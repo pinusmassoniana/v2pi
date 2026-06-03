@@ -1,5 +1,3 @@
-import platform
-import pytest
 from pi_gw_panel.config import Settings
 from pi_gw_panel.net_control.plan import NetPlan
 from pi_gw_panel.net_control.dryrun import DryRunBackend
@@ -37,14 +35,8 @@ def test_factory_forces_dryrun_via_env(monkeypatch):
     assert type(select_backend(Settings())).__name__ == "DryRunBackend"
 
 
-def test_factory_refuses_linux_explicit(monkeypatch):
-    monkeypatch.setenv("PI_GW_NET_BACKEND", "linux")
-    with pytest.raises(NotImplementedError):
-        select_backend(Settings())
-
-
-@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only implicit guard")
-def test_factory_refuses_linux_implicit(monkeypatch):
+def test_factory_unset_defaults_dryrun(monkeypatch):
+    # unset (or unknown) → DryRunBackend everywhere; `linux` is explicit opt-in only,
+    # so dev/CI never half-applies real nft. (linux→LinuxBackend asserted in test_linux.)
     monkeypatch.delenv("PI_GW_NET_BACKEND", raising=False)
-    with pytest.raises(NotImplementedError):
-        select_backend(Settings())
+    assert type(select_backend(Settings())).__name__ == "DryRunBackend"

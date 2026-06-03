@@ -1,20 +1,17 @@
 import os
-import platform
 from pi_gw_panel.config import Settings
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 
 
-def select_backend(settings: Settings) -> DryRunBackend:
-    """Pick the net backend. Override with PI_GW_NET_BACKEND=dryrun|linux.
+def select_backend(settings: Settings):
+    """Pick the net backend from ``PI_GW_NET_BACKEND``.
 
-    `settings` is reserved for backend construction — the future LinuxBackend
-    consumes it (nft/dnsmasq paths). LinuxBackend (real nft/dnsmasq) is introduced
-    in the Linux smoke phase; until then non-dryrun selection on Linux raises so we
-    never half-apply by accident.
+    ``linux`` → the real ``LinuxBackend`` (applies nft tproxy + policy routing to the
+    host; set in the container via ``PI_GW_NET_BACKEND=linux``). Anything else — ``dryrun``,
+    unset, or unknown — returns ``DryRunBackend`` (renders only), so dev/CI never
+    half-applies real rules by accident. Explicit opt-in is the safety boundary.
     """
-    choice = os.environ.get("PI_GW_NET_BACKEND")
-    if choice == "dryrun":
-        return DryRunBackend()
-    if choice == "linux" or (choice is None and platform.system() == "Linux"):
-        raise NotImplementedError("LinuxBackend lands in the pre-cutover Linux phase")
+    if os.environ.get("PI_GW_NET_BACKEND") == "linux":
+        from pi_gw_panel.net_control.linux import LinuxBackend
+        return LinuxBackend(settings)
     return DryRunBackend()
