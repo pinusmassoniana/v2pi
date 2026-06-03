@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL -o /tmp/xray.zip \
       "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-arm64-v8a.zip" \
-    && unzip -o /tmp/xray.zip xray -d /usr/local/bin/ \
+    && unzip -o /tmp/xray.zip xray geoip.dat geosite.dat -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/xray && rm /tmp/xray.zip
 WORKDIR /app
 COPY backend/ /app/backend/
