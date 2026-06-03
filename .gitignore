@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / Vite
+node_modules/
+frontend/dist/
+.vite/
+
+# Built SPA (generated from frontend/ at build time)
+backend/**/static/
+
+# Local dev data
+*.sqlite
+*.sqlite3
+*.db
+data/
+*.log
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# code-review-graph tool metadata
+.code-review-graph/
+
+# OS
+.DS_Store
+
+# Publish tooling
+.publish-audit.md

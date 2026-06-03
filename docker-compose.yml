@@ -1,0 +1,21 @@
+services:
+  v2pi:
+    build: .
+    image: v2pi:dev
+    network_mode: host          # tproxy / nft / dnsmasq live in the host netns (Pi)
+    cap_add:
+      - NET_ADMIN               # nftables
+      - NET_RAW                 # tproxy / raw sockets
+    env_file:
+      - path: .env              # optional overrides; absent .env is fine (zero-config)
+        required: false
+    environment:
+      PI_GW_NET_BACKEND: dryrun   # real nft/dnsmasq (LinuxBackend) lands in Plan 8
+      PI_GW_DATA_DIR: /data
+      PI_GW_PORT: "8080"
+    volumes:
+      - v2pi-data:/data
+    restart: unless-stopped
+
+volumes:
+  v2pi-data:

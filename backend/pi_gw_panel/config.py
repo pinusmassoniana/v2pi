@@ -1,0 +1,112 @@
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+
+def _packaged_static() -> str:
+    """The SPA bundled next to this package (built into pi_gw_panel/static); '' if absent."""
+    p = os.path.join(os.path.dirname(__file__), "static")
+    return p if os.path.isdir(p) else ""
+
+
+@dataclass
+class Settings:
+    xray_bin: str = "xray"
+    data_dir: str = "data"
+    db_path: str = "data/pi_gw_panel.sqlite"
+    config_path: str = "data/xray.json"
+    lastgood_path: str = "data/xray.lastgood.json"
+    # tproxy / marks — match the live Pi: xray dokodemo on :52345, client traffic
+    # marked 0x40 -> tproxy; xray's own egress marked 0x80 (SO_MARK) so nft skips it
+    # (anti-loop); policy-routing table 100.
+    tproxy_port: int = 52345
+    fwmark: int = 0x40
+    egress_mark: int = 0x80
+    table: int = 100
+    # segment = client-facing leg (VLAN2): dnsmasq DHCP + tproxy live here
+    segment_iface: str = "eth0.2"
+    segment_ip: str = "192.168.10.2"
+    dhcp_start: str = "192.168.10.30"
+    dhcp_end: str = "192.168.10.200"
+    dhcp_lease: str = "12h"
+    client_dns: str = "1.1.1.1"   # handed to clients via DHCP; tproxy'd through the tunnel
+    dnsmasq_leases: str = "/var/lib/misc/dnsmasq.leases"  # Pi leases file (absent in dev → 0 clients)
+    # mgmt = Home leg: panel bind + SSH + tunnel egress
+    mgmt_iface: str = "eth0"
+    mgmt_ip: str = "192.168.1.120"
+    doh_url: str = "https://1.1.1.1/dns-query"   # xray's own DoH resolver
+    # HTTP layer (Plan 2)
+    password: str = "changeme"  # DEPRECATED (Wave 3a): unused — the panel credential
+                                # now lives in the DB (auth_username/auth_password_hash),
+                                # created at first run via /api/setup. Kept to avoid churn.
+    session_secret: str = "dev-insecure-secret"
+    bind_host: str = "127.0.0.1"  # prod binds mgmt_ip (Home); dev = localhost
+    static_dir: str = ""
+    local_proxy_port: int = 10808  # gated 127.0.0.1 http inbound for tunneled sub-fetch
+    base_dir: str = ""
+
+    def __post_init__(self) -> None:
+        if self.base_dir:
+            for attr in ("data_dir", "db_path", "config_path", "lastgood_path"):
+                val = getattr(self, attr)
+                if not os.path.isabs(val):
+                    setattr(self, attr, os.path.join(self.base_dir, val))
+
+    def ensure_dirs(self) -> None:
+        os.makedirs(self.data_dir, exist_ok=True)
+        for p in (self.db_path, self.config_path, self.lastgood_path):
+            parent = os.path.dirname(p)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+    @classmethod
+    def from_env(cls, env: "Mapping[str, str] | None" = None) -> "Settings":
+        """Build Settings from PI_GW_* env vars (container/prod entrypoint). Data paths
+        nest under PI_GW_DATA_DIR; static_dir defaults to the packaged SPA; the session
+        secret defaults empty (the entrypoint refuses to start without a real one)."""
+        env = os.environ if env is None else env
+        data = env.get("PI_GW_DATA_DIR", "data")
+        return cls(
+            data_dir=data,
+            db_path=os.path.join(data, "pi_gw_panel.sqlite"),
+            config_path=os.path.join(data, "xray.json"),
+            lastgood_path=os.path.join(data, "xray.lastgood.json"),
+            bind_host=env.get("PI_GW_BIND_HOST", "0.0.0.0"),   # reachable by default; auth-gated
+            static_dir=env.get("PI_GW_STATIC_DIR", _packaged_static()),
+            xray_bin=env.get("PI_GW_XRAY_BIN", "xray"),
+            session_secret=env.get("PI_GW_SESSION_SECRET", ""),
+        )
+
+    # Log file paths derive from data_dir (Wave 3a logs viewer) so they always track
+    # the active data dir (incl. base_dir / test tmp dirs).
+    @property
+    def xray_error_log(self) -> str:
+        return os.path.join(self.data_dir, "xray-error.log")
+
+    @property
+    def xray_access_log(self) -> str:
+        return os.path.join(self.data_dir, "xray-access.log")
+
+    @property
+    def app_log(self) -> str:
+        return os.path.join(self.data_dir, "app.log")
+
+
+# Global non-tuning settings live in the SQLite `settings` k/v table (string values).
+# Wave 2 moved the anti-DPI tuning knobs (fragmentation/mux/DoH/fingerprint) into
+# per-node tuning *profiles*; what remains here is `tunneled_fetch` plus the
+# routing default action and the health/auto-failover knobs.
+SETTINGS_DEFAULTS = {
+    "tunneled_fetch": "1",
+    "routing_default_action": "proxy",
+    "health_enabled": "1",
+    "health_interval": "30",
+    "health_hysteresis": "3",
+    "health_probe_url": "https://api.ipify.org?format=json",
+    "failover_enabled": "1",
+    "failover_cooldown": "120",
+    # Wave 3a — xray StatsService → live traffic graph
+    "stats_enabled": "1",
+    "stats_api_port": "10085",
+    "traffic_sample_ms": "1000",
+}
