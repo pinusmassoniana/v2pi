@@ -15,8 +15,8 @@ def _tunneled_fetch(store) -> bool:
 
 
 def _dns_intercept(store) -> bool:
-    """The `dns_intercept` setting (default on) — gateway resolves segment DNS over DoH."""
-    return (store.get_setting("dns_intercept") or "1") == "1"
+    """The `dns_intercept` setting (default OFF) — gateway resolves segment DNS over DoH."""
+    return (store.get_setting("dns_intercept") or "0") == "1"
 
 
 def _resolve_routing(store) -> tuple:
