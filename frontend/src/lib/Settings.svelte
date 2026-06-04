@@ -72,6 +72,7 @@
   <form onsubmit={save} class="card settings">
     <h3>General</h3>
     <div class="check"><Toggle checked={s.tunneled_fetch} onchange={(v) => { if (s) s.tunneled_fetch = v; }} label="tunneled fetch" /> <span>Fetch subscriptions through the tunnel</span></div>
+    <div class="check"><Toggle checked={s.dns_intercept} onchange={(v) => { if (s) s.dns_intercept = v; }} label="gateway DNS" /> <span>Resolve segment DNS in the gateway over DoH — works on nodes that don't relay UDP (apply a node to take effect)</span></div>
 
     <fieldset>
       <legend>Traffic stats</legend>

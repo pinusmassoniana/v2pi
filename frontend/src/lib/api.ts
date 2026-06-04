@@ -23,6 +23,7 @@ export interface Settings {
   health_enabled: boolean; health_interval: number; health_hysteresis: number; health_probe_url: string;
   failover_enabled: boolean; failover_cooldown: number;
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
+  dns_intercept: boolean;
 }
 
 // --- Wave 3a: live traffic graph ---

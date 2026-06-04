@@ -110,4 +110,6 @@ SETTINGS_DEFAULTS = {
     "stats_enabled": "1",
     "stats_api_port": "10085",
     "traffic_sample_ms": "1000",
+    # resolve segment clients' DNS inside the gateway over DoH (works on nodes w/o UDP relay)
+    "dns_intercept": "1",
 }

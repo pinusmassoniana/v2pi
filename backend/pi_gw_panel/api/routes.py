@@ -76,7 +76,8 @@ def _settings_out(state) -> SettingsOut:
         failover_cooldown=int(val("failover_cooldown")),
         stats_enabled=val("stats_enabled") == "1",
         stats_api_port=int(val("stats_api_port")),
-        traffic_sample_ms=int(val("traffic_sample_ms")))
+        traffic_sample_ms=int(val("traffic_sample_ms")),
+        dns_intercept=val("dns_intercept") == "1")
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns")

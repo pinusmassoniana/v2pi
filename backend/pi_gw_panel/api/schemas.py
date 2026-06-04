@@ -117,6 +117,7 @@ class SettingsOut(BaseModel):
     stats_enabled: bool
     stats_api_port: int
     traffic_sample_ms: int
+    dns_intercept: bool
 
 
 class SettingsIn(BaseModel):
@@ -131,6 +132,7 @@ class SettingsIn(BaseModel):
     stats_enabled: bool | None = None
     stats_api_port: int | None = None
     traffic_sample_ms: int | None = None
+    dns_intercept: bool | None = None
 
 
 # --- Wave 2: tuning profiles ---

@@ -14,6 +14,11 @@ def _tunneled_fetch(store) -> bool:
     return (store.get_setting("tunneled_fetch") or "1") == "1"
 
 
+def _dns_intercept(store) -> bool:
+    """The `dns_intercept` setting (default on) — gateway resolves segment DNS over DoH."""
+    return (store.get_setting("dns_intercept") or "1") == "1"
+
+
 def _resolve_routing(store) -> tuple:
     """Ordered routing rules + the configurable default action (default 'proxy').
     Empty rules + 'proxy' default reproduce the Wave-0 routing exactly."""
@@ -59,10 +64,11 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         routing = _resolve_routing(store)
         tunneled = _tunneled_fetch(store)
         stats = _resolve_stats(store)
+        dns_intercept = _dns_intercept(store)
     else:
-        profile, routing, tunneled, stats = None, None, False, None
+        profile, routing, tunneled, stats, dns_intercept = None, None, False, None, False
     cfg = build_config(node, settings, profile=profile, routing=routing,
-                       tunneled_fetch=tunneled, stats=stats)
+                       tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept)
     mgr = ConfigManager(settings, xray_bin=xray_bin)
     ok, out = mgr.apply(cfg)
     if not ok:

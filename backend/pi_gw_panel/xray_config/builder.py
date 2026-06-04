@@ -4,7 +4,8 @@ from pi_gw_panel.xray_config.routing import rules_to_xray
 
 
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
-                 routing=None, tunneled_fetch: bool = False, stats: dict | None = None) -> dict:
+                 routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
+                 dns_intercept: bool = False) -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -25,7 +26,8 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     fingerprint = profile.fingerprint if profile is not None else node.fingerprint
     doh_on = profile.doh_enabled if profile is not None else True
     doh_url = profile.doh_url if profile is not None and profile.doh_url else settings.doh_url
-    dns_servers = ([{"address": doh_url}] if doh_on else []) + ["localhost"]
+    # gateway DNS interception needs a tunnelled resolver present even if a profile disabled DoH
+    dns_servers = ([{"address": doh_url}] if (doh_on or dns_intercept) else []) + ["localhost"]
 
     # proxy outbound: user + transport/security-aware streamSettings.
     #   tcp+reality+vision (legacy) ── realitySettings + user.flow
@@ -120,6 +122,15 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
         rlist = cfg["routing"]["rules"]
         rlist.insert(len(rlist) - 1,
                      {"type": "field", "protocol": ["quic"], "outboundTag": tag})
+
+    # Gateway DNS (toggle): resolve segment clients' DNS inside xray over DoH/TCP through the
+    # tunnel instead of proxying their raw UDP — so it works even on nodes that don't relay UDP
+    # (the "no internet, but the node works for TCP" case). Route :53 from the tproxy inbound to
+    # a dns outbound, which resolves via the DoH server already in the dns block.
+    if dns_intercept:
+        cfg["outbounds"].append({"protocol": "dns", "tag": "dns-out"})
+        cfg["routing"]["rules"].insert(0, {
+            "type": "field", "inboundTag": ["tproxy-in"], "port": 53, "outboundTag": "dns-out"})
 
     # xray StatsService (Wave 3a): per-outbound traffic counters + a local api inbound,
     # with its dispatch rule prepended first. Gated — stats=None keeps the config Wave-0.

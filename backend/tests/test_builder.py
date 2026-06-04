@@ -9,6 +9,20 @@ def _node():
                 flow="xtls-rprx-vision")
 
 
+def test_dns_intercept_adds_dns_outbound_and_route():
+    cfg = build_config(_node(), Settings(), dns_intercept=True)
+    assert any(o.get("protocol") == "dns" and o.get("tag") == "dns-out" for o in cfg["outbounds"])
+    r0 = cfg["routing"]["rules"][0]                       # client :53 (tproxy-in) → dns-out
+    assert r0 == {"type": "field", "inboundTag": ["tproxy-in"], "port": 53, "outboundTag": "dns-out"}
+    assert any(isinstance(s, dict) and "1.1.1.1" in s["address"] for s in cfg["dns"]["servers"])
+
+
+def test_dns_intercept_off_by_default_is_unchanged():
+    cfg = build_config(_node(), Settings())
+    assert not any(o.get("tag") == "dns-out" for o in cfg["outbounds"])
+    assert all(r.get("outboundTag") != "dns-out" for r in cfg["routing"]["rules"])
+
+
 def test_tproxy_inbound_present():
     cfg = build_config(_node(), Settings())
     inb = cfg["inbounds"][0]
