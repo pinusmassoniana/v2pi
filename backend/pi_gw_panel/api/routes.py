@@ -8,6 +8,7 @@ from pi_gw_panel.api.schemas import (
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
     RoutingIn, RoutingOut, RoutingRuleOut, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
+    TrafficHistoryOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import SESSION_AUTHED, SESSION_CSRF, new_csrf_token
@@ -158,6 +159,21 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     return StatusOut(running=st["running"], pid=st["pid"],
                      active_node_id=int(active) if active else None,  # "" (post-rollback) → None
                      xray_state=state.supervisor.state())
+
+
+@router.get("/traffic/history", response_model=TrafficHistoryOut)
+def traffic_history(request: Request, window_sec: int = 3600, max_points: int = 600,
+                    _: None = Depends(require_auth)) -> TrafficHistoryOut:
+    """Seed the Dashboard graph with the recorded proxy throughput over the last
+    `window_sec`, downsampled to at most `max_points` points (proxy outbound)."""
+    state = get_state(request)
+    interval = int(state.store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"])
+    hist = getattr(state, "history", None)
+    if hist is None:
+        return TrafficHistoryOut(samples=[], interval_ms=interval)
+    since = int(datetime.now(timezone.utc).timestamp() * 1000) - max(1, window_sec) * 1000
+    series = hist.series(since_ms=since, max_points=max(1, max_points))
+    return TrafficHistoryOut(samples=[[s[0], s[1], s[2]] for s in series], interval_ms=interval)
 
 
 # --- nodes ---

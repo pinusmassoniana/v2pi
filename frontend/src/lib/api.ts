@@ -33,6 +33,8 @@ export interface TrafficFrame {
   active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null } | null;
 }
 export type TrafficMessage = TrafficFrame | { disabled: true } | { error: string };
+// long-window history seed: each sample is [ts_ms, up_bps, down_bps]
+export interface TrafficHistoryResp { samples: number[][]; interval_ms: number; }
 export type BackupDoc = Record<string, any>;
 
 // --- Wave 2: tuning profiles ---
@@ -117,6 +119,9 @@ export const api = {
   async logout() { _csrf = null; return req("/logout", { method: "POST" }); },
   changePassword(current_password: string, new_password: string) { return mutate("POST", "/password", { current_password, new_password }); },
   getStatus(): Promise<Status> { return req("/status"); },
+  getTrafficHistory(windowSec = 3600, maxPoints = 1200): Promise<TrafficHistoryResp> {
+    return req(`/traffic/history?window_sec=${windowSec}&max_points=${maxPoints}`);
+  },
 
   listNodes(): Promise<Node[]> { return req("/nodes"); },
   addNode(n: NodeIn): Promise<Node> { return mutate("POST", "/nodes", n); },

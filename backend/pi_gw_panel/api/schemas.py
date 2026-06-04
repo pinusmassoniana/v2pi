@@ -262,3 +262,10 @@ class NetworkIn(BaseModel):
     dhcp_lease: str | None = Field(default=None, min_length=1)
     client_dns: str | None = Field(default=None, min_length=1)
     kill_switch_enabled: bool | None = None
+
+
+# Long-window traffic history seed for the Dashboard graph. Each sample is a compact
+# [ts_ms, up_bps, down_bps] triple (proxy outbound); interval_ms is the record cadence.
+class TrafficHistoryOut(BaseModel):
+    samples: list[list[int]]
+    interval_ms: int

@@ -5,7 +5,7 @@
 
   let status = $state<Status | null>(null);
   let nodes = $state<Node[]>([]);
-  let samples = $state<{ up: number; down: number }[]>([]);
+  let samples = $state<{ ts: number; up: number; down: number }[]>([]);
   let live = $state<TrafficMessage | null>(null);
   let disabled = $state(false);
   let msg = $state("");
@@ -38,6 +38,16 @@
     return () => clearInterval(t);
   });
 
+  // seed the graph with recorded history so the full window shows immediately on open
+  $effect(() => {
+    api.getTrafficHistory(3600, 1200)
+      .then((h) => {
+        const seed = h.samples.map(([ts, up, down]) => ({ ts, up, down }));
+        if (seed.length) samples = [...seed, ...samples].slice(-4000);
+      })
+      .catch(() => {});
+  });
+
   // live traffic WebSocket with reconnect/backoff; closes on unmount
   $effect(() => {
     let ws: WebSocket | null = null;
@@ -50,7 +60,7 @@
         disabled = false;
         live = m;
         const p = m.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
-        samples = [...samples, { up: p.up_bps, down: p.down_bps }].slice(-60);
+        samples = [...samples, { ts: m.ts, up: p.up_bps, down: p.down_bps }].slice(-4000);
       });
       ws.onclose = () => { if (!stop) timer = setTimeout(open, 2000); };
       ws.onerror = () => { try { ws?.close(); } catch {} };
@@ -98,14 +108,11 @@
 </div>
 
 <div class="card graph-card">
-  <div class="graph-head">
-    <span class="eyebrow">Live throughput</span>
-    <span class="muted gh-sub">last {samples.length}/60s</span>
-  </div>
+  <span class="eyebrow">Throughput</span>
   {#if disabled}
     <p class="msg">Traffic stats disabled — enable in Settings.</p>
   {:else}
-    <TrafficGraph {samples} />
+    <TrafficGraph series={samples} />
   {/if}
 </div>
 
@@ -156,8 +163,7 @@
   .metric-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* traffic graph card */
-  .graph-head { display: flex; align-items: center; justify-content: space-between; }
-  .gh-sub { font-size: 0.72rem; }
+  .graph-card { gap: 0.7rem; }
 
   @media (max-width: 820px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
   @media (max-width: 460px) { .metrics { grid-template-columns: 1fr; } }

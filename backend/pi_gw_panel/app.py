@@ -53,11 +53,15 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
         scheduler.start()
         monitor.start()
+        if app_state.recorder is not None:
+            app_state.recorder.start()          # always-on traffic history sampler
         try:
             yield
         finally:
             await scheduler.stop()
             await monitor.stop()
+            if app_state.recorder is not None:
+                await app_state.recorder.stop()
 
     logs_mod.setup_app_logging(app_state.settings.app_log)   # app logs → data_dir/app.log
 

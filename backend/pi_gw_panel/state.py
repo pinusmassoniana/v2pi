@@ -5,6 +5,7 @@ from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.stats.client import StatsClient
 from pi_gw_panel.stats.sampler import TrafficSampler
+from pi_gw_panel.stats.history import TrafficHistory, TrafficRecorder
 
 
 @dataclass
@@ -14,7 +15,9 @@ class AppState:
     supervisor: XraySupervisor
     net: object              # NetBackend (duck-typed: apply_tproxy/teardown)
     xray_bin: str | None = None
-    sampler: object | None = None   # TrafficSampler (stubbed in WS tests)
+    sampler: object | None = None   # TrafficSampler for the live WS (stubbed in WS tests)
+    history: object | None = None   # TrafficHistory ring buffer (long-window graph)
+    recorder: object | None = None  # TrafficRecorder background task (started in lifespan)
 
 
 def build_state(settings: Settings, net: object | None = None) -> AppState:
@@ -35,6 +38,15 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     port = int(store.get_setting("stats_api_port") or SETTINGS_DEFAULTS["stats_api_port"])
     stats_client = StatsClient(f"127.0.0.1:{port}")
     sampler = TrafficSampler(lambda: stats_client.query("outbound>>>"))
+    # Always-on history: a SECOND sampler (independent prev-counters) feeds a 1h ring
+    # buffer (3600 @ 1s) so the graph has a full window the moment the Dashboard opens.
+    history = TrafficHistory(maxlen=3600)
+    recorder = TrafficRecorder(
+        sampler=TrafficSampler(lambda: stats_client.query("outbound>>>")),
+        history=history,
+        stats_enabled=lambda: (store.get_setting("stats_enabled") or "1") == "1",
+        interval_ms=lambda: int(store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"]),
+    )
     return AppState(
         settings=settings,
         store=store,
@@ -42,4 +54,6 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         net=net,
         xray_bin=settings.xray_bin,
         sampler=sampler,
+        history=history,
+        recorder=recorder,
     )
