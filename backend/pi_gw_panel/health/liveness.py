@@ -1,14 +1,14 @@
 """Fast connection-resilience loop (audit B1 + B2), distinct from the slow 30-min
 all-node HealthMonitor sweep.
 
-Every `interval_sec` (default 30 s) it:
-  1. **Watchdog** — if xray was meant to be running but crashed, restart it immediately
-     (the HealthMonitor never touched the supervisor, so a crash otherwise black-holed
-     all client traffic for up to ~90 min, or forever with a single node).
-  2. **Active real-probe** — real-request through the active node so its `fail_count`
-     advances in seconds, not the monitor's 30-min cadence.
-  3. **Failover** — act on the fresh counter (this loop is now the failover driver, so it
-     can record the event); cooldown still debounces.
+Every `interval_sec` (default 20 s) it runs the **watchdog** (restart a crashed xray) and
+**failover** evaluation; every `probe_interval` (default 60 s) it **real-probes the active node**
+to advance `fail_count` for fast failover.
+
+The active-node probe spins a **separate throwaway xray** — it must NOT go through the live
+tunnel's proxy: routing the probe (incl. the v6-egress request) through the live connection
+heavily degrades the user's active connection for the duration of the check. The cost is a
+short-lived xray per probe, kept modest by the 60 s probe cadence.
 
 All blocking work runs in an executor; every step is best-effort and never raises out.
 """
@@ -23,20 +23,25 @@ from pi_gw_panel.controller import apply_lock
 from pi_gw_panel.net_control import events
 
 log = logging.getLogger("pi_gw_panel")
-DEFAULT_INTERVAL = 30.0
+DEFAULT_INTERVAL = 20.0        # watchdog + failover-eval cadence
+DEFAULT_PROBE_INTERVAL = 60.0  # active-node real-probe cadence (a throwaway xray each time)
+DEFAULT_PROBE_URL6 = "https://api6.ipify.org?format=json"
 
 
 class LivenessLoop:
     def __init__(self, state, interval_sec: float = DEFAULT_INTERVAL,
-                 real_request=probe.real_request, failover_run=failover.run,
+                 probe_interval: float = DEFAULT_PROBE_INTERVAL,
+                 real_through=probe.real_through_node, failover_run=failover.run,
                  restart=None, now=None, now_iso=None):
         self._state = state
         self._interval = interval_sec
-        self._real_request = real_request
+        self._probe_interval = probe_interval
+        self._real_through = real_through
         self._failover_run = failover_run
         self._restart = restart or (lambda st: st.supervisor.start())
         self._now = now or time.time
         self._now_iso = now_iso or (lambda: datetime.now(timezone.utc).isoformat())
+        self._last_probe = 0.0
         self._task: asyncio.Task | None = None
 
     # --- B1: restart a crashed xray ---
@@ -51,7 +56,7 @@ class LivenessLoop:
             events.record(st.store, "xray-restart", "auto-restarted after crash", now=self._now())
             log.warning("watchdog: xray was down — restarted")
 
-    # --- B2: fast real-probe of the active node so fail_count is responsive ---
+    # --- B2: real-probe the active node so fail_count is responsive (SEPARATE xray) ---
     def _probe_active(self) -> None:
         st = self._state
         store = st.store
@@ -61,16 +66,16 @@ class LivenessLoop:
         aid = int(av) if av else None
         if aid is None or not st.supervisor.status().get("running"):
             return
-        if (store.get_setting("tunneled_fetch") or "1") != "1":
-            return   # no local proxy inbound to probe through → would false-fail the node (NC1)
+        node = store.get_node(aid)
+        if node is None:
+            return
         probe_url = store.get_setting("health_probe_url") or DEFAULT_PROBE_URL
-        proxy_url = f"http://127.0.0.1:{st.settings.local_proxy_port}"
-        real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
-        # IPv6 egress, when the tunnel carries v6: a v6-only echo through the same live proxy.
-        egress6 = None
-        if (store.get_setting("ipv6_enabled") or "0") == "1":
-            url6 = store.get_setting("health_probe_url6") or "https://api6.ipify.org?format=json"
-            egress6 = self._real_request(proxy_url, url6)[3]
+        url6 = (store.get_setting("health_probe_url6") or DEFAULT_PROBE_URL6
+                if (store.get_setting("ipv6_enabled") or "0") == "1" else None)
+        # Throwaway xray, NOT the live tunnel — isolating the probe keeps the user's active
+        # connection undisturbed during the check (and tunneled_fetch no longer matters here).
+        real_ok, real_ms, egress, egress6 = self._real_through(node, st.xray_bin, probe_url,
+                                                               probe_url6=url6)
         prev = store.get_health(aid)
         store.upsert_health(NodeHealth(
             node_id=aid,
@@ -85,11 +90,16 @@ class LivenessLoop:
             store.record_latency(aid, real_ms)
 
     def _tick(self) -> None:
-        for step in (self._watchdog, self._probe_active):
+        try:
+            self._watchdog()
+        except Exception:
+            log.debug("liveness watchdog failed", exc_info=True)
+        if self._now() - self._last_probe >= self._probe_interval:   # rate-limit the spawn
+            self._last_probe = self._now()
             try:
-                step()
+                self._probe_active()
             except Exception:
-                log.debug("liveness step failed", exc_info=True)
+                log.debug("liveness probe failed", exc_info=True)
         try:
             new_active = self._failover_run(self._state, self._now())
             if new_active is not None:

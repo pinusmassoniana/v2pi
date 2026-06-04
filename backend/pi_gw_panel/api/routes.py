@@ -685,14 +685,13 @@ def probe_http(request: Request, scope: str | None = None,
 
 
 @router.post("/nodes/{node_id}/probe", response_model=NodeHealthOut)
-def probe_node(node_id: int, request: Request, real_only: bool = False,
+def probe_node(node_id: int, request: Request,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NodeHealthOut:
-    """Per-node 'T': run all three probes for one node — TCP, direct HTTPS, and a real request
-    *through* this node (throwaway xray, so the live tunnel is untouched) — and persist them.
+    """Per-node 'T': TCP + direct HTTPS + a real request *through* this node — and persist them.
 
-    `real_only` skips the two DIRECT probes (TCP + TLS handshake) and refreshes only the
-    real-request latency/egress — used by the Dashboard's 60s active-node liveness loop, which
-    consumes nothing else, so the direct dials are wasted load otherwise (audit D6)."""
+    The real request ALWAYS goes through a throwaway xray, even for the active node: reusing the
+    live tunnel's proxy here degrades the user's active connection for the duration of the probe
+    (reverts the earlier NR3 reuse-live-proxy shortcut)."""
     state = get_state(request)
     store = state.store
     node = store.get_node(node_id)
@@ -702,29 +701,15 @@ def probe_node(node_id: int, request: Request, real_only: bool = False,
     # v6 egress: only when the IPv6 tunnel is on (a v6-only echo → the node's v6 egress, or None)
     url6 = (store.get_setting("health_probe_url6") or SETTINGS_DEFAULTS["health_probe_url6"]
             if (store.get_setting("ipv6_enabled") or "0") == "1" else None)
-    active = store.get_setting("active_node_id")
-    tunneled_on = (store.get_setting("tunneled_fetch") or "1") == "1"
-    if (active and int(active) == node_id and tunneled_on
-            and state.supervisor.status().get("running")):
-        # NR3: this IS the live node — reuse the running tunnel's proxy instead of spawning a
-        # second throwaway xray that dials the same server.
-        proxy_url = f"http://127.0.0.1:{state.settings.local_proxy_port}"
-        real_ok, _status, real_ms, egress = probe.real_request(proxy_url, probe_url)
-        egress6 = probe.real_request(proxy_url, url6)[3] if url6 else None
-    else:
-        real_ok, real_ms, egress, egress6 = probe.real_through_node(
-            node, state.xray_bin, probe_url, probe_url6=url6)
+    real_ok, real_ms, egress, egress6 = probe.real_through_node(
+        node, state.xray_bin, probe_url, probe_url6=url6)
     h = store.get_health(node_id) or NodeHealth(node_id=node_id)
-    if not real_only:
-        h.last_tcp_ok, h.last_tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
-        h.last_http_ok, h.last_http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
+    h.last_tcp_ok, h.last_tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
+    h.last_http_ok, h.last_http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
     h.last_real_ok, h.last_real_ms, h.egress_ip, h.egress_ip6 = real_ok, real_ms, egress, egress6
     h.checked_at = datetime.now(timezone.utc).isoformat()
     store.upsert_health(h)
-    if real_only:
-        if real_ok and real_ms is not None:
-            store.record_latency(node_id, real_ms)   # feed the dashboard latency sparkline (B)
-    elif h.last_http_ok and h.last_http_ms is not None:
+    if h.last_http_ok and h.last_http_ms is not None:
         store.record_latency(node_id, h.last_http_ms)   # NN4
     return NodeHealthOut(**vars(store.get_health(node_id)))
 

@@ -204,11 +204,7 @@ export const api = {
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
   probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
   probeHttp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/http${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
-  // real_only skips the two direct probes — the Dashboard's 60s liveness loop only needs the
-  // real-request result, so it avoids two wasted direct dials per tick (D6).
-  probeNode(id: number, realOnly = false): Promise<NodeHealth> {
-    return mutate("POST", `/nodes/${id}/probe${realOnly ? "?real_only=1" : ""}`);
-  },
+  probeNode(id: number): Promise<NodeHealth> { return mutate("POST", `/nodes/${id}/probe`); },
   detachNodes(ids: number[]) { return mutate("POST", "/nodes/detach", { ids }); },
   validateNode(n: NodeIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/nodes/validate", n); },
 

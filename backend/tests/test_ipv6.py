@@ -278,23 +278,24 @@ def test_liveness_records_v6_egress_when_enabled():
         def status(self): return {"running": True, "pid": 1}
 
     class _St:
-        def __init__(s): s.store, s.settings, s.supervisor = store, Settings(), _Sup()
-    def rr(proxy, url, timeout=5.0):
-        return (True, 200, 5, "2606::a" if "api6" in url else "3.3.3.3")
-    LivenessLoop(_St(), real_request=rr)._probe_active()
+        def __init__(s): s.store, s.settings, s.supervisor, s.xray_bin = store, Settings(), _Sup(), "xray"
+    def rt(node, xb, url, probe_url6=None, **k):   # throwaway xray returns v4 + (when asked) v6 egress
+        return (True, 5, "3.3.3.3", "2606::a" if probe_url6 else None)
+    LivenessLoop(_St(), real_through=rt)._probe_active()
     h = store.get_health(nid)
     assert h.egress_ip == "3.3.3.3" and h.egress_ip6 == "2606::a"
 
 
-def test_probe_node_endpoint_returns_v6_egress_for_live_node(settings, stub_xray, monkeypatch):
+def test_probe_node_endpoint_returns_v6_egress(settings, stub_xray, monkeypatch):
     c, h = _client(settings, stub_xray)
     nid = c.post("/api/nodes", json={"name": "n", "address": "1.2.3.4", "port": 443, "uuid": "u"},
                  headers=h).json()["id"]
-    assert c.post(f"/api/nodes/{nid}/apply", headers=h).status_code == 200      # live tunnel
     c.put("/api/network", json={"ipv6_enabled": True}, headers=h)
-    monkeypatch.setattr(probe_mod, "real_request",
-                        lambda proxy, url, timeout=5.0: (True, 200, 7, "2606::5" if "api6" in url else "2.2.2.2"))
-    out = c.post(f"/api/nodes/{nid}/probe?real_only=1", headers=h).json()
+    monkeypatch.setattr(probe_mod, "tcp_ping", lambda *a, **k: (True, 5))
+    monkeypatch.setattr(probe_mod, "http_ping", lambda *a, **k: (True, 9))
+    monkeypatch.setattr(probe_mod, "real_through_node",
+                        lambda node, xb, url, probe_url6=None, **k: (True, 7, "2.2.2.2", "2606::5" if probe_url6 else None))
+    out = c.post(f"/api/nodes/{nid}/probe", headers=h).json()
     assert out["egress_ip"] == "2.2.2.2" and out["egress_ip6"] == "2606::5"
 
 

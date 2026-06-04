@@ -116,16 +116,9 @@
   // seed the graph with recorded history so the full window shows immediately on open
   $effect(() => { seedHistory(); });
 
-  // active-node liveness (P4): re-probe the active node every 60s while the tab is visible, so
-  // real latency / egress stay fresh. real_only → skip the two direct probes (D6).
-  $effect(() => {
-    const t = setInterval(() => {
-      const id = status?.active_node_id;
-      if (id && status?.running && document.visibilityState === "visible")
-        api.probeNode(id, true).catch(() => {});
-    }, 60000);
-    return () => clearInterval(t);
-  });
+  // active-node liveness is owned by the backend loop now (it probes the active node via a
+  // SEPARATE xray and pushes the result through the WS `active` frame) — no client-side re-probe
+  // here, which previously went through the live tunnel and disturbed the active connection.
 
   // live traffic WebSocket with reconnect/backoff; closes on unmount
   $effect(() => {

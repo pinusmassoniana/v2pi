@@ -164,7 +164,7 @@ def test_liveness_probe_advances_fail_count_on_failure():
     nid = store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u"))
     store.set_setting("active_node_id", str(nid))
     state = _State(store, settings, _FakeSup("working"))
-    loop = LivenessLoop(state, real_request=lambda *a, **k: (False, None, None, None))
+    loop = LivenessLoop(state, real_through=lambda *a, **k: (False, None, None, None))   # throwaway xray
     loop._probe_active()
     assert store.get_health(nid).fail_count == 1 and store.get_health(nid).last_real_ok is False
     loop._probe_active()
@@ -176,7 +176,7 @@ def test_liveness_tick_records_failover_event():
     nid = store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u"))
     store.set_setting("active_node_id", str(nid))
     state = _State(store, settings, _FakeSup("working"))
-    loop = LivenessLoop(state, real_request=lambda *a, **k: (True, 200, 7, "9.9.9.9"),
+    loop = LivenessLoop(state, real_through=lambda *a, **k: (True, 7, "9.9.9.9", None),
                         failover_run=lambda st, now: 42)
     loop._tick()
     assert any(e["kind"] == "failover" and "42" in e["detail"] for e in conn_events.recent(store))

@@ -82,28 +82,24 @@ def test_status_carries_server_now(settings, stub_xray):
 
 # --- D6: real_only probe ----------------------------------------------------
 
-def test_probe_real_only_skips_direct_probes(settings, stub_xray, monkeypatch):
+def test_probe_active_node_uses_throwaway_xray_not_live_proxy(settings, stub_xray, monkeypatch):
+    # The active node's per-node probe must NOT reuse the live tunnel proxy (it degrades the
+    # active connection) — it spawns a throwaway xray like any other node (NR3 reverted).
     c, state = _client_state(settings, stub_xray)
     tok = _auth(c)
     h = {"X-CSRF-Token": tok}
     nid = c.post("/api/nodes", json={"name": "n", "address": "1.2.3.4", "port": 443, "uuid": "u-1"},
                  headers=h).json()["id"]
-
-    calls = []
-    monkeypatch.setattr(probe_mod, "tcp_ping", lambda *a, **k: (calls.append("tcp"), (True, 10))[1])
-    monkeypatch.setattr(probe_mod, "http_ping", lambda *a, **k: (calls.append("http"), (True, 20))[1])
-    monkeypatch.setattr(probe_mod, "real_through_node", lambda *a, **k: (True, 42, "5.5.5.5", None))
-
-    out = c.post(f"/api/nodes/{nid}/probe?real_only=1", headers=h).json()
-    assert calls == []                                  # neither direct probe ran (D6)
-    assert out["last_real_ms"] == 42 and out["egress_ip"] == "5.5.5.5"
-    assert out["last_tcp_ok"] is None and out["last_http_ok"] is None
-    assert out["lat_history"] == [42]                   # real latency feeds the sparkline (B)
-
-    out2 = c.post(f"/api/nodes/{nid}/probe", headers=h).json()   # full sweep
-    assert set(calls) == {"tcp", "http"}                # both direct probes ran
-    assert out2["last_tcp_ok"] is True and out2["last_http_ok"] is True
-    assert out2["lat_history"] == [42, 20]              # full sweep records the http latency
+    assert c.post(f"/api/nodes/{nid}/apply", headers=h).status_code == 200   # live + active
+    used = []
+    monkeypatch.setattr(probe_mod, "real_request", lambda *a, **k: used.append("live") or (True, 200, 1, "x"))
+    monkeypatch.setattr(probe_mod, "real_through_node",
+                        lambda *a, **k: used.append("throwaway") or (True, 42, "5.5.5.5", None))
+    monkeypatch.setattr(probe_mod, "tcp_ping", lambda *a, **k: (True, 10))
+    monkeypatch.setattr(probe_mod, "http_ping", lambda *a, **k: (True, 20))
+    out = c.post(f"/api/nodes/{nid}/probe", headers=h).json()
+    assert used == ["throwaway"]                          # NOT the live proxy
+    assert out["egress_ip"] == "5.5.5.5" and out["last_tcp_ok"] is True
 
 
 # --- B + F: WS frame carries lat_history and durable lifetime ---------------
