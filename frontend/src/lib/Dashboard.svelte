@@ -14,7 +14,9 @@
   let liveFrame = $derived(live && !("disabled" in live) && !("error" in live) ? live : null);
   let liveActive = $derived(liveFrame ? liveFrame.active : null);
   let liveTotals = $derived(liveFrame ? liveFrame.totals : null);
-  let liveDirect = $derived(liveFrame ? (liveFrame.outbounds.direct ?? { up_bps: 0, down_bps: 0 }) : null);
+  // never null — a null here would crash the {#if} below (Svelte drops the parens around
+  // the `|| ` so `liveDirect && a || liveDirect.up_bps` reads up_bps on null). Default to zeros.
+  let liveDirect = $derived(liveFrame ? (liveFrame.outbounds.direct ?? { up_bps: 0, down_bps: 0 }) : { up_bps: 0, down_bps: 0 });
   let latest = $derived(samples.length ? samples[samples.length - 1] : { up: 0, down: 0 });
 
   const fmtRate = (bps: number) =>
