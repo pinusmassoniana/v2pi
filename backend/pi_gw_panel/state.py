@@ -42,12 +42,19 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     # buffer (3600 @ 1s) so the graph has a full window the moment the Dashboard opens.
     history = TrafficHistory(maxlen=3600)
     supervisor = XraySupervisor(settings.xray_bin, settings.config_path)
+
+    def _add_data_used(up_delta: int, down_delta: int) -> None:
+        """Durably accumulate proxy bytes so "data used" survives an xray restart (audit F)."""
+        store.set_setting("data_used_up", str(int(store.get_setting("data_used_up") or "0") + up_delta))
+        store.set_setting("data_used_down", str(int(store.get_setting("data_used_down") or "0") + down_delta))
+
     recorder = TrafficRecorder(
         sampler=TrafficSampler(lambda: stats_client.query("outbound>>>")),
         history=history,
         stats_enabled=lambda: (store.get_setting("stats_enabled") or "1") == "1",
         running=lambda: supervisor.status()["running"],   # don't poke a dead stats port (F5)
         interval_ms=lambda: int(store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"]),
+        on_total=_add_data_used,
     )
     return AppState(
         settings=settings,

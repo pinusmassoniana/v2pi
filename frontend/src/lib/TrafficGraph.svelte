@@ -106,9 +106,10 @@
 
 <div class="tg">
   <div class="tg-head">
-    <div class="win" role="tablist">
+    <div class="win" role="tablist" aria-label="Throughput window">
       {#each WINDOWS as wd (wd.sec)}
-        <button class="win-btn" class:on={windowSec === wd.sec} onclick={() => (windowSec = wd.sec)}>{wd.label}</button>
+        <button class="win-btn" class:on={windowSec === wd.sec} onclick={() => (windowSec = wd.sec)}
+                role="tab" aria-selected={windowSec === wd.sec}>{wd.label}</button>
       {/each}
     </div>
     {#if stats}

@@ -1,4 +1,4 @@
-export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; last_failover_at: number | null; }
+export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; last_failover_at: number | null; server_now: number; }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   network: string; security: string;
@@ -46,8 +46,9 @@ export interface OutboundRate { up_bps: number; down_bps: number; }
 export interface TrafficFrame {
   ts: number;
   outbounds: Record<string, OutboundRate>;
-  totals: { up: number; down: number };   // cumulative bytes, proxy outbound (data used)
-  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null } | null;
+  totals: { up: number; down: number };   // proxy outbound bytes since xray start (resets on restart)
+  lifetime?: { up: number; down: number };  // durable data-used total, survives xray restart (F)
+  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; lat_history: number[] } | null;
 }
 export type TrafficMessage = TrafficFrame | { disabled: true } | { error: string };
 // long-window history seed: each sample is [ts_ms, up_bps, down_bps]
@@ -197,7 +198,11 @@ export const api = {
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
   probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
   probeHttp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/http${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
-  probeNode(id: number): Promise<NodeHealth> { return mutate("POST", `/nodes/${id}/probe`); },
+  // real_only skips the two direct probes — the Dashboard's 60s liveness loop only needs the
+  // real-request result, so it avoids two wasted direct dials per tick (D6).
+  probeNode(id: number, realOnly = false): Promise<NodeHealth> {
+    return mutate("POST", `/nodes/${id}/probe${realOnly ? "?real_only=1" : ""}`);
+  },
   detachNodes(ids: number[]) { return mutate("POST", "/nodes/detach", { ids }); },
   validateNode(n: NodeIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/nodes/validate", n); },
 

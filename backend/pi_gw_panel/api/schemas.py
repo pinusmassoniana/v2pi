@@ -80,6 +80,7 @@ class StatusOut(BaseModel):
     xray_state: str = "stopped"   # working | stopped | error (sidebar xray-core box)
     active_since: int | None = None   # epoch the active node was applied (uptime anchor, P3)
     last_failover_at: float | None = None   # epoch of the last auto-failover (NN8)
+    server_now: float = 0.0   # Pi wall-clock at response time → client clock-skew correction (D4)
 
 
 class SubscriptionIn(BaseModel):

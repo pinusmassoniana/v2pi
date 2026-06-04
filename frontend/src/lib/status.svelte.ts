@@ -6,6 +6,9 @@ import { api, type Status } from "./api";
 let _status = $state<Status | null>(null);
 let _refs = 0;
 let _timer: ReturnType<typeof setInterval> | null = null;
+// D4: Date.now() − (server wall-clock). Lets time labels (freshness/uptime) render against the
+// Pi's clock instead of a possibly-skewed browser clock. Updated on every status poll.
+let _skewMs = 0;
 
 export const statusStore = {
   get value(): Status | null {
@@ -13,8 +16,16 @@ export const statusStore = {
   },
 };
 
+/** Current time on the Pi's clock (ms), corrected for browser↔server skew (D4). */
+export function serverNow(): number {
+  return Date.now() - _skewMs;
+}
+
 export async function pollStatusOnce(): Promise<void> {
-  try { _status = await api.getStatus(); } catch { _status = null; }
+  try {
+    _status = await api.getStatus();
+    if (_status?.server_now) _skewMs = Date.now() - _status.server_now * 1000;
+  } catch { _status = null; }
 }
 
 function onVisible() {

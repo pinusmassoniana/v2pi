@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, ApiError, type Network } from "./api";
   import { networkView } from "./network";
+  import { serverNow } from "./status.svelte";
   import Modal from "./Modal.svelte";
   import Toggle from "./Toggle.svelte";
 
@@ -13,7 +14,7 @@
     if (!iso) return "";
     const t = Date.parse(iso);
     if (Number.isNaN(t)) return "";
-    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    const s = Math.max(0, Math.floor((serverNow() - t) / 1000));   // D4: Pi-clock aligned
     if (s < 60) return `${s}s ago`;
     const m = Math.floor(s / 60);
     return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;

@@ -61,7 +61,8 @@ class TrafficRecorder:
     callables read live so a settings change takes effect without a restart."""
 
     def __init__(self, sampler, history: TrafficHistory, stats_enabled, interval_ms,
-                 running=lambda: True, clock=lambda: time.time()):
+                 running=lambda: True, clock=lambda: time.time(),
+                 on_total=None, flush_interval=30.0):
         self._sampler = sampler
         self._history = history
         self._stats_enabled = stats_enabled        # callable -> bool
@@ -69,12 +70,47 @@ class TrafficRecorder:
         self._interval_ms = interval_ms            # callable -> int
         self._clock = clock
         self._task: asyncio.Task | None = None
+        # audit F: persist cumulative proxy bytes so "data used" survives an xray restart.
+        # `on_total(up_delta, down_delta)` adds to a durable counter; deltas are batched and
+        # flushed at most every `flush_interval` s to spare the SD card.
+        self._on_total = on_total
+        self._flush_interval = flush_interval
+        self._prev_abs: dict | None = None         # last absolute proxy counters seen
+        self._pending = {"up": 0, "down": 0}
+        self._last_flush = 0.0
 
     def record_sample(self, out: dict) -> None:
         """Map one sampler output to a history point (proxy outbound, zeros if absent)."""
         p = (out or {}).get("proxy") or {}
         self._history.record(int(self._clock() * 1000),
                              p.get("up_bps", 0.0), p.get("down_bps", 0.0))
+        self._accumulate_total()
+
+    def _accumulate_total(self) -> None:
+        """Add this tick's proxy-byte delta to the durable counter (reset-safe, batched)."""
+        if self._on_total is None:
+            return
+        tot = (getattr(self._sampler, "totals", {}) or {}).get("proxy")
+        if not tot:
+            return
+        up, down = int(tot.get("up", 0)), int(tot.get("down", 0))
+        if self._prev_abs is not None:
+            du, dd = up - self._prev_abs["up"], down - self._prev_abs["down"]
+            if du < 0 or dd < 0:                    # counter reset (xray restart) → count from 0
+                du, dd = max(0, up), max(0, down)
+            self._pending["up"] += du
+            self._pending["down"] += dd
+        self._prev_abs = {"up": up, "down": down}
+        now = self._clock()
+        if (self._pending["up"] or self._pending["down"]) and now - self._last_flush >= self._flush_interval:
+            self.flush_total()
+
+    def flush_total(self) -> None:
+        """Persist and clear the pending byte deltas (also called on shutdown)."""
+        if self._on_total is not None and (self._pending["up"] or self._pending["down"]):
+            self._on_total(self._pending["up"], self._pending["down"])
+            self._pending = {"up": 0, "down": 0}
+        self._last_flush = self._clock()
 
     def start(self) -> None:
         if self._task is None:
@@ -88,6 +124,10 @@ class TrafficRecorder:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        try:
+            self.flush_total()        # don't lose the last batch of data-used on shutdown
+        except Exception:
+            log.debug("data-used flush on stop failed", exc_info=True)
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()

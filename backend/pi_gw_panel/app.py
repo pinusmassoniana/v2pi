@@ -11,21 +11,28 @@ from pi_gw_panel.state import AppState, build_state
 from pi_gw_panel.subs.scheduler import SubScheduler
 from pi_gw_panel.health import failover
 from pi_gw_panel.health.monitor import HealthMonitor
-from pi_gw_panel.auth.auth import SESSION_AUTHED
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.health.snapshot import active_health
+from pi_gw_panel.api.deps import session_invalid_reason
 
 
 def _traffic_frame(state) -> dict:
     """Blocking: sample throughput (gRPC under the hood) + active-node health snapshot
-    (shared with the Network status) + cumulative data-used totals for the proxy outbound."""
+    (shared with the Network status) + cumulative data-used totals for the proxy outbound.
+
+    `totals` is the live sampler's process-lifetime counters (reset on xray restart);
+    `lifetime` is the recorder-accumulated total that survives restarts (audit F)."""
     outbounds = state.sampler.sample()
     totals = (getattr(state.sampler, "totals", {}) or {}).get("proxy") or {"up": 0, "down": 0}
+    store = state.store
+    lifetime = {"up": int(store.get_setting("data_used_up") or "0"),
+                "down": int(store.get_setting("data_used_down") or "0")}
     return {
         "ts": int(time.time() * 1000),
         "outbounds": outbounds,
-        "active": active_health(state.store),
+        "active": active_health(store),
         "totals": totals,
+        "lifetime": lifetime,
     }
 
 
@@ -79,21 +86,25 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
 
     @app.websocket("/api/ws/traffic")
     async def ws_traffic(websocket: WebSocket) -> None:
-        # session-auth (same cookie as the REST API); reject the handshake if unauthed
-        if not websocket.session.get(SESSION_AUTHED):
+        state = websocket.app.state.app_state
+        store = state.store
+        # session-auth (same cookie as the REST API) — enforce the FULL contract (epoch +
+        # idle timeout), not just the authed flag, so a password change / idle-out kills the
+        # traffic stream too (audit D2).
+        if session_invalid_reason(websocket.session, store) is not None:
             await websocket.close(code=4401)
             return
         await websocket.accept()
-        state = websocket.app.state.app_state
-        store = state.store
         if (store.get_setting("stats_enabled") or "1") != "1":
             await websocket.send_json({"disabled": True})
             await websocket.close()
             return
-        interval = int(store.get_setting("traffic_sample_ms") or "1000") / 1000.0
         loop = asyncio.get_running_loop()
         try:
             while True:
+                # re-read the cadence each tick so a Settings change takes effect without a
+                # reconnect, floored to match the recorder (audit D3).
+                interval = max(0.5, int(store.get_setting("traffic_sample_ms") or "1000") / 1000.0)
                 # offload the blocking gRPC sample to a thread so the loop stays free
                 try:
                     frame = await loop.run_in_executor(None, _traffic_frame, state)

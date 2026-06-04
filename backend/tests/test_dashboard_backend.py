@@ -24,7 +24,8 @@ def test_active_health_snapshot_and_none():
     store.upsert_health(NodeHealth(node_id=nid, last_real_ok=True, last_real_ms=21,
                                    egress_ip="8.8.8.8", checked_at="2026-06-04T00:00:00+00:00"))
     assert active_health(store) == {"node_id": nid, "real_ok": True, "latency_ms": 21,
-                                    "egress_ip": "8.8.8.8", "checked_at": "2026-06-04T00:00:00+00:00"}
+                                    "egress_ip": "8.8.8.8", "checked_at": "2026-06-04T00:00:00+00:00",
+                                    "lat_history": []}   # B: sparkline source, empty until probed
 
 
 def test_sampler_totals_track_cumulative_bytes():

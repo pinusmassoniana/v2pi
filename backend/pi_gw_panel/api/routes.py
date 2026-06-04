@@ -248,7 +248,8 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
                      active_node_id=int(active) if active else None,  # "" (post-rollback) → None
                      xray_state=state.supervisor.state(),
                      active_since=int(since) if since else None,
-                     last_failover_at=float(last_fo) if last_fo else None)
+                     last_failover_at=float(last_fo) if last_fo else None,
+                     server_now=time.time())   # D4: client offsets freshness/uptime by this
 
 
 @router.get("/traffic/history", response_model=TrafficHistoryOut)
@@ -661,17 +662,19 @@ def probe_http(request: Request, scope: str | None = None,
 
 
 @router.post("/nodes/{node_id}/probe", response_model=NodeHealthOut)
-def probe_node(node_id: int, request: Request,
+def probe_node(node_id: int, request: Request, real_only: bool = False,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NodeHealthOut:
     """Per-node 'T': run all three probes for one node — TCP, direct HTTPS, and a real request
-    *through* this node (throwaway xray, so the live tunnel is untouched) — and persist them."""
+    *through* this node (throwaway xray, so the live tunnel is untouched) — and persist them.
+
+    `real_only` skips the two DIRECT probes (TCP + TLS handshake) and refreshes only the
+    real-request latency/egress — used by the Dashboard's 60s active-node liveness loop, which
+    consumes nothing else, so the direct dials are wasted load otherwise (audit D6)."""
     state = get_state(request)
     store = state.store
     node = store.get_node(node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="node not found")
-    tcp_ok, tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
-    http_ok, http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
     probe_url = store.get_setting("health_probe_url") or SETTINGS_DEFAULTS["health_probe_url"]
     active = store.get_setting("active_node_id")
     tunneled_on = (store.get_setting("tunneled_fetch") or "1") == "1"
@@ -684,13 +687,17 @@ def probe_node(node_id: int, request: Request,
     else:
         real_ok, real_ms, egress = probe.real_through_node(node, state.xray_bin, probe_url)
     h = store.get_health(node_id) or NodeHealth(node_id=node_id)
-    h.last_tcp_ok, h.last_tcp_ms = tcp_ok, tcp_ms
-    h.last_http_ok, h.last_http_ms = http_ok, http_ms
+    if not real_only:
+        h.last_tcp_ok, h.last_tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
+        h.last_http_ok, h.last_http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
     h.last_real_ok, h.last_real_ms, h.egress_ip = real_ok, real_ms, egress
     h.checked_at = datetime.now(timezone.utc).isoformat()
     store.upsert_health(h)
-    if http_ok and http_ms is not None:
-        store.record_latency(node_id, http_ms)   # NN4
+    if real_only:
+        if real_ok and real_ms is not None:
+            store.record_latency(node_id, real_ms)   # feed the dashboard latency sparkline (B)
+    elif h.last_http_ok and h.last_http_ms is not None:
+        store.record_latency(node_id, h.last_http_ms)   # NN4
     return NodeHealthOut(**vars(store.get_health(node_id)))
 
 
