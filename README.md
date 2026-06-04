@@ -40,20 +40,27 @@ The container is fully self-contained: it bundles a pinned **Xray-core (arm64)**
 
 ## Quickstart (Docker)
 
-Grab `docker-compose.yml` (clone the repo, or just download that one file), then **pull the
-pre-built arm64 image** — no on-device build:
+**Deploy** — fresh install on an arm64 Linux host with Docker:
 
 ```bash
+git clone https://github.com/pinusmassoniana/v2pi-x.git
+cd v2pi-x
+docker compose pull      # pull the pre-built arm64 image — no on-device build
+docker compose up -d
+```
+
+**Update** to the latest published image later:
+
+```bash
+cd v2pi-x
+git pull                 # refresh docker-compose.yml if it changed
 docker compose pull
 docker compose up -d
 ```
 
-The published image is `ghcr.io/pinusmassoniana/v2pi-x` — `:latest` plus an immutable tag per
-version (e.g. `:1.5`, `:1.5.x.x`). Prefer to **build from source** instead (dev / local changes)?
-
-```bash
-docker compose up -d --build
-```
+The published image is `ghcr.io/pinusmassoniana/v2pi-x` — `:latest` plus a tag per version
+(e.g. `:1.6`). To **build from source** instead (dev / local changes), swap the two `compose`
+lines above for `docker compose up -d --build`.
 
 Open `http://<device-ip>:8080` and complete the first-run admin setup. The session secret is
 auto-generated and persisted in the data volume; the panel binds `0.0.0.0` (reachable over the LAN,
@@ -156,21 +163,27 @@ NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запус
 
 ## Быстрый старт (Docker)
 
-Возьмите `docker-compose.yml` (склонируйте репозиторий или скачайте только этот файл) и **скачайте
-готовый arm64-образ** — без сборки на устройстве:
+**Деплой** — установка с нуля на arm64 Linux-хосте с Docker:
 
 ```bash
+git clone https://github.com/pinusmassoniana/v2pi-x.git
+cd v2pi-x
+docker compose pull      # скачать готовый arm64-образ — без сборки на устройстве
+docker compose up -d
+```
+
+**Обновление** до свежего опубликованного образа:
+
+```bash
+cd v2pi-x
+git pull                 # обновить docker-compose.yml, если менялся
 docker compose pull
 docker compose up -d
 ```
 
-Опубликованный образ — `ghcr.io/pinusmassoniana/v2pi-x`: тег `:latest` плюс неизменяемый тег на
-каждую версию (например `:1.5`, `:1.5.x.x`). Хотите **собрать из исходников** (разработка / локальные
-правки)?
-
-```bash
-docker compose up -d --build
-```
+Опубликованный образ — `ghcr.io/pinusmassoniana/v2pi-x`: тег `:latest` плюс тег на каждую версию
+(например `:1.6`). Чтобы **собрать из исходников** (разработка / локальные правки), замените две
+строки `compose` выше на `docker compose up -d --build`.
 
 Откройте `http://<ip-устройства>:8080` и пройдите настройку администратора при первом запуске.
 Секрет сессии генерируется автоматически и сохраняется в data-томе; панель слушает `0.0.0.0`
