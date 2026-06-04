@@ -9,3 +9,5 @@ backend/pi_gw_panel/static
 .claude
 docs
 *.sqlite
+e2e
+.github

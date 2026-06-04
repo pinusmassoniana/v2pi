@@ -1,7 +1,7 @@
 services:
   v2pi:
-    build: .
-    image: v2pi:dev
+    image: ghcr.io/pinusmassoniana/v2pi-x:latest   # published arm64 image — `docker compose pull` grabs it
+    build: .                                        # `docker compose up --build` builds from source instead (dev)
     network_mode: host          # tproxy / nft / dnsmasq live in the host netns (Pi)
     cap_add:
       - NET_ADMIN               # nftables

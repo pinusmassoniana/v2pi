@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # v2pi panel — single self-contained arm64 image (panel supervises xray inside).
-# Cutover-ready (host-net + caps + nft/dnsmasq) but ships the DryRun backend;
-# the real nft/dnsmasq apply (LinuxBackend) lands in Plan 8.
+# Host-net + caps + bundled nft/dnsmasq/iproute2; the real nft/dnsmasq apply
+# (LinuxBackend) is enabled in production via PI_GW_NET_BACKEND=linux (see compose).
 ARG NODE_VERSION=20-bookworm-slim
 ARG PYTHON_VERSION=3.13-slim-bookworm
 ARG XRAY_VERSION=v26.3.27

@@ -40,7 +40,16 @@ The container is fully self-contained: it bundles a pinned **Xray-core (arm64)**
 
 ## Quickstart (Docker)
 
-No configuration needed:
+Grab `docker-compose.yml` (clone the repo, or just download that one file), then **pull the
+pre-built arm64 image** — no on-device build:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The published image is `ghcr.io/pinusmassoniana/v2pi-x` — `:latest` plus an immutable tag per
+version (e.g. `:1.5`, `:1.5.x.x`). Prefer to **build from source** instead (dev / local changes)?
 
 ```bash
 docker compose up -d --build
@@ -147,7 +156,17 @@ NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запус
 
 ## Быстрый старт (Docker)
 
-Настройка не требуется:
+Возьмите `docker-compose.yml` (склонируйте репозиторий или скачайте только этот файл) и **скачайте
+готовый arm64-образ** — без сборки на устройстве:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Опубликованный образ — `ghcr.io/pinusmassoniana/v2pi-x`: тег `:latest` плюс неизменяемый тег на
+каждую версию (например `:1.5`, `:1.5.x.x`). Хотите **собрать из исходников** (разработка / локальные
+правки)?
 
 ```bash
 docker compose up -d --build
