@@ -25,13 +25,18 @@
     } catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
   }
 
-  $effect(() => { load(); });
+  // live: poll status; pause while the Edit modal is open so a background reload
+  // never clobbers the fields the user is editing (they two-way-bind net.segment.*)
+  $effect(() => {
+    load();
+    const t = setInterval(() => { if (!editOpen) load(); }, 5000);
+    return () => clearInterval(t);
+  });
 </script>
 
 <div class="card">
   <div class="net-head">
     <h3>Network</h3>
-    <button class="btn" onclick={load}>Refresh</button>
     <button class="btn" onclick={() => (editOpen = true)} disabled={!net}>Edit</button>
   </div>
   {#if msg}<p class="msg">{msg}</p>{/if}
