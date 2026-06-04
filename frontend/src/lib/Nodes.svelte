@@ -105,11 +105,16 @@
   <button class="btn" onclick={() => pingAll("http")} disabled={pinging !== null}>{pinging === "http" ? "HTTP pinging…" : "HTTP ping all"}</button>
 </div>
 
+{#snippet hpill(ok: boolean | null | undefined, ms: number | null | undefined)}
+  {#if ok}<span class="hpill ok"><span class="hp-dot"></span>{ms}<small>ms</small></span>
+  {:else if ok === false}<span class="hpill bad"><span class="hp-dot"></span>fail</span>
+  {:else}<span class="hp-none">—</span>{/if}
+{/snippet}
 {#snippet healthCells(h: NodeHealth | undefined)}
-  <td>{#if h?.last_tcp_ok}<span class="ok">✓ {h.last_tcp_ms}ms</span>{:else if h && h.last_tcp_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
-  <td>{#if h?.last_http_ok}<span class="ok">✓ {h.last_http_ms}ms</span>{:else if h && h.last_http_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
-  <td>{#if h?.last_real_ok}<span class="ok">✓ {h.last_real_ms}ms</span>{:else if h && h.last_real_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
-  <td>{h?.egress_ip ?? "—"}</td>
+  <td>{@render hpill(h?.last_tcp_ok, h?.last_tcp_ms)}</td>
+  <td>{@render hpill(h?.last_http_ok, h?.last_http_ms)}</td>
+  <td>{@render hpill(h?.last_real_ok, h?.last_real_ms)}</td>
+  <td class="egress mono">{h?.egress_ip ?? "—"}</td>
 {/snippet}
 
 <div class="card">
@@ -202,11 +207,30 @@
   .actions { white-space: nowrap; }
   .t-btn { font-weight: 700; min-width: 2rem; }
   tr.stale { opacity: 0.55; }
-  tr.active td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  tr.active td { background: var(--accent-soft); }
   tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-  .connected { margin-left: 0.5rem; color: var(--accent); font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
-  .ok { color: var(--success); }
-  .bad { color: var(--danger); }
+  .connected {
+    margin-left: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;
+    padding: 0.05rem 0.45rem; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 0.66rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+    white-space: nowrap; vertical-align: middle;
+  }
+  /* health status pills */
+  .hpill {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.08rem 0.45rem; border-radius: 999px;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 0.74rem; font-weight: 500;
+  }
+  .hpill small { opacity: 0.65; margin-left: 0.05rem; }
+  .hpill .hp-dot { width: 0.42rem; height: 0.42rem; border-radius: 50%; flex: none; }
+  .hpill.ok { color: var(--success); background: color-mix(in srgb, var(--success) 13%, transparent); }
+  .hpill.ok .hp-dot { background: var(--success); }
+  .hpill.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
+  .hpill.bad .hp-dot { background: var(--danger); }
+  .hp-none { color: var(--faint); }
+  .egress { color: var(--muted); font-size: 0.78rem; }
   .empty { text-align: center; padding: 1.2rem; }
   .grid-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.6rem; }
   .form-actions { grid-column: 1 / -1; display: flex; gap: 0.5rem; }

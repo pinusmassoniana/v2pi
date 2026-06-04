@@ -136,8 +136,8 @@
 <style>
   .settings, .pw { max-width: 34rem; }
   .pw { gap: 0.5rem; }
-  fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.6rem; display: grid; gap: 0.4rem; }
-  .check { display: flex; gap: 0.5rem; align-items: center; }
+  fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 0.95rem; display: grid; gap: 0.55rem; background: var(--surface-2); }
+  .check { display: flex; gap: 0.55rem; align-items: center; }
   .file { position: relative; overflow: hidden; cursor: pointer; }
   .file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   .hint { font-size: 0.8rem; }

@@ -58,10 +58,10 @@
         <tr>
           <td>{p.name}{#if p.is_default} <span class="badge">default</span>{/if}</td>
           <td>{p.fingerprint}</td>
-          <td>{p.frag_enabled ? "on" : "off"}</td>
-          <td>{p.mux_enabled ? "on" : "off"}</td>
-          <td>{p.doh_enabled ? "on" : "off"}</td>
-          <td>{p.quic}</td>
+          <td><span class="onoff" class:on={p.frag_enabled}>{p.frag_enabled ? "on" : "off"}</span></td>
+          <td><span class="onoff" class:on={p.mux_enabled}>{p.mux_enabled ? "on" : "off"}</span></td>
+          <td><span class="onoff" class:on={p.doh_enabled}>{p.doh_enabled ? "on" : "off"}</span></td>
+          <td class="mono">{p.quic}</td>
           <td class="row-actions">
             <button class="btn" onclick={() => edit(p)}>Edit</button>
             {#if !p.is_default}

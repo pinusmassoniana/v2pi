@@ -89,7 +89,10 @@
 {:else if authed}
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand">{BRAND}</div>
+      <div class="brand" aria-label={BRAND}>
+        <span class="brand-mark">{BRAND.slice(0, 2)}</span>
+        <span class="brand-word">{BRAND.slice(2)}</span>
+      </div>
       <nav>
         {#each tabs as t (t.id)}
           <button class="nav-item" class:active={view === t.id} onclick={() => (view = t.id)}>
@@ -136,28 +139,41 @@
 
 <style>
   .boot { padding: 2rem; color: var(--muted); }
-  .shell { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+  .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100dvh; }
   .sidebar {
     background: var(--surface-2);
     border-right: 1px solid var(--border);
-    padding: 1rem 0.7rem;
+    padding: 1.1rem 0.7rem;
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow-y: auto;
   }
+  .brand { display: flex; align-items: center; gap: 0.55rem; padding: 0.3rem 0.55rem 1.1rem; }
+  .brand-mark {
+    width: 27px; height: 27px; border-radius: 8px; flex: none;
+    display: grid; place-items: center; color: #fff;
+    font-weight: 800; font-size: 0.72rem; letter-spacing: -0.03em;
+    background: linear-gradient(150deg, var(--accent), color-mix(in srgb, var(--accent) 58%, #000));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), var(--shadow-sm);
+  }
+  .brand-word { font-weight: 720; font-size: 1.05rem; letter-spacing: -0.02em; color: var(--text); }
   .xray-box {
-    margin-top: 0.5rem;
-    display: flex; align-items: center; gap: 0.5rem;
-    padding: 0.5rem 0.6rem;
-    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    margin-top: auto;
+    display: flex; align-items: center; gap: 0.55rem;
+    padding: 0.6rem 0.65rem;
+    border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
   .xray-dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--muted); flex: none; }
-  .xray-dot.working { background: var(--success); }
+  .xray-dot.working { background: var(--success); animation: pulse-ring 2.4s ease-out infinite; }
   .xray-dot.error { background: var(--danger); }
-  .xray-label { font-size: 0.78rem; line-height: 1.15; margin-right: auto; }
-  .xray-label small { color: var(--muted); font-size: 0.68rem; }
-  .brand { font-weight: 750; font-size: 1.1rem; padding: 0.4rem 0.6rem 1rem; color: var(--accent); }
+  .xray-label { font-size: 0.78rem; line-height: 1.2; margin-right: auto; font-weight: 500; }
+  .xray-label small { color: var(--muted); font-size: 0.67rem; font-weight: 400; text-transform: capitalize; }
   .sidebar nav { display: grid; gap: 0.2rem; }
   .nav-item {
     display: flex;
@@ -168,31 +184,43 @@
     background: none;
     border: none;
     color: var(--muted);
-    padding: 0.5rem 0.6rem;
+    padding: 0.5rem 0.65rem;
     border-radius: var(--radius-sm);
     cursor: pointer;
     font: inherit;
+    transition: background 0.13s, color 0.13s, box-shadow 0.13s;
   }
+  .nav-item :global(svg) { flex: none; opacity: 0.85; }
   .nav-item:hover { background: var(--surface); color: var(--text); }
-  .nav-item.active { background: var(--surface); color: var(--accent); font-weight: 600; }
-  .content { min-width: 0; }
+  .nav-item.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .nav-item.active :global(svg) { opacity: 1; }
+  .content { min-width: 0; display: flex; flex-direction: column; }
   .topbar {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    padding: 0.7rem 1.25rem;
+    padding: 0.7rem 1.5rem;
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
-    background: var(--bg);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: saturate(1.4) blur(10px);
+    -webkit-backdrop-filter: saturate(1.4) blur(10px);
     z-index: 5;
   }
   .topbar .page-title { margin-right: auto; }
-  .icon-btn { padding: 0.35rem; display: inline-grid; place-items: center; line-height: 0; }
-  @media (max-width: 720px) {
-    .shell { grid-template-columns: 60px 1fr; }
-    .nav-item span, .brand, .xray-label { display: none; }
-    .nav-item { justify-content: center; }
-    .xray-box { flex-direction: column; gap: 0.35rem; padding: 0.45rem 0.3rem; }
+  .icon-btn { padding: 0.4rem; display: inline-grid; place-items: center; line-height: 0; border-radius: var(--radius-sm); }
+  @media (max-width: 760px) {
+    .shell { grid-template-columns: 64px 1fr; }
+    .sidebar { padding: 0.9rem 0.5rem; }
+    .nav-item span, .brand-word, .xray-label { display: none; }
+    .nav-item { justify-content: center; padding: 0.55rem; }
+    .brand { justify-content: center; padding: 0.3rem 0 1rem; }
+    .xray-box { flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.3rem; }
   }
 </style>

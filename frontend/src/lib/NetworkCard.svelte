@@ -77,8 +77,12 @@
 
 <style>
   .net-head { display: flex; align-items: center; gap: 0.5rem; }
-  .net-head h3 { margin: 0; margin-right: auto; }
-  .status { display: grid; gap: 0.4rem; margin-top: 0.6rem; }
+  .net-head h3 { margin: 0; margin-right: auto; font-size: 0.92rem; font-weight: 650; letter-spacing: -0.01em; }
+  .status {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.5rem;
+    font-size: 0.84rem; font-variant-numeric: tabular-nums;
+  }
+  .status > span { display: inline-flex; align-items: center; gap: 0.4rem; }
   .net-form { display: grid; gap: 0.6rem; }
   .check { display: flex; gap: 0.6rem; align-items: center; }
   .recs { margin: 0.3rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; }

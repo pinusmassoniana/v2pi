@@ -181,7 +181,7 @@
   .add { max-width: 42rem; }
   .kv { display: flex; gap: 0.4rem; }
   .kv .input { flex: 1; }
-  fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.6rem; display: grid; gap: 0.4rem; }
+  fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 0.95rem; display: grid; gap: 0.55rem; background: var(--surface-2); }
   td.url { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 0.5rem; }
   .edit { display: grid; gap: 0.6rem; }
