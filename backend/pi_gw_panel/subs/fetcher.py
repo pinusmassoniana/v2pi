@@ -1,12 +1,21 @@
+import http.cookiejar
 import urllib.request
 from pi_gw_panel.subs.inject import build_request
 
 
 def _http_get(url: str, headers: dict, proxy: str | None, timeout: float) -> str:
     """Stdlib GET with optional HTTP proxy. Isolated so tests can stub it; the real
-    urllib path runs against the tunnel proxy on the Pi (Plan 8)."""
+    urllib path runs against the tunnel proxy on the Pi.
+
+    A fresh CookieJar is attached per request so anti-bot providers that gate the
+    subscription behind a cookie challenge work: the first response is 302 + Set-Cookie
+    redirecting to the same URL, and the jar carries that cookie into the retry. Without
+    it urllib loops on the identical Location and aborts with 'infinite loop'."""
     proxies = {"http": proxy, "https": proxy} if proxy else {}
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler(proxies),
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+    )
     request = urllib.request.Request(url, headers=headers, method="GET")
     with opener.open(request, timeout=timeout) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
