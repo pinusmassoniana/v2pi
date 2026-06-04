@@ -15,9 +15,16 @@ class Node:
     short_id: str = ""
     fingerprint: str = "chrome"
     flow: str = "xtls-rprx-vision"
+    network: str = "tcp"        # tcp | xhttp
+    security: str = "reality"   # reality | tls
+    path: str = ""              # xhttp path
+    host: str = ""              # xhttp Host header
+    mode: str = ""              # xhttp mode (e.g. stream-up)
+    alpn: str = ""              # tls ALPN (comma-separated)
     subscription_id: int | None = None
     stale: bool = False
     tuning_profile_id: int | None = None
+    position: int = 0           # order within its subscription (set on reconcile)
 
     def __post_init__(self) -> None:
         # `flow` (xtls-rprx-vision) is Vision-only; XHTTP nodes must not carry it.

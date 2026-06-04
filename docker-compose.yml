@@ -15,6 +15,7 @@ services:
       PI_GW_PORT: "8080"
     volumes:
       - v2pi-data:/data
+      - /var/lib/misc:/var/lib/misc:ro   # host dnsmasq leasefile (pi-gw-dhcp.service) → DHCP-client count
     restart: unless-stopped
 
 volumes:

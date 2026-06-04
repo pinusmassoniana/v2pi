@@ -4,7 +4,8 @@ from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, N
 
 _NODE_COLS = ("name", "address", "port", "uuid", "transport", "sni",
               "public_key", "short_id", "fingerprint", "flow",
-              "subscription_id", "stale", "tuning_profile_id")
+              "network", "security", "path", "host", "mode", "alpn",
+              "subscription_id", "stale", "tuning_profile_id", "position")
 
 _PROFILE_COLS = ("name", "fingerprint", "frag_enabled", "frag_packets", "frag_length",
                  "frag_interval", "mux_enabled", "doh_enabled", "doh_url", "quic")
@@ -26,8 +27,10 @@ def _row_to_node(row: sqlite3.Row) -> Node:
         uuid=row["uuid"], transport=row["transport"], sni=row["sni"],
         public_key=row["public_key"], short_id=row["short_id"],
         fingerprint=row["fingerprint"], flow=row["flow"],
+        network=row["network"], security=row["security"], path=row["path"],
+        host=row["host"], mode=row["mode"], alpn=row["alpn"],
         subscription_id=row["subscription_id"], stale=bool(row["stale"]),
-        tuning_profile_id=row["tuning_profile_id"],
+        tuning_profile_id=row["tuning_profile_id"], position=row["position"],
     )
 
 
@@ -79,19 +82,21 @@ class NodeStore:
         row = self._conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
         return _row_to_node(row) if row else None
 
-    def get_node_by_identity(self, address: str, port: int, uuid: str) -> Node | None:
+    def get_node_by_identity(self, address: str, port: int, uuid: str,
+                             path: str = "") -> Node | None:
         row = self._conn.execute(
-            "SELECT * FROM nodes WHERE address = ? AND port = ? AND uuid = ?",
-            (address, port, uuid)).fetchone()
+            "SELECT * FROM nodes WHERE address = ? AND port = ? AND uuid = ? AND path = ?",
+            (address, port, uuid, path)).fetchone()
         return _row_to_node(row) if row else None
 
     def list_nodes(self) -> list[Node]:
-        rows = self._conn.execute("SELECT * FROM nodes ORDER BY id").fetchall()
+        rows = self._conn.execute("SELECT * FROM nodes ORDER BY position, id").fetchall()
         return [_row_to_node(r) for r in rows]
 
     def list_nodes_for_sub(self, sub_id: int) -> list[Node]:
         rows = self._conn.execute(
-            "SELECT * FROM nodes WHERE subscription_id = ? ORDER BY id", (sub_id,)).fetchall()
+            "SELECT * FROM nodes WHERE subscription_id = ? ORDER BY position, id",
+            (sub_id,)).fetchall()
         return [_row_to_node(r) for r in rows]
 
     def update_node(self, node: Node) -> None:

@@ -30,7 +30,7 @@ class Settings:
     dhcp_end: str = "192.168.10.200"
     dhcp_lease: str = "12h"
     client_dns: str = "1.1.1.1"   # handed to clients via DHCP; tproxy'd through the tunnel
-    dnsmasq_leases: str = "/var/lib/misc/dnsmasq.leases"  # Pi leases file (absent in dev → 0 clients)
+    dnsmasq_leases: str = "/var/lib/misc/pi-gw.leases"  # pi-gw-dhcp.service leasefile (absent in dev → 0 clients)
     # mgmt = Home leg: panel bind + SSH + tunnel egress
     mgmt_iface: str = "eth0"
     mgmt_ip: str = "192.168.1.120"
@@ -75,6 +75,7 @@ class Settings:
             static_dir=env.get("PI_GW_STATIC_DIR", _packaged_static()),
             xray_bin=env.get("PI_GW_XRAY_BIN", "xray"),
             session_secret=env.get("PI_GW_SESSION_SECRET", ""),
+            dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", "/var/lib/misc/pi-gw.leases"),
         )
 
     # Log file paths derive from data_dir (Wave 3a logs viewer) so they always track

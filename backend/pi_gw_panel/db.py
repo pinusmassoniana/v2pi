@@ -130,8 +130,24 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(pid),))
 
 
+def _migration_3(conn: sqlite3.Connection) -> None:
+    # XHTTP-over-TLS stream fields + per-node subscription order.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    for name, ddl in (
+        ("network", "TEXT NOT NULL DEFAULT 'tcp'"),
+        ("security", "TEXT NOT NULL DEFAULT 'reality'"),
+        ("path", "TEXT NOT NULL DEFAULT ''"),
+        ("host", "TEXT NOT NULL DEFAULT ''"),
+        ("mode", "TEXT NOT NULL DEFAULT ''"),
+        ("alpn", "TEXT NOT NULL DEFAULT ''"),
+        ("position", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {ddl}")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
-_MIGRATIONS = [(1, _migration_1), (2, _migration_2)]
+_MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

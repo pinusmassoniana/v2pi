@@ -27,6 +27,28 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     doh_url = profile.doh_url if profile is not None and profile.doh_url else settings.doh_url
     dns_servers = ([{"address": doh_url}] if doh_on else []) + ["localhost"]
 
+    # proxy outbound: user + transport/security-aware streamSettings.
+    #   tcp+reality+vision (legacy) ── realitySettings + user.flow
+    #   xhttp+tls            ──────── xhttpSettings{path,host,mode} + tlsSettings{sni,alpn}
+    user: dict = {"id": node.uuid, "encryption": "none"}
+    if node.flow:                         # Vision flow only; XHTTP nodes carry none
+        user["flow"] = node.flow
+    network = node.network or "tcp"
+    security = node.security or "reality"
+    stream: dict = {"network": network, "security": security,
+                    "sockopt": {"mark": settings.egress_mark}}
+    if security == "reality":
+        stream["realitySettings"] = {"serverName": node.sni, "fingerprint": fingerprint,
+                                     "publicKey": node.public_key, "shortId": node.short_id}
+    else:
+        tls: dict = {"serverName": node.sni, "fingerprint": fingerprint}
+        if node.alpn:
+            tls["alpn"] = [a.strip() for a in node.alpn.split(",") if a.strip()]
+        stream["tlsSettings"] = tls
+    if network == "xhttp":
+        stream["xhttpSettings"] = {k: getattr(node, k) for k in ("path", "host", "mode")
+                                   if getattr(node, k)}
+
     cfg = {
         "log": {"loglevel": "warning",
                 "error": settings.xray_error_log, "access": settings.xray_access_log},
@@ -47,26 +69,10 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
                 "protocol": "vless",
                 "settings": {
                     "vnext": [
-                        {
-                            "address": node.address,
-                            "port": node.port,
-                            "users": [
-                                {"id": node.uuid, "encryption": "none", "flow": node.flow}
-                            ],
-                        }
+                        {"address": node.address, "port": node.port, "users": [user]}
                     ]
                 },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "reality",
-                    "realitySettings": {
-                        "serverName": node.sni,
-                        "fingerprint": fingerprint,
-                        "publicKey": node.public_key,
-                        "shortId": node.short_id,
-                    },
-                    "sockopt": {"mark": settings.egress_mark},
-                },
+                "streamSettings": stream,
             },
             {"tag": "direct", "protocol": "freedom", "settings": {},
              "streamSettings": {"sockopt": {"mark": settings.egress_mark}}},

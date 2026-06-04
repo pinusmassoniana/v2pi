@@ -10,24 +10,23 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
     existing = store.list_nodes_for_sub(sub_id)
     seen: set[tuple] = set()
     added = updated = removed = 0
-    for p in parsed:
-        key = (p.address, p.port, p.uuid)
+    for pos, p in enumerate(parsed):
+        key = (p.address, p.port, p.uuid, p.path)
         seen.add(key)
         cur = store.get_node_by_identity(*key)
+        p.subscription_id = sub_id
+        p.stale = False
+        p.position = pos
         if cur is None:
             p.id = None
-            p.subscription_id = sub_id
-            p.stale = False
             store.add_node(p)
             added += 1
         else:
             p.id = cur.id
-            p.subscription_id = sub_id
-            p.stale = False
             store.update_node(p)
             updated += 1
     for n in existing:
-        if (n.address, n.port, n.uuid) not in seen:
+        if (n.address, n.port, n.uuid, n.path) not in seen:
             if n.id == active_node_id:
                 store.mark_stale(n.id, True)  # protect the live connection
             else:

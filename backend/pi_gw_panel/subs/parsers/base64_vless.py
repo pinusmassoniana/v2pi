@@ -33,15 +33,20 @@ def _parse_vless(uri: str) -> Node | None:
     if not sep:
         return None
     hostport, _, query = hostport_q.partition("?")
-    host, _, port = hostport.partition(":")
+    addr, _, port = hostport.partition(":")
     q = urllib.parse.parse_qs(query)
 
     def g(k, d=""):
         return q.get(k, [d])[0]
 
-    transport = "xhttp" if g("type") in ("xhttp", "splithttp") else "vision"
+    network = "xhttp" if g("type") in ("xhttp", "splithttp") else "tcp"
+    transport = "xhttp" if network == "xhttp" else "vision"
+    # explicit `security` wins; else reality iff a reality public key is present, else tls
+    security = g("security") or ("reality" if g("pbk") else "tls")
     return Node(
-        id=None, name=frag or host, address=host, port=int(port or 443), uuid=userinfo,
-        transport=transport, sni=g("sni"), public_key=g("pbk"),
-        short_id=g("sid"), fingerprint=g("fp", "chrome"), flow=g("flow", "xtls-rprx-vision"),
+        id=None, name=frag or addr, address=addr, port=int(port or 443), uuid=userinfo,
+        transport=transport, network=network, security=security,
+        sni=g("sni"), public_key=g("pbk"), short_id=g("sid"),
+        fingerprint=g("fp", "chrome"), flow=g("flow", "xtls-rprx-vision"),
+        path=g("path"), host=g("host"), mode=g("mode"), alpn=g("alpn"),
     )
