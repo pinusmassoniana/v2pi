@@ -413,6 +413,7 @@ class NetworkStatusOut(BaseModel):
     clients: list[DhcpClientOut] = []
     tunnel: NetworkTunnelOut
     wan_blocked: bool = False           # N1: kill-switch leak-guard is holding (tunnel down)
+    ipv6_prefix: str | None = None      # DHCPv6-PD 'auto': the host-delegated segment v6 prefix
 
 
 class RouterRecOut(BaseModel):

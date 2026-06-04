@@ -147,6 +147,36 @@ def _client(settings, stub_xray):
     return c, {"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]}
 
 
+# --- DHCPv6-PD 'auto' (spec §9) --------------------------------------------
+
+def test_segment_prefix6_reads_global_scope_only():
+    sample = (
+        "fe800000000000000000000000000001 03 40 20 80 eth0.2\n"   # link-local (scope 20) → skip
+        "20010db8000000020000000000000001 03 40 00 00 eth0.2\n"   # global (scope 00) → match
+        "20010db8000000990000000000000001 03 40 00 00 eth0.9\n"   # other iface → skip
+    )
+    assert netcheck.segment_prefix6("eth0.2", read=lambda: sample) == "2001:db8:0:2::1/64"
+    assert netcheck.segment_prefix6("eth0.7", read=lambda: sample) is None
+    assert netcheck.segment_prefix6("eth0.2", read=lambda: "") is None
+
+
+def test_recommendations_auto_mode_recommends_pd_client():
+    v6 = netcheck.router_recommendations(Settings(), ipv6_enabled=True, segment_ip6="auto")
+    assert any("DHCPv6-PD client" in r["title"] for r in v6)
+    assert any("odhcp6c" in r["detail"] for r in v6)
+    # static mode keeps the delegate-/64 wording
+    static = netcheck.router_recommendations(Settings(), ipv6_enabled=True, segment_ip6="2001:db8::/64")
+    assert any("Delegate an IPv6 /64" in r["title"] for r in static)
+
+
+def test_put_network_auto_prefix_persists_and_recommends_pd(settings, stub_xray):
+    c, h = _client(settings, stub_xray)
+    body = c.put("/api/network", json={"ipv6_enabled": True, "segment_ip6": "auto"}, headers=h).json()
+    assert body["segment"]["ip6"] == "auto"
+    assert any("DHCPv6-PD client" in r["title"] for r in body["recommendations"])
+    assert body["status"]["ipv6_prefix"] is None   # DryRun backend → prefix not observed
+
+
 def test_put_network_enable_ipv6_rebuilds_config_and_shows_hint(settings, stub_xray):
     c, h = _client(settings, stub_xray)
     nid = c.post("/api/nodes", json={"name": "n", "address": "1.2.3.4", "port": 443, "uuid": "u-1"},

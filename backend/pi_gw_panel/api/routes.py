@@ -163,6 +163,11 @@ def _network_out(state) -> NetworkOut:
     running = state.supervisor.status().get("running", False)
     st = netcheck.network_status(store, settings, uplink_check=uplink_check)
     st["wan_blocked"] = kill_switch and not running   # N1: leak-guard holding while tunnel down
+    # DHCPv6-PD 'auto': observe the host-delegated segment prefix (Linux backend only — reads
+    # /proc/net/if_inet6; dev/CI = None).
+    if (ipv6_enabled and (ov("segment_ip6") or "").strip().lower() == "auto"
+            and type(state.net).__name__ == "LinuxBackend"):
+        st["ipv6_prefix"] = netcheck.segment_prefix6(ov("segment_iface"))
     return NetworkOut(
         segment=NetworkSegmentOut(
             iface=ov("segment_iface"), ip=ov("segment_ip"), ip6=ov("segment_ip6"),

@@ -102,6 +102,7 @@ export interface DhcpClient { ip: string; mac: string; hostname: string; expiry:
 export interface NetworkStatus {
   segment_up: boolean | null; uplink: boolean | null; dhcp_clients: number;
   clients: DhcpClient[]; tunnel: NetworkTunnel; wan_blocked: boolean;
+  ipv6_prefix: string | null;   // DHCPv6-PD 'auto': host-delegated segment v6 prefix
 }
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }

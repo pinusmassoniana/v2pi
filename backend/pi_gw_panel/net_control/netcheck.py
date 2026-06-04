@@ -1,8 +1,32 @@
+import ipaddress
 import os
 import socket
 import time
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
+
+
+def segment_prefix6(iface: str, proc_path: str = "/proc/net/if_inet6", read=None) -> str | None:
+    """The segment iface's GLOBAL IPv6 address/prefix as the host sees it — used by the
+    DHCPv6-PD `auto` mode to *observe* the prefix delegated to the segment (the PD client +
+    RA run on the host, the panel just reads the result). Parses `/proc/net/if_inet6`
+    (`<32hex-addr> <ifidx> <plen-hex> <scope-hex> <flags> <name>`; scope 00 = global). Returns
+    e.g. `2001:db8:0:2::1/64`, or None when there's no global v6 (dev / not delegated yet).
+    `read` is an injectable seam for tests."""
+    try:
+        text = read() if read is not None else open(proc_path).read()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 6 or parts[5] != iface or parts[3] != "00":   # match iface + global scope
+            continue
+        try:
+            addr = ipaddress.IPv6Address(int(parts[0], 16))
+            return f"{addr.compressed}/{int(parts[2], 16)}"
+        except ValueError:
+            continue
+    return None
 
 
 def uplink_up(host: str = "1.1.1.1", port: int = 443, timeout: float = 1.5,
@@ -102,11 +126,19 @@ def router_recommendations(settings: Settings, ipv6_enabled: bool = False,
                    f"({settings.mgmt_ip}); keep that port on your normal LAN with internet access."},
     ]
     if ipv6_enabled:
-        prefix = segment_ip6 or "your /64"
+        if segment_ip6.strip().lower() == "auto":
+            first = {"title": "Run a DHCPv6-PD client on the Pi's Home leg",
+                     "detail": f"`auto` mode: a host DHCPv6-PD client (odhcp6c / dhcpcd -6) on "
+                               f"{settings.mgmt_iface} requests a prefix from the router (enable PD "
+                               f"there); the panel shows the delegated prefix once it lands."}
+        else:
+            prefix = segment_ip6 or "your /64"
+            first = {"title": f"Delegate an IPv6 /64 to VLAN {vlan}",
+                     "detail": f"Route a v6 /64 to this segment — DHCPv6-PD on the router, or a "
+                               f"static route of {prefix} to the Pi's Home leg {settings.mgmt_iface}. "
+                               f"(Set the prefix to `auto` to read it from a host PD client instead.)"}
         recs += [
-            {"title": f"Delegate an IPv6 /64 to VLAN {vlan}",
-             "detail": f"Route a v6 /64 to this segment — DHCPv6-PD on the router, or a static route "
-                       f"of {prefix} to the Pi's Home leg {settings.mgmt_iface}."},
+            first,
             {"title": f"Advertise IPv6 on {iface} (host)",
              "detail": "The host must advertise that prefix as Router Advertisements on the segment "
                        "(dnsmasq enable-ra / radvd) so clients get a v6 address — the panel tunnels "

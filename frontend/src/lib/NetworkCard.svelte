@@ -76,7 +76,7 @@
         {#if net.status.tunnel.checked_at}<span class="fresh">· {freshness(net.status.tunnel.checked_at)}</span>{/if}
       </span>
       {#if net.kill_switch_enabled && !v.wan_blocked}<span><span class="dot ok"></span> Kill-switch on</span>{/if}
-      {#if net.ipv6_enabled}<span><span class="dot ok"></span> IPv6: tunneled</span>{/if}
+      {#if net.ipv6_enabled}<span><span class="dot ok"></span> IPv6: tunneled{#if net.status.ipv6_prefix} <span class="mono fresh">({net.status.ipv6_prefix})</span>{/if}</span>{/if}
     </div>
     {#if showClients && net.status.clients?.length}
       <table class="table clients">
@@ -128,8 +128,12 @@
           setup</strong> below.</span>
       </div>
       {#if net.ipv6_enabled}
-        <label class="field"><span>Segment IPv6 /64 <small>(static)</small></span>
-          <input class="input mono" bind:value={net.segment.ip6} placeholder="2001:db8:0:2::1/64" /></label>
+        <label class="field"><span>Segment IPv6 /64 <small>(static, or <code>auto</code> for DHCPv6-PD)</small></span>
+          <input class="input mono" bind:value={net.segment.ip6} placeholder="2001:db8:0:2::1/64  ·  auto" /></label>
+        {#if net.segment.ip6.trim().toLowerCase() === "auto"}
+          <p class="muted hint">DHCPv6-PD: a host PD client (odhcp6c / dhcpcd&nbsp;-6) acquires the prefix —
+            {#if net.status.ipv6_prefix}delegated <span class="mono">{net.status.ipv6_prefix}</span>.{:else}none observed yet (set up the PD client + RA on the host).{/if}</p>
+        {/if}
       {/if}
       <div class="hint-block">
         <strong>Router setup</strong>
