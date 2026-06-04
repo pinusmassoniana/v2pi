@@ -29,6 +29,13 @@ def test_nft_redirects_both_tcp_and_udp():
     assert "meta l4proto { tcp, udp }" in text
 
 
+def test_nft_tproxy_scoped_to_segment_iface():
+    # tproxy must only catch traffic arriving on the segment iface — not the Docker
+    # bridge or other host-forwarded traffic (which would otherwise get tunneled).
+    line = next(l for l in render_nft(_plan()).splitlines() if "tproxy ip to" in l)
+    assert 'iifname "eth0.2"' in line
+
+
 def test_dnsmasq_serves_segment_dhcp():
     text = render_dnsmasq(_plan())
     assert "interface=eth0.2" in text

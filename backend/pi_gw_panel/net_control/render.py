@@ -2,9 +2,11 @@ from pi_gw_panel.net_control.plan import NetPlan
 
 
 def render_nft(plan: NetPlan) -> str:
-    # Mark client TCP/UDP with fwmark and tproxy to the xray dokodemo port.
-    # Skip packets already carrying the xray egress mark (anti-loop), and bypass
-    # loopback + RFC-1918 so local/LAN traffic stays direct.
+    # Mark client TCP/UDP *arriving on the segment iface* with fwmark and tproxy to the
+    # xray dokodemo port. The iifname scope keeps it to segment clients only — host-
+    # forwarded traffic (Docker bridge, other interfaces) stays direct (otherwise a
+    # `docker build` etc. gets tunneled and breaks). Skip packets already carrying the
+    # xray egress mark (anti-loop), and bypass loopback + RFC-1918 so local/LAN stays direct.
     #
     # Kill-switch (fail-closed): when on, add a forward-chain drop for client-segment
     # traffic headed to a non-private destination. Correctly-tunneled client packets
@@ -24,7 +26,7 @@ table ip pi_gw_panel {{
         type filter hook prerouting priority mangle; policy accept;
         meta mark 0x{plan.egress_mark:x} return
         ip daddr {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} return
-        meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
+        iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
     }}
 {forward}}}
 """
