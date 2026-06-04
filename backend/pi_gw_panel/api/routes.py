@@ -8,7 +8,7 @@ from pi_gw_panel.api.schemas import (
     ImportNodesIn, ImportNodesOut, DetachIn, NodeValidateOut,
     SettingsOut, SettingsIn,
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
-    RoutingIn, RoutingOut, RoutingRuleOut, NodeHealthOut,
+    RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     TrafficHistoryOut,
 )
@@ -23,7 +23,8 @@ from pi_gw_panel.health import probe
 from pi_gw_panel.health.selection import best_node
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
-from pi_gw_panel.xray_config.routing import RU_DIRECT_PRESET
+from pi_gw_panel.xray_config.routing import PRESETS, preset_rules, validate_routing
+from pi_gw_panel.xray_config.builder import build_config
 from pi_gw_panel.xray_config.validate import ConfigManager, validate_config
 from pi_gw_panel.config import SETTINGS_DEFAULTS
 from pi_gw_panel.subs.inject import build_request, default_injection, host_tokens
@@ -59,12 +60,18 @@ def _profile_out(p: TuningProfile, default_id: int | None) -> ProfileOut:
                       **{f: getattr(p, f) for f in _PROFILE_FIELDS})
 
 
-def _routing_out(state) -> RoutingOut:
+def _rule_out(r) -> RoutingRuleOut:
+    return RoutingRuleOut(id=r.id or 0, position=r.position, type=r.type, value=r.value,
+                          action=r.action, enabled=getattr(r, "enabled", True),
+                          label=getattr(r, "label", ""))
+
+
+def _routing_out(state, rules=None) -> RoutingOut:
+    rules = state.store.get_routing() if rules is None else rules
     return RoutingOut(
-        rules=[RoutingRuleOut(id=r.id, position=r.position, type=r.type,
-                              value=r.value, action=r.action)
-               for r in state.store.get_routing()],
-        default_action=state.store.get_setting("routing_default_action") or "proxy")
+        rules=[_rule_out(r) for r in rules],
+        default_action=state.store.get_setting("routing_default_action") or "proxy",
+        domain_strategy=state.store.get_setting("routing_domain_strategy") or "IPIfNonMatch")
 
 
 def _sub_out(state, sub: Subscription) -> SubscriptionOut:
@@ -389,14 +396,33 @@ def get_routing(request: Request, _: None = Depends(require_auth)) -> RoutingOut
     return _routing_out(get_state(request))
 
 
+def _clean_rules(rules) -> list[RoutingRule]:
+    """Drop empty-value rules and dedup (type, value, action); re-position from 0."""
+    seen, clean = set(), []
+    for r in rules:
+        v = (r.value or "").strip()
+        if not v:
+            continue
+        key = (r.type, v, r.action)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(RoutingRule(id=None, position=len(clean), type=r.type, value=r.value,
+                                 action=r.action, enabled=r.enabled, label=r.label))
+    return clean
+
+
 @router.put("/routing", response_model=RoutingOut)
 def put_routing(body: RoutingIn, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RoutingOut:
     state = get_state(request)
-    state.store.replace_routing(
-        [RoutingRule(id=None, position=i, type=r.type, value=r.value, action=r.action)
-         for i, r in enumerate(body.rules)])
+    rules = _clean_rules(body.rules)
+    ok, err = validate_routing(rules, body.default_action)   # RC2: clear per-rule error, not raw xray
+    if not ok:
+        raise HTTPException(status_code=422, detail=err)
+    state.store.replace_routing(rules)
     state.store.set_setting("routing_default_action", body.default_action)
+    state.store.set_setting("routing_domain_strategy", body.domain_strategy)
     # Apply now: rebuild the live config (which embeds routing) + reload xray, so the change
     # takes effect immediately instead of silently waiting for the next Connect. No-op when
     # no node is active; a rule xray rejects surfaces as 502 (live config stays last-good).
@@ -406,17 +432,48 @@ def put_routing(body: RoutingIn, request: Request,
     return _routing_out(state)
 
 
-@router.post("/routing/preset/ru-direct", response_model=RoutingOut)
-def routing_preset_ru_direct(request: Request,
-                             _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RoutingOut:
-    # Additive + idempotent: append the preset's rules that aren't already present.
+@router.get("/routing/presets", response_model=list[PresetInfo])
+def routing_presets(request: Request, _: None = Depends(require_auth)) -> list[PresetInfo]:
+    return [PresetInfo(name=k, title=v["title"]) for k, v in PRESETS.items()]
+
+
+@router.post("/routing/validate", response_model=RoutingValidateOut)
+def routing_validate(body: RoutingIn, request: Request,
+                     _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RoutingValidateOut:
+    """RN1: dry-run — structural check, plus an `xray -test` of the full config when a node is
+    active. Never persists or applies."""
     state = get_state(request)
+    rules = _clean_rules(body.rules)
+    ok, err = validate_routing(rules, body.default_action)
+    if not ok:
+        return RoutingValidateOut(ok=False, error=err)
+    aid = state.store.get_setting("active_node_id")
+    if aid:
+        node = state.store.get_node(int(aid))
+        if node is not None:
+            cfg = build_config(node, state.settings, routing=(rules, body.default_action),
+                               domain_strategy=body.domain_strategy)
+            ok2, out = validate_config(cfg, state.xray_bin or state.settings.xray_bin)
+            if not ok2:
+                return RoutingValidateOut(ok=False, error=out)
+    return RoutingValidateOut(ok=True)
+
+
+@router.post("/routing/preset/{name}", response_model=RoutingOut)
+def routing_preset(name: str, request: Request,
+                   _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RoutingOut:
+    """RC1/RN2: stage a preset — return the current rules merged with the preset's new ones,
+    WITHOUT persisting or applying. The user reviews and Saves to commit."""
+    state = get_state(request)
+    preset = preset_rules(name)
+    if preset is None:
+        raise HTTPException(status_code=404, detail=f"unknown preset {name!r}")
     existing = state.store.get_routing()
     have = {(r.type, r.value, r.action) for r in existing}
-    combined = list(existing) + [r for r in RU_DIRECT_PRESET
-                                 if (r.type, r.value, r.action) not in have]
-    state.store.replace_routing(combined)
-    return _routing_out(state)
+    merged = list(existing) + [r for r in preset if (r.type, r.value, r.action) not in have]
+    for i, r in enumerate(merged):
+        r.position = i
+    return _routing_out(state, merged)
 
 
 # --- node health (per-node snapshot; distinct from the open /api/health liveness) ---

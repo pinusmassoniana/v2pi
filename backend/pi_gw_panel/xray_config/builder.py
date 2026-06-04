@@ -5,7 +5,7 @@ from pi_gw_panel.xray_config.routing import rules_to_xray
 
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
-                 dns_intercept: bool = False) -> dict:
+                 dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch") -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -81,7 +81,7 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
             {"tag": "block", "protocol": "blackhole", "settings": {}},
         ],
         "routing": {
-            "domainStrategy": "IPIfNonMatch",
+            "domainStrategy": domain_strategy,
             "rules": [
                 {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
                 {"type": "field", "network": "tcp,udp", "outboundTag": "proxy"},

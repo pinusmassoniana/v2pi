@@ -263,6 +263,8 @@ class RoutingRuleIn(BaseModel):
     type: str    # geoip | geosite | domain | ip | port
     value: str
     action: str  # direct | proxy | block
+    enabled: bool = True
+    label: str = ""
 
 
 class RoutingRuleOut(BaseModel):
@@ -271,16 +273,30 @@ class RoutingRuleOut(BaseModel):
     type: str
     value: str
     action: str
+    enabled: bool = True
+    label: str = ""
 
 
 class RoutingIn(BaseModel):
     rules: list[RoutingRuleIn]
     default_action: str = "proxy"
+    domain_strategy: str = "IPIfNonMatch"
 
 
 class RoutingOut(BaseModel):
     rules: list[RoutingRuleOut]
     default_action: str
+    domain_strategy: str = "IPIfNonMatch"
+
+
+class RoutingValidateOut(BaseModel):
+    ok: bool
+    error: str = ""
+
+
+class PresetInfo(BaseModel):
+    name: str
+    title: str
 
 
 # --- Wave 2: per-node health snapshot ---

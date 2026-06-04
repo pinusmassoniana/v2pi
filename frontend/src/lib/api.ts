@@ -64,10 +64,11 @@ export interface ProfileIn {
 export type ProfileUpdate = Partial<ProfileIn>;
 
 // --- Wave 2: routing ---
-export interface RoutingRule { id: number; position: number; type: string; value: string; action: string; }
-export interface RoutingRuleIn { type: string; value: string; action: string; }
-export interface Routing { rules: RoutingRule[]; default_action: string; }
-export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; }
+export interface RoutingRule { id: number; position: number; type: string; value: string; action: string; enabled: boolean; label: string; }
+export interface RoutingRuleIn { type: string; value: string; action: string; enabled?: boolean; label?: string; }
+export interface Routing { rules: RoutingRule[]; default_action: string; domain_strategy: string; }
+export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; domain_strategy?: string; }
+export interface PresetInfo { name: string; title: string; }
 
 // --- Wave 2: per-node health ---
 export interface NodeHealth {
@@ -171,7 +172,9 @@ export const api = {
 
   getRouting(): Promise<Routing> { return req("/routing"); },
   putRouting(r: RoutingIn): Promise<Routing> { return mutate("PUT", "/routing", r); },
-  routingPresetRuDirect(): Promise<Routing> { return mutate("POST", "/routing/preset/ru-direct"); },
+  listRoutingPresets(): Promise<PresetInfo[]> { return req("/routing/presets"); },
+  routingPreset(name: string): Promise<Routing> { return mutate("POST", `/routing/preset/${encodeURIComponent(name)}`); },
+  validateRouting(r: RoutingIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/routing/validate", r); },
 
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
   probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },

@@ -183,9 +183,22 @@ def _migration_6(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE node_health ADD COLUMN lat_history TEXT NOT NULL DEFAULT '[]'")
 
 
+def _migration_7(conn: sqlite3.Connection) -> None:
+    # Per-rule enable/disable + label (routing_rules is created in migration 2).
+    if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='routing_rules'"
+    ).fetchone():
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(routing_rules)").fetchall()}
+    if "enabled" not in cols:
+        conn.execute("ALTER TABLE routing_rules ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+    if "label" not in cols:
+        conn.execute("ALTER TABLE routing_rules ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
-               (5, _migration_5), (6, _migration_6)]
+               (5, _migration_5), (6, _migration_6), (7, _migration_7)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

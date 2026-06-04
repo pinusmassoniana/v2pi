@@ -163,7 +163,7 @@ describe("api client", () => {
     expect((await api.getRouting()).default_action).toBe("proxy");
     const r = await api.putRouting({ rules: [{ type: "geoip", value: "ru", action: "direct" }], default_action: "direct" });
     expect(r.default_action).toBe("direct");
-    expect((await api.routingPresetRuDirect()).rules.length).toBeGreaterThan(0);
+    expect((await api.routingPreset("ru-direct")).rules.length).toBeGreaterThan(0);
     expect(calls.find((c) => c.url.endsWith("/api/routing") && c.opts.method === "PUT")).toBeTruthy();
   });
 

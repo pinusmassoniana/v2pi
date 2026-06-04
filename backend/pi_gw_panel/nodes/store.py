@@ -285,16 +285,25 @@ class NodeStore:
     # --- routing rules (ordered) ---
     def get_routing(self) -> list[RoutingRule]:
         rows = self._conn.execute("SELECT * FROM routing_rules ORDER BY position").fetchall()
-        return [RoutingRule(id=r["id"], position=r["position"], type=r["type"],
-                            value=r["value"], action=r["action"]) for r in rows]
+        out = []
+        for r in rows:
+            keys = r.keys()
+            out.append(RoutingRule(
+                id=r["id"], position=r["position"], type=r["type"], value=r["value"],
+                action=r["action"],
+                enabled=bool(r["enabled"]) if "enabled" in keys else True,
+                label=r["label"] if "label" in keys else ""))
+        return out
 
     def replace_routing(self, rules: list[RoutingRule]) -> None:
         # Whole-list replace: positions are re-derived from list order (0..n-1).
         self._conn.execute("DELETE FROM routing_rules")
         for i, r in enumerate(rules):
             self._conn.execute(
-                "INSERT INTO routing_rules(position, type, value, action) VALUES(?, ?, ?, ?)",
-                (i, r.type, r.value, r.action))
+                "INSERT INTO routing_rules(position, type, value, action, enabled, label) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (i, r.type, r.value, r.action, int(getattr(r, "enabled", True)),
+                 getattr(r, "label", "")))
         self._conn.commit()
 
     # --- node health ---

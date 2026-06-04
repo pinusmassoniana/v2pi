@@ -17,7 +17,9 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
             "up_bytes", "down_bytes", "total_bytes", "expire_at"} <= scols  # migration 5
     hcols2 = {r["name"] for r in conn.execute("PRAGMA table_info(node_health)").fetchall()}
     assert "lat_history" in hcols2  # migration 6
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    rcols = {r["name"] for r in conn.execute("PRAGMA table_info(routing_rules)").fetchall()}
+    assert {"enabled", "label"} <= rcols  # migration 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

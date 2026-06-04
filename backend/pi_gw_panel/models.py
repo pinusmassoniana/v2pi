@@ -94,6 +94,8 @@ class RoutingRule:
     type: str   # geoip | geosite | domain | ip | port
     value: str
     action: str  # direct | proxy | block
+    enabled: bool = True
+    label: str = ""
 
 
 @dataclass
