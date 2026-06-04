@@ -1,30 +1,24 @@
 <script lang="ts">
-  import { api, ApiError, type Node, type NodeHealth, type Status, type TrafficMessage } from "./api";
+  import { api, ApiError, type Node, type Status, type TrafficMessage } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
 
   let status = $state<Status | null>(null);
   let nodes = $state<Node[]>([]);
-  let health = $state<Record<number, NodeHealth>>({});
   let samples = $state<{ up: number; down: number }[]>([]);
   let live = $state<TrafficMessage | null>(null);
   let disabled = $state(false);
   let msg = $state("");
 
-  // live active-node health from the latest WS frame (falls back to polled health)
+  let activeName = $derived(nodes.find((n) => n.id === status?.active_node_id)?.name ?? null);
+  // live active-node health from the latest WS frame
   let liveActive = $derived(live && !("disabled" in live) && !("error" in live) ? live.active : null);
 
   async function refresh() {
     try {
-      status = await api.getStatus();
-      const [ns, hs] = await Promise.all([api.listNodes(), api.listNodeHealth()]);
+      const [st, ns] = await Promise.all([api.getStatus(), api.listNodes()]);
+      status = st;
       nodes = ns;
-      health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
     } catch (err) { msg = err instanceof ApiError ? err.message : "refresh failed"; }
-  }
-  async function connect(id: number) {
-    msg = "";
-    try { await api.apply(id); await refresh(); msg = "applied"; }
-    catch (err) { msg = err instanceof ApiError ? err.message : "apply failed"; }
   }
   async function rollback() {
     try { await api.rollback(); await refresh(); msg = "rolled back"; }
@@ -61,7 +55,7 @@
       <span class="dot" class:ok={status?.running} class:bad={status?.running === false}></span>
       {status?.running ? "connected" : "disconnected"}
     </span>
-    <span class="muted">active node: {status?.active_node_id ?? "—"}</span>
+    <span class="muted">active node: {activeName ?? "—"}</span>
     {#if liveActive}
       <span class="badge">
         <span class="dot" class:ok={liveActive.real_ok} class:bad={liveActive.real_ok === false}></span>
@@ -85,30 +79,8 @@
 
 {#if msg}<p class="msg">{msg}</p>{/if}
 
-<div class="card">
-  <table class="table">
-    <thead><tr><th>id</th><th>name</th><th>address</th><th>port</th><th>TCP</th><th>real</th><th></th></tr></thead>
-    <tbody>
-      {#each nodes as n (n.id)}
-        {@const h = health[n.id]}
-        <tr class:active={n.id === status?.active_node_id}>
-          <td>{n.id}</td>
-          <td>{n.name}{#if n.stale} <em class="muted">(stale)</em>{/if}</td>
-          <td>{n.address}</td><td>{n.port}</td>
-          <td>{#if h?.last_tcp_ok}<span class="ok">✓ {h.last_tcp_ms}ms</span>{:else if h && h.last_tcp_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
-          <td>{#if h?.last_real_ok}<span class="ok">✓ {h.last_real_ms}ms</span>{:else if h && h.last_real_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
-          <td><button class="btn" onclick={() => connect(n.id)}>Connect</button></td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-</div>
-
 <style>
   .toolbar .spacer { margin-left: auto; }
   .ok { color: var(--success); }
   .bad { color: var(--danger); }
-  tr.active { font-weight: 600; }
-  tr.active td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
-  em { font-style: normal; }
 </style>

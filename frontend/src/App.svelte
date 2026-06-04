@@ -8,7 +8,8 @@
   import Routing from "./lib/Routing.svelte";
   import Network from "./lib/Network.svelte";
   import Settings from "./lib/Settings.svelte";
-  import { api } from "./lib/api";
+  import Toggle from "./lib/Toggle.svelte";
+  import { api, type Status } from "./lib/api";
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
@@ -19,6 +20,7 @@
   let view = $state<View>("dashboard");
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
   let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "light");
+  let status = $state<Status | null>(null);
 
   // On load: if first-run (no credential) show Setup; else probe the session for auth.
   $effect(() => {
@@ -32,6 +34,19 @@
       .catch(() => { authed = false; })
       .finally(() => { ready = true; });
   });
+
+  // Poll xray-core status for the sidebar box.
+  async function pollStatus() { try { status = await api.getStatus(); } catch { status = null; } }
+  $effect(() => {
+    if (!authed) return;
+    pollStatus();
+    const t = setInterval(pollStatus, 4000);
+    return () => clearInterval(t);
+  });
+  async function toggleXray(on: boolean) {
+    try { if (on) await api.xrayStart(); else await api.xrayStop(); } catch {}
+    await pollStatus();
+  }
 
   const tabs: { id: View; label: string }[] = [
     { id: "dashboard", label: "Dashboard" },
@@ -84,6 +99,13 @@
           </button>
         {/each}
       </nav>
+      {#if status}
+        <div class="xray-box">
+          <span class="xray-dot {status.xray_state}"></span>
+          <span class="xray-label">xray-core<br /><small>{status.xray_state}</small></span>
+          <Toggle checked={status.xray_state === "working"} onchange={toggleXray} label="xray-core" />
+        </div>
+      {/if}
     </aside>
     <div class="content">
       <header class="topbar">
@@ -123,10 +145,22 @@
     background: var(--surface-2);
     border-right: 1px solid var(--border);
     padding: 1rem 0.7rem;
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 0.3rem;
-    align-content: start;
   }
+  .xray-box {
+    margin-top: auto;
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface);
+  }
+  .xray-dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--muted); flex: none; }
+  .xray-dot.working { background: var(--success); }
+  .xray-dot.error { background: var(--danger); }
+  .xray-label { font-size: 0.78rem; line-height: 1.15; margin-right: auto; }
+  .xray-label small { color: var(--muted); font-size: 0.68rem; }
   .brand { font-weight: 750; font-size: 1.1rem; padding: 0.4rem 0.6rem 1rem; color: var(--accent); }
   .sidebar nav { display: grid; gap: 0.2rem; }
   .nav-item {
@@ -161,7 +195,8 @@
   .icon-btn { padding: 0.35rem; display: inline-grid; place-items: center; line-height: 0; }
   @media (max-width: 720px) {
     .shell { grid-template-columns: 60px 1fr; }
-    .nav-item span, .brand { display: none; }
+    .nav-item span, .brand, .xray-label { display: none; }
     .nav-item { justify-content: center; }
+    .xray-box { flex-direction: column; gap: 0.35rem; padding: 0.45rem 0.3rem; }
   }
 </style>

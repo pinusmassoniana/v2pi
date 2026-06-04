@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Node, type NodeHealth, type TuningProfile } from "./api";
+  import { api, ApiError, type Node, type NodeHealth, type TuningProfile, type Status } from "./api";
 
   let nodes = $state<Node[]>([]);
   let health = $state<Record<number, NodeHealth>>({});
@@ -11,13 +11,26 @@
   let edit = $state({ name: "", address: "", port: 443, uuid: "", transport: "vision",
                       sni: "", public_key: "", short_id: "", fingerprint: "chrome" });
 
+  let status = $state<Status | null>(null);
+  const activeId = $derived(status?.active_node_id ?? null);
+
   async function refresh() {
     try {
-      const [ns, hs, ps] = await Promise.all([api.listNodes(), api.listNodeHealth(), api.listProfiles()]);
+      const [ns, hs, ps, st] = await Promise.all([
+        api.listNodes(), api.listNodeHealth(), api.listProfiles(), api.getStatus()]);
       nodes = ns;
       health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
       profiles = ps;
+      status = st;
     } catch (err) { msg = err instanceof ApiError ? err.message : "load failed"; }
+  }
+  async function connect(id: number) {
+    try { await api.apply(id); await refresh(); }
+    catch (err) { msg = err instanceof ApiError ? err.message : "connect failed"; }
+  }
+  async function disconnect(id: number) {
+    try { await api.disconnect(id); await refresh(); }
+    catch (err) { msg = err instanceof ApiError ? err.message : "disconnect failed"; }
   }
   async function add(e: Event) {
     e.preventDefault();
@@ -83,8 +96,10 @@
             <td class="actions"><button class="btn btn-primary" onclick={saveEdit}>Save</button> <button class="btn" onclick={() => (editId = null)}>Cancel</button></td>
           </tr>
         {:else}
-          <tr class:stale={n.stale}>
-            <td>{n.id}</td><td>{n.name}</td><td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td>
+          <tr class:stale={n.stale} class:active={n.id === activeId}>
+            <td>{n.id}</td>
+            <td>{n.name}{#if n.id === activeId}<span class="connected">● connected</span>{/if}</td>
+            <td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td>
             <td>
               <select class="input" value={n.tuning_profile_id === null ? "" : String(n.tuning_profile_id)}
                       onchange={(e) => assignProfile(n, e.currentTarget.value)}>
@@ -94,7 +109,15 @@
             </td>
             {@render healthCells(health[n.id])}
             <td>{n.subscription_id ?? "—"}</td>
-            <td class="actions"><button class="btn" onclick={() => startEdit(n)}>Edit</button> <button class="btn btn-danger" onclick={() => del(n.id)}>Delete</button></td>
+            <td class="actions">
+              {#if n.id === activeId}
+                <button class="btn" onclick={() => disconnect(n.id)}>Disconnect</button>
+              {:else}
+                <button class="btn btn-primary" onclick={() => connect(n.id)}>Connect</button>
+              {/if}
+              <button class="btn" onclick={() => startEdit(n)}>Edit</button>
+              <button class="btn btn-danger" onclick={() => del(n.id)}>Delete</button>
+            </td>
           </tr>
         {/if}
       {/each}
@@ -124,6 +147,9 @@
   .add .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.5rem; }
   .actions { white-space: nowrap; }
   tr.stale { opacity: 0.55; }
+  tr.active td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .connected { margin-left: 0.5rem; color: var(--accent); font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
   .ok { color: var(--success); }
   .bad { color: var(--danger); }
 </style>
