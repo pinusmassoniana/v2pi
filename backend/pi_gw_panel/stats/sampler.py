@@ -20,12 +20,15 @@ class TrafficSampler:
         self._clock = clock
         self._prev: dict[str, int] = {}
         self._prev_t: float | None = None
+        # cumulative bytes per tag from the latest sample, for "data used" totals (P1)
+        self.totals: dict[str, dict[str, int]] = {}
 
     def sample(self) -> dict[str, dict[str, float]]:
         now = self._clock()
         counters = self._query()
         dt = (now - self._prev_t) if self._prev_t is not None else 0.0
         out: dict[str, dict[str, float]] = {}
+        totals: dict[str, dict[str, int]] = {}
         for name, value in counters.items():
             tag, direction = _parse(name)
             if tag is None:
@@ -37,6 +40,9 @@ class TrafficSampler:
                 bps = 0.0                              # first sample / reset / rollover
             entry = out.setdefault(tag, {"up_bps": 0.0, "down_bps": 0.0})
             entry["up_bps" if direction == "uplink" else "down_bps"] = bps
+            tot = totals.setdefault(tag, {"up": 0, "down": 0})
+            tot["up" if direction == "uplink" else "down"] = value   # cumulative bytes
         self._prev = counters
         self._prev_t = now
+        self.totals = totals
         return out

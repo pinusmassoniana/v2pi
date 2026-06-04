@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS
 from pi_gw_panel.models import Node
@@ -81,6 +82,7 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         prev = store.get_setting("active_node_id")
         store.set_setting("prev_active_node_id", prev if prev is not None else "")
         store.set_setting("active_node_id", str(node.id))
+        store.set_setting("active_since", str(int(time.time())))   # connection uptime anchor (P3)
     return ApplyResult(ok=True)
 
 

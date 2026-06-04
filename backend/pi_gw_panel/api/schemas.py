@@ -62,6 +62,7 @@ class StatusOut(BaseModel):
     pid: int | None
     active_node_id: int | None
     xray_state: str = "stopped"   # working | stopped | error (sidebar xray-core box)
+    active_since: int | None = None   # epoch the active node was applied (uptime anchor, P3)
 
 
 class SubscriptionIn(BaseModel):
@@ -231,11 +232,20 @@ class NetworkTunnelOut(BaseModel):
     real_ok: bool | None = None
     latency_ms: int | None = None
     egress_ip: str | None = None
+    checked_at: str | None = None
+
+
+class DhcpClientOut(BaseModel):
+    ip: str
+    mac: str
+    hostname: str = ""
+    expiry: int = 0
 
 
 class NetworkStatusOut(BaseModel):
     segment_up: bool | None = None
     dhcp_clients: int = 0
+    clients: list[DhcpClientOut] = []
     tunnel: NetworkTunnelOut
 
 

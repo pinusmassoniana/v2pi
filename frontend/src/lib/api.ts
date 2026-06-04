@@ -1,4 +1,4 @@
-export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; }
+export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   sni: string; public_key: string; short_id: string; fingerprint: string;
@@ -30,7 +30,8 @@ export interface OutboundRate { up_bps: number; down_bps: number; }
 export interface TrafficFrame {
   ts: number;
   outbounds: Record<string, OutboundRate>;
-  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null } | null;
+  totals: { up: number; down: number };   // cumulative bytes, proxy outbound (data used)
+  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null } | null;
 }
 export type TrafficMessage = TrafficFrame | { disabled: true } | { error: string };
 // long-window history seed: each sample is [ts_ms, up_bps, down_bps]
@@ -68,8 +69,9 @@ export interface NodeHealth {
 export interface NetworkSegment {
   iface: string; ip: string; dhcp_start: string; dhcp_end: string; dhcp_lease: string; client_dns: string;
 }
-export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; }
-export interface NetworkStatus { segment_up: boolean | null; dhcp_clients: number; tunnel: NetworkTunnel; }
+export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; }
+export interface DhcpClient { ip: string; mac: string; hostname: string; expiry: number; }
+export interface NetworkStatus { segment_up: boolean | null; dhcp_clients: number; clients: DhcpClient[]; tunnel: NetworkTunnel; }
 export interface RouterRec { title: string; detail: string; }
 export interface Network {
   segment: NetworkSegment; kill_switch_enabled: boolean; status: NetworkStatus; recommendations: RouterRec[];

@@ -61,10 +61,11 @@ class TrafficRecorder:
     callables read live so a settings change takes effect without a restart."""
 
     def __init__(self, sampler, history: TrafficHistory, stats_enabled, interval_ms,
-                 clock=lambda: time.time()):
+                 running=lambda: True, clock=lambda: time.time()):
         self._sampler = sampler
         self._history = history
         self._stats_enabled = stats_enabled        # callable -> bool
+        self._running = running                    # callable -> bool (xray up? — F5 gate)
         self._interval_ms = interval_ms            # callable -> int
         self._clock = clock
         self._task: asyncio.Task | None = None
@@ -93,7 +94,7 @@ class TrafficRecorder:
         while True:
             interval = max(0.5, self._interval_ms() / 1000.0)
             try:
-                if self._stats_enabled():
+                if self._stats_enabled() and self._running():
                     out = await loop.run_in_executor(None, self._sampler.sample)
                     self.record_sample(out)
             except Exception:

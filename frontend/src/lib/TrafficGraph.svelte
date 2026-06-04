@@ -48,6 +48,9 @@
     const m = Math.floor(s / 60), r = s % 60;
     return r && m < 10 ? `${m}m ${r}s ago` : `${m}m ago`;
   }
+  function absLabel(ts: number): string {
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
 
   const geom = $derived.by(() => {
     const plotW = Math.max(10, w - padL - padR), plotH = H - padT - padB;
@@ -147,7 +150,7 @@
       </svg>
       {#if hover}
         <div class="tip" style="left:{Math.min(Math.max(hover.x, padL), w - padR)}px">
-          <div class="tip-t">{agoLabel((geom.tEnd - hover.ts) / 1000)}</div>
+          <div class="tip-t">{agoLabel((geom.tEnd - hover.ts) / 1000)} · {absLabel(hover.ts)}</div>
           <div class="tip-r down">↓ {fmt(hover.down)}</div>
           <div class="tip-r up">↑ {fmt(hover.up)}</div>
         </div>

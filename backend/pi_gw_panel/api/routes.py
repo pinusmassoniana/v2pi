@@ -156,9 +156,11 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     state = get_state(request)
     st = state.supervisor.status()
     active = state.store.get_setting("active_node_id")
+    since = state.store.get_setting("active_since")
     return StatusOut(running=st["running"], pid=st["pid"],
                      active_node_id=int(active) if active else None,  # "" (post-rollback) → None
-                     xray_state=state.supervisor.state())
+                     xray_state=state.supervisor.state(),
+                     active_since=int(since) if since else None)
 
 
 @router.get("/traffic/history", response_model=TrafficHistoryOut)
@@ -248,6 +250,7 @@ def disconnect(node_id: int, request: Request,
     prev = state.store.get_setting("active_node_id")
     state.store.set_setting("prev_active_node_id", prev or "")
     state.store.set_setting("active_node_id", "")
+    state.store.set_setting("active_since", "")        # clear uptime anchor (P3)
     return {"ok": True}
 
 
@@ -286,6 +289,8 @@ def rollback(request: Request,
         state.supervisor.reload()
         prev = state.store.get_setting("prev_active_node_id")
         state.store.set_setting("active_node_id", prev if prev else "")  # revert to prior apply
+        state.store.set_setting(
+            "active_since", str(int(datetime.now(timezone.utc).timestamp())) if prev else "")
     return {"ok": ok}
 
 

@@ -41,16 +41,18 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     # Always-on history: a SECOND sampler (independent prev-counters) feeds a 1h ring
     # buffer (3600 @ 1s) so the graph has a full window the moment the Dashboard opens.
     history = TrafficHistory(maxlen=3600)
+    supervisor = XraySupervisor(settings.xray_bin, settings.config_path)
     recorder = TrafficRecorder(
         sampler=TrafficSampler(lambda: stats_client.query("outbound>>>")),
         history=history,
         stats_enabled=lambda: (store.get_setting("stats_enabled") or "1") == "1",
+        running=lambda: supervisor.status()["running"],   # don't poke a dead stats port (F5)
         interval_ms=lambda: int(store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"]),
     )
     return AppState(
         settings=settings,
         store=store,
-        supervisor=XraySupervisor(settings.xray_bin, settings.config_path),
+        supervisor=supervisor,
         net=net,
         xray_bin=settings.xray_bin,
         sampler=sampler,

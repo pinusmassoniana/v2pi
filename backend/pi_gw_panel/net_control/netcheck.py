@@ -1,5 +1,7 @@
 import os
+import time
 from pi_gw_panel.config import Settings
+from pi_gw_panel.health.snapshot import active_health
 
 
 def segment_up(iface: str, sysfs: str = "/sys/class/net") -> bool | None:
@@ -12,32 +14,55 @@ def segment_up(iface: str, sysfs: str = "/sys/class/net") -> bool | None:
         return None
 
 
-def dhcp_clients(leases_path: str) -> int:
-    """Count active leases (non-blank lines in the dnsmasq leases file); 0 when absent."""
+def dhcp_leases(leases_path: str, now: float | None = None) -> list[dict]:
+    """Parse the dnsmasq leases file → unexpired leases ``[{ip, mac, hostname, expiry}]``
+    (P5). Each line is ``<expiry_epoch> <mac> <ip> <hostname> <client-id>``; expiry 0 means
+    no expiry. Expired leases are dropped (audit F4). Empty/absent file → []."""
+    now = time.time() if now is None else now
+    out: list[dict] = []
     try:
         with open(leases_path) as f:
-            return sum(1 for line in f if line.strip())
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                try:
+                    expiry = int(parts[0])
+                except ValueError:
+                    continue
+                if expiry != 0 and expiry < now:
+                    continue                                   # lease has expired
+                host = parts[3] if parts[3] != "*" else ""
+                out.append({"ip": parts[2], "mac": parts[1], "hostname": host, "expiry": expiry})
     except OSError:
-        return 0
+        return []
+    return out
+
+
+def dhcp_clients(leases_path: str, now: float | None = None) -> int:
+    """Count of currently-leased (unexpired) clients; 0 when the file is absent."""
+    return len(dhcp_leases(leases_path, now))
 
 
 def _tunnel(store) -> dict:
-    """Active node's tunnel egress, reusing the Wave-3a node_health snapshot."""
-    aid = store.get_setting("active_node_id")
-    h = store.get_health(int(aid)) if aid else None
-    if h is None:
-        return {"real_ok": None, "latency_ms": None, "egress_ip": None}
-    return {"real_ok": h.last_real_ok, "latency_ms": h.last_real_ms, "egress_ip": h.egress_ip}
+    """Active node's tunnel egress + freshness via the shared health snapshot (F3)."""
+    a = active_health(store)
+    if a is None:
+        return {"real_ok": None, "latency_ms": None, "egress_ip": None, "checked_at": None}
+    return {"real_ok": a["real_ok"], "latency_ms": a["latency_ms"],
+            "egress_ip": a["egress_ip"], "checked_at": a["checked_at"]}
 
 
 def network_status(store, settings: Settings, *, sysfs: str = "/sys/class/net",
                    leases_path: str | None = None) -> dict:
-    """Live gateway status: segment link, DHCP client count, tunnel egress. Real
+    """Live gateway status: segment link, DHCP clients (+ list), tunnel egress. Real
     checks are Pi-only; dev returns unknown/0 gracefully (paths injected in tests)."""
     iface = store.get_setting("segment_iface") or settings.segment_iface
+    clients = dhcp_leases(leases_path or settings.dnsmasq_leases)
     return {
         "segment_up": segment_up(iface, sysfs=sysfs),
-        "dhcp_clients": dhcp_clients(leases_path or settings.dnsmasq_leases),
+        "dhcp_clients": len(clients),
+        "clients": clients,
         "tunnel": _tunnel(store),
     }
 

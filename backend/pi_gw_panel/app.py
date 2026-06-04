@@ -13,26 +13,19 @@ from pi_gw_panel.health import failover
 from pi_gw_panel.health.monitor import HealthMonitor
 from pi_gw_panel.auth.auth import SESSION_AUTHED
 from pi_gw_panel import logs as logs_mod
-
-
-def _active_health(store) -> dict | None:
-    """Active node's health snapshot for the live graph (reuses node_health)."""
-    aid = store.get_setting("active_node_id")
-    if not aid:
-        return None
-    h = store.get_health(int(aid))
-    if h is None:
-        return None
-    return {"node_id": h.node_id, "real_ok": h.last_real_ok,
-            "latency_ms": h.last_real_ms, "egress_ip": h.egress_ip}
+from pi_gw_panel.health.snapshot import active_health
 
 
 def _traffic_frame(state) -> dict:
-    """Blocking: sample throughput (gRPC under the hood) + read active-node health."""
+    """Blocking: sample throughput (gRPC under the hood) + active-node health snapshot
+    (shared with the Network status) + cumulative data-used totals for the proxy outbound."""
+    outbounds = state.sampler.sample()
+    totals = (getattr(state.sampler, "totals", {}) or {}).get("proxy") or {"up": 0, "down": 0}
     return {
         "ts": int(time.time() * 1000),
-        "outbounds": state.sampler.sample(),
-        "active": _active_health(state.store),
+        "outbounds": outbounds,
+        "active": active_health(state.store),
+        "totals": totals,
     }
 
 

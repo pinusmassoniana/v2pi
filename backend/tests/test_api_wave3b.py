@@ -24,7 +24,8 @@ def test_get_network_shape(settings, stub_xray):
     assert body["kill_switch_enabled"] is False
     assert body["status"]["segment_up"] is None             # dev: no Linux sysfs
     assert body["status"]["dhcp_clients"] == 0
-    assert set(body["status"]["tunnel"]) == {"real_ok", "latency_ms", "egress_ip"}
+    assert set(body["status"]["tunnel"]) == {"real_ok", "latency_ms", "egress_ip", "checked_at"}
+    assert body["status"]["clients"] == []
     assert len(body["recommendations"]) >= 1
 
 
