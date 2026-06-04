@@ -176,9 +176,16 @@ def _migration_5(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {name} {ddl}")
 
 
+def _migration_6(conn: sqlite3.Connection) -> None:
+    # Per-node latency history (JSON array of recent HTTPS-handshake ms) for the sparkline.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(node_health)").fetchall()}
+    if "lat_history" not in cols:
+        conn.execute("ALTER TABLE node_health ADD COLUMN lat_history TEXT NOT NULL DEFAULT '[]'")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
-               (5, _migration_5)]
+               (5, _migration_5), (6, _migration_6)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

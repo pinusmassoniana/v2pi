@@ -10,8 +10,13 @@ import socket
 import ssl
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
+
+_PROBE_BODY_CAP = 64_000   # NS1: IP-echo responses are tiny; cap so a huge body can't OOM
+# NR4: bound how many throwaway-xray probes can run at once (per-node "T" / real-test-all)
+_PROBE_SEM = threading.BoundedSemaphore(3)
 
 
 def tcp_ping(address: str, port: int, timeout: float = 3.0,
@@ -89,7 +94,7 @@ def real_request(proxy_url: str, probe_url: str, timeout: float = 5.0,
         opener = opener_factory()
         with opener.open(probe_url, timeout=timeout) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
-            body = resp.read().decode("utf-8", "replace")
+            body = resp.read(_PROBE_BODY_CAP).decode("utf-8", "replace")
     except Exception:
         return False, None, None, None
     latency_ms = int((clock() - start) * 1000)
@@ -133,6 +138,11 @@ def real_through_node(node, xray_bin: str, probe_url: str, timeout: float = 8.0,
     """Spin up a throwaway xray (local http inbound + `node` as outbound), do a real request
     through it, then tear it down — so ANY node can be probed without touching the live tunnel.
     Returns (ok, latency_ms, egress_ip). `spawn`/`wait_ready` are injectable for tests."""
+    with _PROBE_SEM:
+        return _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready)
+
+
+def _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready):
     port = _free_port()
     cfg = {
         "log": {"loglevel": "warning"},

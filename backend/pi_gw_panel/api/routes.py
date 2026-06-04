@@ -5,7 +5,7 @@ from pi_gw_panel.api.schemas import (
     LoginIn, SetupIn, PasswordChangeIn, NodeIn, NodeOut, NodeUpdate, StatusOut,
     SubscriptionIn, SubscriptionPatch, SubscriptionOut,
     PreviewIn, PreviewOut, PreviewNodesOut, PreviewNodeOut, ReorderIn, ConnectBestIn,
-    ImportNodesIn, ImportNodesOut,
+    ImportNodesIn, ImportNodesOut, DetachIn, NodeValidateOut,
     SettingsOut, SettingsIn,
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
     RoutingIn, RoutingOut, RoutingRuleOut, NodeHealthOut,
@@ -16,13 +16,15 @@ from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import SESSION_AUTHED, SESSION_CSRF, new_csrf_token
 from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
-from pi_gw_panel.controller import apply_node, apply_net, reapply_active_node
+from pi_gw_panel.controller import (
+    apply_node, apply_net, reapply_active_node, build_node_config, apply_lock)
 from pi_gw_panel.net_control import netcheck
 from pi_gw_panel.health import probe
+from pi_gw_panel.health.selection import best_node
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.xray_config.routing import RU_DIRECT_PRESET
-from pi_gw_panel.xray_config.validate import ConfigManager
+from pi_gw_panel.xray_config.validate import ConfigManager, validate_config
 from pi_gw_panel.config import SETTINGS_DEFAULTS
 from pi_gw_panel.subs.inject import build_request, default_injection, host_tokens
 from pi_gw_panel.subs import service
@@ -78,26 +80,11 @@ def _sub_out(state, sub: Subscription) -> SubscriptionOut:
 
 def _pick_best_node(store, subscription_id):
     """N9: the healthiest non-stale node in a scope (a subscription id, or None for manual).
-    Tier real-ok > http-ok > tcp-ok > unknown; tie-break on lower latency."""
-    cands = [n for n in store.list_nodes()
-             if n.subscription_id == subscription_id and not n.stale]
-    if not cands:
-        return None
+    Shares the failover scorer (real > http > tcp, lowest latency); blind-picks the first when
+    no node has health yet."""
+    nodes = [n for n in store.list_nodes() if n.subscription_id == subscription_id]
     health = {h.node_id: h for h in store.list_health()}
-
-    def score(n):
-        h = health.get(n.id)
-        if h is None:
-            return (0, 0)
-        if h.last_real_ok:
-            return (3, -(h.last_real_ms or 10**9))
-        if h.last_http_ok:
-            return (2, -(h.last_http_ms or 10**9))
-        if h.last_tcp_ok:
-            return (1, -(h.last_tcp_ms or 10**9))
-        return (0, 0)
-
-    return max(cands, key=score)
+    return best_node(nodes, health)
 
 
 def _settings_out(state) -> SettingsOut:
@@ -196,10 +183,12 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     st = state.supervisor.status()
     active = state.store.get_setting("active_node_id")
     since = state.store.get_setting("active_since")
+    last_fo = state.store.get_setting("last_failover_at")
     return StatusOut(running=st["running"], pid=st["pid"],
                      active_node_id=int(active) if active else None,  # "" (post-rollback) → None
                      xray_state=state.supervisor.state(),
-                     active_since=int(since) if since else None)
+                     active_since=int(since) if since else None,
+                     last_failover_at=float(last_fo) if last_fo else None)
 
 
 @router.get("/traffic/history", response_model=TrafficHistoryOut)
@@ -288,11 +277,12 @@ def disconnect(node_id: int, request: Request,
     to direct) and clear the active selection. xray is left running — the sidebar toggle is
     the only thing that stops xray-core."""
     state = get_state(request)
-    state.net.teardown()
-    prev = state.store.get_setting("active_node_id")
-    state.store.set_setting("prev_active_node_id", prev or "")
-    state.store.set_setting("active_node_id", "")
-    state.store.set_setting("active_since", "")        # clear uptime anchor (P3)
+    with apply_lock:   # don't race a concurrent apply / failover tick (NR1)
+        state.net.teardown()
+        prev = state.store.get_setting("active_node_id")
+        state.store.set_setting("prev_active_node_id", prev or "")
+        state.store.set_setting("active_node_id", "")
+        state.store.set_setting("active_since", "")        # clear uptime anchor (P3)
     return {"ok": True}
 
 
@@ -302,12 +292,12 @@ def xray_start(request: Request,
     """Start xray-core. If a node is active, bring its tunnel back up (config + net);
     otherwise just start the process."""
     state = get_state(request)
-    from pi_gw_panel.controller import reapply_active_node
-    res = reapply_active_node(state)
-    if res is None:
-        state.supervisor.start()
-    elif not res.ok:
-        raise HTTPException(status_code=502, detail=res.error)
+    with apply_lock:   # reapply_active_node re-enters the lock (RLock); guards plain start()
+        res = reapply_active_node(state)
+        if res is None:
+            state.supervisor.start()
+        elif not res.ok:
+            raise HTTPException(status_code=502, detail=res.error)
     return {"ok": True}
 
 
@@ -317,8 +307,9 @@ def xray_stop(request: Request,
     """Stop xray-core and tear down the tproxy/routing (so segment clients fall back to
     direct rather than black-holing into a dead tproxy port). The active selection is kept."""
     state = get_state(request)
-    state.supervisor.stop()
-    state.net.teardown()
+    with apply_lock:
+        state.supervisor.stop()
+        state.net.teardown()
     return {"ok": True}
 
 
@@ -326,13 +317,14 @@ def xray_stop(request: Request,
 def rollback(request: Request,
              _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
     state = get_state(request)
-    ok = ConfigManager(state.settings, xray_bin=state.xray_bin).rollback()
-    if ok:
-        state.supervisor.reload()
-        prev = state.store.get_setting("prev_active_node_id")
-        state.store.set_setting("active_node_id", prev if prev else "")  # revert to prior apply
-        state.store.set_setting(
-            "active_since", str(int(datetime.now(timezone.utc).timestamp())) if prev else "")
+    with apply_lock:
+        ok = ConfigManager(state.settings, xray_bin=state.xray_bin).rollback()
+        if ok:
+            state.supervisor.reload()
+            prev = state.store.get_setting("prev_active_node_id")
+            state.store.set_setting("active_node_id", prev if prev else "")  # revert to prior apply
+            state.store.set_setting(
+                "active_since", str(int(datetime.now(timezone.utc).timestamp())) if prev else "")
     return {"ok": ok}
 
 
@@ -434,10 +426,24 @@ def node_health(request: Request, _: None = Depends(require_auth)) -> list[NodeH
     return [NodeHealthOut(**vars(h)) for h in state.store.list_health()]
 
 
-def _probe_sweep(store, probe_one, assign) -> list[NodeHealthOut]:
-    """Probe every node concurrently, persist the result (preserving the fields the other
-    sweep owns), and return the full updated health list."""
+def _scoped_nodes(store, scope: str | None) -> list:
+    """NR2: resolve a probe scope — None/'all' = every node, 'servers' = manual nodes,
+    or a subscription id string = that sub's nodes."""
     nodes = store.list_nodes()
+    if not scope or scope == "all":
+        return nodes
+    if scope == "servers":
+        return [n for n in nodes if n.subscription_id is None]
+    try:
+        sid = int(scope)
+    except ValueError:
+        return nodes
+    return [n for n in nodes if n.subscription_id == sid]
+
+
+def _probe_sweep(store, nodes, probe_one, assign, record_http=False) -> list[NodeHealthOut]:
+    """Probe the given nodes concurrently, persist (preserving the fields the other sweep
+    owns), and return the full updated health list."""
     ts = datetime.now(timezone.utc).isoformat()
     with ThreadPoolExecutor(max_workers=24) as ex:
         results = list(ex.map(lambda n: (n.id, probe_one(n)), nodes))
@@ -446,25 +452,32 @@ def _probe_sweep(store, probe_one, assign) -> list[NodeHealthOut]:
         assign(h, ok, ms)
         h.checked_at = ts
         store.upsert_health(h)
+        if record_http and ok and ms is not None:
+            store.record_latency(nid, ms)   # NN4: HTTPS latency trend
     return [NodeHealthOut(**vars(h)) for h in store.list_health()]
 
 
 @router.post("/probe/tcp", response_model=list[NodeHealthOut])
-def probe_tcp(request: Request,
+def probe_tcp(request: Request, scope: str | None = None,
               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> list[NodeHealthOut]:
-    """TCP-ping every node (reachability + latency) on demand → updates the TCP column."""
+    """TCP-ping nodes (reachability + latency) on demand → updates the TCP column. `scope`
+    limits the sweep to a subscription / manual group (default all)."""
     store = get_state(request).store
     def assign(h: NodeHealth, ok, ms): h.last_tcp_ok, h.last_tcp_ms = ok, ms
-    return _probe_sweep(store, lambda n: probe.tcp_ping(n.address, n.port, timeout=2.0), assign)
+    return _probe_sweep(store, _scoped_nodes(store, scope),
+                        lambda n: probe.tcp_ping(n.address, n.port, timeout=2.0), assign)
 
 
 @router.post("/probe/http", response_model=list[NodeHealthOut])
-def probe_http(request: Request,
+def probe_http(request: Request, scope: str | None = None,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> list[NodeHealthOut]:
-    """HTTPS-handshake every node endpoint directly (not through the tunnel) → HTTP column."""
+    """HTTPS-handshake each node directly (not through the tunnel) → HTTP column. `scope`
+    limits the sweep to a subscription / manual group (default all)."""
     store = get_state(request).store
     def assign(h: NodeHealth, ok, ms): h.last_http_ok, h.last_http_ms = ok, ms
-    return _probe_sweep(store, lambda n: probe.http_ping(n.address, n.port, n.sni, timeout=3.0), assign)
+    return _probe_sweep(store, _scoped_nodes(store, scope),
+                        lambda n: probe.http_ping(n.address, n.port, n.sni, timeout=3.0),
+                        assign, record_http=True)
 
 
 @router.post("/nodes/{node_id}/probe", response_model=NodeHealthOut)
@@ -480,14 +493,25 @@ def probe_node(node_id: int, request: Request,
     tcp_ok, tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
     http_ok, http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
     probe_url = store.get_setting("health_probe_url") or SETTINGS_DEFAULTS["health_probe_url"]
-    real_ok, real_ms, egress = probe.real_through_node(node, state.xray_bin, probe_url)
+    active = store.get_setting("active_node_id")
+    tunneled_on = (store.get_setting("tunneled_fetch") or "1") == "1"
+    if (active and int(active) == node_id and tunneled_on
+            and state.supervisor.status().get("running")):
+        # NR3: this IS the live node — reuse the running tunnel's proxy instead of spawning a
+        # second throwaway xray that dials the same server.
+        proxy_url = f"http://127.0.0.1:{state.settings.local_proxy_port}"
+        real_ok, _status, real_ms, egress = probe.real_request(proxy_url, probe_url)
+    else:
+        real_ok, real_ms, egress = probe.real_through_node(node, state.xray_bin, probe_url)
     h = store.get_health(node_id) or NodeHealth(node_id=node_id)
     h.last_tcp_ok, h.last_tcp_ms = tcp_ok, tcp_ms
     h.last_http_ok, h.last_http_ms = http_ok, http_ms
     h.last_real_ok, h.last_real_ms, h.egress_ip = real_ok, real_ms, egress
     h.checked_at = datetime.now(timezone.utc).isoformat()
     store.upsert_health(h)
-    return NodeHealthOut(**vars(h))
+    if http_ok and http_ms is not None:
+        store.record_latency(node_id, http_ms)   # NN4
+    return NodeHealthOut(**vars(store.get_health(node_id)))
 
 
 _LOG_SOURCES = {"xray-error": "xray_error_log", "xray-access": "xray_access_log", "app": "app_log"}
@@ -623,6 +647,30 @@ def reorder_nodes(body: ReorderIn, request: Request,
     """N8: persist a new order (position = list index) for the given node ids."""
     get_state(request).store.reorder_nodes(body.ids)
     return {"ok": True}
+
+
+@router.post("/nodes/detach")
+def detach_nodes(body: DetachIn, request: Request,
+                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """NN3: detach the given nodes from their subscription (→ manual Servers)."""
+    get_state(request).store.detach_nodes(body.ids)
+    return {"ok": True}
+
+
+@router.post("/nodes/validate", response_model=NodeValidateOut)
+def validate_node(body: NodeIn, request: Request,
+                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NodeValidateOut:
+    """NN10: pre-flight — build this node's config and run `xray -test` without connecting,
+    so a bad reality/xhttp/tls combo is caught before Connect."""
+    state = get_state(request)
+    node = Node(id=None, name=body.name, address=body.address, port=body.port,
+                uuid=body.uuid, transport=body.transport, security=body.security,
+                sni=body.sni, public_key=body.public_key, short_id=body.short_id,
+                fingerprint=body.fingerprint, path=body.path, host=body.host,
+                mode=body.mode, alpn=body.alpn)
+    cfg = build_node_config(node, state.settings, state.store)
+    ok, out = validate_config(cfg, state.xray_bin or state.settings.xray_bin)
+    return NodeValidateOut(ok=ok, error="" if ok else out)
 
 
 @router.post("/nodes/import", response_model=ImportNodesOut)

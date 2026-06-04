@@ -116,11 +116,14 @@ def _row_to_profile(row: sqlite3.Row) -> TuningProfile:
 def _row_to_health(row: sqlite3.Row) -> NodeHealth:
     def b(v):
         return None if v is None else bool(v)
+    keys = row.keys()
+    lat = json.loads(row["lat_history"] or "[]") if "lat_history" in keys else []
     return NodeHealth(
         node_id=row["node_id"], last_tcp_ok=b(row["last_tcp_ok"]), last_tcp_ms=row["last_tcp_ms"],
         last_http_ok=b(row["last_http_ok"]), last_http_ms=row["last_http_ms"],
         last_real_ok=b(row["last_real_ok"]), last_real_ms=row["last_real_ms"],
         egress_ip=row["egress_ip"], checked_at=row["checked_at"], fail_count=row["fail_count"],
+        lat_history=lat,
     )
 
 
@@ -180,6 +183,13 @@ class NodeStore:
         Ids not in the list are left untouched."""
         for i, nid in enumerate(node_ids):
             self._conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (i, nid))
+        self._conn.commit()
+
+    def detach_nodes(self, node_ids: list[int]) -> None:
+        """Detach nodes from their subscription (→ manual Servers); the rows survive so a
+        live/active connection is kept."""
+        for nid in node_ids:
+            self._conn.execute("UPDATE nodes SET subscription_id = NULL WHERE id = ?", (nid,))
         self._conn.commit()
 
     def mark_stale(self, node_id: int, stale: bool) -> None:
@@ -315,3 +325,16 @@ class NodeStore:
     def list_health(self) -> list[NodeHealth]:
         rows = self._conn.execute("SELECT * FROM node_health ORDER BY node_id").fetchall()
         return [_row_to_health(r) for r in rows]
+
+    def record_latency(self, node_id: int, ms: int, cap: int = 20) -> None:
+        """Append one latency sample to the node's history ring (NN4). Kept as a separate
+        column update so it survives the health upsert; capped at `cap` most-recent samples."""
+        row = self._conn.execute(
+            "SELECT lat_history FROM node_health WHERE node_id = ?", (node_id,)).fetchone()
+        if row is None:
+            return
+        hist = json.loads(row["lat_history"] or "[]")
+        hist.append(int(ms))
+        self._conn.execute("UPDATE node_health SET lat_history = ? WHERE node_id = ?",
+                           (json.dumps(hist[-cap:]), node_id))
+        self._conn.commit()

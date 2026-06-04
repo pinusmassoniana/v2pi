@@ -1,4 +1,5 @@
 from pi_gw_panel.controller import apply_node
+from pi_gw_panel.health.selection import best_node
 
 DEFAULT_HYSTERESIS = 3
 DEFAULT_COOLDOWN = 120.0
@@ -10,8 +11,8 @@ def decide(health: dict, nodes: list, active_id, hysteresis: int, cooldown: floa
 
     Fires only when the active node's consecutive real-request failures have reached
     `hysteresis` AND we're past the `cooldown` debounce window since the last failover.
-    The candidate is the first TCP-alive node other than the active one, in node order
-    (so a dead candidate is skipped). `health` maps node_id → NodeHealth."""
+    The candidate is the *healthiest* alive node other than the active one, skipping stale
+    nodes (NC3: real > http > tcp, lowest latency). `health` maps node_id → NodeHealth."""
     if active_id is None:
         return None
     active_h = health.get(active_id)
@@ -19,13 +20,8 @@ def decide(health: dict, nodes: list, active_id, hysteresis: int, cooldown: floa
         return None
     if last_failover_at is not None and (now - last_failover_at) < cooldown:
         return None
-    for node in nodes:
-        if node.id == active_id:
-            continue
-        h = health.get(node.id)
-        if h is not None and h.last_tcp_ok:
-            return node.id
-    return None
+    cand = best_node(nodes, health, exclude_id=active_id, require_alive=True)
+    return cand.id if cand is not None else None
 
 
 def run(state, now: float, apply_fn=apply_node):

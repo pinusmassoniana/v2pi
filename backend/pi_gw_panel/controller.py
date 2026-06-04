@@ -1,3 +1,4 @@
+import threading
 import time
 from dataclasses import dataclass
 from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS
@@ -7,6 +8,12 @@ from pi_gw_panel.xray_config.tuning import resolve_profile
 from pi_gw_panel.xray_config.validate import ConfigManager
 from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
 from pi_gw_panel.net_control.plan import NetPlan, NetResult
+
+# Serializes everything that mutates the live xray + net state (config write, supervisor
+# reload, tproxy apply/teardown). Re-entrant so a route that already holds it can call
+# apply_node. Without it a manual Connect and the failover tick (separate threads) can
+# interleave supervisor stop/start and config writes (NR1).
+apply_lock = threading.RLock()
 
 
 def _tunneled_fetch(store) -> bool:
@@ -48,17 +55,10 @@ def apply_net(settings: Settings, net, store=None) -> NetResult:
     return net.apply_tproxy(plan)
 
 
-def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
-               net, store=None, xray_bin: str | None = None) -> ApplyResult:
-    """Backbone: build -> validate(+snapshot) -> reload xray -> apply net.
-
-    On validation failure nothing is mutated (last-good preserved). If applying a
-    *validated* config fails downstream (xray reload or net), roll the live config
-    back to last-good, tear down the net ruleset, and report — never leave a
-    half-applied state. On success, persist the active node id (if a store given).
-    """
-    # Resolve the node's tuning profile + ordered routing + tunneled-fetch from the
-    # store (Wave-2). With no store, build_config stays on the byte-identical Wave-0 path.
+def build_node_config(node: Node, settings: Settings, store=None) -> dict:
+    """Render the xray config for `node` exactly as apply would — tuning profile + ordered
+    routing + tunneled-fetch + stats + dns from the store (when given). Shared by apply_node
+    and the pre-flight validate route (NN10). With no store this is the Wave-0 path."""
     if store is not None:
         profile = resolve_profile(store, node)
         routing = _resolve_routing(store)
@@ -67,29 +67,43 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         dns_intercept = _dns_intercept(store)
     else:
         profile, routing, tunneled, stats, dns_intercept = None, None, False, None, False
-    cfg = build_config(node, settings, profile=profile, routing=routing,
-                       tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept)
-    mgr = ConfigManager(settings, xray_bin=xray_bin)
-    ok, out = mgr.apply(cfg)
-    if not ok:
-        return ApplyResult(ok=False, error=out)
-    try:
-        supervisor.reload()
-        apply_net(settings, net, store)   # honors editable net overrides + kill-switch
-    except Exception as exc:
-        mgr.rollback()
+    return build_config(node, settings, profile=profile, routing=routing,
+                        tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept)
+
+
+def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
+               net, store=None, xray_bin: str | None = None) -> ApplyResult:
+    """Backbone: build -> validate(+snapshot) -> reload xray -> apply net.
+
+    Serialized by `apply_lock` so a manual Connect and the failover tick can't interleave.
+    On validation failure nothing is mutated (last-good preserved). If applying a
+    *validated* config fails downstream (xray reload or net), roll the live config
+    back to last-good, tear down the net ruleset, and report — never leave a
+    half-applied state. On success, persist the active node id (if a store given).
+    """
+    with apply_lock:
+        cfg = build_node_config(node, settings, store)
+        mgr = ConfigManager(settings, xray_bin=xray_bin)
+        ok, out = mgr.apply(cfg)
+        if not ok:
+            return ApplyResult(ok=False, error=out)
         try:
-            net.teardown()
-        except Exception:
-            pass
-        return ApplyResult(ok=False, error=f"apply failed after validation: {exc}")
-    if store is not None and node.id is not None:
-        # record the node that was active before this apply, so /rollback can revert to it
-        prev = store.get_setting("active_node_id")
-        store.set_setting("prev_active_node_id", prev if prev is not None else "")
-        store.set_setting("active_node_id", str(node.id))
-        store.set_setting("active_since", str(int(time.time())))   # connection uptime anchor (P3)
-    return ApplyResult(ok=True)
+            supervisor.reload()
+            apply_net(settings, net, store)   # honors editable net overrides + kill-switch
+        except Exception as exc:
+            mgr.rollback()
+            try:
+                net.teardown()
+            except Exception:
+                pass
+            return ApplyResult(ok=False, error=f"apply failed after validation: {exc}")
+        if store is not None and node.id is not None:
+            # record the node that was active before this apply, so /rollback can revert to it
+            prev = store.get_setting("active_node_id")
+            store.set_setting("prev_active_node_id", prev if prev is not None else "")
+            store.set_setting("active_node_id", str(node.id))
+            store.set_setting("active_since", str(int(time.time())))   # uptime anchor (P3)
+        return ApplyResult(ok=True)
 
 
 def reapply_active_node(state) -> ApplyResult | None:

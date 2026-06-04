@@ -25,8 +25,8 @@ class _FakeResp:
         self._body = body.encode()
         self.status = status
 
-    def read(self):
-        return self._body
+    def read(self, amt=None):
+        return self._body if amt is None else self._body[:amt]
 
     def __enter__(self):
         return self

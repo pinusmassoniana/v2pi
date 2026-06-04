@@ -53,6 +53,10 @@ class HealthMonitor:
         active_id = self._active_id()
         probe_url = store.get_setting("health_probe_url") or DEFAULT_PROBE_URL
         proxy_url = f"http://127.0.0.1:{self._state.settings.local_proxy_port}"
+        # The through-tunnel real probe needs the local proxy inbound, which only exists when
+        # tunneled_fetch is on. With it off the port isn't listening, so probing it would fail
+        # every tick and spuriously fail the active node over (NC1) — skip the real probe then.
+        tunneled_on = (store.get_setting("tunneled_fetch") or "1") == "1"
         ts = self._now_iso()
         nodes = store.list_nodes()
 
@@ -68,11 +72,11 @@ class HealthMonitor:
             swept = list(ex.map(direct, nodes))
 
         for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:
-            if node.id == active_id:
+            prev = store.get_health(node.id)
+            if node.id == active_id and tunneled_on:
                 # active node: the through-tunnel real request gives the true egress IP and
                 # drives the failover hysteresis counter — distinct from the direct HTTP probe.
                 real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
-                prev = store.get_health(node.id)
                 prev_fail = prev.fail_count if prev else 0
                 store.upsert_health(NodeHealth(
                     node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
@@ -80,10 +84,18 @@ class HealthMonitor:
                     last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress,
                     checked_at=ts, fail_count=0 if real_ok else prev_fail + 1))
             else:
+                # non-active (or active with no proxy port): direct probes only. Preserve any
+                # prior real/egress (NC2 — don't wipe a per-node "T" result) and keep
+                # fail_count at 0 since there's no real-request failure signal (NC1).
                 store.upsert_health(NodeHealth(
                     node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
                     last_http_ok=http_ok, last_http_ms=http_ms,
+                    last_real_ok=(prev.last_real_ok if prev else None),
+                    last_real_ms=(prev.last_real_ms if prev else None),
+                    egress_ip=(prev.egress_ip if prev else None),
                     checked_at=ts, fail_count=0))
+            if http_ok and http_ms is not None:
+                store.record_latency(node.id, http_ms)   # NN4: HTTPS-handshake latency trend
 
     def _tick(self) -> None:
         self.run_once()

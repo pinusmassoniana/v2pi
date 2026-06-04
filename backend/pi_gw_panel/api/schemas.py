@@ -79,6 +79,7 @@ class StatusOut(BaseModel):
     active_node_id: int | None
     xray_state: str = "stopped"   # working | stopped | error (sidebar xray-core box)
     active_since: int | None = None   # epoch the active node was applied (uptime anchor, P3)
+    last_failover_at: float | None = None   # epoch of the last auto-failover (NN8)
 
 
 class SubscriptionIn(BaseModel):
@@ -161,6 +162,17 @@ class ImportNodesOut(BaseModel):
 # N8: reorder manual nodes (Servers tab) — position = list index.
 class ReorderIn(BaseModel):
     ids: list[int]
+
+
+# NN3: bulk-detach nodes from their subscription (→ manual Servers).
+class DetachIn(BaseModel):
+    ids: list[int]
+
+
+# NN10: pre-flight config validation for a node (xray -test) before connecting.
+class NodeValidateOut(BaseModel):
+    ok: bool
+    error: str = ""
 
 
 # N9: connect to the healthiest node in a scope (a subscription, or manual when null).
@@ -283,6 +295,7 @@ class NodeHealthOut(BaseModel):
     egress_ip: str | None = None
     checked_at: str | None = None
     fail_count: int = 0
+    lat_history: list[int] = []
 
 
 # --- Wave 3b: editable Pi network config + kill-switch + live status ---

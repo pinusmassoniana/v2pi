@@ -108,3 +108,4 @@ class NodeHealth:
     egress_ip: str | None = None
     checked_at: str | None = None
     fail_count: int = 0
+    lat_history: list[int] = field(default_factory=list)   # recent HTTPS-handshake latencies (NN4)

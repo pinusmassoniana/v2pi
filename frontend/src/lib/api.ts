@@ -1,4 +1,4 @@
-export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; }
+export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; last_failover_at: number | null; }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   network: string; security: string;
@@ -75,6 +75,7 @@ export interface NodeHealth {
   last_http_ok: boolean | null; last_http_ms: number | null;
   last_real_ok: boolean | null; last_real_ms: number | null;
   egress_ip: string | null; checked_at: string | null; fail_count: number;
+  lat_history: number[];
 }
 
 // --- Wave 3b: editable Pi network config + kill-switch + live status ---
@@ -173,9 +174,11 @@ export const api = {
   routingPresetRuDirect(): Promise<Routing> { return mutate("POST", "/routing/preset/ru-direct"); },
 
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
-  probeTcp(): Promise<NodeHealth[]> { return mutate("POST", "/probe/tcp"); },
-  probeHttp(): Promise<NodeHealth[]> { return mutate("POST", "/probe/http"); },
+  probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
+  probeHttp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/http${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
   probeNode(id: number): Promise<NodeHealth> { return mutate("POST", `/nodes/${id}/probe`); },
+  detachNodes(ids: number[]) { return mutate("POST", "/nodes/detach", { ids }); },
+  validateNode(n: NodeIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/nodes/validate", n); },
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
