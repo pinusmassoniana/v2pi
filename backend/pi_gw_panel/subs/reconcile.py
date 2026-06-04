@@ -11,11 +11,24 @@ def _config_differs(a: Node, b: Node) -> bool:
     return any(getattr(a, f) != getattr(b, f) for f in _CONFIG_FIELDS)
 
 
+def _dedupe(parsed: list[Node]) -> list[Node]:
+    """Collapse duplicate (address, port, uuid, path) entries — last wins, first-seen order —
+    so a feed that lists the same server twice yields one node (and honest counts)."""
+    by_key: dict[tuple, Node] = {}
+    for p in parsed:
+        by_key[(p.address, p.port, p.uuid, p.path)] = p
+    return list(by_key.values())
+
+
 def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
-              active_node_id: int | None) -> dict:
+              active_node_id: int | None, default_profile_id: int | None = None) -> dict:
     """Merge parsed nodes into the store under sub_id, matching by (address, port, uuid, path):
     update changed, add new, remove vanished — EXCEPT the active node is never removed
     (flagged stale instead) so a live connection survives.
+
+    User-owned per-node state is preserved across a refresh: an updated node keeps its
+    assigned ``tuning_profile_id`` (the feed never carries one), and a *new* node inherits the
+    subscription's ``default_profile_id`` when one is set.
 
     Also reports how the active node was affected, so the caller can restart the tunnel on
     the refreshed server:
@@ -28,7 +41,7 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
     seen: set[tuple] = set()
     added = updated = removed = 0
     active_changed = active_vanished = False
-    for pos, p in enumerate(parsed):
+    for pos, p in enumerate(_dedupe(parsed)):
         key = (p.address, p.port, p.uuid, p.path)
         seen.add(key)
         cur = store.get_node_by_identity(sub_id, *key)
@@ -37,10 +50,12 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
         p.position = pos
         if cur is None:
             p.id = None
+            p.tuning_profile_id = default_profile_id   # N5: inherit the sub's default profile
             store.add_node(p)
             added += 1
         else:
             p.id = cur.id
+            p.tuning_profile_id = cur.tuning_profile_id  # C2: keep the user's per-node choice
             if cur.id == active_node_id and _config_differs(cur, p):
                 active_changed = True
             store.update_node(p)

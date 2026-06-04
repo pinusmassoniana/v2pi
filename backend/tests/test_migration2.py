@@ -12,7 +12,10 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert {"network", "security", "path", "host", "mode", "alpn", "position"} <= cols  # migration 3
     hcols = {r["name"] for r in conn.execute("PRAGMA table_info(node_health)").fetchall()}
     assert {"last_http_ok", "last_http_ms"} <= hcols  # migration 4
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    scols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+    assert {"enabled", "default_profile_id", "last_error",
+            "up_bytes", "down_bytes", "total_bytes", "expire_at"} <= scols  # migration 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

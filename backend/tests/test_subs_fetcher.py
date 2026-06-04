@@ -1,6 +1,8 @@
 import http.server
 import threading
 
+import pytest
+
 from pi_gw_panel.subs import fetcher
 from pi_gw_panel.subs.fetcher import fetch
 
@@ -10,11 +12,11 @@ def test_fetch_direct_builds_request_and_no_proxy(monkeypatch):
 
     def fake(url, headers, proxy, timeout):
         calls.update(url=url, headers=headers, proxy=proxy, timeout=timeout)
-        return "BODY"
+        return "BODY", {}
 
     monkeypatch.setattr(fetcher, "_http_get", fake)
-    body, path = fetch("https://h/s", {"headers": {"x-h": "1"}}, {}, proxy=None)
-    assert body == "BODY" and path == "direct"
+    body, path, headers = fetch("https://h/s", {"headers": {"x-h": "1"}}, {}, proxy=None)
+    assert body == "BODY" and path == "direct" and headers == {}
     assert calls["proxy"] is None
     assert calls["headers"]["x-h"] == "1"
     assert calls["url"] == "https://h/s"
@@ -25,12 +27,20 @@ def test_fetch_tunnel_passes_proxy(monkeypatch):
 
     def fake(url, headers, proxy, timeout):
         calls["proxy"] = proxy
-        return "B"
+        return "B", {}
 
     monkeypatch.setattr(fetcher, "_http_get", fake)
-    body, path = fetch("https://h/s", {}, {}, proxy="http://127.0.0.1:10808")
+    body, path, _ = fetch("https://h/s", {}, {}, proxy="http://127.0.0.1:10808")
     assert path == "tunnel"
     assert calls["proxy"] == "http://127.0.0.1:10808"
+
+
+def test_fetch_rejects_non_http_scheme(monkeypatch):
+    # S1: a file:///ftp:// URL must be refused before any network/file access.
+    monkeypatch.setattr(fetcher, "_http_get", lambda *a, **k: ("SHOULD-NOT-RUN", {}))
+    for url in ("file:///etc/passwd", "ftp://host/x"):
+        with pytest.raises(ValueError):
+            fetch(url, {}, {}, proxy=None)
 
 
 class _CookieChallengeHandler(http.server.BaseHTTPRequestHandler):
@@ -63,8 +73,9 @@ def test_http_get_follows_cookie_challenge_redirect():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        body = fetcher._http_get(f"http://127.0.0.1:{port}/sub", {}, None, 5.0)
+        body, headers = fetcher._http_get(f"http://127.0.0.1:{port}/sub", {}, None, 5.0)
     finally:
         server.shutdown()
         thread.join()
     assert body == "vless://node"
+    assert isinstance(headers, dict)

@@ -7,30 +7,67 @@ from pi_gw_panel.subs.parsers.dispatch import parse_subscription
 from pi_gw_panel.subs.reconcile import reconcile
 from pi_gw_panel.controller import apply_node
 
+MAX_NODES = 500   # S3: a single subscription can't balloon the DB / reconcile loop
+
 
 def refresh(state, sub: Subscription) -> dict:
     """Fetch (tunnel if available else direct) → parse → reconcile; update + persist sub.last_*.
     Single shared path for the manual refresh route and the scheduler. Never raises — failures
-    are recorded in sub.last_status."""
+    are recorded in sub.last_status / sub.last_error."""
     tokens = host_tokens(machine_id())
     proxy = tunnel_proxy(state)
     try:
-        body, path = fetch(sub.url, sub.injection, tokens, proxy=proxy)
+        body, path, headers = fetch(sub.url, sub.injection, tokens, proxy=proxy)
         parsed = parse_subscription(body)
+        capped = len(parsed) > MAX_NODES
+        parsed = parsed[:MAX_NODES]
         active = state.store.get_setting("active_node_id")
         active_id = int(active) if active is not None else None
-        counts = reconcile(state.store, sub.id, parsed, active_id)
+        counts = reconcile(state.store, sub.id, parsed, active_id, sub.default_profile_id)
         _restart_active(state, active_id, counts)   # reconnect on a rotated/updated active server
-        sub.last_status = f"ok: +{counts['added']} ~{counts['updated']} -{counts['removed']}"
+        _apply_userinfo(sub, headers)               # N7: quota/expiry, when the provider sends it
+        note = f" (capped at {MAX_NODES})" if capped else ""
+        sub.last_status = f"ok: +{counts['added']} ~{counts['updated']} -{counts['removed']}{note}"
         sub.last_path = path
-        result = {**counts, "path": path}
+        sub.last_error = None
+        result = {**counts, "path": path, "capped": capped}
     except Exception as exc:  # network/parse failure → record, don't crash the loop
         sub.last_path = "tunnel" if proxy else "direct"
-        sub.last_status = f"error: {exc}"
+        sub.last_status = f"error: {_short(exc)}"
+        sub.last_error = f"{type(exc).__name__}: {exc}"
         result = {"added": 0, "updated": 0, "removed": 0, "error": str(exc), "path": sub.last_path}
     sub.last_fetched = _now_iso()
     state.store.update_subscription(sub)
     return result
+
+
+def _short(exc: Exception, limit: int = 120) -> str:
+    """A one-line status summary; the full text goes to sub.last_error (N6)."""
+    s = " ".join(str(exc).split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _apply_userinfo(sub: Subscription, headers: dict) -> None:
+    """Parse a `Subscription-Userinfo: upload=…; download=…; total=…; expire=…` header
+    (the de-facto panel standard) onto the sub. Absent/garbled → leave fields untouched."""
+    raw = None
+    for k, v in (headers or {}).items():
+        if k.lower() == "subscription-userinfo":
+            raw = v
+            break
+    if not raw:
+        return
+    vals: dict[str, int] = {}
+    for part in raw.replace(",", ";").split(";"):
+        key, _, val = part.strip().partition("=")
+        try:
+            vals[key.strip().lower()] = int(val.strip())
+        except (ValueError, AttributeError):
+            continue
+    sub.up_bytes = vals.get("upload", sub.up_bytes)
+    sub.down_bytes = vals.get("download", sub.down_bytes)
+    sub.total_bytes = vals.get("total", sub.total_bytes)
+    sub.expire_at = vals.get("expire", sub.expire_at)
 
 
 def _restart_active(state, active_id, counts) -> None:

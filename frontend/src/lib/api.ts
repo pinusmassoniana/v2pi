@@ -1,23 +1,34 @@
 export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
+  network: string; security: string;
   sni: string; public_key: string; short_id: string; fingerprint: string;
+  path: string; host: string; mode: string; alpn: string;
   subscription_id: number | null; stale: boolean; tuning_profile_id: number | null;
 }
 export interface NodeIn {
   name: string; address: string; port: number; uuid: string;
-  transport?: string; sni?: string; public_key?: string; short_id?: string; fingerprint?: string;
+  transport?: string; security?: string; sni?: string; public_key?: string; short_id?: string;
+  fingerprint?: string; path?: string; host?: string; mode?: string; alpn?: string;
 }
 // tuning_profile_id is patch-only (assign a profile, or null to inherit the global default)
 export type NodeUpdate = Partial<NodeIn> & { tuning_profile_id?: number | null };
 
 export interface Subscription {
   id: number; name: string; url: string; injection: Record<string, any>;
-  interval_sec: number; last_fetched: string | null; last_status: string | null;
-  last_path: string | null; node_count: number;
+  interval_sec: number; enabled: boolean; default_profile_id: number | null;
+  last_fetched: string | null; last_status: string | null; last_path: string | null;
+  last_error: string | null;
+  up_bytes: number | null; down_bytes: number | null; total_bytes: number | null; expire_at: number | null;
+  node_count: number;
 }
-export interface SubscriptionIn { name: string; url: string; interval_sec?: number; injection?: Record<string, any>; }
+export interface SubscriptionIn {
+  name: string; url: string; interval_sec?: number; injection?: Record<string, any>;
+  enabled?: boolean; default_profile_id?: number | null;
+}
 export interface Preview { method: string; url: string; headers: Record<string, string>; query: Record<string, string>; }
+export interface PreviewNode { name: string; address: string; port: number; transport: string; network: string; security: string; }
+export interface PreviewNodes { format: string; count: number; nodes: PreviewNode[]; }
 export interface Settings {
   tunneled_fetch: boolean; routing_default_action: string;
   health_enabled: boolean; health_interval: number; health_hysteresis: number; health_probe_url: string;
@@ -141,7 +152,12 @@ export const api = {
   updateSub(id: number, patch: Partial<SubscriptionIn>): Promise<Subscription> { return mutate("PATCH", `/subs/${id}`, patch); },
   deleteSub(id: number) { return mutate("DELETE", `/subs/${id}`); },
   refreshSub(id: number): Promise<any> { return mutate("POST", `/subs/${id}/refresh`); },
+  refreshAllSubs(): Promise<{ refreshed: number }> { return mutate("POST", "/subs/refresh-all"); },
   previewSub(url: string, injection?: Record<string, any>): Promise<Preview> { return mutate("POST", "/subs/preview", { url, injection }); },
+  previewSubNodes(url: string, injection?: Record<string, any>): Promise<PreviewNodes> { return mutate("POST", "/subs/preview-nodes", { url, injection }); },
+  reorderNodes(ids: number[]) { return mutate("POST", "/nodes/reorder", { ids }); },
+  connectBest(subscription_id: number | null): Promise<{ ok: boolean; node_id: number }> { return mutate("POST", "/connect-best", { subscription_id }); },
+  importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },
 
   getSettings(): Promise<Settings> { return req("/settings"); },
   putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch); },

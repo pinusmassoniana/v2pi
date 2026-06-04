@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from pi_gw_panel.api.schemas import (
     LoginIn, SetupIn, PasswordChangeIn, NodeIn, NodeOut, NodeUpdate, StatusOut,
     SubscriptionIn, SubscriptionPatch, SubscriptionOut,
-    PreviewIn, PreviewOut, SettingsOut, SettingsIn,
+    PreviewIn, PreviewOut, PreviewNodesOut, PreviewNodeOut, ReorderIn, ConnectBestIn,
+    ImportNodesIn, ImportNodesOut,
+    SettingsOut, SettingsIn,
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
     RoutingIn, RoutingOut, RoutingRuleOut, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
@@ -24,16 +26,25 @@ from pi_gw_panel.xray_config.validate import ConfigManager
 from pi_gw_panel.config import SETTINGS_DEFAULTS
 from pi_gw_panel.subs.inject import build_request, default_injection, host_tokens
 from pi_gw_panel.subs import service
+from pi_gw_panel.subs.fetcher import fetch
+from pi_gw_panel.subs.parsers.dispatch import parse_subscription, detect
 
 router = APIRouter(prefix="/api")
 
 
 def _node_out(n: Node) -> NodeOut:
     return NodeOut(id=n.id, name=n.name, address=n.address, port=n.port, uuid=n.uuid,
-                   transport=n.transport, sni=n.sni, public_key=n.public_key,
-                   short_id=n.short_id, fingerprint=n.fingerprint,
+                   transport=n.transport, network=n.network, security=n.security,
+                   sni=n.sni, public_key=n.public_key, short_id=n.short_id,
+                   fingerprint=n.fingerprint, path=n.path, host=n.host, mode=n.mode, alpn=n.alpn,
                    subscription_id=n.subscription_id, stale=n.stale,
                    tuning_profile_id=n.tuning_profile_id)
+
+
+def _clamp_interval(sec: int) -> int:
+    """R3: 0 = manual-only; otherwise floor the auto-update interval at 60s so a typo can't
+    hammer the provider every scheduler tick."""
+    return 0 if sec <= 0 else max(60, sec)
 
 
 _PROFILE_FIELDS = ("id", "name", "fingerprint", "frag_enabled", "frag_packets",
@@ -57,9 +68,36 @@ def _routing_out(state) -> RoutingOut:
 def _sub_out(state, sub: Subscription) -> SubscriptionOut:
     return SubscriptionOut(
         id=sub.id, name=sub.name, url=sub.url, injection=sub.injection,
-        interval_sec=sub.interval_sec, last_fetched=sub.last_fetched,
-        last_status=sub.last_status, last_path=sub.last_path,
+        interval_sec=sub.interval_sec, enabled=sub.enabled,
+        default_profile_id=sub.default_profile_id, last_fetched=sub.last_fetched,
+        last_status=sub.last_status, last_path=sub.last_path, last_error=sub.last_error,
+        up_bytes=sub.up_bytes, down_bytes=sub.down_bytes, total_bytes=sub.total_bytes,
+        expire_at=sub.expire_at,
         node_count=len(state.store.list_nodes_for_sub(sub.id)))
+
+
+def _pick_best_node(store, subscription_id):
+    """N9: the healthiest non-stale node in a scope (a subscription id, or None for manual).
+    Tier real-ok > http-ok > tcp-ok > unknown; tie-break on lower latency."""
+    cands = [n for n in store.list_nodes()
+             if n.subscription_id == subscription_id and not n.stale]
+    if not cands:
+        return None
+    health = {h.node_id: h for h in store.list_health()}
+
+    def score(n):
+        h = health.get(n.id)
+        if h is None:
+            return (0, 0)
+        if h.last_real_ok:
+            return (3, -(h.last_real_ms or 10**9))
+        if h.last_http_ok:
+            return (2, -(h.last_http_ms or 10**9))
+        if h.last_tcp_ok:
+            return (1, -(h.last_tcp_ms or 10**9))
+        return (0, 0)
+
+    return max(cands, key=score)
 
 
 def _settings_out(state) -> SettingsOut:
@@ -190,10 +228,13 @@ def list_nodes(request: Request, _: None = Depends(require_auth)) -> list[NodeOu
 def add_node(body: NodeIn, request: Request,
              _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NodeOut:
     state = get_state(request)
+    # Node.__post_init__ normalizes transport↔network↔security↔flow, so an xhttp manual
+    # node is built as xhttp (not silently tcp) and reality-without-key falls back to tls.
     node = Node(id=None, name=body.name, address=body.address, port=body.port,
-                uuid=body.uuid, transport=body.transport, sni=body.sni,
-                public_key=body.public_key, short_id=body.short_id,
-                fingerprint=body.fingerprint)
+                uuid=body.uuid, transport=body.transport, security=body.security,
+                sni=body.sni, public_key=body.public_key, short_id=body.short_id,
+                fingerprint=body.fingerprint, path=body.path, host=body.host,
+                mode=body.mode, alpn=body.alpn)
     nid = state.store.add_node(node)
     saved = state.store.get_node(nid)
     if saved is None:  # unreachable: lastrowid is valid right after a successful insert
@@ -212,8 +253,8 @@ def update_node(node_id: int, body: NodeUpdate, request: Request,
     # the assignment (→ inherit the global default) rather than being dropped.
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(node, k, v)
-    # keep the Vision-only flow invariant after a transport change
-    node.flow = "" if node.transport != "vision" else (node.flow or "xtls-rprx-vision")
+    # single source of truth: re-derive network/security/flow from the edited fields
+    node.normalize()
     state.store.update_node(node)
     return _node_out(state.store.get_node(node_id))
 
@@ -493,7 +534,8 @@ def add_sub(body: SubscriptionIn, request: Request,
     injection = body.injection if body.injection is not None else default_injection()
     sid = state.store.add_subscription(Subscription(
         id=None, name=body.name, url=body.url, injection=injection,
-        interval_sec=body.interval_sec))
+        interval_sec=_clamp_interval(body.interval_sec),
+        enabled=body.enabled, default_profile_id=body.default_profile_id))
     return _sub_out(state, state.store.get_subscription(sid))
 
 
@@ -504,8 +546,11 @@ def update_sub(sub_id: int, body: SubscriptionPatch, request: Request,
     sub = state.store.get_subscription(sub_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="subscription not found")
-    for k, v in body.model_dump(exclude_none=True).items():
+    # exclude_unset so an explicit `default_profile_id: null` clears the inherited profile
+    # rather than being dropped (mirrors update_node).
+    for k, v in body.model_dump(exclude_unset=True).items():
         setattr(sub, k, v)
+    sub.interval_sec = _clamp_interval(sub.interval_sec)
     state.store.update_subscription(sub)
     return _sub_out(state, state.store.get_subscription(sub_id))
 
@@ -534,6 +579,89 @@ def preview_sub(body: PreviewIn, request: Request,
     injection = body.injection if body.injection is not None else default_injection()
     req = build_request(body.url, injection, host_tokens(service.machine_id()))
     return PreviewOut(method=req.method, url=req.url, headers=req.headers, query=req.query)
+
+
+@router.post("/subs/preview-nodes", response_model=PreviewNodesOut)
+def preview_sub_nodes(body: PreviewIn, request: Request,
+                      _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> PreviewNodesOut:
+    """N1: dry-run — fetch + parse without persisting, so a bad URL/token/format is caught
+    before adding/saving. Uses the tunnel when one is up, like a real refresh."""
+    state = get_state(request)
+    injection = body.injection if body.injection is not None else default_injection()
+    tokens = host_tokens(service.machine_id())
+    try:
+        text, _path, _headers = fetch(body.url, injection, tokens, proxy=service.tunnel_proxy(state))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"fetch failed: {exc}")
+    try:
+        fmt = detect(text)
+        nodes = parse_subscription(text)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
+    return PreviewNodesOut(
+        format=fmt, count=len(nodes),
+        nodes=[PreviewNodeOut(name=n.name, address=n.address, port=n.port,
+                              transport=n.transport, network=n.network, security=n.security)
+               for n in nodes[:200]])
+
+
+@router.post("/subs/refresh-all")
+def refresh_all_subs(request: Request,
+                     _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """N3: refresh every enabled subscription now. Disabled subs are skipped."""
+    state = get_state(request)
+    results = {}
+    for sub in state.store.list_subscriptions():
+        if sub.enabled:
+            results[sub.id] = service.refresh(state, sub)
+    return {"refreshed": len(results), "results": results}
+
+
+@router.post("/nodes/reorder")
+def reorder_nodes(body: ReorderIn, request: Request,
+                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """N8: persist a new order (position = list index) for the given node ids."""
+    get_state(request).store.reorder_nodes(body.ids)
+    return {"ok": True}
+
+
+@router.post("/nodes/import", response_model=ImportNodesOut)
+def import_nodes(body: ImportNodesIn, request: Request,
+                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> ImportNodesOut:
+    """N4: parse pasted subscription text (base64 / clash / json) and add the nodes as manual
+    servers (subscription_id NULL), skipping ones already present by identity."""
+    state = get_state(request)
+    try:
+        fmt = detect(body.text)
+        parsed = parse_subscription(body.text)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
+    added = 0
+    for p in parsed[:service.MAX_NODES]:
+        if state.store.get_node_by_identity(None, p.address, p.port, p.uuid, p.path) is not None:
+            continue
+        p.id = None
+        p.subscription_id = None
+        p.stale = False
+        state.store.add_node(p)
+        added += 1
+    return ImportNodesOut(added=added, total=len(parsed), format=fmt)
+
+
+@router.post("/connect-best")
+def connect_best(body: ConnectBestIn, request: Request,
+                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """N9: connect to the healthiest non-stale node in a scope (a subscription, or manual
+    when subscription_id is null), using the latest probe data."""
+    state = get_state(request)
+    node = _pick_best_node(state.store, body.subscription_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="no connectable node in this group")
+    res = apply_node(node, state.settings, state.supervisor, state.net,
+                     store=state.store, xray_bin=state.xray_bin)
+    if not res.ok:
+        raise HTTPException(status_code=502, detail=res.error)
+    return {"ok": True, "node_id": node.id}
 
 
 # --- settings (global toggles) ---

@@ -89,8 +89,12 @@ def _row_to_sub(row: sqlite3.Row) -> Subscription:
     return Subscription(
         id=row["id"], name=row["name"], url=row["url"],
         injection=json.loads(row["injection_json"] or "{}"),
-        interval_sec=row["interval_sec"], last_fetched=row["last_fetched"],
-        last_status=row["last_status"], last_path=row["last_path"],
+        interval_sec=row["interval_sec"], enabled=bool(row["enabled"]),
+        default_profile_id=row["default_profile_id"],
+        last_fetched=row["last_fetched"], last_status=row["last_status"],
+        last_path=row["last_path"], last_error=row["last_error"],
+        up_bytes=row["up_bytes"], down_bytes=row["down_bytes"],
+        total_bytes=row["total_bytes"], expire_at=row["expire_at"],
     )
 
 
@@ -165,7 +169,17 @@ class NodeStore:
         self._conn.commit()
 
     def delete_node(self, node_id: int) -> None:
+        # Drop the node's health row too (no FK/ON DELETE on node_health) so deletes —
+        # including the churn from every sub refresh — don't leave orphans behind.
+        self._conn.execute("DELETE FROM node_health WHERE node_id = ?", (node_id,))
         self._conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+        self._conn.commit()
+
+    def reorder_nodes(self, node_ids: list[int]) -> None:
+        """Set ``position`` = list index for the given node ids (manual-node reorder).
+        Ids not in the list are left untouched."""
+        for i, nid in enumerate(node_ids):
+            self._conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (i, nid))
         self._conn.commit()
 
     def mark_stale(self, node_id: int, stale: bool) -> None:
@@ -186,8 +200,10 @@ class NodeStore:
     # --- subscriptions ---
     def add_subscription(self, sub: Subscription) -> int:
         cur = self._conn.execute(
-            "INSERT INTO subscriptions(name, url, injection_json, interval_sec) VALUES(?, ?, ?, ?)",
-            (sub.name, sub.url, json.dumps(sub.injection), sub.interval_sec))
+            "INSERT INTO subscriptions(name, url, injection_json, interval_sec, enabled, "
+            "default_profile_id) VALUES(?, ?, ?, ?, ?, ?)",
+            (sub.name, sub.url, json.dumps(sub.injection), sub.interval_sec,
+             int(sub.enabled), sub.default_profile_id))
         self._conn.commit()
         return int(cur.lastrowid)
 
@@ -203,9 +219,12 @@ class NodeStore:
         assert sub.id is not None
         self._conn.execute(
             "UPDATE subscriptions SET name=?, url=?, injection_json=?, interval_sec=?, "
-            "last_fetched=?, last_status=?, last_path=? WHERE id=?",
+            "enabled=?, default_profile_id=?, last_fetched=?, last_status=?, last_path=?, "
+            "last_error=?, up_bytes=?, down_bytes=?, total_bytes=?, expire_at=? WHERE id=?",
             (sub.name, sub.url, json.dumps(sub.injection), sub.interval_sec,
-             sub.last_fetched, sub.last_status, sub.last_path, sub.id))
+             int(sub.enabled), sub.default_profile_id, sub.last_fetched, sub.last_status,
+             sub.last_path, sub.last_error, sub.up_bytes, sub.down_bytes, sub.total_bytes,
+             sub.expire_at, sub.id))
         self._conn.commit()
 
     def delete_subscription(self, sub_id: int) -> None:

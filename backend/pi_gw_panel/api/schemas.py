@@ -22,10 +22,15 @@ class NodeIn(BaseModel):
     port: int
     uuid: str
     transport: str = "vision"
+    security: str = "reality"   # reality | tls (normalize() downgrades reality→tls if no key)
     sni: str = ""
     public_key: str = ""
     short_id: str = ""
     fingerprint: str = "chrome"
+    path: str = ""              # xhttp path
+    host: str = ""             # xhttp Host header
+    mode: str = ""             # xhttp mode
+    alpn: str = ""             # tls ALPN (comma-separated)
 
 
 class NodeUpdate(BaseModel):
@@ -34,10 +39,15 @@ class NodeUpdate(BaseModel):
     port: int | None = None
     uuid: str | None = None
     transport: str | None = None
+    security: str | None = None
     sni: str | None = None
     public_key: str | None = None
     short_id: str | None = None
     fingerprint: str | None = None
+    path: str | None = None
+    host: str | None = None
+    mode: str | None = None
+    alpn: str | None = None
     tuning_profile_id: int | None = None
 
 
@@ -48,10 +58,16 @@ class NodeOut(BaseModel):
     port: int
     uuid: str
     transport: str
+    network: str = "tcp"
+    security: str = "reality"
     sni: str = ""
     public_key: str = ""
     short_id: str = ""
     fingerprint: str = "chrome"
+    path: str = ""
+    host: str = ""
+    mode: str = ""
+    alpn: str = ""
     subscription_id: int | None = None
     stale: bool = False
     tuning_profile_id: int | None = None
@@ -70,6 +86,8 @@ class SubscriptionIn(BaseModel):
     url: str
     interval_sec: int = 0
     injection: dict | None = None
+    enabled: bool = True
+    default_profile_id: int | None = None
 
 
 class SubscriptionPatch(BaseModel):
@@ -77,6 +95,8 @@ class SubscriptionPatch(BaseModel):
     url: str | None = None
     interval_sec: int | None = None
     injection: dict | None = None
+    enabled: bool | None = None
+    default_profile_id: int | None = None
 
 
 class SubscriptionOut(BaseModel):
@@ -85,9 +105,16 @@ class SubscriptionOut(BaseModel):
     url: str
     injection: dict
     interval_sec: int
+    enabled: bool
+    default_profile_id: int | None
     last_fetched: str | None
     last_status: str | None
     last_path: str | None
+    last_error: str | None
+    up_bytes: int | None = None
+    down_bytes: int | None = None
+    total_bytes: int | None = None
+    expire_at: int | None = None
     node_count: int
 
 
@@ -101,6 +128,44 @@ class PreviewOut(BaseModel):
     url: str
     headers: dict
     query: dict
+
+
+# N1: dry-run fetch+parse (no persist) — what nodes a sub WOULD yield, to catch a bad
+# URL/token/format before saving.
+class PreviewNodeOut(BaseModel):
+    name: str
+    address: str
+    port: int
+    transport: str
+    network: str
+    security: str
+
+
+class PreviewNodesOut(BaseModel):
+    format: str
+    count: int
+    nodes: list[PreviewNodeOut]
+
+
+# N4: import nodes from pasted subscription text (base64 / clash / json) as manual servers.
+class ImportNodesIn(BaseModel):
+    text: str
+
+
+class ImportNodesOut(BaseModel):
+    added: int
+    total: int
+    format: str
+
+
+# N8: reorder manual nodes (Servers tab) — position = list index.
+class ReorderIn(BaseModel):
+    ids: list[int]
+
+
+# N9: connect to the healthiest node in a scope (a subscription, or manual when null).
+class ConnectBestIn(BaseModel):
+    subscription_id: int | None = None
 
 
 # Settings now carry tunneled-fetch + routing default + health/failover knobs. The

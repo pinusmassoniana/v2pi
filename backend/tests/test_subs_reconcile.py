@@ -94,7 +94,7 @@ def test_refresh_end_to_end(monkeypatch, settings):
     monkeypatch.setattr(
         "pi_gw_panel.subs.service.fetch",
         lambda url, inj, tok, *, proxy: (
-            '[{"name":"a","address":"1.1.1.1","port":443,"uuid":"u"}]', "direct"))
+            '[{"name":"a","address":"1.1.1.1","port":443,"uuid":"u"}]', "direct", {}))
 
     class FakeSup:
         def status(self):

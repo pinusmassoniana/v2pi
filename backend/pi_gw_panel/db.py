@@ -154,8 +154,31 @@ def _migration_4(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE node_health ADD COLUMN {name} INTEGER")
 
 
+def _migration_5(conn: sqlite3.Connection) -> None:
+    # Subscription lifecycle + provider metadata: enable/disable, a per-sub default tuning
+    # profile new nodes inherit, full last-error text, and Subscription-Userinfo quota/expiry.
+    # (subscriptions is created in migration 1; guard so it's a no-op if 1 hasn't run.)
+    if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='subscriptions'"
+    ).fetchone():
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+    for name, ddl in (
+        ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("default_profile_id", "INTEGER REFERENCES tuning_profiles(id)"),
+        ("last_error", "TEXT"),
+        ("up_bytes", "INTEGER"),
+        ("down_bytes", "INTEGER"),
+        ("total_bytes", "INTEGER"),
+        ("expire_at", "INTEGER"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {name} {ddl}")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
-_MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4)]
+_MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
+               (5, _migration_5)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

@@ -38,7 +38,7 @@ def default_injection() -> dict:
             "x-device-os": "{device_os}",
             "x-device-ver": "{device_ver}",
             "x-device-model": "{device_model}",
-            "user-agent": "pi-gw-panel/1.0",
+            "user-agent": "v2pi/1.0",
         },
         "query": {},
     }

@@ -10,11 +10,14 @@
   let msg = $state("");
   let tab = $state<number | "servers" | null>(null);   // selected switcher tab (sub id | manual)
   let addOpen = $state(false);
-  let form = $state({ name: "", address: "", port: 443, uuid: "", transport: "vision",
-                      sni: "", public_key: "", short_id: "", fingerprint: "chrome" });
+  const blankForm = () => ({ name: "", address: "", port: 443, uuid: "", transport: "vision",
+                            security: "reality", sni: "", public_key: "", short_id: "",
+                            fingerprint: "chrome", path: "", host: "", mode: "", alpn: "" });
+  let form = $state(blankForm());
   let editId = $state<number | null>(null);
   let edit = $state({ name: "", address: "", port: 443, uuid: "", transport: "vision",
-                      sni: "", public_key: "", short_id: "", fingerprint: "chrome",
+                      security: "reality", sni: "", public_key: "", short_id: "",
+                      fingerprint: "chrome", path: "", host: "", mode: "", alpn: "",
                       tuning_profile_id: null as number | null });
 
   const activeId = $derived(status?.active_node_id ?? null);
@@ -40,14 +43,15 @@
     e.preventDefault();
     try {
       await api.addNode({ ...form });
-      form.name = ""; form.address = ""; form.uuid = ""; addOpen = false;
+      form = blankForm(); addOpen = false;
       await refresh();
     } catch (err) { msg = err instanceof ApiError ? err.message : "add failed"; }
   }
   function startEdit(n: Node) {
     editId = n.id;
     edit = { name: n.name, address: n.address, port: n.port, uuid: n.uuid, transport: n.transport,
-             sni: n.sni, public_key: n.public_key, short_id: n.short_id, fingerprint: n.fingerprint,
+             security: n.security, sni: n.sni, public_key: n.public_key, short_id: n.short_id,
+             fingerprint: n.fingerprint, path: n.path, host: n.host, mode: n.mode, alpn: n.alpn,
              tuning_profile_id: n.tuning_profile_id };
   }
   async function saveEdit(e: Event) {
@@ -56,9 +60,44 @@
     try { await api.updateNode(editId, { ...edit }); editId = null; await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
   }
-  async function del(id: number) {
-    try { await api.deleteNode(id); await refresh(); }
+  async function del(n: Node) {
+    if (!confirm(`Delete server “${n.name}” (${n.address})?`)) return;
+    try { await api.deleteNode(n.id); await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "delete failed"; }
+  }
+  // N8: reorder the manual (Servers) list by swapping a node with its neighbour.
+  async function move(i: number, dir: -1 | 1) {
+    const list = shown.map((n) => n.id);
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    try { await api.reorderNodes(list); await refresh(); }
+    catch (err) { msg = err instanceof ApiError ? err.message : "reorder failed"; }
+  }
+  // N4: import nodes from pasted subscription text as manual servers.
+  let importOpen = $state(false);
+  let importText = $state("");
+  let importing = $state(false);
+  async function doImport() {
+    importing = true;
+    try {
+      const r = await api.importNodes(importText);
+      msg = `imported ${r.added}/${r.total} node(s) (${r.format})`;
+      importText = ""; importOpen = false;
+      await refresh();
+    } catch (err) { msg = err instanceof ApiError ? err.message : "import failed"; }
+    finally { importing = false; }
+  }
+  // N9: connect to the healthiest node in the current group (sub id, or null for Servers).
+  let connectingBest = $state(false);
+  async function connectBest() {
+    connectingBest = true;
+    try {
+      const r = await api.connectBest(tab === "servers" ? null : (tab as number));
+      msg = `connected to node ${r.node_id}`;
+      await refresh();
+    } catch (err) { msg = err instanceof ApiError ? err.message : "connect-best failed"; }
+    finally { connectingBest = false; }
   }
   async function connect(id: number) {
     try { await api.apply(id); await refresh(); }
@@ -96,13 +135,16 @@
   {/each}
   <button class="tab" class:active={tab === "servers"} onclick={() => (tab = "servers")}>Servers</button>
   {#if tab === "servers"}
-    <button class="btn btn-primary add-btn" onclick={() => (addOpen = true)}>+ Add server</button>
+    <button class="btn import-btn" onclick={() => (importOpen = true)}>Import</button>
+    <button class="btn btn-primary" onclick={() => (addOpen = true)}>+ Add server</button>
   {/if}
 </div>
 
 <div class="ping-bar">
   <button class="btn" onclick={() => pingAll("tcp")} disabled={pinging !== null}>{pinging === "tcp" ? "TCP pinging…" : "TCP ping all"}</button>
   <button class="btn" onclick={() => pingAll("http")} disabled={pinging !== null}>{pinging === "http" ? "HTTP pinging…" : "HTTP ping all"}</button>
+  <button class="btn" onclick={connectBest} disabled={connectingBest || shown.length === 0}
+          title="Connect to the healthiest node in this group">{connectingBest ? "Connecting…" : "Connect best"}</button>
 </div>
 
 {#snippet hpill(ok: boolean | null | undefined, ms: number | null | undefined)}
@@ -124,13 +166,17 @@
       <th>TCP</th><th>HTTP</th><th>real</th><th>egress</th><th></th>
     </tr></thead>
     <tbody>
-      {#each shown as n (n.id)}
+      {#each shown as n, i (n.id)}
         <tr class:stale={n.stale} class:active={n.id === activeId}>
           <td>{n.id}</td>
           <td>{n.name}{#if n.id === activeId}<span class="connected">● connected</span>{/if}</td>
           <td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td>
           {@render healthCells(health[n.id])}
           <td class="actions">
+            {#if tab === "servers"}
+              <button class="btn ord" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">▲</button>
+              <button class="btn ord" title="Move down" onclick={() => move(i, 1)} disabled={i === shown.length - 1} aria-label="move down">▼</button>
+            {/if}
             {#if n.id === activeId}
               <button class="btn" onclick={() => disconnect(n.id)}>Disconnect</button>
             {:else}
@@ -138,7 +184,7 @@
             {/if}
             <button class="btn t-btn" title="Test this node — TCP + HTTP + real through it" onclick={() => probeNode(n.id)} disabled={probingId === n.id}>{probingId === n.id ? "…" : "T"}</button>
             <button class="btn" onclick={() => startEdit(n)}>Edit</button>
-            {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n.id)}>Delete</button>{/if}
+            {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n)}>Delete</button>{/if}
           </td>
         </tr>
       {/each}
@@ -159,11 +205,36 @@
       <select class="input" bind:value={form.transport}>
         <option value="vision">vision</option><option value="xhttp">xhttp</option>
       </select>
+      <select class="input" bind:value={form.security}>
+        <option value="reality">reality</option><option value="tls">tls</option>
+      </select>
       <input class="input" bind:value={form.sni} placeholder="sni" />
-      <input class="input" bind:value={form.public_key} placeholder="reality publicKey" />
-      <input class="input" bind:value={form.short_id} placeholder="shortId" />
+      {#if form.security === "reality"}
+        <input class="input" bind:value={form.public_key} placeholder="reality publicKey" />
+        <input class="input" bind:value={form.short_id} placeholder="shortId" />
+      {:else}
+        <input class="input" bind:value={form.alpn} placeholder="alpn (e.g. h2,http/1.1)" />
+      {/if}
+      {#if form.transport === "xhttp"}
+        <input class="input" bind:value={form.path} placeholder="xhttp path" />
+        <input class="input" bind:value={form.host} placeholder="xhttp host" />
+        <input class="input" bind:value={form.mode} placeholder="xhttp mode (optional)" />
+      {/if}
       <div class="form-actions"><button class="btn btn-primary">Add server</button></div>
     </form>
+  </Modal>
+{/if}
+
+{#if importOpen}
+  <Modal title="Import servers" onClose={() => (importOpen = false)}>
+    <div class="import">
+      <p class="muted">Paste a subscription body — base64/vless, a clash <code>proxies:</code> YAML, or a JSON node list. Parsed nodes are added as manual servers; duplicates are skipped.</p>
+      <textarea class="input ta" bind:value={importText} rows="8" placeholder="vless://…  or  proxies:  or  [{'{'}…{'}'}]"></textarea>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick={doImport} disabled={importing || !importText.trim()}>{importing ? "Importing…" : "Import"}</button>
+        <button class="btn" onclick={() => (importOpen = false)}>Cancel</button>
+      </div>
+    </div>
   </Modal>
 {/if}
 
@@ -178,10 +249,23 @@
         <select class="input" bind:value={edit.transport}>
           <option value="vision">vision</option><option value="xhttp">xhttp</option>
         </select></label>
+      <label class="field"><span>security</span>
+        <select class="input" bind:value={edit.security}>
+          <option value="reality">reality</option><option value="tls">tls</option>
+        </select></label>
       <label class="field"><span>sni</span><input class="input" bind:value={edit.sni} /></label>
       <label class="field"><span>fingerprint</span><input class="input" bind:value={edit.fingerprint} /></label>
-      <label class="field"><span>reality publicKey</span><input class="input" bind:value={edit.public_key} /></label>
-      <label class="field"><span>shortId</span><input class="input" bind:value={edit.short_id} /></label>
+      {#if edit.security === "reality"}
+        <label class="field"><span>reality publicKey</span><input class="input" bind:value={edit.public_key} /></label>
+        <label class="field"><span>shortId</span><input class="input" bind:value={edit.short_id} /></label>
+      {:else}
+        <label class="field"><span>alpn</span><input class="input" bind:value={edit.alpn} placeholder="h2,http/1.1" /></label>
+      {/if}
+      {#if edit.transport === "xhttp"}
+        <label class="field"><span>xhttp path</span><input class="input" bind:value={edit.path} /></label>
+        <label class="field"><span>xhttp host</span><input class="input" bind:value={edit.host} /></label>
+        <label class="field"><span>xhttp mode</span><input class="input" bind:value={edit.mode} /></label>
+      {/if}
       <label class="field"><span>tuning profile</span>
         <select class="input" value={edit.tuning_profile_id === null ? "" : String(edit.tuning_profile_id)}
                 onchange={(e) => (edit.tuning_profile_id = e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}>
@@ -202,10 +286,13 @@
   }
   .tab:hover { color: var(--text); }
   .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .switcher .add-btn { margin-left: auto; }
+  .switcher .import-btn { margin-left: auto; }
+  .import { display: grid; gap: 0.7rem; }
+  .import .ta { font-family: var(--mono); font-size: 0.8rem; width: 100%; resize: vertical; }
   .ping-bar { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
   .actions { white-space: nowrap; }
   .t-btn { font-weight: 700; min-width: 2rem; }
+  .ord { min-width: 1.7rem; padding-left: 0.4rem; padding-right: 0.4rem; font-size: 0.72rem; }
   tr.stale { opacity: 0.55; }
   tr.active td { background: var(--accent-soft); }
   tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }

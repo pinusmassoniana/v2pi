@@ -1,6 +1,21 @@
 import asyncio
+import datetime
 import time
 from pi_gw_panel.subs import service
+
+
+def _age_since(last_fetched: str | None) -> float | None:
+    """Wall-clock seconds since the persisted ISO ``last_fetched``, or None if missing /
+    unparseable. Used to seed due-ness across a restart so we don't refresh-storm."""
+    if not last_fetched:
+        return None
+    try:
+        ts = datetime.datetime.fromisoformat(last_fetched)
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds())
 
 
 class SubScheduler:
@@ -17,10 +32,19 @@ class SubScheduler:
     def due_subs(self, now: float) -> list:
         due = []
         for sub in self._state.store.list_subscriptions():
-            if sub.interval_sec <= 0:
+            if sub.interval_sec <= 0 or not sub.enabled:   # manual-only or paused (N2)
                 continue
             last = self._last_run.get(sub.id)
-            if last is None or (now - last) >= sub.interval_sec:
+            if last is None:
+                # First sight since start: honor the persisted last_fetched so a restart doesn't
+                # refresh every auto-sub at once. Fetched recently → seed _last_run so it next
+                # fires when the remaining interval elapses; otherwise it's genuinely due.
+                age = _age_since(sub.last_fetched)
+                if age is not None and age < sub.interval_sec:
+                    self._last_run[sub.id] = now - age
+                    continue
+                due.append(sub)
+            elif (now - last) >= sub.interval_sec:
                 due.append(sub)
         return due
 

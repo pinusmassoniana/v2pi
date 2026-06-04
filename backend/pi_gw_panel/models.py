@@ -27,9 +27,29 @@ class Node:
     position: int = 0           # order within its subscription (set on reconcile)
 
     def __post_init__(self) -> None:
-        # `flow` (xtls-rprx-vision) is Vision-only; XHTTP nodes must not carry it.
-        if self.transport != "vision":
-            self.flow = ""
+        self.normalize()
+
+    def normalize(self) -> None:
+        """Single source of truth for the transport↔network↔security↔flow invariants.
+
+        ``transport`` is the UI-facing choice; ``network`` + ``security`` + ``flow`` are what
+        the xray config builder consumes. Keeping them coherent here — and calling this after
+        every edit (see ``update_node``) — is what stops parsers and manual add/edit from
+        drifting (the old bug class: an xhttp node built as tcp, or reality with no key).
+
+        Idempotent: safe to run on DB reads and repeated edits.
+        """
+        if self.transport == "xhttp":
+            self.network = "xhttp"
+            self.flow = ""                       # Vision-only flow; XHTTP carries none
+        else:                                    # vision
+            self.network = "tcp"
+            if not self.flow:
+                self.flow = "xtls-rprx-vision"
+        # reality needs a public key; without one fall back to plain TLS (a reality
+        # outbound with an empty publicKey is broken/insecure).
+        if self.security == "reality" and not self.public_key:
+            self.security = "tls"
 
 
 @dataclass
@@ -39,9 +59,17 @@ class Subscription:
     url: str
     injection: dict = field(default_factory=dict)
     interval_sec: int = 0
+    enabled: bool = True                  # N2: pause auto + manual refresh without deleting
+    default_profile_id: int | None = None  # N5: tuning profile new reconciled nodes inherit
     last_fetched: str | None = None
     last_status: str | None = None
     last_path: str | None = None
+    last_error: str | None = None         # N6: full last error text (status stays a short line)
+    # N7: Subscription-Userinfo quota/expiry, when the provider sends the header
+    up_bytes: int | None = None
+    down_bytes: int | None = None
+    total_bytes: int | None = None
+    expire_at: int | None = None          # epoch seconds; 0/None = no expiry
 
 
 @dataclass
