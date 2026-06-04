@@ -14,7 +14,8 @@
                       sni: "", public_key: "", short_id: "", fingerprint: "chrome" });
   let editId = $state<number | null>(null);
   let edit = $state({ name: "", address: "", port: 443, uuid: "", transport: "vision",
-                      sni: "", public_key: "", short_id: "", fingerprint: "chrome" });
+                      sni: "", public_key: "", short_id: "", fingerprint: "chrome",
+                      tuning_profile_id: null as number | null });
 
   const activeId = $derived(status?.active_node_id ?? null);
   const shown = $derived(nodes.filter((n) =>
@@ -31,7 +32,6 @@
       profiles = ps;
       subs = ss;
       status = st;
-      // pick a valid default tab (first subscription, else the manual Servers list)
       if (tab === null || (tab !== "servers" && !ss.some((s) => s.id === tab)))
         tab = ss[0]?.id ?? "servers";
     } catch (err) { msg = err instanceof ApiError ? err.message : "load failed"; }
@@ -47,9 +47,11 @@
   function startEdit(n: Node) {
     editId = n.id;
     edit = { name: n.name, address: n.address, port: n.port, uuid: n.uuid, transport: n.transport,
-             sni: n.sni, public_key: n.public_key, short_id: n.short_id, fingerprint: n.fingerprint };
+             sni: n.sni, public_key: n.public_key, short_id: n.short_id, fingerprint: n.fingerprint,
+             tuning_profile_id: n.tuning_profile_id };
   }
-  async function saveEdit() {
+  async function saveEdit(e: Event) {
+    e.preventDefault();
     if (editId === null) return;
     try { await api.updateNode(editId, { ...edit }); editId = null; await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
@@ -58,10 +60,6 @@
     try { await api.deleteNode(id); await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "delete failed"; }
   }
-  async function assignProfile(n: Node, value: string) {
-    try { await api.updateNode(n.id, { tuning_profile_id: value === "" ? null : Number(value) }); await refresh(); }
-    catch (err) { msg = err instanceof ApiError ? err.message : "assign failed"; }
-  }
   async function connect(id: number) {
     try { await api.apply(id); await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "connect failed"; }
@@ -69,9 +67,6 @@
   async function disconnect(id: number) {
     try { await api.disconnect(id); await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "disconnect failed"; }
-  }
-  function profileName(id: number | null): string {
-    return id === null ? "(default)" : (profiles.find((p) => p.id === id)?.name ?? `#${id}`);
   }
 
   $effect(() => { refresh(); });
@@ -99,53 +94,28 @@
   <table class="table">
     <thead><tr>
       <th>id</th><th>name</th><th>address</th><th>port</th><th>transport</th>
-      <th>profile</th><th>TCP</th><th>real</th><th>egress</th><th></th>
+      <th>TCP</th><th>real</th><th>egress</th><th></th>
     </tr></thead>
     <tbody>
       {#each shown as n (n.id)}
-        {#if editId === n.id}
-          <tr>
-            <td>{n.id}</td>
-            <td><input class="input" bind:value={edit.name} /></td>
-            <td><input class="input" bind:value={edit.address} /></td>
-            <td><input class="input" type="number" bind:value={edit.port} /></td>
-            <td>
-              <select class="input" bind:value={edit.transport}>
-                <option value="vision">vision</option>
-                <option value="xhttp">xhttp</option>
-              </select>
-            </td>
-            <td>{profileName(n.tuning_profile_id)}</td>
-            {@render healthCells(health[n.id])}
-            <td class="actions"><button class="btn btn-primary" onclick={saveEdit}>Save</button> <button class="btn" onclick={() => (editId = null)}>Cancel</button></td>
-          </tr>
-        {:else}
-          <tr class:stale={n.stale} class:active={n.id === activeId}>
-            <td>{n.id}</td>
-            <td>{n.name}{#if n.id === activeId}<span class="connected">● connected</span>{/if}</td>
-            <td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td>
-            <td>
-              <select class="input" value={n.tuning_profile_id === null ? "" : String(n.tuning_profile_id)}
-                      onchange={(e) => assignProfile(n, e.currentTarget.value)}>
-                <option value="">(default)</option>
-                {#each profiles as p (p.id)}<option value={String(p.id)}>{p.name}</option>{/each}
-              </select>
-            </td>
-            {@render healthCells(health[n.id])}
-            <td class="actions">
-              {#if n.id === activeId}
-                <button class="btn" onclick={() => disconnect(n.id)}>Disconnect</button>
-              {:else}
-                <button class="btn btn-primary" onclick={() => connect(n.id)}>Connect</button>
-              {/if}
-              <button class="btn" onclick={() => startEdit(n)}>Edit</button>
-              {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n.id)}>Delete</button>{/if}
-            </td>
-          </tr>
-        {/if}
+        <tr class:stale={n.stale} class:active={n.id === activeId}>
+          <td>{n.id}</td>
+          <td>{n.name}{#if n.id === activeId}<span class="connected">● connected</span>{/if}</td>
+          <td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td>
+          {@render healthCells(health[n.id])}
+          <td class="actions">
+            {#if n.id === activeId}
+              <button class="btn" onclick={() => disconnect(n.id)}>Disconnect</button>
+            {:else}
+              <button class="btn btn-primary" onclick={() => connect(n.id)}>Connect</button>
+            {/if}
+            <button class="btn" onclick={() => startEdit(n)}>Edit</button>
+            {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n.id)}>Delete</button>{/if}
+          </td>
+        </tr>
       {/each}
       {#if shown.length === 0}
-        <tr><td colspan="10" class="muted empty">No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}</td></tr>
+        <tr><td colspan="9" class="muted empty">No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}</td></tr>
       {/if}
     </tbody>
   </table>
@@ -153,19 +123,45 @@
 
 {#if addOpen}
   <Modal title="Add server" onClose={() => (addOpen = false)}>
-    <form onsubmit={add} class="add-grid">
+    <form onsubmit={add} class="grid-form">
       <input class="input" bind:value={form.name} placeholder="name" required />
       <input class="input" bind:value={form.address} placeholder="address" required />
       <input class="input" type="number" bind:value={form.port} placeholder="port" required />
       <input class="input" bind:value={form.uuid} placeholder="uuid" required />
       <select class="input" bind:value={form.transport}>
-        <option value="vision">vision</option>
-        <option value="xhttp">xhttp</option>
+        <option value="vision">vision</option><option value="xhttp">xhttp</option>
       </select>
       <input class="input" bind:value={form.sni} placeholder="sni" />
       <input class="input" bind:value={form.public_key} placeholder="reality publicKey" />
       <input class="input" bind:value={form.short_id} placeholder="shortId" />
-      <div class="add-actions"><button class="btn btn-primary">Add server</button></div>
+      <div class="form-actions"><button class="btn btn-primary">Add server</button></div>
+    </form>
+  </Modal>
+{/if}
+
+{#if editId !== null}
+  <Modal title="Edit node" onClose={() => (editId = null)}>
+    <form onsubmit={saveEdit} class="grid-form">
+      <label class="field"><span>name</span><input class="input" bind:value={edit.name} /></label>
+      <label class="field"><span>address</span><input class="input" bind:value={edit.address} /></label>
+      <label class="field"><span>port</span><input class="input" type="number" bind:value={edit.port} /></label>
+      <label class="field"><span>uuid</span><input class="input" bind:value={edit.uuid} /></label>
+      <label class="field"><span>transport</span>
+        <select class="input" bind:value={edit.transport}>
+          <option value="vision">vision</option><option value="xhttp">xhttp</option>
+        </select></label>
+      <label class="field"><span>sni</span><input class="input" bind:value={edit.sni} /></label>
+      <label class="field"><span>fingerprint</span><input class="input" bind:value={edit.fingerprint} /></label>
+      <label class="field"><span>reality publicKey</span><input class="input" bind:value={edit.public_key} /></label>
+      <label class="field"><span>shortId</span><input class="input" bind:value={edit.short_id} /></label>
+      <label class="field"><span>tuning profile</span>
+        <select class="input" value={edit.tuning_profile_id === null ? "" : String(edit.tuning_profile_id)}
+                onchange={(e) => (edit.tuning_profile_id = e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}>
+          <option value="">(default)</option>
+          {#each profiles as p (p.id)}<option value={String(p.id)}>{p.name}</option>{/each}
+        </select></label>
+      <div class="form-actions"><button class="btn btn-primary">Save</button>
+        <button class="btn" type="button" onclick={() => (editId = null)}>Cancel</button></div>
     </form>
   </Modal>
 {/if}
@@ -187,6 +183,7 @@
   .ok { color: var(--success); }
   .bad { color: var(--danger); }
   .empty { text-align: center; padding: 1.2rem; }
-  .add-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.5rem; }
-  .add-actions { grid-column: 1 / -1; }
+  .grid-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.6rem; }
+  .form-actions { grid-column: 1 / -1; display: flex; gap: 0.5rem; }
+  .field { display: grid; gap: 0.2rem; }
 </style>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, ApiError, type Settings } from "./api";
+  import Toggle from "./Toggle.svelte";
 
   let s = $state<Settings | null>(null);
   let msg = $state("");
@@ -70,25 +71,25 @@
 {#if s}
   <form onsubmit={save} class="card settings">
     <h3>General</h3>
-    <label class="check"><input type="checkbox" bind:checked={s.tunneled_fetch} /> Fetch subscriptions through the tunnel</label>
+    <div class="check"><Toggle checked={s.tunneled_fetch} onchange={(v) => { if (s) s.tunneled_fetch = v; }} label="tunneled fetch" /> <span>Fetch subscriptions through the tunnel</span></div>
 
     <fieldset>
       <legend>Traffic stats</legend>
-      <label class="check"><input type="checkbox" bind:checked={s.stats_enabled} /> Enabled (live Dashboard graph)</label>
+      <div class="check"><Toggle checked={s.stats_enabled} onchange={(v) => { if (s) s.stats_enabled = v; }} label="stats" /> <span>Enabled (live Dashboard graph)</span></div>
       <label class="field"><span>Sample interval (ms)</span><input class="input" type="number" min="250" bind:value={s.traffic_sample_ms} /></label>
       <label class="field"><span>xray api port</span><input class="input" type="number" bind:value={s.stats_api_port} /></label>
     </fieldset>
 
     <fieldset>
       <legend>Health monitoring</legend>
-      <label class="check"><input type="checkbox" bind:checked={s.health_enabled} /> Enabled</label>
+      <div class="check"><Toggle checked={s.health_enabled} onchange={(v) => { if (s) s.health_enabled = v; }} label="health" /> <span>Enabled</span></div>
       <label class="field"><span>Interval (s)</span><input class="input" type="number" min="5" bind:value={s.health_interval} /></label>
       <label class="field"><span>Probe URL</span><input class="input" bind:value={s.health_probe_url} /></label>
     </fieldset>
 
     <fieldset>
       <legend>Auto-failover</legend>
-      <label class="check"><input type="checkbox" bind:checked={s.failover_enabled} /> Enabled</label>
+      <div class="check"><Toggle checked={s.failover_enabled} onchange={(v) => { if (s) s.failover_enabled = v; }} label="failover" /> <span>Enabled</span></div>
       <label class="field"><span>Hysteresis (consecutive real-request fails)</span><input class="input" type="number" min="1" bind:value={s.health_hysteresis} /></label>
       <label class="field"><span>Cooldown (s)</span><input class="input" type="number" min="0" bind:value={s.failover_cooldown} /></label>
     </fieldset>
