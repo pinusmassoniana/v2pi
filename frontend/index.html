@@ -3,7 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>v2pi</title>
+
+    <title>v2pi — Pi VPN gateway</title>
+    <meta
+      name="description"
+      content="Self-hosted control panel for a Raspberry Pi VPN gateway — Xray-core nodes, subscriptions, routing and anti-DPI tuning."
+    />
+    <meta name="application-name" content="v2pi" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f6fa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0c10" />
+
+    <!-- Identity: favicon, home-screen icon, installable web-app manifest.
+         These let the browser remember v2pi (tab/history/bookmark icon, "Add to
+         Home Screen", install prompt) instead of showing a blank globe. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-title" content="v2pi" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Rich link previews (Open Graph) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="v2pi — Pi VPN gateway" />
+    <meta property="og:description" content="Self-hosted control panel for a Raspberry Pi VPN gateway." />
+    <meta property="og:image" content="/icon-512.png" />
+
     <script>
       // Anti-FOUC: set the theme before the bundle loads so there's no light flash.
       (function () {
