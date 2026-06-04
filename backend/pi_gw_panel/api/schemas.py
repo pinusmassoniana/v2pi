@@ -61,6 +61,7 @@ class StatusOut(BaseModel):
     running: bool
     pid: int | None
     active_node_id: int | None
+    xray_state: str = "stopped"   # working | stopped | error (sidebar xray-core box)
 
 
 class SubscriptionIn(BaseModel):

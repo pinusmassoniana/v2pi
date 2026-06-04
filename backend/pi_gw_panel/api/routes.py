@@ -153,7 +153,8 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     st = state.supervisor.status()
     active = state.store.get_setting("active_node_id")
     return StatusOut(running=st["running"], pid=st["pid"],
-                     active_node_id=int(active) if active else None)  # "" (post-rollback) → None
+                     active_node_id=int(active) if active else None,  # "" (post-rollback) → None
+                     xray_state=state.supervisor.state())
 
 
 # --- nodes ---
@@ -214,6 +215,46 @@ def apply(node_id: int, request: Request,
                      store=state.store, xray_bin=state.xray_bin)
     if not res.ok:
         raise HTTPException(status_code=502, detail=res.error)
+    return {"ok": True}
+
+
+@router.post("/nodes/{node_id}/disconnect")
+def disconnect(node_id: int, request: Request,
+               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """Disconnect the active node: tear down the tproxy/routing (segment clients fall back
+    to direct) and clear the active selection. xray is left running — the sidebar toggle is
+    the only thing that stops xray-core."""
+    state = get_state(request)
+    state.net.teardown()
+    prev = state.store.get_setting("active_node_id")
+    state.store.set_setting("prev_active_node_id", prev or "")
+    state.store.set_setting("active_node_id", "")
+    return {"ok": True}
+
+
+@router.post("/xray/start")
+def xray_start(request: Request,
+               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """Start xray-core. If a node is active, bring its tunnel back up (config + net);
+    otherwise just start the process."""
+    state = get_state(request)
+    from pi_gw_panel.controller import reapply_active_node
+    res = reapply_active_node(state)
+    if res is None:
+        state.supervisor.start()
+    elif not res.ok:
+        raise HTTPException(status_code=502, detail=res.error)
+    return {"ok": True}
+
+
+@router.post("/xray/stop")
+def xray_stop(request: Request,
+              _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """Stop xray-core and tear down the tproxy/routing (so segment clients fall back to
+    direct rather than black-holing into a dead tproxy port). The active selection is kept."""
+    state = get_state(request)
+    state.supervisor.stop()
+    state.net.teardown()
     return {"ok": True}
 
 

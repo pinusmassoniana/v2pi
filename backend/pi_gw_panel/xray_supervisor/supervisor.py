@@ -14,13 +14,16 @@ class XraySupervisor:
         self.xray_bin = xray_bin
         self.config_path = config_path
         self._proc: subprocess.Popen | None = None
+        self._want_running = False   # intent — distinguishes a deliberate stop from a crash
 
     def start(self) -> None:
+        self._want_running = True
         if self._proc and self._proc.poll() is None:
             return
         self._proc = subprocess.Popen([self.xray_bin, "-config", self.config_path])
 
     def stop(self) -> None:
+        self._want_running = False
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
             try:
@@ -37,3 +40,10 @@ class XraySupervisor:
     def status(self) -> SupervisorStatus:
         running = self._proc is not None and self._proc.poll() is None
         return {"running": running, "pid": self._proc.pid if running else None}
+
+    def state(self) -> str:
+        """3-way state for the sidebar xray-core box: 'working' (running) |
+        'error' (we wanted it running but it died) | 'stopped' (deliberate)."""
+        if self._proc is not None and self._proc.poll() is None:
+            return "working"
+        return "error" if self._want_running else "stopped"

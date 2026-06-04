@@ -49,3 +49,28 @@ def test_start_is_idempotent(settings, stub_xray):
         assert sup.status()["pid"] == pid1
     finally:
         sup.stop()
+
+
+# --- 3-way state for the sidebar xray-core box: stopped | working | error ---
+def test_state_stopped_initially():
+    assert XraySupervisor("xray", "/tmp/none.json").state() == "stopped"
+
+
+def test_state_working_then_stopped(settings, stub_xray):
+    sup = XraySupervisor(xray_bin=stub_xray, config_path=settings.config_path)
+    with open(settings.config_path, "w") as f:
+        f.write("{}")
+    sup.start()
+    try:
+        assert sup.state() == "working"
+    finally:
+        sup.stop()
+    assert sup.state() == "stopped"
+
+
+def test_state_error_when_process_exits_while_wanted():
+    # `false` exits non-zero immediately → we wanted it running but it died → error
+    sup = XraySupervisor(xray_bin="false", config_path="/tmp/none.json")
+    sup.start()
+    sup._proc.wait()
+    assert sup.state() == "error"

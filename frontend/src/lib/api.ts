@@ -1,4 +1,4 @@
-export interface Status { running: boolean; pid: number | null; active_node_id: number | null; }
+export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   sni: string; public_key: string; short_id: string; fingerprint: string;
@@ -122,7 +122,10 @@ export const api = {
   updateNode(id: number, patch: NodeUpdate): Promise<Node> { return mutate("PATCH", `/nodes/${id}`, patch); },
   deleteNode(id: number) { return mutate("DELETE", `/nodes/${id}`); },
   apply(id: number) { return mutate("POST", `/nodes/${id}/apply`); },
+  disconnect(id: number) { return mutate("POST", `/nodes/${id}/disconnect`); },
   rollback() { return mutate("POST", "/rollback"); },
+  xrayStart() { return mutate("POST", "/xray/start"); },
+  xrayStop() { return mutate("POST", "/xray/stop"); },
 
   listSubs(): Promise<Subscription[]> { return req("/subs"); },
   addSub(s: SubscriptionIn): Promise<Subscription> { return mutate("POST", "/subs", s); },
