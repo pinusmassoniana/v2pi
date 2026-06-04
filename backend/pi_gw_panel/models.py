@@ -73,7 +73,9 @@ class NodeHealth:
     node_id: int
     last_tcp_ok: bool | None = None
     last_tcp_ms: int | None = None
-    last_real_ok: bool | None = None
+    last_http_ok: bool | None = None      # direct HTTPS-handshake (all nodes)
+    last_http_ms: int | None = None
+    last_real_ok: bool | None = None      # real request through the node (active / on-demand)
     last_real_ms: int | None = None
     egress_ip: str | None = None
     checked_at: str | None = None

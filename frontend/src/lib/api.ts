@@ -57,6 +57,7 @@ export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; }
 // --- Wave 2: per-node health ---
 export interface NodeHealth {
   node_id: number; last_tcp_ok: boolean | null; last_tcp_ms: number | null;
+  last_http_ok: boolean | null; last_http_ms: number | null;
   last_real_ok: boolean | null; last_real_ms: number | null;
   egress_ip: string | null; checked_at: string | null; fail_count: number;
 }
@@ -150,6 +151,7 @@ export const api = {
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
   probeTcp(): Promise<NodeHealth[]> { return mutate("POST", "/probe/tcp"); },
   probeHttp(): Promise<NodeHealth[]> { return mutate("POST", "/probe/http"); },
+  probeNode(id: number): Promise<NodeHealth> { return mutate("POST", `/nodes/${id}/probe`); },
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },

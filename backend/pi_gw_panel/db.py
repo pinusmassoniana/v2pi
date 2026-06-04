@@ -146,8 +146,16 @@ def _migration_3(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {ddl}")
 
 
+def _migration_4(conn: sqlite3.Connection) -> None:
+    # Separate HTTPS-handshake health from the through-tunnel "real" health.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(node_health)").fetchall()}
+    for name in ("last_http_ok", "last_http_ms"):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE node_health ADD COLUMN {name} INTEGER")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
-_MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3)]
+_MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

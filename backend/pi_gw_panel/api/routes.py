@@ -392,11 +392,33 @@ def probe_tcp(request: Request,
 @router.post("/probe/http", response_model=list[NodeHealthOut])
 def probe_http(request: Request,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> list[NodeHealthOut]:
-    """HTTPS-handshake every node endpoint directly (not through the tunnel) → updates the
-    real/HTTP column."""
+    """HTTPS-handshake every node endpoint directly (not through the tunnel) → HTTP column."""
     store = get_state(request).store
-    def assign(h: NodeHealth, ok, ms): h.last_real_ok, h.last_real_ms = ok, ms
+    def assign(h: NodeHealth, ok, ms): h.last_http_ok, h.last_http_ms = ok, ms
     return _probe_sweep(store, lambda n: probe.http_ping(n.address, n.port, n.sni, timeout=3.0), assign)
+
+
+@router.post("/nodes/{node_id}/probe", response_model=NodeHealthOut)
+def probe_node(node_id: int, request: Request,
+               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NodeHealthOut:
+    """Per-node 'T': run all three probes for one node — TCP, direct HTTPS, and a real request
+    *through* this node (throwaway xray, so the live tunnel is untouched) — and persist them."""
+    state = get_state(request)
+    store = state.store
+    node = store.get_node(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="node not found")
+    tcp_ok, tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
+    http_ok, http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
+    probe_url = store.get_setting("health_probe_url") or SETTINGS_DEFAULTS["health_probe_url"]
+    real_ok, real_ms, egress = probe.real_through_node(node, state.xray_bin, probe_url)
+    h = store.get_health(node_id) or NodeHealth(node_id=node_id)
+    h.last_tcp_ok, h.last_tcp_ms = tcp_ok, tcp_ms
+    h.last_http_ok, h.last_http_ms = http_ok, http_ms
+    h.last_real_ok, h.last_real_ms, h.egress_ip = real_ok, real_ms, egress
+    h.checked_at = datetime.now(timezone.utc).isoformat()
+    store.upsert_health(h)
+    return NodeHealthOut(**vars(h))
 
 
 _LOG_SOURCES = {"xray-error": "xray_error_log", "xray-access": "xray_access_log", "app": "app_log"}

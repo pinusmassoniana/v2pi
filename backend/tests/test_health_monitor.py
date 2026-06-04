@@ -33,11 +33,13 @@ def test_run_once_writes_tcp_for_all_and_real_for_active(settings):
     mon.run_once()
     ha = st.store.get_health(a)
     assert ha.last_tcp_ok is True and ha.last_tcp_ms == 12
+    assert ha.last_http_ok is True and ha.last_http_ms == 50            # direct HTTPS probe
     assert ha.last_real_ok is True and ha.last_real_ms == 34 and ha.egress_ip == "203.0.113.5"
     assert ha.fail_count == 0 and ha.checked_at == "2026-06-03T00:00:00Z"
-    # non-active node now also gets a direct HTTPS-handshake "real" value (no egress)
+    # non-active node gets TCP + HTTP, but no through-tunnel real
     hb = st.store.get_health(b)
-    assert hb.last_tcp_ok is True and hb.last_real_ok is True and hb.last_real_ms == 50 and hb.egress_ip is None
+    assert hb.last_tcp_ok is True and hb.last_http_ok is True and hb.last_http_ms == 50
+    assert hb.last_real_ok is None and hb.egress_ip is None
 
 
 def test_consecutive_real_failures_increment_then_reset(settings):

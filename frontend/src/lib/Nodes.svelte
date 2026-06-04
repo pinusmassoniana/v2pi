@@ -77,6 +77,13 @@
     } catch (err) { msg = err instanceof ApiError ? err.message : "ping failed"; }
     finally { pinging = null; }
   }
+  let probingId = $state<number | null>(null);
+  async function probeNode(id: number) {
+    probingId = id;
+    try { const h = await api.probeNode(id); health = { ...health, [h.node_id]: h }; }
+    catch (err) { msg = err instanceof ApiError ? err.message : "probe failed"; }
+    finally { probingId = null; }
+  }
 
   $effect(() => { refresh(); });
 </script>
@@ -100,6 +107,7 @@
 
 {#snippet healthCells(h: NodeHealth | undefined)}
   <td>{#if h?.last_tcp_ok}<span class="ok">✓ {h.last_tcp_ms}ms</span>{:else if h && h.last_tcp_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
+  <td>{#if h?.last_http_ok}<span class="ok">✓ {h.last_http_ms}ms</span>{:else if h && h.last_http_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
   <td>{#if h?.last_real_ok}<span class="ok">✓ {h.last_real_ms}ms</span>{:else if h && h.last_real_ok === false}<span class="bad">✕</span>{:else}—{/if}</td>
   <td>{h?.egress_ip ?? "—"}</td>
 {/snippet}
@@ -108,7 +116,7 @@
   <table class="table">
     <thead><tr>
       <th>id</th><th>name</th><th>address</th><th>port</th><th>transport</th>
-      <th>TCP</th><th>real</th><th>egress</th><th></th>
+      <th>TCP</th><th>HTTP</th><th>real</th><th>egress</th><th></th>
     </tr></thead>
     <tbody>
       {#each shown as n (n.id)}
@@ -123,13 +131,14 @@
             {:else}
               <button class="btn btn-primary" onclick={() => connect(n.id)}>Connect</button>
             {/if}
+            <button class="btn t-btn" title="Test this node — TCP + HTTP + real through it" onclick={() => probeNode(n.id)} disabled={probingId === n.id}>{probingId === n.id ? "…" : "T"}</button>
             <button class="btn" onclick={() => startEdit(n)}>Edit</button>
             {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n.id)}>Delete</button>{/if}
           </td>
         </tr>
       {/each}
       {#if shown.length === 0}
-        <tr><td colspan="9" class="muted empty">No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}</td></tr>
+        <tr><td colspan="10" class="muted empty">No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}</td></tr>
       {/if}
     </tbody>
   </table>
@@ -191,6 +200,7 @@
   .switcher .add-btn { margin-left: auto; }
   .ping-bar { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
   .actions { white-space: nowrap; }
+  .t-btn { font-weight: 700; min-width: 2rem; }
   tr.stale { opacity: 0.55; }
   tr.active td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
   tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }

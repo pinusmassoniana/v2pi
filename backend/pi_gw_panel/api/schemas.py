@@ -208,6 +208,8 @@ class NodeHealthOut(BaseModel):
     node_id: int
     last_tcp_ok: bool | None = None
     last_tcp_ms: int | None = None
+    last_http_ok: bool | None = None
+    last_http_ms: int | None = None
     last_real_ok: bool | None = None
     last_real_ms: int | None = None
     egress_ip: str | None = None

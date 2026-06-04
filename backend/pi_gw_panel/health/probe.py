@@ -5,8 +5,11 @@ monitor and fully stubbed in tests via the injected `connect` / `opener_factory`
 / `clock` seams — no real network is touched on the dev host. Real probing is
 exercised on the Pi (Plan 8)."""
 import json
+import os
 import socket
 import ssl
+import subprocess
+import tempfile
 import time
 import urllib.request
 
@@ -91,3 +94,82 @@ def real_request(proxy_url: str, probe_url: str, timeout: float = 5.0,
         return False, None, None, None
     latency_ms = int((clock() - start) * 1000)
     return (200 <= status < 400), status, latency_ms, _parse_egress_ip(body)
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _probe_outbound(node) -> dict:
+    """The node's vless proxy outbound — mirrors xray_config.builder (transport/security
+    aware) but without the tproxy egress mark or tuning profile (a clean probe path)."""
+    user = {"id": node.uuid, "encryption": "none"}
+    if node.flow:
+        user["flow"] = node.flow
+    network = node.network or "tcp"
+    security = node.security or "reality"
+    stream: dict = {"network": network, "security": security}
+    if security == "reality":
+        stream["realitySettings"] = {"serverName": node.sni, "fingerprint": node.fingerprint,
+                                     "publicKey": node.public_key, "shortId": node.short_id}
+    else:
+        tls: dict = {"serverName": node.sni, "fingerprint": node.fingerprint}
+        if node.alpn:
+            tls["alpn"] = [a.strip() for a in node.alpn.split(",") if a.strip()]
+        stream["tlsSettings"] = tls
+    if network == "xhttp":
+        stream["xhttpSettings"] = {k: getattr(node, k) for k in ("path", "host", "mode") if getattr(node, k)}
+    return {"tag": "proxy", "protocol": "vless",
+            "settings": {"vnext": [{"address": node.address, "port": node.port, "users": [user]}]},
+            "streamSettings": stream}
+
+
+def real_through_node(node, xray_bin: str, probe_url: str, timeout: float = 8.0,
+                      spawn=None, wait_ready=None) -> tuple[bool, int | None, str | None]:
+    """Spin up a throwaway xray (local http inbound + `node` as outbound), do a real request
+    through it, then tear it down — so ANY node can be probed without touching the live tunnel.
+    Returns (ok, latency_ms, egress_ip). `spawn`/`wait_ready` are injectable for tests."""
+    port = _free_port()
+    cfg = {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{"tag": "in", "protocol": "http", "listen": "127.0.0.1", "port": port, "settings": {}}],
+        "outbounds": [_probe_outbound(node), {"tag": "direct", "protocol": "freedom"}],
+    }
+    if spawn is None:
+        def spawn(config_path):
+            return subprocess.Popen([xray_bin, "-config", config_path],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if wait_ready is None:
+        def wait_ready(p):
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                try:
+                    socket.create_connection(("127.0.0.1", p), 0.2).close()
+                    return
+                except OSError:
+                    time.sleep(0.1)
+    fd, path = tempfile.mkstemp(suffix=".json")
+    proc = None
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cfg, f)
+        proc = spawn(path)
+        wait_ready(port)
+        ok, _status, ms, egress = real_request(f"http://127.0.0.1:{port}", probe_url, timeout=timeout)
+        return ok, ms, egress
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        try:
+            os.unlink(path)
+        except OSError:
+            pass

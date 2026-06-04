@@ -70,18 +70,19 @@ class HealthMonitor:
         for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:
             if node.id == active_id:
                 # active node: the through-tunnel real request gives the true egress IP and
-                # drives the failover hysteresis counter — it overrides the direct probe.
+                # drives the failover hysteresis counter — distinct from the direct HTTP probe.
                 real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
                 prev = store.get_health(node.id)
                 prev_fail = prev.fail_count if prev else 0
                 store.upsert_health(NodeHealth(
                     node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
+                    last_http_ok=http_ok, last_http_ms=http_ms,
                     last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress,
                     checked_at=ts, fail_count=0 if real_ok else prev_fail + 1))
             else:
                 store.upsert_health(NodeHealth(
                     node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
-                    last_real_ok=http_ok, last_real_ms=http_ms, egress_ip=None,
+                    last_http_ok=http_ok, last_http_ms=http_ms,
                     checked_at=ts, fail_count=0))
 
     def _tick(self) -> None:
