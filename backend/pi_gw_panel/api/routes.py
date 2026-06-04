@@ -148,7 +148,8 @@ def _settings_out(state) -> SettingsOut:
         auto_backup_enabled=val("auto_backup_enabled") == "1")
 
 
-_NET_EDITABLE = ("segment_iface", "segment_ip", "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns")
+_NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
+                 "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns")
 
 
 def _network_out(state) -> NetworkOut:
@@ -158,17 +159,20 @@ def _network_out(state) -> NetworkOut:
     # C1: only the real Pi backend probes the uplink (a live socket); dev/CI = unknown.
     uplink_check = netcheck.uplink_up if type(state.net).__name__ == "LinuxBackend" else (lambda: None)
     kill_switch = (store.get_setting("kill_switch_enabled") or "0") == "1"
+    ipv6_enabled = (store.get_setting("ipv6_enabled") or "0") == "1"
     running = state.supervisor.status().get("running", False)
     st = netcheck.network_status(store, settings, uplink_check=uplink_check)
     st["wan_blocked"] = kill_switch and not running   # N1: leak-guard holding while tunnel down
     return NetworkOut(
         segment=NetworkSegmentOut(
-            iface=ov("segment_iface"), ip=ov("segment_ip"),
+            iface=ov("segment_iface"), ip=ov("segment_ip"), ip6=ov("segment_ip6"),
             dhcp_start=ov("dhcp_start"), dhcp_end=ov("dhcp_end"),
             dhcp_lease=ov("dhcp_lease"), client_dns=ov("client_dns")),
         kill_switch_enabled=kill_switch,
+        ipv6_enabled=ipv6_enabled,
         status=NetworkStatusOut(**st),
-        recommendations=[RouterRecOut(**r) for r in netcheck.router_recommendations(settings)],
+        recommendations=[RouterRecOut(**r) for r in
+                         netcheck.router_recommendations(settings, ipv6_enabled, ov("segment_ip6"))],
         events=[ConnEventOut(**e) for e in conn_events.recent(store)])
 
 
@@ -1011,7 +1015,20 @@ def put_network(body: NetworkIn, request: Request,
         state.store.set_setting("kill_switch_enabled", "1" if now_on else "0")
         if now_on != was:
             conn_events.record(state.store, "kill-switch", "enabled" if now_on else "disabled")
-    # Apply the edit to match the CURRENT tunnel state (tproxy if up, else leak-guard/teardown)
-    # so toggling the kill-switch while disconnected installs the guard, not a dead tproxy (A1).
-    sync_net(state)
+    ipv6_changed = False
+    if "ipv6_enabled" in data:
+        was6 = (state.store.get_setting("ipv6_enabled") or "0") == "1"
+        on6 = bool(data["ipv6_enabled"])
+        state.store.set_setting("ipv6_enabled", "1" if on6 else "0")
+        if on6 != was6:
+            ipv6_changed = True
+            conn_events.record(state.store, "ipv6", "enabled" if on6 else "disabled")
+    # Apply to match the CURRENT tunnel state. Toggling IPv6 changes the xray config (the
+    # tproxy-in6 inbound), so on a live tunnel do a full reapply (rebuild config + net); other
+    # edits only re-render the net rules (tproxy if up, else leak-guard/teardown — A1).
+    running_active = state.supervisor.status().get("running") and state.store.get_setting("active_node_id")
+    if ipv6_changed and running_active:
+        _reapply_or_502(state)
+    else:
+        sync_net(state)
     return _network_out(state)

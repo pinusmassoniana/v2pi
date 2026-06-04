@@ -83,12 +83,14 @@ def network_status(store, settings: Settings, *, sysfs: str = "/sys/class/net",
     }
 
 
-def router_recommendations(settings: Settings) -> list[dict]:
+def router_recommendations(settings: Settings, ipv6_enabled: bool = False,
+                           segment_ip6: str = "") -> list[dict]:
     """Static, config-derived guidance for the one box the panel never touches —
-    the router. The live-status panel verifies the result visually."""
+    the router. The live-status panel verifies the result visually. When the IPv6 tunnel is
+    on, append the v6 prefix/RA guidance (the panel tunnels v6 but RA is host/router-managed)."""
     iface = settings.segment_iface
     vlan = iface.split(".")[-1] if "." in iface else "?"
-    return [
+    recs = [
         {"title": f"Create VLAN {vlan}",
          "detail": f"Add VLAN {vlan} on the router and tag the client switch port to it "
                    f"(the Pi's client leg is {iface})."},
@@ -99,3 +101,18 @@ def router_recommendations(settings: Settings) -> list[dict]:
          "detail": f"The Pi reaches the tunnel through its Home leg {settings.mgmt_iface} "
                    f"({settings.mgmt_ip}); keep that port on your normal LAN with internet access."},
     ]
+    if ipv6_enabled:
+        prefix = segment_ip6 or "your /64"
+        recs += [
+            {"title": f"Delegate an IPv6 /64 to VLAN {vlan}",
+             "detail": f"Route a v6 /64 to this segment — DHCPv6-PD on the router, or a static route "
+                       f"of {prefix} to the Pi's Home leg {settings.mgmt_iface}."},
+            {"title": f"Advertise IPv6 on {iface} (host)",
+             "detail": "The host must advertise that prefix as Router Advertisements on the segment "
+                       "(dnsmasq enable-ra / radvd) so clients get a v6 address — the panel tunnels "
+                       "v6 but does not manage RA."},
+            {"title": "Use a node with IPv6 egress",
+             "detail": "v6 traffic exits via the active node; pick one with working IPv6 or v6-only "
+                       "sites will fail (no leak — they just won't connect)."},
+        ]
+    return recs

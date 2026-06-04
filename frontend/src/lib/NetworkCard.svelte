@@ -30,9 +30,10 @@
     const s = net.segment;
     try {
       net = await api.putNetwork({
-        segment_iface: s.iface, segment_ip: s.ip,
+        segment_iface: s.iface, segment_ip: s.ip, segment_ip6: s.ip6,
         dhcp_start: s.dhcp_start, dhcp_end: s.dhcp_end, dhcp_lease: s.dhcp_lease,
         client_dns: s.client_dns, kill_switch_enabled: net.kill_switch_enabled,
+        ipv6_enabled: net.ipv6_enabled,
       });
       editOpen = false;
       msg = "saved · network rules applied";   // A3: don't claim a DHCP apply we don't do
@@ -75,6 +76,7 @@
         {#if net.status.tunnel.checked_at}<span class="fresh">· {freshness(net.status.tunnel.checked_at)}</span>{/if}
       </span>
       {#if net.kill_switch_enabled && !v.wan_blocked}<span><span class="dot ok"></span> Kill-switch on</span>{/if}
+      {#if net.ipv6_enabled}<span><span class="dot ok"></span> IPv6: tunneled</span>{/if}
     </div>
     {#if showClients && net.status.clients?.length}
       <table class="table clients">
@@ -118,6 +120,17 @@
           blocking even when you stop the tunnel</strong> (incl. IPv6). Clients lose internet rather
           than leak.</span>
       </div>
+      <div class="check">
+        <Toggle checked={net.ipv6_enabled}
+                onchange={(v) => { if (net) net.ipv6_enabled = v; }} label="ipv6" />
+        <span>IPv6 (tunnel) — carry segment client IPv6 through the tunnel. Off keeps v6 blocked
+          (no leak). Requires a router-delegated /64 + host RA on the segment — see <strong>Router
+          setup</strong> below.</span>
+      </div>
+      {#if net.ipv6_enabled}
+        <label class="field"><span>Segment IPv6 /64 <small>(static)</small></span>
+          <input class="input mono" bind:value={net.segment.ip6} placeholder="2001:db8:0:2::1/64" /></label>
+      {/if}
       <div class="hint-block">
         <strong>Router setup</strong>
         <p class="muted hint">The panel never touches your router — set these there, then confirm green.</p>

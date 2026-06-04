@@ -27,7 +27,7 @@ class LinuxBackend:
         `delete table` safe on first run; the render then recreates each table fresh (the
         v6 table is recreated only when the kill-switch is on, else left deleted)."""
         v4 = render_nft(plan, tunnel_up=tunnel_up)
-        v6 = render_nft6(plan)
+        v6 = render_nft6(plan, tunnel_up=tunnel_up)
         script = f"add table ip {NFT_TABLE}\ndelete table ip {NFT_TABLE}\n{v4}"
         script += f"add table ip6 {NFT_TABLE}\ndelete table ip6 {NFT_TABLE}\n"
         if v6:
@@ -44,7 +44,11 @@ class LinuxBackend:
             self._run_ok(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
             self._run(["ip", "rule", "add", "fwmark", fw, "lookup", tbl])
             self._run(["ip", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
-            self._ensure_forward()
+            if plan.ipv6_enabled:           # mirror the policy routing for v6 tproxy
+                self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])
+                self._run(["ip", "-6", "rule", "add", "fwmark", fw, "lookup", tbl])
+                self._run(["ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
+            self._ensure_forward(ipv6=plan.ipv6_enabled)
             return NetResult(ok=True, rendered=nft_text)
         except subprocess.CalledProcessError as exc:
             return NetResult(ok=False, rendered=nft_text,
@@ -75,6 +79,8 @@ class LinuxBackend:
         fw, tbl = f"0x{fwmark:x}", str(table)
         self._run_ok(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
         self._run_ok(["ip", "route", "flush", "table", tbl])
+        self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])   # v6 (no-op if absent)
+        self._run_ok(["ip", "-6", "route", "flush", "table", tbl])
 
     def _run_ok(self, cmd: list[str]) -> None:
         """Run ignoring a non-zero exit (the rule/table is already absent)."""
@@ -83,10 +89,14 @@ class LinuxBackend:
         except subprocess.CalledProcessError:
             pass
 
-    def _ensure_forward(self) -> None:
-        """Ensure IPv4 forwarding (best-effort; usually already on)."""
-        try:
-            with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
-                f.write("1")
-        except OSError:
-            pass
+    def _ensure_forward(self, ipv6: bool = False) -> None:
+        """Ensure IPv4 (and, when tunnelling v6, IPv6) forwarding (best-effort)."""
+        paths = ["/proc/sys/net/ipv4/ip_forward"]
+        if ipv6:
+            paths.append("/proc/sys/net/ipv6/conf/all/forwarding")
+        for p in paths:
+            try:
+                with open(p, "w") as f:
+                    f.write("1")
+            except OSError:
+                pass

@@ -95,7 +95,7 @@ export interface NodeHealth {
 
 // --- Wave 3b: editable Pi network config + kill-switch + live status ---
 export interface NetworkSegment {
-  iface: string; ip: string; dhcp_start: string; dhcp_end: string; dhcp_lease: string; client_dns: string;
+  iface: string; ip: string; ip6: string; dhcp_start: string; dhcp_end: string; dhcp_lease: string; client_dns: string;
 }
 export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; }
 export interface DhcpClient { ip: string; mac: string; hostname: string; expiry: number; }
@@ -106,14 +106,14 @@ export interface NetworkStatus {
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
 export interface Network {
-  segment: NetworkSegment; kill_switch_enabled: boolean; status: NetworkStatus;
-  recommendations: RouterRec[]; events: ConnEvent[];
+  segment: NetworkSegment; kill_switch_enabled: boolean; ipv6_enabled: boolean;
+  status: NetworkStatus; recommendations: RouterRec[]; events: ConnEvent[];
 }
 // PUT is partial + flat: editable settings keys (segment_iface/ip is long-form here) + kill-switch.
 export interface NetworkPatch {
-  segment_iface?: string; segment_ip?: string;
+  segment_iface?: string; segment_ip?: string; segment_ip6?: string;
   dhcp_start?: string; dhcp_end?: string; dhcp_lease?: string; client_dns?: string;
-  kill_switch_enabled?: boolean;
+  kill_switch_enabled?: boolean; ipv6_enabled?: boolean;
 }
 
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }

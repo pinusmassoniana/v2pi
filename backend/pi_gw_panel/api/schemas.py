@@ -385,6 +385,7 @@ class NodeHealthOut(BaseModel):
 class NetworkSegmentOut(BaseModel):
     iface: str
     ip: str
+    ip6: str = ""           # segment static IPv6 /64 (opt-in IPv6 tunnel; RA host-managed)
     dhcp_start: str
     dhcp_end: str
     dhcp_lease: str
@@ -428,6 +429,7 @@ class ConnEventOut(BaseModel):
 class NetworkOut(BaseModel):
     segment: NetworkSegmentOut
     kill_switch_enabled: bool
+    ipv6_enabled: bool = False          # opt-in IPv6 tunnel
     status: NetworkStatusOut
     recommendations: list[RouterRecOut]
     events: list[ConnEventOut] = []     # N2: recent connection events (newest last)
@@ -443,7 +445,9 @@ class NetworkIn(BaseModel):
     dhcp_end: str | None = Field(default=None, min_length=1)
     dhcp_lease: str | None = Field(default=None, min_length=1)
     client_dns: str | None = Field(default=None, min_length=1)
+    segment_ip6: str | None = None          # empty allowed (clears the prefix / v6 off)
     kill_switch_enabled: bool | None = None
+    ipv6_enabled: bool | None = None
 
 
 # Long-window traffic history seed for the Dashboard graph. Each sample is a compact

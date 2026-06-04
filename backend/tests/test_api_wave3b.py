@@ -18,10 +18,11 @@ def test_get_network_shape(settings, stub_xray):
     c = _client(settings, stub_xray)
     _auth(c)
     body = c.get("/api/network").json()
-    assert body["segment"] == {"iface": "eth0.2", "ip": "192.168.10.2",
+    assert body["segment"] == {"iface": "eth0.2", "ip": "192.168.10.2", "ip6": "",
                                "dhcp_start": "192.168.10.30", "dhcp_end": "192.168.10.200",
                                "dhcp_lease": "12h", "client_dns": "1.1.1.1"}
     assert body["kill_switch_enabled"] is False
+    assert body["ipv6_enabled"] is False
     assert body["status"]["segment_up"] is None             # dev: no Linux sysfs
     assert body["status"]["dhcp_clients"] == 0
     assert set(body["status"]["tunnel"]) == {"real_ok", "latency_ms", "egress_ip", "checked_at"}

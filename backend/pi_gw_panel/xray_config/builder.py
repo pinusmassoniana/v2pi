@@ -5,7 +5,8 @@ from pi_gw_panel.xray_config.routing import rules_to_xray
 
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
-                 dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch") -> dict:
+                 dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch",
+                 ipv6_tproxy: bool = False) -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -109,6 +110,20 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
 
     proxy_out = cfg["outbounds"][0]
 
+    # IPv6 tproxy: a second dokodemo inbound listening on :: at tproxy_port6, fed by the nft
+    # `ip6` tproxy rule. Separate from the v4 inbound to avoid IPV6_V6ONLY tproxy edge-cases.
+    # The catch-all routing rule already sends it out `proxy`; the exit node dials the v6 dest.
+    if ipv6_tproxy:
+        cfg["inbounds"].append({
+            "tag": "tproxy-in6",
+            "protocol": "dokodemo-door",
+            "listen": "::",
+            "port": settings.tproxy_port6,
+            "settings": {"network": "tcp,udp", "followRedirect": True},
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+            "streamSettings": {"sockopt": {"tproxy": "tproxy", "mark": settings.egress_mark}},
+        })
+
     if profile is not None:
         # mux is invalid with XTLS Vision — only emit it for non-Vision (xhttp) outbounds (TC1).
         if not node.flow:
@@ -157,8 +172,9 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     # a dns outbound, which resolves via the DoH server already in the dns block.
     if dns_intercept:
         cfg["outbounds"].append({"protocol": "dns", "tag": "dns-out"})
+        in_tags = ["tproxy-in", "tproxy-in6"] if ipv6_tproxy else ["tproxy-in"]
         cfg["routing"]["rules"].insert(0, {
-            "type": "field", "inboundTag": ["tproxy-in"], "port": 53, "outboundTag": "dns-out"})
+            "type": "field", "inboundTag": in_tags, "port": 53, "outboundTag": "dns-out"})
 
     # xray StatsService (Wave 3a): per-outbound traffic counters + a local api inbound,
     # with its dispatch rule prepended first. Gated — stats=None keeps the config Wave-0.

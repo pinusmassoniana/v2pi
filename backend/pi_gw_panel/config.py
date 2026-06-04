@@ -20,12 +20,14 @@ class Settings:
     # marked 0x40 -> tproxy; xray's own egress marked 0x80 (SO_MARK) so nft skips it
     # (anti-loop); policy-routing table 100.
     tproxy_port: int = 52345
+    tproxy_port6: int = 52346   # IPv6 dokodemo tproxy inbound (separate from v4 to avoid v6only edge-cases)
     fwmark: int = 0x40
     egress_mark: int = 0x80
     table: int = 100
     # segment = client-facing leg (VLAN2): dnsmasq DHCP + tproxy live here
     segment_iface: str = "eth0.2"
     segment_ip: str = "192.168.10.2"
+    segment_ip6: str = ""              # segment's static IPv6 /64 (opt-in IPv6 tunnel; RA host-managed)
     dhcp_start: str = "192.168.10.30"
     dhcp_end: str = "192.168.10.200"
     dhcp_lease: str = "12h"
@@ -117,4 +119,8 @@ SETTINGS_DEFAULTS = {
     # session idle timeout in minutes (0 = none) and daily auto-backup to data_dir/backups
     "session_timeout_min": "0",
     "auto_backup_enabled": "0",
+    # IPv6 tunnel (off by default): carry segment client v6 through xray (static prefix; RA is
+    # host-managed). segment_ip6 is the segment's static /64, informational + recommendation.
+    "ipv6_enabled": "0",
+    "segment_ip6": "",
 }

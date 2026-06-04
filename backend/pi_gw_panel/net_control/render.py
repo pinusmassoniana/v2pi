@@ -46,14 +46,33 @@ table ip pi_gw_panel {{
 """
 
 
-def render_nft6(plan: NetPlan) -> str:
-    """IPv6 leak-guard (A2). v6 is never tproxy'd, so when the kill-switch is on we must
-    still drop client→global-v6 or it routes straight to the WAN around the tunnel *and*
-    around the v4 kill-switch. Link-local / ULA / loopback stay allowed. Empty (→ the v6
-    table is removed) when the kill-switch is off."""
-    if not plan.kill_switch:
-        return ""
-    return f"""\
+def render_nft6(plan: NetPlan, tunnel_up: bool = True) -> str:
+    """IPv6 `ip6` table, mode-aware:
+
+    - **IPv6 tunnel on + tunnel up** → tproxy v6 to xray (port6). Bypasses loopback /
+      link-local / ULA / multicast, and CRITICALLY icmpv6 (NDP/RA) + DHCPv6 (546/547) —
+      tunnelling those would break the segment's v6 neighbour discovery & address assignment
+      (the v6 analog of the v4 DHCP carve-out).
+    - **otherwise + kill-switch on** → fail-closed drop of client→global-v6 (the v1.8
+      leak-guard): v6 isn't tproxy'd here, so without this it leaks around the tunnel and the
+      v4 kill-switch.
+    - **otherwise + kill-switch off** → empty (the v6 table is removed; v6 goes direct or
+      simply isn't present)."""
+    if plan.ipv6_enabled and tunnel_up:
+        return f"""\
+table ip6 pi_gw_panel {{
+    chain prerouting {{
+        type filter hook prerouting priority mangle; policy accept;
+        meta mark 0x{plan.egress_mark:x} return
+        ip6 daddr {{ ::1/128, fe80::/10, fc00::/7, ff00::/8 }} return
+        meta l4proto ipv6-icmp return
+        udp dport {{ 546, 547 }} return
+        iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip6 to :{plan.tproxy_port6} accept
+    }}
+}}
+"""
+    if plan.kill_switch:
+        return f"""\
 table ip6 pi_gw_panel {{
     chain forward {{
         type filter hook forward priority filter; policy accept;
@@ -61,6 +80,7 @@ table ip6 pi_gw_panel {{
     }}
 }}
 """
+    return ""
 
 
 def render_dnsmasq(plan: NetPlan) -> str:

@@ -26,6 +26,11 @@ def _dns_intercept(store) -> bool:
     return (store.get_setting("dns_intercept") or "0") == "1"
 
 
+def _ipv6_enabled(store) -> bool:
+    """The `ipv6_enabled` setting (default OFF) — tunnel segment client IPv6 through xray."""
+    return (store.get_setting("ipv6_enabled") or "0") == "1"
+
+
 def _resolve_routing(store) -> tuple:
     """Ordered routing rules + the configurable default action (default 'proxy').
     Empty rules + 'proxy' default reproduce the Wave-0 routing exactly."""
@@ -106,13 +111,14 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
         tunneled = _tunneled_fetch(store)
         stats = _resolve_stats(store)
         dns_intercept = _dns_intercept(store)
+        ipv6 = _ipv6_enabled(store)
         domain_strategy = store.get_setting("routing_domain_strategy") or "IPIfNonMatch"
     else:
-        profile, routing, tunneled, stats, dns_intercept = None, None, False, None, False
+        profile, routing, tunneled, stats, dns_intercept, ipv6 = None, None, False, None, False, False
         domain_strategy = "IPIfNonMatch"
     return build_config(node, settings, profile=profile, routing=routing,
                         tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept,
-                        domain_strategy=domain_strategy)
+                        domain_strategy=domain_strategy, ipv6_tproxy=ipv6)
 
 
 def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
