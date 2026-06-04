@@ -1,6 +1,6 @@
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.models import Node, Subscription
+from pi_gw_panel.models import Node, Subscription, NodeHealth
 
 
 def test_node_roundtrip(settings):
@@ -44,6 +44,34 @@ def test_node_update_delete_and_identity(settings):
     assert s.get_node(nid).stale is True
     s.delete_node(nid)
     assert s.get_node(nid) is None
+
+
+def test_store_concurrent_access_is_serialized(settings):
+    # Many threads hammering one shared connection must not raise sqlite
+    # "bad parameter or other API misuse" — the race that 500'd /status under load.
+    import threading
+    conn = connect(settings.db_path, check_same_thread=False)
+    init_schema(conn)
+    s = NodeStore(conn)
+    nid = s.add_node(Node(id=None, name="n", address="a", port=1, uuid="u"))
+    errors: list = []
+
+    def hammer():
+        try:
+            for i in range(150):
+                s.set_setting("k", str(i))
+                s.get_setting("k")
+                s.list_nodes()
+                s.upsert_health(NodeHealth(node_id=nid, last_tcp_ok=True, last_tcp_ms=i))
+        except Exception as e:  # noqa: BLE001 — capture for the assert
+            errors.append(e)
+
+    threads = [threading.Thread(target=hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [], errors[0]
 
 
 def test_subscription_crud_and_delete_detaches_nodes(settings):

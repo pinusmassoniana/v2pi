@@ -1,6 +1,57 @@
 import json
 import sqlite3
+import threading
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
+
+
+class _Result:
+    """Materialized result of one locked execute, so callers keep the existing
+    `execute(...).fetchone()/.fetchall()/.lastrowid` pattern with no DB access after
+    the lock is released."""
+    __slots__ = ("lastrowid", "_rows")
+
+    def __init__(self, lastrowid, rows):
+        self.lastrowid = lastrowid
+        self._rows = rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return self._rows
+
+
+class _SafeConn:
+    """Serialize all access to a single sqlite connection shared across threads
+    (uvicorn's pool, the probe/health executors, the traffic recorder). A bare shared
+    connection raises `sqlite3.InterfaceError: bad parameter or other API misuse` under
+    concurrent use; one re-entrant lock spanning execute+fetch (and commit) prevents it."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+        self._lock = threading.RLock()
+
+    def execute(self, sql: str, params=()) -> _Result:
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            return _Result(cur.lastrowid, cur.fetchall())
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    # transaction context (`with conn:` — used by the backup restore): hold the lock for
+    # the whole transaction so it's both atomic and serialized against other threads.
+    def __enter__(self):
+        self._lock.acquire()
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self._conn.__exit__(exc_type, exc, tb)
+        finally:
+            self._lock.release()
 
 _NODE_COLS = ("name", "address", "port", "uuid", "transport", "sni",
               "public_key", "short_id", "fingerprint", "flow",
@@ -71,7 +122,9 @@ def _row_to_health(row: sqlite3.Row) -> NodeHealth:
 
 class NodeStore:
     def __init__(self, conn: sqlite3.Connection):
-        self._conn = conn
+        # wrap in a lock-serialized proxy so concurrent threads can't corrupt the
+        # single shared connection (sqlite "bad parameter or other API misuse")
+        self._conn = _SafeConn(conn)
 
     # --- nodes ---
     def add_node(self, node: Node) -> int:

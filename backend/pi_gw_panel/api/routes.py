@@ -14,7 +14,7 @@ from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import SESSION_AUTHED, SESSION_CSRF, new_csrf_token
 from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
-from pi_gw_panel.controller import apply_node, apply_net
+from pi_gw_panel.controller import apply_node, apply_net, reapply_active_node
 from pi_gw_panel.net_control import netcheck
 from pi_gw_panel.health import probe
 from pi_gw_panel import backup as backup_mod
@@ -363,6 +363,12 @@ def put_routing(body: RoutingIn, request: Request,
         [RoutingRule(id=None, position=i, type=r.type, value=r.value, action=r.action)
          for i, r in enumerate(body.rules)])
     state.store.set_setting("routing_default_action", body.default_action)
+    # Apply now: rebuild the live config (which embeds routing) + reload xray, so the change
+    # takes effect immediately instead of silently waiting for the next Connect. No-op when
+    # no node is active; a rule xray rejects surfaces as 502 (live config stays last-good).
+    res = reapply_active_node(state)
+    if res is not None and not res.ok:
+        raise HTTPException(status_code=502, detail=res.error)
     return _routing_out(state)
 
 
