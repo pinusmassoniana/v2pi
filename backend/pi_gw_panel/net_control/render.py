@@ -8,6 +8,11 @@ def render_nft(plan: NetPlan) -> str:
     # `docker build` etc. gets tunneled and breaks). Skip packets already carrying the
     # xray egress mark (anti-loop), and bypass loopback + RFC-1918 so local/LAN stays direct.
     #
+    # DHCP carve-out: a client's DHCPDISCOVER is a broadcast to 255.255.255.255, which the
+    # RFC-1918 daddr return does NOT cover — so without this explicit bypass it falls through
+    # to tproxy and xray swallows it, and new segment clients never get a lease (only unicast
+    # renewals to the gateway survive). Excluding udp 67/68 lets DHCP reach the local dnsmasq.
+    #
     # Kill-switch (fail-closed): when on, add a forward-chain drop for client-segment
     # traffic headed to a non-private destination. Correctly-tunneled client packets
     # are tproxy'd to local xray (never forwarded) so they're unaffected; only leaked
@@ -26,6 +31,7 @@ table ip pi_gw_panel {{
         type filter hook prerouting priority mangle; policy accept;
         meta mark 0x{plan.egress_mark:x} return
         ip daddr {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} return
+        udp dport {{ 67, 68 }} return
         iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
     }}
 {forward}}}

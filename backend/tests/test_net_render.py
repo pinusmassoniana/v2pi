@@ -29,6 +29,17 @@ def test_nft_redirects_both_tcp_and_udp():
     assert "meta l4proto { tcp, udp }" in text
 
 
+def test_nft_bypasses_dhcp_before_tproxy():
+    # A DHCP DISCOVER is a broadcast to 255.255.255.255 — NOT covered by the RFC-1918
+    # daddr return — so without an explicit carve-out it falls through to the tproxy
+    # rule and xray steals it, leaving segment clients unable to get a lease. The
+    # bypass must precede the catch-all tproxy line.
+    lines = render_nft(_plan()).splitlines()
+    dhcp_idx = next(i for i, l in enumerate(lines) if "udp dport { 67, 68 } return" in l)
+    tproxy_idx = next(i for i, l in enumerate(lines) if "tproxy ip to" in l)
+    assert dhcp_idx < tproxy_idx
+
+
 def test_nft_tproxy_scoped_to_segment_iface():
     # tproxy must only catch traffic arriving on the segment iface — not the Docker
     # bridge or other host-forwarded traffic (which would otherwise get tunneled).
