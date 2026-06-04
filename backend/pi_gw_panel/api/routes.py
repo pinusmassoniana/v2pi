@@ -1,3 +1,7 @@
+import os
+import shutil
+import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request, HTTPException
@@ -6,7 +10,7 @@ from pi_gw_panel.api.schemas import (
     SubscriptionIn, SubscriptionPatch, SubscriptionOut,
     PreviewIn, PreviewOut, PreviewNodesOut, PreviewNodeOut, ReorderIn, ConnectBestIn,
     ImportNodesIn, ImportNodesOut, DetachIn, NodeValidateOut,
-    SettingsOut, SettingsIn,
+    SettingsOut, SettingsIn, DiagnosticsOut,
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
     ProfileValidateOut, ProfilePresetInfo,
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
@@ -14,7 +18,8 @@ from pi_gw_panel.api.schemas import (
     TrafficHistoryOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
-from pi_gw_panel.auth.auth import SESSION_AUTHED, SESSION_CSRF, new_csrf_token
+from pi_gw_panel.auth.auth import (
+    SESSION_AUTHED, SESSION_CSRF, SESSION_EPOCH, SESSION_LASTSEEN, new_csrf_token)
 from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 from pi_gw_panel.controller import (
@@ -135,7 +140,9 @@ def _settings_out(state) -> SettingsOut:
         stats_enabled=val("stats_enabled") == "1",
         stats_api_port=int(val("stats_api_port")),
         traffic_sample_ms=int(val("traffic_sample_ms")),
-        dns_intercept=val("dns_intercept") == "1")
+        dns_intercept=val("dns_intercept") == "1",
+        session_timeout_min=int(val("session_timeout_min")),
+        auto_backup_enabled=val("auto_backup_enabled") == "1")
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns")
@@ -155,8 +162,14 @@ def _network_out(state) -> NetworkOut:
         recommendations=[RouterRecOut(**r) for r in netcheck.router_recommendations(settings)])
 
 
+_START_TIME = time.time()
+
+
 def _open_session(request: Request) -> None:
+    store = get_state(request).store
     request.session[SESSION_AUTHED] = True
+    request.session[SESSION_EPOCH] = auth_service.session_epoch(store)
+    request.session[SESSION_LASTSEEN] = int(time.time())
     request.session[SESSION_CSRF] = new_csrf_token()
 
 
@@ -182,8 +195,17 @@ def setup_create(body: SetupIn, request: Request) -> dict:
 @router.post("/login")
 def login(body: LoginIn, request: Request) -> dict:
     state = get_state(request)
+    guard = request.app.state.login_guard          # per-app counter (SS3)
+    now = time.time()
+    if guard["until"] > now:
+        raise HTTPException(status_code=429, detail="too many attempts — try again shortly")
     if not auth_service.verify_login(state.store, body.username, body.password):
+        guard["count"] += 1
+        if guard["count"] >= 5:
+            guard["until"] = now + 60               # lock out for 60s after 5 fails
+            guard["count"] = 0
         raise HTTPException(status_code=401, detail="bad credentials")
+    guard["count"] = 0
     _open_session(request)
     return {"ok": True}
 
@@ -202,6 +224,8 @@ def change_password(body: PasswordChangeIn, request: Request,
     if not auth_service.verify_login(state.store, username, body.current_password):
         raise HTTPException(status_code=403, detail="current password incorrect")
     auth_service.set_password(state.store, body.new_password)
+    # invalidate other sessions, then keep the current one valid (SS3)
+    request.session[SESSION_EPOCH] = auth_service.bump_session_epoch(state.store)
     return {"ok": True}
 
 
@@ -871,13 +895,76 @@ def get_settings(request: Request, _: None = Depends(require_auth)) -> SettingsO
     return _settings_out(get_state(request))
 
 
+# Settings that are baked into the xray config → changing them needs a live re-apply.
+_SETTINGS_CONFIG_KEYS = {"tunneled_fetch", "dns_intercept", "stats_enabled", "stats_api_port"}
+# Settings the Settings screen owns (reset target — excludes routing-owned keys).
+_SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled", "health_interval",
+                        "health_hysteresis", "health_probe_url", "failover_enabled",
+                        "failover_cooldown", "stats_enabled", "stats_api_port",
+                        "traffic_sample_ms", "session_timeout_min", "auto_backup_enabled")
+
+
+def _validate_settings(state, data: dict) -> None:
+    """SC2: reject out-of-range values that would break the runtime (busy loops, bad ports)."""
+    floors = {"health_interval": 60, "traffic_sample_ms": 250, "health_hysteresis": 1,
+              "failover_cooldown": 0, "session_timeout_min": 0}
+    for k, lo in floors.items():
+        if isinstance(data.get(k), int) and data[k] < lo:
+            raise HTTPException(status_code=422, detail=f"{k} must be >= {lo}")
+    if "stats_api_port" in data:
+        p = data["stats_api_port"]
+        if not (1 <= p <= 65535):
+            raise HTTPException(status_code=422, detail="stats_api_port must be 1..65535")
+        if p in (state.settings.tproxy_port, state.settings.local_proxy_port):
+            raise HTTPException(status_code=422, detail="stats_api_port collides with a system port")
+
+
 @router.put("/settings", response_model=SettingsOut)
 def put_settings(body: SettingsIn, request: Request,
                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> SettingsOut:
     state = get_state(request)
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    _validate_settings(state, data)
+    for k, v in data.items():
         state.store.set_setting(k, ("1" if v else "0") if isinstance(v, bool) else str(v))
+    if _SETTINGS_CONFIG_KEYS & data.keys():   # SR1: a config-affecting toggle → re-apply live
+        _reapply_or_502(state)
     return _settings_out(state)
+
+
+@router.post("/settings/reset", response_model=SettingsOut)
+def reset_settings(request: Request,
+                   _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> SettingsOut:
+    """SN1: restore the Settings-screen knobs to their defaults (routing-owned keys untouched)."""
+    state = get_state(request)
+    for k in _SETTINGS_RESET_KEYS:
+        state.store.set_setting(k, SETTINGS_DEFAULTS[k])
+    _reapply_or_502(state)
+    return _settings_out(state)
+
+
+@router.get("/diagnostics", response_model=DiagnosticsOut)
+def diagnostics(request: Request, _: None = Depends(require_auth)) -> DiagnosticsOut:
+    """SN8: at-a-glance support info — app/xray version, uptime, DB size, disk."""
+    state = get_state(request)
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        app_v = version("pi-gw-panel") or "unknown"
+    except (PackageNotFoundError, Exception):
+        app_v = "unknown"
+    try:
+        out = subprocess.run([state.xray_bin or state.settings.xray_bin, "-version"],
+                             capture_output=True, text=True, timeout=5)
+        text = (out.stdout or out.stderr).strip()
+        xray_v = text.splitlines()[0] if text else "unknown"
+    except Exception:
+        xray_v = "unavailable"
+    db = state.settings.db_path
+    db_bytes = os.path.getsize(db) if os.path.exists(db) else 0
+    du = shutil.disk_usage(state.settings.data_dir)
+    return DiagnosticsOut(app_version=app_v, xray_version=xray_v,
+                          uptime_sec=int(time.time() - _START_TIME), db_path=db, db_bytes=db_bytes,
+                          disk_free_bytes=du.free, disk_total_bytes=du.total)
 
 
 # --- network (editable Pi net config + kill-switch + live status + router guidance) ---

@@ -10,7 +10,7 @@ def _client(settings, stub_xray):
 
 
 def _auth(c):
-    c.post("/api/setup", json={"username": "admin", "password": "s3cret"})
+    c.post("/api/setup", json={"username": "admin", "password": "s3cret12"})
     return {"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]}
 
 

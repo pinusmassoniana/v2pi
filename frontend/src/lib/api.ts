@@ -34,7 +34,11 @@ export interface Settings {
   health_enabled: boolean; health_interval: number; health_hysteresis: number; health_probe_url: string;
   failover_enabled: boolean; failover_cooldown: number;
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
-  dns_intercept: boolean;
+  dns_intercept: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
+}
+export interface Diagnostics {
+  app_version: string; xray_version: string; uptime_sec: number;
+  db_path: string; db_bytes: number; disk_free_bytes: number; disk_total_bytes: number;
 }
 
 // --- Wave 3a: live traffic graph ---
@@ -172,6 +176,8 @@ export const api = {
 
   getSettings(): Promise<Settings> { return req("/settings"); },
   putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch); },
+  resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset"); },
+  getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
 
   listProfiles(): Promise<TuningProfile[]> { return req("/profiles"); },
   addProfile(p: ProfileIn): Promise<TuningProfile> { return mutate("POST", "/profiles", p); },

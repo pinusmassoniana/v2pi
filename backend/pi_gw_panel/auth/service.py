@@ -35,3 +35,15 @@ def verify_login(store, username: str, password: str) -> bool:
 def set_password(store, password: str) -> None:
     """Rotate the password hash (username unchanged)."""
     store.set_setting(_HASH, hash_password(password))
+
+
+def session_epoch(store) -> int:
+    """Current session epoch (default 0). A session is valid only while its stamped epoch
+    matches this — bumping it on a password change signs every other session out."""
+    return int(store.get_setting("session_epoch") or "0")
+
+
+def bump_session_epoch(store) -> int:
+    e = session_epoch(store) + 1
+    store.set_setting("session_epoch", str(e))
+    return e

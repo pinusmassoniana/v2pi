@@ -13,6 +13,8 @@ import secrets
 
 SESSION_AUTHED = "authed"
 SESSION_CSRF = "csrf"
+SESSION_EPOCH = "epoch"        # bumped on password change → invalidates other sessions
+SESSION_LASTSEEN = "last_seen"  # for the optional idle timeout
 
 # scrypt cost — fine for an infrequent single-user login, incl. on the Pi (ARM).
 _SCRYPT = dict(n=16384, r=8, p=1, dklen=32)

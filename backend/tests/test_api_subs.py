@@ -51,9 +51,9 @@ def test_settings_get_put(settings, stub_xray):
     assert s["failover_cooldown"] == 120 and s["routing_default_action"] == "proxy"
     assert s["stats_enabled"] is True and s["stats_api_port"] == 10085 and s["traffic_sample_ms"] == 1000
     assert "frag_enabled" not in s                                      # tuning fields → profiles
-    r = c.put("/api/settings", json={"health_interval": 15, "failover_enabled": False,
+    r = c.put("/api/settings", json={"health_interval": 120, "failover_enabled": False,
                                      "routing_default_action": "direct", "stats_enabled": False}, headers=h)
-    assert r.json()["health_interval"] == 15 and r.json()["failover_enabled"] is False
+    assert r.json()["health_interval"] == 120 and r.json()["failover_enabled"] is False
     assert r.json()["stats_enabled"] is False
     assert c.get("/api/settings").json()["routing_default_action"] == "direct"   # persisted
 

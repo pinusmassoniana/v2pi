@@ -35,6 +35,8 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     # Health monitor probes each interval, then auto-failover runs on the result
     # (wall-clock now → cooldown survives restarts). Both gate on their own settings.
     monitor = HealthMonitor(app_state, after_tick=lambda: failover.run(app_state, time.time()))
+    from pi_gw_panel.backup.scheduler import BackupScheduler
+    backup_scheduler = BackupScheduler(app_state)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -46,6 +48,7 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
         scheduler.start()
         monitor.start()
+        backup_scheduler.start()
         if app_state.recorder is not None:
             app_state.recorder.start()          # always-on traffic history sampler
         try:
@@ -53,6 +56,7 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         finally:
             await scheduler.stop()
             await monitor.stop()
+            await backup_scheduler.stop()
             if app_state.recorder is not None:
                 await app_state.recorder.stop()
 
@@ -62,7 +66,10 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     app.state.app_state = app_state
     app.state.scheduler = scheduler
     app.state.monitor = monitor
-    app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+    app.state.login_guard = {"count": 0, "until": 0.0}   # per-app login rate-limit (SS3)
+    # SameSite=strict (first-party SPA) + a bounded lifetime, defense-in-depth atop CSRF.
+    app.add_middleware(SessionMiddleware, secret_key=settings.session_secret,
+                       same_site="strict", max_age=7 * 24 * 3600)
     # Register future middleware AFTER this line: Starlette runs middleware in
     # reverse order, so later-registered (e.g. auth) runs first and sees the session.
 

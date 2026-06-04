@@ -7,13 +7,13 @@ class LoginIn(BaseModel):
 
 
 class SetupIn(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=8)   # SS1: minimum password length
 
 
 class PasswordChangeIn(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(min_length=8)
 
 
 class NodeIn(BaseModel):
@@ -195,6 +195,8 @@ class SettingsOut(BaseModel):
     stats_api_port: int
     traffic_sample_ms: int
     dns_intercept: bool
+    session_timeout_min: int
+    auto_backup_enabled: bool
 
 
 class SettingsIn(BaseModel):
@@ -210,6 +212,18 @@ class SettingsIn(BaseModel):
     stats_api_port: int | None = None
     traffic_sample_ms: int | None = None
     dns_intercept: bool | None = None
+    session_timeout_min: int | None = None
+    auto_backup_enabled: bool | None = None
+
+
+class DiagnosticsOut(BaseModel):
+    app_version: str
+    xray_version: str
+    uptime_sec: int
+    db_path: str
+    db_bytes: int
+    disk_free_bytes: int
+    disk_total_bytes: int
 
 
 # --- Wave 2: tuning profiles ---

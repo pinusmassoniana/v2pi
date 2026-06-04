@@ -114,4 +114,7 @@ SETTINGS_DEFAULTS = {
     "dns_intercept": "0",
     # xray routing domainStrategy (AsIs | IPIfNonMatch | IPOnDemand) — how domain rules resolve
     "routing_domain_strategy": "IPIfNonMatch",
+    # session idle timeout in minutes (0 = none) and daily auto-backup to data_dir/backups
+    "session_timeout_min": "0",
+    "auto_backup_enabled": "0",
 }
