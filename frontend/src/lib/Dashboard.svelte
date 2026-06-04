@@ -31,7 +31,12 @@
     catch (err) { msg = err instanceof ApiError ? err.message : "rollback failed"; }
   }
 
-  $effect(() => { refresh(); });
+  // keep the gateway status live without a manual refresh
+  $effect(() => {
+    refresh();
+    const t = setInterval(refresh, 3000);
+    return () => clearInterval(t);
+  });
 
   // live traffic WebSocket with reconnect/backoff; closes on unmount
   $effect(() => {
@@ -66,7 +71,6 @@
     <span class="hero-nodename">{activeName ?? "—"}</span>
   </div>
   <span class="hero-spacer"></span>
-  <button class="btn" onclick={refresh}>Refresh</button>
   <button class="btn" onclick={rollback}>Rollback</button>
 </div>
 
