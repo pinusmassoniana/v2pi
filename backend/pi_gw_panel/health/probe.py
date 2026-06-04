@@ -6,6 +6,7 @@ monitor and fully stubbed in tests via the injected `connect` / `opener_factory`
 exercised on the Pi (Plan 8)."""
 import json
 import socket
+import ssl
 import time
 import urllib.request
 
@@ -19,6 +20,28 @@ def tcp_ping(address: str, port: int, timeout: float = 3.0,
         conn = connect((address, port), timeout)
         conn.close()
     except OSError:
+        return False, None
+    return True, int((clock() - start) * 1000)
+
+
+def http_ping(address: str, port: int, sni: str, timeout: float = 5.0,
+              connect=None, clock=time.monotonic) -> tuple[bool, int | None]:
+    """HTTPS reachability probe — time a TLS handshake to the node endpoint with the
+    given SNI (does the server answer at the TLS/HTTP layer). Returns ``(ok, latency_ms)``;
+    None on failure. This is a DIRECT probe to address:port, not through the tunnel
+    (xray has a single active outbound, so per-node through-tunnel probing isn't possible).
+    Certs aren't verified — reality nodes present borrowed certs; we only time the handshake."""
+    if connect is None:
+        def connect(addr, to):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx.wrap_socket(socket.create_connection(addr, to), server_hostname=sni or address)
+    start = clock()
+    try:
+        conn = connect((address, port), timeout)
+        conn.close()
+    except OSError:                  # ssl.SSLError subclasses OSError
         return False, None
     return True, int((clock() - start) * 1000)
 

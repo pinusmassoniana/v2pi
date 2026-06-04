@@ -68,6 +68,15 @@
     try { await api.disconnect(id); await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "disconnect failed"; }
   }
+  let pinging = $state<"tcp" | "http" | null>(null);
+  async function pingAll(kind: "tcp" | "http") {
+    pinging = kind;
+    try {
+      const hs = kind === "tcp" ? await api.probeTcp() : await api.probeHttp();
+      health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
+    } catch (err) { msg = err instanceof ApiError ? err.message : "ping failed"; }
+    finally { pinging = null; }
+  }
 
   $effect(() => { refresh(); });
 </script>
@@ -82,6 +91,11 @@
   {#if tab === "servers"}
     <button class="btn btn-primary add-btn" onclick={() => (addOpen = true)}>+ Add server</button>
   {/if}
+</div>
+
+<div class="ping-bar">
+  <button class="btn" onclick={() => pingAll("tcp")} disabled={pinging !== null}>{pinging === "tcp" ? "TCP pinging…" : "TCP ping all"}</button>
+  <button class="btn" onclick={() => pingAll("http")} disabled={pinging !== null}>{pinging === "http" ? "HTTP pinging…" : "HTTP ping all"}</button>
 </div>
 
 {#snippet healthCells(h: NodeHealth | undefined)}
@@ -175,6 +189,7 @@
   .tab:hover { color: var(--text); }
   .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .switcher .add-btn { margin-left: auto; }
+  .ping-bar { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
   .actions { white-space: nowrap; }
   tr.stale { opacity: 0.55; }
   tr.active td { background: color-mix(in srgb, var(--accent) 12%, transparent); }

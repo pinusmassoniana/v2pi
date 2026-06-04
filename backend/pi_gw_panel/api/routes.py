@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pi_gw_panel.api.schemas import (
     LoginIn, SetupIn, PasswordChangeIn, NodeIn, NodeOut, NodeUpdate, StatusOut,
@@ -10,9 +12,10 @@ from pi_gw_panel.api.schemas import (
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import SESSION_AUTHED, SESSION_CSRF, new_csrf_token
 from pi_gw_panel.auth import service as auth_service
-from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule
+from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 from pi_gw_panel.controller import apply_node, apply_net
 from pi_gw_panel.net_control import netcheck
+from pi_gw_panel.health import probe
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.xray_config.routing import RU_DIRECT_PRESET
@@ -360,6 +363,40 @@ def routing_preset_ru_direct(request: Request,
 def node_health(request: Request, _: None = Depends(require_auth)) -> list[NodeHealthOut]:
     state = get_state(request)
     return [NodeHealthOut(**vars(h)) for h in state.store.list_health()]
+
+
+def _probe_sweep(store, probe_one, assign) -> list[NodeHealthOut]:
+    """Probe every node concurrently, persist the result (preserving the fields the other
+    sweep owns), and return the full updated health list."""
+    nodes = store.list_nodes()
+    ts = datetime.now(timezone.utc).isoformat()
+    with ThreadPoolExecutor(max_workers=24) as ex:
+        results = list(ex.map(lambda n: (n.id, probe_one(n)), nodes))
+    for nid, (ok, ms) in results:
+        h = store.get_health(nid) or NodeHealth(node_id=nid)
+        assign(h, ok, ms)
+        h.checked_at = ts
+        store.upsert_health(h)
+    return [NodeHealthOut(**vars(h)) for h in store.list_health()]
+
+
+@router.post("/probe/tcp", response_model=list[NodeHealthOut])
+def probe_tcp(request: Request,
+              _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> list[NodeHealthOut]:
+    """TCP-ping every node (reachability + latency) on demand → updates the TCP column."""
+    store = get_state(request).store
+    def assign(h: NodeHealth, ok, ms): h.last_tcp_ok, h.last_tcp_ms = ok, ms
+    return _probe_sweep(store, lambda n: probe.tcp_ping(n.address, n.port, timeout=2.0), assign)
+
+
+@router.post("/probe/http", response_model=list[NodeHealthOut])
+def probe_http(request: Request,
+               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> list[NodeHealthOut]:
+    """HTTPS-handshake every node endpoint directly (not through the tunnel) → updates the
+    real/HTTP column."""
+    store = get_state(request).store
+    def assign(h: NodeHealth, ok, ms): h.last_real_ok, h.last_real_ms = ok, ms
+    return _probe_sweep(store, lambda n: probe.http_ping(n.address, n.port, n.sni, timeout=3.0), assign)
 
 
 _LOG_SOURCES = {"xray-error": "xray_error_log", "xray-access": "xray_access_log", "app": "app_log"}

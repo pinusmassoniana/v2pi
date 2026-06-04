@@ -148,6 +148,8 @@ export const api = {
   routingPresetRuDirect(): Promise<Routing> { return mutate("POST", "/routing/preset/ru-direct"); },
 
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
+  probeTcp(): Promise<NodeHealth[]> { return mutate("POST", "/probe/tcp"); },
+  probeHttp(): Promise<NodeHealth[]> { return mutate("POST", "/probe/http"); },
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
