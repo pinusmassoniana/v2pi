@@ -82,3 +82,24 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         store.set_setting("prev_active_node_id", prev if prev is not None else "")
         store.set_setting("active_node_id", str(node.id))
     return ApplyResult(ok=True)
+
+
+def reapply_active_node(state) -> ApplyResult | None:
+    """Boot/restart persistence: re-apply the saved active node (rebuild+validate → start
+    xray → apply net) on startup, so a reboot or container restart restores the tunnel with
+    no manual Connect. Returns the ApplyResult, or None when there is no (valid) saved active
+    node. Never raises — a failure is reported in the result, not by crashing boot."""
+    aid = state.store.get_setting("active_node_id")
+    if not aid:
+        return None
+    try:
+        node = state.store.get_node(int(aid))
+    except (TypeError, ValueError):
+        return None
+    if node is None:
+        return None  # saved node vanished (e.g. a sub resync removed it) — skip
+    try:
+        return apply_node(node, state.settings, state.supervisor, state.net,
+                          store=state.store, xray_bin=state.xray_bin)
+    except Exception as exc:  # never let boot crash on a bad saved node/config
+        return ApplyResult(ok=False, error=f"boot reapply failed: {exc}")

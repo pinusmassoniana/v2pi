@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -44,6 +45,12 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Boot/restart persistence: re-establish the active node's tunnel before serving,
+        # so a reboot or container restart self-heals with no manual Connect (Plan 9c).
+        from pi_gw_panel.controller import reapply_active_node
+        res = reapply_active_node(app_state)
+        if res is not None and not res.ok:
+            logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
         scheduler.start()
         monitor.start()
         try:
