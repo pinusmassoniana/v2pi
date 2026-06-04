@@ -47,7 +47,7 @@ def test_settings_get_put(settings, stub_xray):
     h = {"X-CSRF-Token": _login(c)}
     s = c.get("/api/settings").json()
     assert s["tunneled_fetch"] is True                                  # default kept
-    assert s["health_enabled"] is True and s["health_interval"] == 30   # health defaults
+    assert s["health_enabled"] is True and s["health_interval"] == 1800   # health defaults (30 min)
     assert s["failover_cooldown"] == 120 and s["routing_default_action"] == "proxy"
     assert s["stats_enabled"] is True and s["stats_api_port"] == 10085 and s["traffic_sample_ms"] == 1000
     assert "frag_enabled" not in s                                      # tuning fields → profiles

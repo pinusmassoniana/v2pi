@@ -101,7 +101,7 @@ SETTINGS_DEFAULTS = {
     "tunneled_fetch": "1",
     "routing_default_action": "proxy",
     "health_enabled": "1",
-    "health_interval": "30",
+    "health_interval": "1800",
     "health_hysteresis": "3",
     "health_probe_url": "https://api.ipify.org?format=json",
     "failover_enabled": "1",

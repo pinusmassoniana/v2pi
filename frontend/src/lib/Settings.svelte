@@ -83,8 +83,12 @@
     <fieldset>
       <legend>Health monitoring</legend>
       <div class="check"><Toggle checked={s.health_enabled} onchange={(v) => { if (s) s.health_enabled = v; }} label="health" /> <span>Enabled</span></div>
-      <label class="field"><span>Interval (s)</span><input class="input" type="number" min="5" bind:value={s.health_interval} /></label>
+      <label class="field"><span>Probe interval (minutes)</span>
+        <input class="input" type="number" min="1"
+               value={Math.max(1, Math.round((s.health_interval || 1800) / 60))}
+               onchange={(e) => { if (s) s.health_interval = Math.max(60, Math.round(Number(e.currentTarget.value)) * 60); }} /></label>
       <label class="field"><span>Probe URL</span><input class="input" bind:value={s.health_probe_url} /></label>
+      <p class="muted hint">TCP + HTTPS-handshake of every node each interval; the active node also gets a real request through the tunnel.</p>
     </fieldset>
 
     <fieldset>

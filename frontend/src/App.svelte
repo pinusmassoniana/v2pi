@@ -146,7 +146,7 @@
     gap: 0.3rem;
   }
   .xray-box {
-    margin-top: auto;
+    margin-top: 0.5rem;
     display: flex; align-items: center; gap: 0.5rem;
     padding: 0.5rem 0.6rem;
     border: 1px solid var(--border); border-radius: var(--radius-sm);

@@ -1,10 +1,11 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pi_gw_panel.models import NodeHealth
 from pi_gw_panel.health import probe
 
 DEFAULT_PROBE_URL = "https://api.ipify.org?format=json"
-DEFAULT_INTERVAL = 30.0
+DEFAULT_INTERVAL = 1800.0   # 30 min — TCP + direct-HTTPS sweep of all nodes (configurable)
 
 
 class HealthMonitor:
@@ -19,10 +20,12 @@ class HealthMonitor:
     given) runs right after each probe sweep — the lifespan wires failover here."""
 
     def __init__(self, state, tcp_ping=probe.tcp_ping, real_request=probe.real_request,
-                 now_iso=None, tick_sec: float | None = None, after_tick=None):
+                 http_ping=probe.http_ping, now_iso=None, tick_sec: float | None = None,
+                 after_tick=None):
         self._state = state
         self._tcp_ping = tcp_ping
         self._real_request = real_request
+        self._http_ping = http_ping
         self._now_iso = now_iso or (lambda: datetime.now(timezone.utc).isoformat())
         self._tick_override = tick_sec
         self._after_tick = after_tick
@@ -51,9 +54,23 @@ class HealthMonitor:
         probe_url = store.get_setting("health_probe_url") or DEFAULT_PROBE_URL
         proxy_url = f"http://127.0.0.1:{self._state.settings.local_proxy_port}"
         ts = self._now_iso()
-        for node in store.list_nodes():
+        nodes = store.list_nodes()
+
+        # Direct probes for EVERY node, concurrently: TCP liveness + an HTTPS handshake.
+        # The handshake fills the "real" column for all nodes — a real request *through* each
+        # node isn't possible (xray has a single active outbound).
+        def direct(node):
             tcp_ok, tcp_ms = self._tcp_ping(node.address, node.port)
+            http_ok, http_ms = self._http_ping(node.address, node.port, node.sni)
+            return node, tcp_ok, tcp_ms, http_ok, http_ms
+
+        with ThreadPoolExecutor(max_workers=24) as ex:
+            swept = list(ex.map(direct, nodes))
+
+        for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:
             if node.id == active_id:
+                # active node: the through-tunnel real request gives the true egress IP and
+                # drives the failover hysteresis counter — it overrides the direct probe.
                 real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
                 prev = store.get_health(node.id)
                 prev_fail = prev.fail_count if prev else 0
@@ -62,9 +79,9 @@ class HealthMonitor:
                     last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress,
                     checked_at=ts, fail_count=0 if real_ok else prev_fail + 1))
             else:
-                # non-active: TCP liveness only (real fields cleared, counter reset)
                 store.upsert_health(NodeHealth(
                     node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
+                    last_real_ok=http_ok, last_real_ms=http_ms, egress_ip=None,
                     checked_at=ts, fail_count=0))
 
     def _tick(self) -> None:
