@@ -2,6 +2,7 @@
   import { api, ApiError, type Network } from "./api";
   import { networkView } from "./network";
   import { serverNow } from "./status.svelte";
+  import { agoLabel } from "./dashboard";
   import Modal from "./Modal.svelte";
   import Toggle from "./Toggle.svelte";
 
@@ -33,7 +34,8 @@
         dhcp_start: s.dhcp_start, dhcp_end: s.dhcp_end, dhcp_lease: s.dhcp_lease,
         client_dns: s.client_dns, kill_switch_enabled: net.kill_switch_enabled,
       });
-      editOpen = false; msg = "saved & applied";
+      editOpen = false;
+      msg = "saved · network rules applied";   // A3: don't claim a DHCP apply we don't do
     } catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
   }
 
@@ -54,8 +56,14 @@
   {#if msg}<p class="msg">{msg}</p>{/if}
   {#if net}
     {@const v = networkView(net)}
+    {#if v.wan_blocked}
+      <div class="wan-banner" role="status">
+        <span class="dot bad"></span> WAN blocked — kill-switch is holding traffic (tunnel down). No leak.
+      </div>
+    {/if}
     <div class="status">
       <span><span class="dot {v.segment.tone}"></span> Segment: {v.segment.label}</span>
+      <span><span class="dot {v.uplink.tone}"></span> Uplink: {v.uplink.label}</span>
       <span>
         <span class="dot {v.dhcp_clients > 0 ? 'ok' : 'unknown'}"></span> DHCP clients: {v.dhcp_clients}
         {#if net.status.clients?.length}
@@ -66,7 +74,7 @@
         <span class="dot {v.tunnel.tone}"></span> Tunnel egress: {v.tunnel.egress} ({v.tunnel.latency})
         {#if net.status.tunnel.checked_at}<span class="fresh">· {freshness(net.status.tunnel.checked_at)}</span>{/if}
       </span>
-      {#if net.kill_switch_enabled}<span><span class="dot ok"></span> Kill-switch on</span>{/if}
+      {#if net.kill_switch_enabled && !v.wan_blocked}<span><span class="dot ok"></span> Kill-switch on</span>{/if}
     </div>
     {#if showClients && net.status.clients?.length}
       <table class="table clients">
@@ -78,6 +86,16 @@
         </tbody>
       </table>
     {/if}
+    {#if net.events?.length}
+      <details class="events">
+        <summary>Recent connection events ({net.events.length})</summary>
+        <ul>
+          {#each [...net.events].reverse().slice(0, 12) as e (e.ts + e.kind + e.detail)}
+            <li><span class="ev ev-{e.kind}">{e.kind}</span> {e.detail}<span class="fresh"> · {agoLabel(e.ts, serverNow() / 1000)}</span></li>
+          {/each}
+        </ul>
+      </details>
+    {/if}
   {/if}
 </div>
 
@@ -86,14 +104,19 @@
     <div class="net-form">
       <label class="field"><span>Segment interface</span><input class="input" bind:value={net.segment.iface} /></label>
       <label class="field"><span>Segment IP (gateway)</span><input class="input" bind:value={net.segment.ip} /></label>
-      <label class="field"><span>DHCP start</span><input class="input" bind:value={net.segment.dhcp_start} /></label>
-      <label class="field"><span>DHCP end</span><input class="input" bind:value={net.segment.dhcp_end} /></label>
-      <label class="field"><span>DHCP lease</span><input class="input" bind:value={net.segment.dhcp_lease} /></label>
-      <label class="field"><span>Client DNS</span><input class="input" bind:value={net.segment.client_dns} /></label>
+      <p class="muted hint dhcp-note">DHCP range / lease / client-DNS are served by the host
+        (<code>pi-gw-dhcp.service</code>) — saved here for reference, but applied on the host, not by
+        the panel. The segment interface &amp; IP above take effect live.</p>
+      <label class="field"><span>DHCP start <small>(host)</small></span><input class="input" bind:value={net.segment.dhcp_start} /></label>
+      <label class="field"><span>DHCP end <small>(host)</small></span><input class="input" bind:value={net.segment.dhcp_end} /></label>
+      <label class="field"><span>DHCP lease <small>(host)</small></span><input class="input" bind:value={net.segment.dhcp_lease} /></label>
+      <label class="field"><span>Client DNS <small>(host)</small></span><input class="input" bind:value={net.segment.client_dns} /></label>
       <div class="check">
         <Toggle checked={net.kill_switch_enabled}
                 onchange={(v) => { if (net) net.kill_switch_enabled = v; }} label="kill-switch" />
-        <span>Kill-switch — fail closed, drop client→WAN traffic that isn't tunnelled</span>
+        <span>Kill-switch — fail closed: drops client→WAN that isn't tunnelled, and <strong>keeps
+          blocking even when you stop the tunnel</strong> (incl. IPv6). Clients lose internet rather
+          than leak.</span>
       </div>
       <div class="hint-block">
         <strong>Router setup</strong>
@@ -113,6 +136,12 @@
 <style>
   .net-head { display: flex; align-items: center; gap: 0.5rem; }
   .net-head h3 { margin: 0; margin-right: auto; font-size: 0.92rem; font-weight: 650; letter-spacing: -0.01em; }
+  .wan-banner {
+    display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;
+    padding: 0.5rem 0.7rem; border-radius: var(--radius); font-size: 0.84rem; font-weight: 500;
+    color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
+  }
   .status {
     display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.5rem;
     font-size: 0.84rem; font-variant-numeric: tabular-nums;
@@ -121,8 +150,22 @@
   .link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 0.78rem; padding: 0 0 0 0.2rem; text-decoration: underline; text-underline-offset: 2px; }
   .fresh { color: var(--faint); }
   .clients { margin-top: 0.6rem; font-size: 0.8rem; }
+  .events { margin-top: 0.7rem; font-size: 0.82rem; }
+  .events summary { cursor: pointer; color: var(--muted); }
+  .events ul { list-style: none; margin: 0.4rem 0 0; padding: 0; display: grid; gap: 0.25rem; }
+  .events li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; }
+  .ev {
+    font-family: var(--mono); font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.03em; padding: 0.04rem 0.4rem; border-radius: 999px;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .ev-connect { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
+  .ev-failover, .ev-xray-restart { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .ev-disconnect, .ev-xray-stop { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
   .net-form { display: grid; gap: 0.6rem; }
-  .check { display: flex; gap: 0.6rem; align-items: center; }
+  .dhcp-note { margin: 0.1rem 0 -0.1rem; }
+  .field span small { color: var(--faint); font-weight: 400; }
+  .check { display: flex; gap: 0.6rem; align-items: flex-start; }
   .recs { margin: 0.3rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; }
   .hint { margin: 0.2rem 0; font-size: 0.8rem; }
   .hint-block { border-top: 1px solid var(--border); padding-top: 0.6rem; }

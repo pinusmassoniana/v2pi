@@ -15,7 +15,7 @@ from pi_gw_panel.api.schemas import (
     ProfileValidateOut, ProfilePresetInfo,
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
-    TrafficHistoryOut,
+    ConnEventOut, TrafficHistoryOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import (
@@ -23,8 +23,8 @@ from pi_gw_panel.auth.auth import (
 from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 from pi_gw_panel.controller import (
-    apply_node, apply_net, reapply_active_node, build_node_config, apply_lock)
-from pi_gw_panel.net_control import netcheck
+    apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net)
+from pi_gw_panel.net_control import netcheck, events as conn_events
 from pi_gw_panel.health import probe
 from pi_gw_panel.health.selection import best_node
 from pi_gw_panel import backup as backup_mod
@@ -155,14 +155,21 @@ def _network_out(state) -> NetworkOut:
     store, settings = state.store, state.settings
     def ov(key: str) -> str:                       # editable field: DB override or config
         return store.get_setting(key) or getattr(settings, key)
+    # C1: only the real Pi backend probes the uplink (a live socket); dev/CI = unknown.
+    uplink_check = netcheck.uplink_up if type(state.net).__name__ == "LinuxBackend" else (lambda: None)
+    kill_switch = (store.get_setting("kill_switch_enabled") or "0") == "1"
+    running = state.supervisor.status().get("running", False)
+    st = netcheck.network_status(store, settings, uplink_check=uplink_check)
+    st["wan_blocked"] = kill_switch and not running   # N1: leak-guard holding while tunnel down
     return NetworkOut(
         segment=NetworkSegmentOut(
             iface=ov("segment_iface"), ip=ov("segment_ip"),
             dhcp_start=ov("dhcp_start"), dhcp_end=ov("dhcp_end"),
             dhcp_lease=ov("dhcp_lease"), client_dns=ov("client_dns")),
-        kill_switch_enabled=(store.get_setting("kill_switch_enabled") or "0") == "1",
-        status=NetworkStatusOut(**netcheck.network_status(store, settings)),
-        recommendations=[RouterRecOut(**r) for r in netcheck.router_recommendations(settings)])
+        kill_switch_enabled=kill_switch,
+        status=NetworkStatusOut(**st),
+        recommendations=[RouterRecOut(**r) for r in netcheck.router_recommendations(settings)],
+        events=[ConnEventOut(**e) for e in conn_events.recent(store)])
 
 
 _START_TIME = time.time()
@@ -328,22 +335,25 @@ def apply(node_id: int, request: Request,
                      store=state.store, xray_bin=state.xray_bin)
     if not res.ok:
         raise HTTPException(status_code=502, detail=res.error)
+    conn_events.record(state.store, "connect", f"connected to {node.name}")
     return {"ok": True}
 
 
 @router.post("/nodes/{node_id}/disconnect")
 def disconnect(node_id: int, request: Request,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
-    """Disconnect the active node: tear down the tproxy/routing (segment clients fall back
-    to direct) and clear the active selection. xray is left running — the sidebar toggle is
-    the only thing that stops xray-core."""
+    """Disconnect the active node and clear the active selection. The net rules come down
+    via stop_net: with the kill-switch ON the fail-closed leak-guard stays in place (so
+    'disconnect' doesn't leak client→WAN — A1); with it off, clients fall back to direct.
+    xray is left running — the sidebar toggle is the only thing that stops xray-core."""
     state = get_state(request)
     with apply_lock:   # don't race a concurrent apply / failover tick (NR1)
-        state.net.teardown()
+        stop_net(state.settings, state.net, state.store)
         prev = state.store.get_setting("active_node_id")
         state.store.set_setting("prev_active_node_id", prev or "")
         state.store.set_setting("active_node_id", "")
         state.store.set_setting("active_since", "")        # clear uptime anchor (P3)
+    conn_events.record(state.store, "disconnect", "node disconnected")
     return {"ok": True}
 
 
@@ -365,12 +375,15 @@ def xray_start(request: Request,
 @router.post("/xray/stop")
 def xray_stop(request: Request,
               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
-    """Stop xray-core and tear down the tproxy/routing (so segment clients fall back to
-    direct rather than black-holing into a dead tproxy port). The active selection is kept."""
+    """Stop xray-core. Net rules come down via stop_net: kill-switch ON keeps the
+    fail-closed leak-guard (block client→WAN while the tunnel is down — A1); OFF tears down
+    so clients fall back to direct rather than black-holing a dead tproxy port. The active
+    selection is kept."""
     state = get_state(request)
     with apply_lock:
         state.supervisor.stop()
-        state.net.teardown()
+        stop_net(state.settings, state.net, state.store)
+    conn_events.record(state.store, "xray-stop", "xray-core stopped")
     return {"ok": True}
 
 
@@ -993,6 +1006,12 @@ def put_network(body: NetworkIn, request: Request,
         if k in data:
             state.store.set_setting(k, data[k])
     if "kill_switch_enabled" in data:
-        state.store.set_setting("kill_switch_enabled", "1" if data["kill_switch_enabled"] else "0")
-    apply_net(state.settings, state.net, state.store)   # apply the edit immediately (re-render)
+        was = (state.store.get_setting("kill_switch_enabled") or "0") == "1"
+        now_on = bool(data["kill_switch_enabled"])
+        state.store.set_setting("kill_switch_enabled", "1" if now_on else "0")
+        if now_on != was:
+            conn_events.record(state.store, "kill-switch", "enabled" if now_on else "disabled")
+    # Apply the edit to match the CURRENT tunnel state (tproxy if up, else leak-guard/teardown)
+    # so toggling the kill-switch while disconnected installs the guard, not a dead tproxy (A1).
+    sync_net(state)
     return _network_out(state)

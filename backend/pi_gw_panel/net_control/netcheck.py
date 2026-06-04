@@ -1,7 +1,20 @@
 import os
+import socket
 import time
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
+
+
+def uplink_up(host: str = "1.1.1.1", port: int = 443, timeout: float = 1.5,
+              connect=socket.create_connection) -> bool:
+    """Direct TCP reachability of the WAN/uplink (the Pi's Home leg), bypassing the tunnel
+    (C1). Lets the UI tell a bad node (tunnel red, uplink green) from a dead internet
+    (both red). Only invoked on the real Pi backend — dev/CI report 'unknown'."""
+    try:
+        connect((host, port), timeout).close()
+        return True
+    except OSError:
+        return False
 
 
 def segment_up(iface: str, sysfs: str = "/sys/class/net") -> bool | None:
@@ -54,13 +67,16 @@ def _tunnel(store) -> dict:
 
 
 def network_status(store, settings: Settings, *, sysfs: str = "/sys/class/net",
-                   leases_path: str | None = None) -> dict:
-    """Live gateway status: segment link, DHCP clients (+ list), tunnel egress. Real
-    checks are Pi-only; dev returns unknown/0 gracefully (paths injected in tests)."""
+                   leases_path: str | None = None, uplink_check=lambda: None) -> dict:
+    """Live gateway status: segment link, uplink, DHCP clients (+ list), tunnel egress.
+    Real checks are Pi-only; dev returns unknown/0 gracefully (paths/probes injected in
+    tests). `uplink_check` defaults to 'unknown' so a bare call never touches the network —
+    the route passes the real probe only on the Linux backend (C1)."""
     iface = store.get_setting("segment_iface") or settings.segment_iface
     clients = dhcp_leases(leases_path or settings.dnsmasq_leases)
     return {
         "segment_up": segment_up(iface, sysfs=sysfs),
+        "uplink": uplink_check(),
         "dhcp_clients": len(clients),
         "clients": clients,
         "tunnel": _tunnel(store),

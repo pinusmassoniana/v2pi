@@ -55,6 +55,47 @@ def apply_net(settings: Settings, net, store=None) -> NetResult:
     return net.apply_tproxy(plan)
 
 
+def _kill_switch_on(store) -> bool:
+    return store is not None and (store.get_setting("kill_switch_enabled") or "0") == "1"
+
+
+def stop_net(settings: Settings, net, store=None) -> NetResult:
+    """Tear down the tunnel's net rules when the tunnel is intentionally stopped
+    (disconnect / xray-stop / boot-before-tunnel).
+
+    Kill-switch ON  → install the fail-closed leak-guard (keep dropping client→WAN, v4+v6)
+    instead of a full teardown — otherwise a "fail closed" kill-switch would *leak* the
+    moment you stop (audit A1). Kill-switch OFF → full teardown (clients fall back direct).
+    """
+    if _kill_switch_on(store) and hasattr(net, "apply_guard"):
+        return net.apply_guard(NetPlan.from_store(store, settings))
+    return net.teardown()
+
+
+def sync_net(state) -> NetResult:
+    """Apply the net rules that match the CURRENT tunnel state — used by PUT /network so a
+    segment/kill-switch edit takes effect immediately without black-holing. Tunnel up (xray
+    running + an active node) → full tproxy; otherwise → stop_net (leak-guard if the
+    kill-switch is on, else teardown). Avoids installing a tproxy-to-dead-port when there's
+    no live tunnel (A1)."""
+    running = state.supervisor.status().get("running")
+    if running and state.store.get_setting("active_node_id"):
+        return apply_net(state.settings, state.net, state.store)
+    return stop_net(state.settings, state.net, state.store)
+
+
+def boot_guard(state) -> None:
+    """Close the boot leak window (A1): if the kill-switch is on, install the leak-guard
+    BEFORE the tunnel is (re)applied, so a reboot never leaks client→WAN while xray starts.
+    No-op when the kill-switch is off. Best-effort — never blocks boot."""
+    if not _kill_switch_on(state.store) or not hasattr(state.net, "apply_guard"):
+        return
+    try:
+        state.net.apply_guard(NetPlan.from_store(state.store, state.settings))
+    except Exception:
+        pass
+
+
 def build_node_config(node: Node, settings: Settings, store=None) -> dict:
     """Render the xray config for `node` exactly as apply would — tuning profile + ordered
     routing + tunneled-fetch + stats + dns from the store (when given). Shared by apply_node

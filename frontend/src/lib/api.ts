@@ -99,10 +99,15 @@ export interface NetworkSegment {
 }
 export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; }
 export interface DhcpClient { ip: string; mac: string; hostname: string; expiry: number; }
-export interface NetworkStatus { segment_up: boolean | null; dhcp_clients: number; clients: DhcpClient[]; tunnel: NetworkTunnel; }
+export interface NetworkStatus {
+  segment_up: boolean | null; uplink: boolean | null; dhcp_clients: number;
+  clients: DhcpClient[]; tunnel: NetworkTunnel; wan_blocked: boolean;
+}
 export interface RouterRec { title: string; detail: string; }
+export interface ConnEvent { ts: number; kind: string; detail: string; }
 export interface Network {
-  segment: NetworkSegment; kill_switch_enabled: boolean; status: NetworkStatus; recommendations: RouterRec[];
+  segment: NetworkSegment; kill_switch_enabled: boolean; status: NetworkStatus;
+  recommendations: RouterRec[]; events: ConnEvent[];
 }
 // PUT is partial + flat: editable settings keys (segment_iface/ip is long-form here) + kill-switch.
 export interface NetworkPatch {

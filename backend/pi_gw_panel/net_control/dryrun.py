@@ -16,6 +16,12 @@ class DryRunBackend:
         self.applied.append(text)
         return NetResult(ok=True, rendered=text)
 
+    def apply_guard(self, plan: NetPlan) -> NetResult:
+        """Fail-closed leak-guard render (no tproxy) — the dev/CI mirror of A1."""
+        text = render_nft(plan, tunnel_up=False)
+        self.applied.append(text)
+        return NetResult(ok=True, rendered=text)
+
     def teardown(self) -> NetResult:
         self.applied.clear()
         return NetResult(ok=True)

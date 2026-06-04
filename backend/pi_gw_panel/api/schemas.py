@@ -407,9 +407,11 @@ class DhcpClientOut(BaseModel):
 
 class NetworkStatusOut(BaseModel):
     segment_up: bool | None = None
+    uplink: bool | None = None          # C1: Pi WAN/Home-leg reachability (None = unknown/dev)
     dhcp_clients: int = 0
     clients: list[DhcpClientOut] = []
     tunnel: NetworkTunnelOut
+    wan_blocked: bool = False           # N1: kill-switch leak-guard is holding (tunnel down)
 
 
 class RouterRecOut(BaseModel):
@@ -417,11 +419,18 @@ class RouterRecOut(BaseModel):
     detail: str
 
 
+class ConnEventOut(BaseModel):
+    ts: int
+    kind: str
+    detail: str = ""
+
+
 class NetworkOut(BaseModel):
     segment: NetworkSegmentOut
     kill_switch_enabled: bool
     status: NetworkStatusOut
     recommendations: list[RouterRecOut]
+    events: list[ConnEventOut] = []     # N2: recent connection events (newest last)
 
 
 # Partial, like SettingsIn: any provided editable field is set; empty strings are

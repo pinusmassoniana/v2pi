@@ -40,12 +40,13 @@ def test_put_network_updates_field_and_flips_killswitch(settings, stub_xray):
     h = _auth(c)
     body = c.put("/api/network",
                  json={"dhcp_end": "192.168.10.250", "kill_switch_enabled": True}, headers=h).json()
-    assert body["segment"]["dhcp_end"] == "192.168.10.250"
+    assert body["segment"]["dhcp_end"] == "192.168.10.250"   # field persisted
     assert body["kill_switch_enabled"] is True
-    # the edit was applied: DryRun recorded the new DHCP range + the kill-switch drop
+    # A1: kill-switch ON with no tunnel up installs the fail-closed leak-guard (forward drop,
+    # NO tproxy pointed at a dead xray port), not the full tproxy render.
     applied = c.app.state.app_state.net.applied[-1]
-    assert "dhcp-range=192.168.10.30,192.168.10.250,12h" in applied
     assert "chain forward" in applied and " drop" in applied
+    assert "tproxy ip to" not in applied
 
 
 def test_put_network_rejects_empty_and_ignores_unknown(settings, stub_xray):

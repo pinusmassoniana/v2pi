@@ -9,8 +9,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from pi_gw_panel.config import Settings
 from pi_gw_panel.state import AppState, build_state
 from pi_gw_panel.subs.scheduler import SubScheduler
-from pi_gw_panel.health import failover
 from pi_gw_panel.health.monitor import HealthMonitor
+from pi_gw_panel.health.liveness import LivenessLoop
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.health.snapshot import active_health
 from pi_gw_panel.api.deps import session_invalid_reason
@@ -39,9 +39,11 @@ def _traffic_frame(state) -> dict:
 def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     app_state = state if state is not None else build_state(settings)
     scheduler = SubScheduler(app_state)
-    # Health monitor probes each interval, then auto-failover runs on the result
-    # (wall-clock now → cooldown survives restarts). Both gate on their own settings.
-    monitor = HealthMonitor(app_state, after_tick=lambda: failover.run(app_state, time.time()))
+    # Slow (30-min) all-node TCP/HTTPS sweep for the health table + latency trends.
+    monitor = HealthMonitor(app_state)
+    # Fast (30-s) resilience loop: xray crash-watchdog + active-node real-probe + auto-failover
+    # (wall-clock now → cooldown survives restarts). This is the failover driver now (B1/B2).
+    liveness = LivenessLoop(app_state)
     from pi_gw_panel.backup.scheduler import BackupScheduler
     backup_scheduler = BackupScheduler(app_state)
 
@@ -49,12 +51,16 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         # Boot/restart persistence: re-establish the active node's tunnel before serving,
         # so a reboot or container restart self-heals with no manual Connect (Plan 9c).
-        from pi_gw_panel.controller import reapply_active_node
+        # First close the boot leak window: with the kill-switch on, install the leak-guard
+        # BEFORE the tunnel comes up so a reboot never leaks client→WAN (A1).
+        from pi_gw_panel.controller import reapply_active_node, boot_guard
+        boot_guard(app_state)
         res = reapply_active_node(app_state)
         if res is not None and not res.ok:
             logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
         scheduler.start()
         monitor.start()
+        liveness.start()
         backup_scheduler.start()
         if app_state.recorder is not None:
             app_state.recorder.start()          # always-on traffic history sampler
@@ -63,6 +69,7 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         finally:
             await scheduler.stop()
             await monitor.stop()
+            await liveness.stop()
             await backup_scheduler.stop()
             if app_state.recorder is not None:
                 await app_state.recorder.stop()
