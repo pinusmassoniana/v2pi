@@ -177,6 +177,13 @@ class NodeStore:
             (sub_id,)).fetchall()
         return [_row_to_node(r) for r in rows]
 
+    def node_counts_by_sub(self) -> dict[int, int]:
+        """{subscription_id: node count} in one query (avoids an N+1 in the subs list)."""
+        rows = self._conn.execute(
+            "SELECT subscription_id, COUNT(*) AS n FROM nodes "
+            "WHERE subscription_id IS NOT NULL GROUP BY subscription_id").fetchall()
+        return {r["subscription_id"]: r["n"] for r in rows}
+
     def update_node(self, node: Node) -> None:
         assert node.id is not None
         sets = ", ".join(f"{c} = ?" for c in _NODE_COLS)
@@ -219,6 +226,11 @@ class NodeStore:
     def get_setting(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
+
+    def get_settings_map(self) -> dict[str, str]:
+        """All settings in one query — for hot read paths that need several at once."""
+        rows = self._conn.execute("SELECT key, value FROM settings").fetchall()
+        return {r["key"]: r["value"] for r in rows}
 
     # --- subscriptions ---
     def add_subscription(self, sub: Subscription) -> int:

@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { api, ApiError, type Node, type Status, type TrafficMessage } from "./api";
+  import { api, ApiError, type Node, type TrafficMessage } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
   import NetworkCard from "./NetworkCard.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { statusStore, subscribeStatus } from "./status.svelte";
 
-  let status = $state<Status | null>(null);
+  const status = $derived(statusStore.value);   // shared poller (no duplicate /api/status)
   let nodes = $state<Node[]>([]);
   let samples = $state<{ ts: number; up: number; down: number }[]>([]);
   let live = $state<TrafficMessage | null>(null);
@@ -47,10 +48,8 @@
   }
 
   async function refresh() {
-    try {
-      const [st, ns] = await Promise.all([api.getStatus(), api.listNodes()]);
-      status = st; nodes = ns;
-    } catch (err) { msg = err instanceof ApiError ? err.message : "refresh failed"; }
+    try { nodes = await api.listNodes(); }   // status comes from the shared store now
+    catch (err) { msg = err instanceof ApiError ? err.message : "refresh failed"; }
   }
   async function rollback() {
     if (!(await confirmDialog("Roll back the live config to the previously applied node?"))) return;
@@ -58,11 +57,12 @@
     catch (err) { msg = err instanceof ApiError ? err.message : "rollback failed"; }
   }
 
-  // keep the gateway status live without a manual refresh
+  // shared status poller + a nodes refresh, both paused while the tab is hidden
   $effect(() => {
+    const stop = subscribeStatus(3000);
     refresh();
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
+    const t = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 3000);
+    return () => { clearInterval(t); stop(); };
   });
 
   // seed the graph with recorded history so the full window shows immediately on open
@@ -99,7 +99,8 @@
         disabled = false;
         live = m;
         const p = m.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
-        samples = [...samples, { ts: m.ts, up: p.up_bps, down: p.down_bps }].slice(-4000);
+        samples.push({ ts: m.ts, up: p.up_bps, down: p.down_bps });   // mutate (no per-second 4000-copy)
+        if (samples.length > 4000) samples.splice(0, samples.length - 4000);
       });
       ws.onclose = () => { if (!stop) timer = setTimeout(open, 2000); };
       ws.onerror = () => { try { ws?.close(); } catch {} };

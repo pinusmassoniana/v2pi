@@ -9,7 +9,8 @@
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
   import ConfirmModal from "./lib/ConfirmModal.svelte";
-  import { api, type Status } from "./lib/api";
+  import { api } from "./lib/api";
+  import { statusStore, subscribeStatus, pollStatusOnce } from "./lib/status.svelte";
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
@@ -20,7 +21,7 @@
   let view = $state<View>("dashboard");
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
   let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "light");
-  let status = $state<Status | null>(null);
+  const status = $derived(statusStore.value);   // shared, visibility-aware poller
 
   // On load: if first-run (no credential) show Setup; else probe the session for auth.
   $effect(() => {
@@ -35,17 +36,15 @@
       .finally(() => { ready = true; });
   });
 
-  // Poll xray-core status for the sidebar box.
-  async function pollStatus() { try { status = await api.getStatus(); } catch { status = null; } }
+  // Shared status poller drives the sidebar xray box (and the Dashboard) — one timer, paused
+  // when the tab is hidden.
   $effect(() => {
     if (!authed) return;
-    pollStatus();
-    const t = setInterval(pollStatus, 4000);
-    return () => clearInterval(t);
+    return subscribeStatus(4000);
   });
   async function toggleXray(on: boolean) {
     try { if (on) await api.xrayStart(); else await api.xrayStop(); } catch {}
-    await pollStatus();
+    await pollStatusOnce();
   }
 
   const tabs: { id: View; label: string }[] = [

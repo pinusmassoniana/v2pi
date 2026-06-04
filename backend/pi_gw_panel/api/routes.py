@@ -105,15 +105,16 @@ def _routing_out(state, rules=None) -> RoutingOut:
         domain_strategy=state.store.get_setting("routing_domain_strategy") or "IPIfNonMatch")
 
 
-def _sub_out(state, sub: Subscription) -> SubscriptionOut:
+def _sub_out(state, sub: Subscription, node_count: int | None = None) -> SubscriptionOut:
+    if node_count is None:
+        node_count = len(state.store.list_nodes_for_sub(sub.id))
     return SubscriptionOut(
         id=sub.id, name=sub.name, url=sub.url, injection=sub.injection,
         interval_sec=sub.interval_sec, enabled=sub.enabled,
         default_profile_id=sub.default_profile_id, last_fetched=sub.last_fetched,
         last_status=sub.last_status, last_path=sub.last_path, last_error=sub.last_error,
         up_bytes=sub.up_bytes, down_bytes=sub.down_bytes, total_bytes=sub.total_bytes,
-        expire_at=sub.expire_at,
-        node_count=len(state.store.list_nodes_for_sub(sub.id)))
+        expire_at=sub.expire_at, node_count=node_count)
 
 
 def _pick_best_node(store, subscription_id):
@@ -126,8 +127,10 @@ def _pick_best_node(store, subscription_id):
 
 
 def _settings_out(state) -> SettingsOut:
+    m = state.store.get_settings_map()   # one query instead of ~15 (OB6)
+
     def val(key: str) -> str:
-        return state.store.get_setting(key) or SETTINGS_DEFAULTS[key]
+        return m.get(key) or SETTINGS_DEFAULTS[key]
     return SettingsOut(
         tunneled_fetch=val("tunneled_fetch") == "1",
         routing_default_action=val("routing_default_action"),
@@ -622,7 +625,7 @@ def _probe_sweep(store, nodes, probe_one, assign, record_http=False) -> list[Nod
     """Probe the given nodes concurrently, persist (preserving the fields the other sweep
     owns), and return the full updated health list."""
     ts = datetime.now(timezone.utc).isoformat()
-    with ThreadPoolExecutor(max_workers=24) as ex:
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(nodes)))) as ex:
         results = list(ex.map(lambda n: (n.id, probe_one(n)), nodes))
     for nid, (ok, ms) in results:
         h = store.get_health(nid) or NodeHealth(node_id=nid)
@@ -725,7 +728,8 @@ def post_restore(body: dict, request: Request,
 @router.get("/subs", response_model=list[SubscriptionOut])
 def list_subs(request: Request, _: None = Depends(require_auth)) -> list[SubscriptionOut]:
     state = get_state(request)
-    return [_sub_out(state, s) for s in state.store.list_subscriptions()]
+    counts = state.store.node_counts_by_sub()   # one query, not one-per-sub (OB4)
+    return [_sub_out(state, s, counts.get(s.id, 0)) for s in state.store.list_subscriptions()]
 
 
 @router.post("/subs", response_model=SubscriptionOut)

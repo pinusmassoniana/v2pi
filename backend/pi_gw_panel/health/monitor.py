@@ -68,7 +68,7 @@ class HealthMonitor:
             http_ok, http_ms = self._http_ping(node.address, node.port, node.sni)
             return node, tcp_ok, tcp_ms, http_ok, http_ms
 
-        with ThreadPoolExecutor(max_workers=24) as ex:
+        with ThreadPoolExecutor(max_workers=max(1, min(8, len(nodes)))) as ex:
             swept = list(ex.map(direct, nodes))
 
         for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:

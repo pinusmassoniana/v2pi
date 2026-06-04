@@ -9,6 +9,13 @@ def connect(db_path: str, check_same_thread: bool = True) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Tuned for the Pi's SD card: WAL + synchronous=NORMAL skips the per-commit fsync (readers
+    # also stop blocking the writer), busy_timeout avoids spurious "database is locked", and a
+    # memory temp store keeps sort/scratch off the card. WAL persists; the rest are per-connection.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA temp_store = MEMORY")
     return conn
 
 

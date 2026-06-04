@@ -6,12 +6,24 @@ _app_logging_configured = False
 
 
 def tail(path: str, lines: int) -> list[str]:
-    """Last `lines` lines of `path`; [] if the file is missing. Reads the whole file
-    (panel logs are small / capped by the caller)."""
+    """Last `lines` lines of `path`; [] if the file is missing. Reads from the END in blocks
+    (O(lines), not O(filesize)) so a large xray access log doesn't get slurped whole."""
     if not os.path.exists(path):
         return []
-    with open(path, "r", errors="replace") as f:
-        return f.read().splitlines()[-lines:]
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            data = b""
+            block = 8192
+            while pos > 0 and data.count(b"\n") <= lines:
+                read = min(block, pos)
+                pos -= read
+                f.seek(pos)
+                data = f.read(read) + data
+        return data.decode("utf-8", "replace").splitlines()[-lines:]
+    except OSError:
+        return []
 
 
 def setup_app_logging(path: str) -> None:

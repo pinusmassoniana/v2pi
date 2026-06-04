@@ -58,7 +58,9 @@
     const tStart = tEnd - windowSec * 1000;
     const view = series.filter((s) => s.ts >= tStart);
     const rendered = downsample(view, 700);
-    const vmax = niceMax(Math.max(1, ...view.flatMap((s) => [s.up, s.down])));
+    let peak = 1;   // single pass instead of a per-frame flatMap + spread
+    for (const s of view) { if (s.up > peak) peak = s.up; if (s.down > peak) peak = s.down; }
+    const vmax = niceMax(peak);
     const X = (ts: number) => padL + clamp01((ts - tStart) / (windowSec * 1000)) * plotW;
     const Y = (v: number) => padT + plotH - (v / vmax) * plotH;
     const line = (key: "up" | "down") =>
