@@ -39,7 +39,7 @@ def test_node_update_delete_and_identity(settings):
     n.name = "renamed"
     s.update_node(n)
     assert s.get_node(nid).name == "renamed"
-    assert s.get_node_by_identity("a", 1, "u").id == nid
+    assert s.get_node_by_identity(None, "a", 1, "u").id == nid   # manual node → sub_id None
     s.mark_stale(nid, True)
     assert s.get_node(nid).stale is True
     s.delete_node(nid)

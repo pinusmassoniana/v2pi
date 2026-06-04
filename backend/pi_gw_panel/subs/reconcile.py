@@ -13,7 +13,7 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
     for pos, p in enumerate(parsed):
         key = (p.address, p.port, p.uuid, p.path)
         seen.add(key)
-        cur = store.get_node_by_identity(*key)
+        cur = store.get_node_by_identity(sub_id, *key)
         p.subscription_id = sub_id
         p.stale = False
         p.position = pos

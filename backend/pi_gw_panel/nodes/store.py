@@ -83,11 +83,15 @@ class NodeStore:
         row = self._conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
         return _row_to_node(row) if row else None
 
-    def get_node_by_identity(self, address: str, port: int, uuid: str,
+    def get_node_by_identity(self, sub_id: int | None, address: str, port: int, uuid: str,
                              path: str = "") -> Node | None:
+        # Scoped to the owning subscription so two subscriptions with the same server each
+        # keep their own copy instead of fighting over one row. `IS` matches NULL too, so a
+        # sub-refresh scoped to a real sub_id can never steal a manual (NULL) or other-sub node.
         row = self._conn.execute(
-            "SELECT * FROM nodes WHERE address = ? AND port = ? AND uuid = ? AND path = ?",
-            (address, port, uuid, path)).fetchone()
+            "SELECT * FROM nodes WHERE subscription_id IS ? AND address = ? AND port = ? "
+            "AND uuid = ? AND path = ?",
+            (sub_id, address, port, uuid, path)).fetchone()
         return _row_to_node(row) if row else None
 
     def list_nodes(self) -> list[Node]:

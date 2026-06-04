@@ -25,6 +25,21 @@ def test_reconcile_add_update_remove(settings):
     assert s.get_node(a).id == a  # A kept its id across the update
 
 
+def test_reconcile_two_subs_same_server_get_independent_copies(settings):
+    # Two subscriptions with an identical server must each own their OWN node — sub2's
+    # reconcile must not steal/reassign sub1's row (identity is scoped per subscription).
+    s = _store(settings)
+    s1 = s.add_subscription(Subscription(id=None, name="a", url="u1"))
+    s2 = s.add_subscription(Subscription(id=None, name="b", url="u2"))
+    def server():
+        return Node(id=None, name="N", address="1.1.1.1", port=443, uuid="u")
+    reconcile(s, s1, [server()], active_node_id=None)
+    reconcile(s, s2, [server()], active_node_id=None)
+    a, b = s.list_nodes_for_sub(s1), s.list_nodes_for_sub(s2)
+    assert len(a) == 1 and len(b) == 1            # sub2 did not collapse into sub1
+    assert a[0].id != b[0].id                     # distinct rows, one per subscription
+
+
 def test_reconcile_protects_active_node(settings):
     s = _store(settings)
     sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
