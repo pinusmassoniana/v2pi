@@ -51,17 +51,26 @@ export interface TrafficHistoryResp { samples: number[][]; interval_ms: number; 
 export type BackupDoc = Record<string, any>;
 
 // --- Wave 2: tuning profiles ---
+export interface NoiseSpec { type: string; packet: string; delay: string; }
 export interface TuningProfile {
   id: number; name: string; fingerprint: string;
   frag_enabled: boolean; frag_packets: string; frag_length: string; frag_interval: string;
-  mux_enabled: boolean; doh_enabled: boolean; doh_url: string; quic: string; is_default: boolean;
+  mux_enabled: boolean; doh_enabled: boolean; doh_url: string; quic: string;
+  noise_enabled: boolean; noises: NoiseSpec[];
+  xhttp_padding: string; xmux_max_concurrency: string; xmux_max_connections: string;
+  mux_concurrency: string; xudp_proxy_udp443: string; alpn: string; tls_min: string; tls_max: string;
+  is_default: boolean; is_active: boolean; node_count: number;
 }
 export interface ProfileIn {
   name: string; fingerprint?: string;
   frag_enabled?: boolean; frag_packets?: string; frag_length?: string; frag_interval?: string;
   mux_enabled?: boolean; doh_enabled?: boolean; doh_url?: string; quic?: string;
+  noise_enabled?: boolean; noises?: NoiseSpec[];
+  xhttp_padding?: string; xmux_max_concurrency?: string; xmux_max_connections?: string;
+  mux_concurrency?: string; xudp_proxy_udp443?: string; alpn?: string; tls_min?: string; tls_max?: string;
 }
 export type ProfileUpdate = Partial<ProfileIn>;
+export interface ProfilePreset { name: string; title: string; fields: Record<string, any>; }
 
 // --- Wave 2: routing ---
 export interface RoutingRule { id: number; position: number; type: string; value: string; action: string; enabled: boolean; label: string; }
@@ -169,6 +178,9 @@ export const api = {
   updateProfile(id: number, patch: ProfileUpdate): Promise<TuningProfile> { return mutate("PATCH", `/profiles/${id}`, patch); },
   deleteProfile(id: number) { return mutate("DELETE", `/profiles/${id}`); },
   setDefaultProfile(id: number): Promise<TuningProfile> { return mutate("PUT", "/profiles/default", { id }); },
+  validateProfile(p: ProfileIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/profiles/validate", p); },
+  listProfilePresets(): Promise<ProfilePreset[]> { return req("/profiles/presets"); },
+  applyProfileActive(id: number): Promise<{ ok: boolean; node_id: number }> { return mutate("POST", `/profiles/${id}/apply-active`); },
 
   getRouting(): Promise<Routing> { return req("/routing"); },
   putRouting(r: RoutingIn): Promise<Routing> { return mutate("PUT", "/routing", r); },

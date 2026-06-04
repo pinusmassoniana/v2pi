@@ -8,6 +8,7 @@ from pi_gw_panel.api.schemas import (
     ImportNodesIn, ImportNodesOut, DetachIn, NodeValidateOut,
     SettingsOut, SettingsIn,
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
+    ProfileValidateOut, ProfilePresetInfo,
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     TrafficHistoryOut,
@@ -24,6 +25,7 @@ from pi_gw_panel.health.selection import best_node
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.xray_config.routing import PRESETS, preset_rules, validate_routing
+from pi_gw_panel.xray_config.tuning import resolve_profile, validate_profile, PROFILE_PRESETS
 from pi_gw_panel.xray_config.builder import build_config
 from pi_gw_panel.xray_config.validate import ConfigManager, validate_config
 from pi_gw_panel.config import SETTINGS_DEFAULTS
@@ -52,12 +54,36 @@ def _clamp_interval(sec: int) -> int:
 
 _PROFILE_FIELDS = ("id", "name", "fingerprint", "frag_enabled", "frag_packets",
                    "frag_length", "frag_interval", "mux_enabled", "doh_enabled",
-                   "doh_url", "quic")
+                   "doh_url", "quic", "noise_enabled", "noises", "xhttp_padding",
+                   "xmux_max_concurrency", "xmux_max_connections", "mux_concurrency",
+                   "xudp_proxy_udp443", "alpn", "tls_min", "tls_max")
 
 
-def _profile_out(p: TuningProfile, default_id: int | None) -> ProfileOut:
+def _profile_out(p: TuningProfile, default_id: int | None,
+                 active_pid: int | None = None, node_count: int = 0) -> ProfileOut:
     return ProfileOut(is_default=(default_id is not None and default_id == p.id),
+                      is_active=(active_pid is not None and active_pid == p.id),
+                      node_count=node_count,
                       **{f: getattr(p, f) for f in _PROFILE_FIELDS})
+
+
+def _active_resolved_pid(store) -> int | None:
+    """The profile id that governs the live tunnel right now — the active node's assigned
+    profile, or the default it inherits. None when no node is active."""
+    aid = store.get_setting("active_node_id")
+    if not aid:
+        return None
+    node = store.get_node(int(aid))
+    if node is None:
+        return None
+    p = resolve_profile(store, node)
+    return p.id if p else None
+
+
+def _reapply_or_502(state) -> None:
+    res = reapply_active_node(state)
+    if res is not None and not res.ok:
+        raise HTTPException(status_code=502, detail=res.error)
 
 
 def _rule_out(r) -> RoutingRuleOut:
@@ -336,21 +362,62 @@ def rollback(request: Request,
 
 
 # --- tuning profiles ---
-@router.get("/profiles", response_model=list[ProfileOut])
-def list_profiles(request: Request, _: None = Depends(require_auth)) -> list[ProfileOut]:
-    state = get_state(request)
+def _profiles_out(state) -> list[ProfileOut]:
     d = state.store.get_default_profile()
     did = d.id if d else None
-    return [_profile_out(p, did) for p in state.store.list_profiles()]
+    active_pid = _active_resolved_pid(state.store)
+    counts: dict[int, int] = {}
+    for n in state.store.list_nodes():
+        if n.tuning_profile_id is not None:
+            counts[n.tuning_profile_id] = counts.get(n.tuning_profile_id, 0) + 1
+    return [_profile_out(p, did, active_pid, counts.get(p.id, 0))
+            for p in state.store.list_profiles()]
+
+
+@router.get("/profiles", response_model=list[ProfileOut])
+def list_profiles(request: Request, _: None = Depends(require_auth)) -> list[ProfileOut]:
+    return _profiles_out(get_state(request))
+
+
+@router.get("/profiles/presets", response_model=list[ProfilePresetInfo])
+def profile_presets(request: Request, _: None = Depends(require_auth)) -> list[ProfilePresetInfo]:
+    return [ProfilePresetInfo(name=k, title=v["title"], fields=v["fields"])
+            for k, v in PROFILE_PRESETS.items()]
+
+
+@router.post("/profiles/validate", response_model=ProfileValidateOut)
+def validate_profile_ep(body: ProfileIn, request: Request,
+                        _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> ProfileValidateOut:
+    """TN7: structural check, plus an xray -test of a node using this profile when one exists."""
+    state = get_state(request)
+    prof = TuningProfile(id=None, **body.model_dump())
+    ok, err = validate_profile(prof)
+    if not ok:
+        return ProfileValidateOut(ok=False, error=err)
+    nodes = state.store.list_nodes()
+    if nodes:
+        aid = state.store.get_setting("active_node_id")
+        node = state.store.get_node(int(aid)) if aid else nodes[0]
+        if node is not None:
+            cfg = build_config(node, state.settings, profile=prof, tunneled_fetch=True)
+            ok2, out = validate_config(cfg, state.xray_bin or state.settings.xray_bin)
+            if not ok2:
+                return ProfileValidateOut(ok=False, error=out)
+    return ProfileValidateOut(ok=True)
 
 
 @router.post("/profiles", response_model=ProfileOut)
 def add_profile(body: ProfileIn, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> ProfileOut:
     state = get_state(request)
-    pid = state.store.add_profile(TuningProfile(id=None, **body.model_dump()))
+    prof = TuningProfile(id=None, **body.model_dump())
+    ok, err = validate_profile(prof)
+    if not ok:
+        raise HTTPException(status_code=422, detail=err)
+    pid = state.store.add_profile(prof)
     d = state.store.get_default_profile()
-    return _profile_out(state.store.get_profile(pid), d.id if d else None)
+    return _profile_out(state.store.get_profile(pid), d.id if d else None,
+                        _active_resolved_pid(state.store))
 
 
 @router.put("/profiles/default", response_model=ProfileOut)
@@ -360,8 +427,11 @@ def set_default_profile(body: DefaultProfileIn, request: Request,
     p = state.store.get_profile(body.id)
     if p is None:
         raise HTTPException(status_code=404, detail="profile not found")
+    before = _active_resolved_pid(state.store)
     state.store.set_default_profile(body.id)
-    return _profile_out(p, body.id)
+    if _active_resolved_pid(state.store) != before:   # active node inherits the default → re-apply
+        _reapply_or_502(state)
+    return _profile_out(p, body.id, _active_resolved_pid(state.store))
 
 
 @router.patch("/profiles/{profile_id}", response_model=ProfileOut)
@@ -373,9 +443,32 @@ def update_profile(profile_id: int, body: ProfileUpdate, request: Request,
         raise HTTPException(status_code=404, detail="profile not found")
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(p, k, v)
+    ok, err = validate_profile(p)
+    if not ok:
+        raise HTTPException(status_code=422, detail=err)
     state.store.update_profile(p)
+    if _active_resolved_pid(state.store) == profile_id:   # edited the live profile → re-apply (TB1)
+        _reapply_or_502(state)
     d = state.store.get_default_profile()
-    return _profile_out(state.store.get_profile(profile_id), d.id if d else None)
+    return _profile_out(state.store.get_profile(profile_id), d.id if d else None,
+                        _active_resolved_pid(state.store))
+
+
+@router.post("/profiles/{profile_id}/apply-active")
+def apply_profile_active(profile_id: int, request: Request,
+                         _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """TN6: assign this profile to the currently-active node and re-apply now (the 'panic' path)."""
+    state = get_state(request)
+    if state.store.get_profile(profile_id) is None:
+        raise HTTPException(status_code=404, detail="profile not found")
+    aid = state.store.get_setting("active_node_id")
+    node = state.store.get_node(int(aid)) if aid else None
+    if node is None:
+        raise HTTPException(status_code=409, detail="no active node")
+    node.tuning_profile_id = profile_id
+    state.store.update_node(node)
+    _reapply_or_502(state)
+    return {"ok": True, "node_id": node.id}
 
 
 @router.delete("/profiles/{profile_id}")
@@ -386,7 +479,10 @@ def delete_profile(profile_id: int, request: Request,
     if d is not None and d.id == profile_id:
         # the global default must always exist (nodes inherit it); reassign default first
         raise HTTPException(status_code=409, detail="cannot delete the default profile")
-    state.store.delete_profile(profile_id)
+    was_live = _active_resolved_pid(state.store) == profile_id   # active node uses it?
+    state.store.delete_profile(profile_id)                       # referencing nodes → default
+    if was_live:
+        _reapply_or_502(state)
     return {"ok": True}
 
 

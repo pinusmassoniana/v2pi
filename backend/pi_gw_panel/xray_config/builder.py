@@ -44,12 +44,30 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
                                      "publicKey": node.public_key, "shortId": node.short_id}
     else:
         tls: dict = {"serverName": node.sni, "fingerprint": fingerprint}
-        if node.alpn:
-            tls["alpn"] = [a.strip() for a in node.alpn.split(",") if a.strip()]
+        alpn = profile.alpn if profile is not None and profile.alpn else node.alpn
+        if alpn:
+            tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
+        if profile is not None and profile.tls_min:
+            tls["minVersion"] = profile.tls_min
+        if profile is not None and profile.tls_max:
+            tls["maxVersion"] = profile.tls_max
         stream["tlsSettings"] = tls
     if network == "xhttp":
-        stream["xhttpSettings"] = {k: getattr(node, k) for k in ("path", "host", "mode")
-                                   if getattr(node, k)}
+        xs: dict = {k: getattr(node, k) for k in ("path", "host", "mode") if getattr(node, k)}
+        if profile is not None:
+            extra: dict = {}
+            if profile.xhttp_padding:
+                extra["xPaddingBytes"] = profile.xhttp_padding
+            xmux: dict = {}
+            if profile.xmux_max_concurrency:
+                xmux["maxConcurrency"] = profile.xmux_max_concurrency
+            if profile.xmux_max_connections:
+                xmux["maxConnections"] = profile.xmux_max_connections
+            if xmux:
+                extra["xmux"] = xmux
+            if extra:
+                xs["extra"] = extra
+        stream["xhttpSettings"] = xs
 
     cfg = {
         "log": {"loglevel": "warning",
@@ -92,19 +110,29 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     proxy_out = cfg["outbounds"][0]
 
     if profile is not None:
-        # mux on/off — emitted whenever a profile is resolved (Wave-0 omits it).
-        proxy_out["mux"] = {"enabled": bool(profile.mux_enabled)}
+        # mux is invalid with XTLS Vision — only emit it for non-Vision (xhttp) outbounds (TC1).
+        if not node.flow:
+            mux: dict = {"enabled": bool(profile.mux_enabled)}
+            if profile.mux_enabled and profile.mux_concurrency.strip():
+                try:
+                    mux["concurrency"] = int(profile.mux_concurrency)
+                except ValueError:
+                    pass
+            if profile.mux_enabled and profile.xudp_proxy_udp443:
+                mux["xudpProxyUDP443"] = profile.xudp_proxy_udp443
+            proxy_out["mux"] = mux
 
-        # TLS fragmentation: a fragment freedom outbound that `proxy` dials through.
-        if profile.frag_enabled:
+        # Fragment + UDP noise: a freedom outbound the `proxy` dials through (dialerProxy).
+        if profile.frag_enabled or (profile.noise_enabled and profile.noises):
+            fset: dict = {}
+            if profile.frag_enabled:
+                fset["fragment"] = {"packets": profile.frag_packets,
+                                    "length": profile.frag_length,
+                                    "interval": profile.frag_interval}
+            if profile.noise_enabled and profile.noises:
+                fset["noises"] = profile.noises
             cfg["outbounds"].insert(1, {
-                "tag": "fragment",
-                "protocol": "freedom",
-                "settings": {"fragment": {
-                    "packets": profile.frag_packets,
-                    "length": profile.frag_length,
-                    "interval": profile.frag_interval,
-                }},
+                "tag": "fragment", "protocol": "freedom", "settings": fset,
                 "streamSettings": {"sockopt": {"mark": settings.egress_mark}},
             })
             proxy_out["streamSettings"]["sockopt"]["dialerProxy"] = "fragment"

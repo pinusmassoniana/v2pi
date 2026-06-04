@@ -57,11 +57,27 @@ def test_profile_fingerprint_overrides_node():
 def test_profile_fragmentation_and_mux():
     p = TuningProfile(id=1, name="p", frag_enabled=True, frag_packets="tlshello",
                       frag_length="100-200", frag_interval="10-20", mux_enabled=True)
-    cfg = build_config(_node(), Settings(), profile=p)
+    cfg = build_config(_node(), Settings(), profile=p)   # vision node
     frag = next(o for o in cfg["outbounds"] if o["tag"] == "fragment")
     assert frag["settings"]["fragment"]["packets"] == "tlshello"
     assert cfg["outbounds"][0]["streamSettings"]["sockopt"]["dialerProxy"] == "fragment"
-    assert cfg["outbounds"][0]["mux"] == {"enabled": True}
+    assert "mux" not in cfg["outbounds"][0]               # TC1: mux invalid with XTLS Vision
+    # mux IS emitted for a non-Vision (xhttp) node
+    xcfg = build_config(_node(transport="xhttp", network="xhttp", security="tls", flow=""),
+                        Settings(), profile=p)
+    assert xcfg["outbounds"][0]["mux"] == {"enabled": True}
+
+
+def test_profile_noises_and_xhttp_extra():
+    p = TuningProfile(id=1, name="p", noise_enabled=True,
+                      noises=[{"type": "rand", "packet": "50-150", "delay": "10-16"}],
+                      xhttp_padding="100-1000", xmux_max_concurrency="16")
+    cfg = build_config(_node(transport="xhttp", network="xhttp", security="tls", flow=""),
+                       Settings(), profile=p)
+    frag = next(o for o in cfg["outbounds"] if o["tag"] == "fragment")
+    assert frag["settings"]["noises"][0]["type"] == "rand"
+    extra = cfg["outbounds"][0]["streamSettings"]["xhttpSettings"]["extra"]
+    assert extra["xPaddingBytes"] == "100-1000" and extra["xmux"]["maxConcurrency"] == "16"
 
 
 def test_profile_doh_url_and_disable():

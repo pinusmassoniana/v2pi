@@ -58,9 +58,12 @@ _NODE_COLS = ("name", "address", "port", "uuid", "transport", "sni",
               "network", "security", "path", "host", "mode", "alpn",
               "subscription_id", "stale", "tuning_profile_id", "position")
 
+# Scalar profile columns (attr name == column name). `noises` is stored separately as JSON.
 _PROFILE_COLS = ("name", "fingerprint", "frag_enabled", "frag_packets", "frag_length",
-                 "frag_interval", "mux_enabled", "doh_enabled", "doh_url", "quic")
-_PROFILE_BOOL_COLS = {"frag_enabled", "mux_enabled", "doh_enabled"}
+                 "frag_interval", "mux_enabled", "doh_enabled", "doh_url", "quic",
+                 "noise_enabled", "xhttp_padding", "xmux_max_concurrency", "xmux_max_connections",
+                 "mux_concurrency", "xudp_proxy_udp443", "alpn", "tls_min", "tls_max")
+_PROFILE_BOOL_COLS = {"frag_enabled", "mux_enabled", "doh_enabled", "noise_enabled"}
 _INSERT_NODE = (
     f"INSERT INTO nodes ({', '.join(_NODE_COLS)}) "
     f"VALUES ({', '.join(['?'] * len(_NODE_COLS))})"
@@ -104,12 +107,22 @@ def _profile_values(p: TuningProfile) -> tuple:
 
 
 def _row_to_profile(row: sqlite3.Row) -> TuningProfile:
+    keys = row.keys()
+
+    def g(name, default=""):
+        return row[name] if name in keys else default
     return TuningProfile(
         id=row["id"], name=row["name"], fingerprint=row["fingerprint"],
         frag_enabled=bool(row["frag_enabled"]), frag_packets=row["frag_packets"],
         frag_length=row["frag_length"], frag_interval=row["frag_interval"],
         mux_enabled=bool(row["mux_enabled"]), doh_enabled=bool(row["doh_enabled"]),
         doh_url=row["doh_url"], quic=row["quic"],
+        noise_enabled=bool(g("noise_enabled", 0)),
+        noises=json.loads(g("noises_json", "[]") or "[]"),
+        xhttp_padding=g("xhttp_padding"), xmux_max_concurrency=g("xmux_max_concurrency"),
+        xmux_max_connections=g("xmux_max_connections"), mux_concurrency=g("mux_concurrency"),
+        xudp_proxy_udp443=g("xudp_proxy_udp443"), alpn=g("alpn"),
+        tls_min=g("tls_min"), tls_max=g("tls_max"),
     )
 
 
@@ -246,9 +259,11 @@ class NodeStore:
 
     # --- tuning profiles ---
     def add_profile(self, p: TuningProfile) -> int:
+        cols = _PROFILE_COLS + ("noises_json",)
         cur = self._conn.execute(
-            f"INSERT INTO tuning_profiles ({', '.join(_PROFILE_COLS)}) "
-            f"VALUES ({', '.join(['?'] * len(_PROFILE_COLS))})", _profile_values(p))
+            f"INSERT INTO tuning_profiles ({', '.join(cols)}) "
+            f"VALUES ({', '.join(['?'] * len(cols))})",
+            (*_profile_values(p), json.dumps(p.noises)))
         self._conn.commit()
         return int(cur.lastrowid)
 
@@ -263,9 +278,10 @@ class NodeStore:
 
     def update_profile(self, p: TuningProfile) -> None:
         assert p.id is not None
-        sets = ", ".join(f"{c} = ?" for c in _PROFILE_COLS)
+        cols = _PROFILE_COLS + ("noises_json",)
+        sets = ", ".join(f"{c} = ?" for c in cols)
         self._conn.execute(f"UPDATE tuning_profiles SET {sets} WHERE id = ?",
-                           (*_profile_values(p), p.id))
+                           (*_profile_values(p), json.dumps(p.noises), p.id))
         self._conn.commit()
 
     def delete_profile(self, profile_id: int) -> None:

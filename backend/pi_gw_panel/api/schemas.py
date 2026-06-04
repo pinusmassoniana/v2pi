@@ -213,6 +213,12 @@ class SettingsIn(BaseModel):
 
 
 # --- Wave 2: tuning profiles ---
+class NoiseSpec(BaseModel):
+    type: str = "rand"          # rand | str | base64 | hex
+    packet: str = "50-150"
+    delay: str = "10-16"
+
+
 class ProfileIn(BaseModel):
     name: str
     fingerprint: str = "chrome"
@@ -224,6 +230,16 @@ class ProfileIn(BaseModel):
     doh_enabled: bool = True
     doh_url: str = ""
     quic: str = "allow"
+    noise_enabled: bool = False
+    noises: list[NoiseSpec] = []
+    xhttp_padding: str = ""
+    xmux_max_concurrency: str = ""
+    xmux_max_connections: str = ""
+    mux_concurrency: str = ""
+    xudp_proxy_udp443: str = ""
+    alpn: str = ""
+    tls_min: str = ""
+    tls_max: str = ""
 
 
 class ProfileUpdate(BaseModel):
@@ -237,6 +253,16 @@ class ProfileUpdate(BaseModel):
     doh_enabled: bool | None = None
     doh_url: str | None = None
     quic: str | None = None
+    noise_enabled: bool | None = None
+    noises: list[NoiseSpec] | None = None
+    xhttp_padding: str | None = None
+    xmux_max_concurrency: str | None = None
+    xmux_max_connections: str | None = None
+    mux_concurrency: str | None = None
+    xudp_proxy_udp443: str | None = None
+    alpn: str | None = None
+    tls_min: str | None = None
+    tls_max: str | None = None
 
 
 class ProfileOut(BaseModel):
@@ -251,7 +277,30 @@ class ProfileOut(BaseModel):
     doh_enabled: bool
     doh_url: str
     quic: str
+    noise_enabled: bool = False
+    noises: list[NoiseSpec] = []
+    xhttp_padding: str = ""
+    xmux_max_concurrency: str = ""
+    xmux_max_connections: str = ""
+    mux_concurrency: str = ""
+    xudp_proxy_udp443: str = ""
+    alpn: str = ""
+    tls_min: str = ""
+    tls_max: str = ""
     is_default: bool = False
+    is_active: bool = False        # this profile governs the live tunnel right now
+    node_count: int = 0           # how many nodes use this profile explicitly
+
+
+class ProfileValidateOut(BaseModel):
+    ok: bool
+    error: str = ""
+
+
+class ProfilePresetInfo(BaseModel):
+    name: str
+    title: str
+    fields: dict
 
 
 class DefaultProfileIn(BaseModel):

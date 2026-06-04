@@ -196,9 +196,32 @@ def _migration_7(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE routing_rules ADD COLUMN label TEXT NOT NULL DEFAULT ''")
 
 
+def _migration_8(conn: sqlite3.Connection) -> None:
+    # Anti-DPI tuning knobs: freedom noises, xhttp padding/xmux, mux concurrency/xudp, tls alpn/version.
+    if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='tuning_profiles'"
+    ).fetchone():
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(tuning_profiles)").fetchall()}
+    for name, ddl in (
+        ("noise_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("noises_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("xhttp_padding", "TEXT NOT NULL DEFAULT ''"),
+        ("xmux_max_concurrency", "TEXT NOT NULL DEFAULT ''"),
+        ("xmux_max_connections", "TEXT NOT NULL DEFAULT ''"),
+        ("mux_concurrency", "TEXT NOT NULL DEFAULT ''"),
+        ("xudp_proxy_udp443", "TEXT NOT NULL DEFAULT ''"),
+        ("alpn", "TEXT NOT NULL DEFAULT ''"),
+        ("tls_min", "TEXT NOT NULL DEFAULT ''"),
+        ("tls_max", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE tuning_profiles ADD COLUMN {name} {ddl}")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
-               (5, _migration_5), (6, _migration_6), (7, _migration_7)]
+               (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

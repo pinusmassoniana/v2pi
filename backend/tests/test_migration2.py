@@ -19,7 +19,9 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "lat_history" in hcols2  # migration 6
     rcols = {r["name"] for r in conn.execute("PRAGMA table_info(routing_rules)").fetchall()}
     assert {"enabled", "label"} <= rcols  # migration 7
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(tuning_profiles)").fetchall()}
+    assert {"noise_enabled", "noises_json", "xhttp_padding", "alpn"} <= pcols  # migration 8
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

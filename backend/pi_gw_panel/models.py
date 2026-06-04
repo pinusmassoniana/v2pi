@@ -85,6 +85,17 @@ class TuningProfile:
     doh_enabled: bool = True
     doh_url: str = ""
     quic: str = "allow"  # allow | drop | proxy
+    # v1.4 anti-DPI additions
+    noise_enabled: bool = False
+    noises: list = field(default_factory=list)   # [{type, packet, delay}] on the fragment outbound
+    xhttp_padding: str = ""          # xhttpSettings.extra.xPaddingBytes (xhttp nodes)
+    xmux_max_concurrency: str = ""   # xhttpSettings.extra.xmux.maxConcurrency
+    xmux_max_connections: str = ""   # xhttpSettings.extra.xmux.maxConnections
+    mux_concurrency: str = ""        # mux.concurrency (non-Vision only)
+    xudp_proxy_udp443: str = ""      # mux.xudpProxyUDP443: "" | reject | allow | skip
+    alpn: str = ""                   # tlsSettings.alpn (tls-mode nodes), comma-separated
+    tls_min: str = ""                # tlsSettings.minVersion
+    tls_max: str = ""                # tlsSettings.maxVersion
 
 
 @dataclass
