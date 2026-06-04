@@ -31,6 +31,7 @@ class NodeIn(BaseModel):
     host: str = ""             # xhttp Host header
     mode: str = ""             # xhttp mode
     alpn: str = ""             # tls ALPN (comma-separated)
+    note: str = ""             # free-text operator note / label
 
 
 class NodeUpdate(BaseModel):
@@ -48,6 +49,7 @@ class NodeUpdate(BaseModel):
     host: str | None = None
     mode: str | None = None
     alpn: str | None = None
+    note: str | None = None
     tuning_profile_id: int | None = None
 
 
@@ -68,6 +70,7 @@ class NodeOut(BaseModel):
     host: str = ""
     mode: str = ""
     alpn: str = ""
+    note: str = ""
     subscription_id: int | None = None
     stale: bool = False
     tuning_profile_id: int | None = None

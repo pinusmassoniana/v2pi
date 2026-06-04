@@ -47,7 +47,7 @@ def _node_out(n: Node) -> NodeOut:
                    transport=n.transport, network=n.network, security=n.security,
                    sni=n.sni, public_key=n.public_key, short_id=n.short_id,
                    fingerprint=n.fingerprint, path=n.path, host=n.host, mode=n.mode, alpn=n.alpn,
-                   subscription_id=n.subscription_id, stale=n.stale,
+                   note=n.note, subscription_id=n.subscription_id, stale=n.stale,
                    tuning_profile_id=n.tuning_profile_id)
 
 
@@ -284,7 +284,7 @@ def add_node(body: NodeIn, request: Request,
                 uuid=body.uuid, transport=body.transport, security=body.security,
                 sni=body.sni, public_key=body.public_key, short_id=body.short_id,
                 fingerprint=body.fingerprint, path=body.path, host=body.host,
-                mode=body.mode, alpn=body.alpn)
+                mode=body.mode, alpn=body.alpn, note=body.note)
     nid = state.store.add_node(node)
     saved = state.store.get_node(nid)
     if saved is None:  # unreachable: lastrowid is valid right after a successful insert

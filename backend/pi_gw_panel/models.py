@@ -21,6 +21,7 @@ class Node:
     host: str = ""              # xhttp Host header
     mode: str = ""              # xhttp mode (e.g. stream-up)
     alpn: str = ""              # tls ALPN (comma-separated)
+    note: str = ""              # free-text operator note / label (searchable)
     subscription_id: int | None = None
     stale: bool = False
     tuning_profile_id: int | None = None

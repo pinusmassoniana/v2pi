@@ -3,13 +3,13 @@ export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   network: string; security: string;
   sni: string; public_key: string; short_id: string; fingerprint: string;
-  path: string; host: string; mode: string; alpn: string;
+  path: string; host: string; mode: string; alpn: string; note: string;
   subscription_id: number | null; stale: boolean; tuning_profile_id: number | null;
 }
 export interface NodeIn {
   name: string; address: string; port: number; uuid: string;
   transport?: string; security?: string; sni?: string; public_key?: string; short_id?: string;
-  fingerprint?: string; path?: string; host?: string; mode?: string; alpn?: string;
+  fingerprint?: string; path?: string; host?: string; mode?: string; alpn?: string; note?: string;
 }
 // tuning_profile_id is patch-only (assign a profile, or null to inherit the global default)
 export type NodeUpdate = Partial<NodeIn> & { tuning_profile_id?: number | null };

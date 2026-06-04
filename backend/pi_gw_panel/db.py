@@ -203,6 +203,13 @@ def _migration_7(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE routing_rules ADD COLUMN label TEXT NOT NULL DEFAULT ''")
 
 
+def _migration_9(conn: sqlite3.Connection) -> None:
+    # Per-node free-text operator note / label (searchable in the Nodes panel).
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    if "note" not in cols:
+        conn.execute("ALTER TABLE nodes ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+
+
 def _migration_8(conn: sqlite3.Connection) -> None:
     # Anti-DPI tuning knobs: freedom noises, xhttp padding/xmux, mux concurrency/xudp, tls alpn/version.
     if not conn.execute(
@@ -228,7 +235,8 @@ def _migration_8(conn: sqlite3.Connection) -> None:
 
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
-               (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8)]
+               (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
+               (9, _migration_9)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

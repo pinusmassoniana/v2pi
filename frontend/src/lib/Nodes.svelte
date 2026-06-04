@@ -3,6 +3,8 @@
   import Modal from "./Modal.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { serverNow } from "./status.svelte";
+  import { sparkPath } from "./dashboard";
 
   let nodes = $state<Node[]>([]);
   let health = $state<Record<number, NodeHealth>>({});
@@ -17,18 +19,35 @@
   let sortKey = $state<"pos" | "name" | "address" | "tcp" | "http">("pos");
   let sortDir = $state<1 | -1>(1);
   let selected = $state<Set<number>>(new Set());         // NN3 bulk selection
+  // N-E: row density, persisted
+  let dense = $state(typeof localStorage !== "undefined" && localStorage.getItem("nodes-density") === "1");
+  function toggleDensity() { dense = !dense; try { localStorage.setItem("nodes-density", dense ? "1" : "0"); } catch {} }
 
   let addOpen = $state(false);
   const blankForm = () => ({ name: "", address: "", port: 443, uuid: "", transport: "vision",
                             security: "reality", sni: "", public_key: "", short_id: "",
-                            fingerprint: "chrome", path: "", host: "", mode: "", alpn: "" });
+                            fingerprint: "chrome", path: "", host: "", mode: "", alpn: "", note: "" });
   let form = $state(blankForm());
   let editId = $state<number | null>(null);
   let edit = $state({ name: "", address: "", port: 443, uuid: "", transport: "vision",
                       security: "reality", sni: "", public_key: "", short_id: "",
-                      fingerprint: "chrome", path: "", host: "", mode: "", alpn: "",
+                      fingerprint: "chrome", path: "", host: "", mode: "", alpn: "", note: "",
                       tuning_profile_id: null as number | null });
   let validateMsg = $state("");
+
+  // compact action icons (legible SVGs vs the old ⤴/⧉ glyphs — A3)
+  const svg = (p: string) =>
+    `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const I = {
+    test: svg('<path d="M3 12h3l3 8 4-16 3 8h5"/>'),
+    edit: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
+    share: svg('<path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/>'),
+    clone: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+    trash: svg('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M6 6v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6"/>'),
+    up: svg('<path d="M18 15l-6-6-6 6"/>'),
+    down: svg('<path d="M6 9l6 6 6-6"/>'),
+    note: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+  };
 
   function setMsg(t: string, kind: "ok" | "err" = "ok") { msg = t; msgKind = kind; }
   function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
@@ -40,7 +59,7 @@
     : n.subscription_id === tab));
   const shown = $derived.by(() => {
     const q = query.trim().toLowerCase();
-    let list = q ? inScope.filter((n) => (n.name + " " + n.address).toLowerCase().includes(q)) : inScope;
+    let list = q ? inScope.filter((n) => (n.name + " " + n.address + " " + n.note).toLowerCase().includes(q)) : inScope;
     const cmp = (a: Node, b: Node) => {
       const h = (n: Node) => health[n.id];
       switch (sortKey) {
@@ -54,13 +73,15 @@
     return sortKey === "pos" ? list : [...list].sort((a, b) => cmp(a, b) * sortDir);
   });
   const scope = $derived(tab === "servers" ? "servers" : tab === null ? undefined : String(tab));
+  // C2: reordering is only coherent over the full, unfiltered scope in pos order
+  const canReorder = $derived(tab === "servers" && sortKey === "pos" && query.trim() === "");
 
   // --- helpers ---
   function relTime(iso: string | number | null): string {
     if (!iso) return "—";
     const t = typeof iso === "number" ? iso * 1000 : new Date(iso).getTime();
     if (isNaN(t)) return String(iso);
-    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    const s = Math.max(0, Math.round((serverNow() - t) / 1000));   // C1: Pi-clock aligned
     if (s < 60) return `${s}s ago`;
     if (s < 3600) return `${Math.round(s / 60)}m ago`;
     if (s < 86400) return `${Math.round(s / 3600)}h ago`;
@@ -68,15 +89,9 @@
   }
   function uptime(since: number | null | undefined): string {
     if (!since) return "";
-    const s = Math.max(0, Math.round(Date.now() / 1000 - since));
+    const s = Math.max(0, Math.round(serverNow() / 1000 - since));   // C1
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
     return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
-  }
-  function spark(hist: number[] | undefined, w = 56, h = 14): string {
-    if (!hist || hist.length < 2) return "";
-    const max = Math.max(...hist), min = Math.min(...hist), range = max - min || 1;
-    const step = w / (hist.length - 1);
-    return hist.map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`).join(" ");
   }
   function vlessUri(n: Node): string {
     const flow = n.transport === "vision" ? "xtls-rprx-vision" : "";
@@ -107,6 +122,15 @@
         tab = ss[0]?.id ?? "servers";
     } catch (err) { setMsg(errText(err, "load failed"), "err"); }
   }
+  // D1: connect/disconnect change only nodes + status + health, not profiles/subs/settings
+  async function refreshNodes() {
+    try {
+      const [ns, hs, st] = await Promise.all([api.listNodes(), api.listNodeHealth(), api.getStatus()]);
+      nodes = ns;
+      health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
+      status = st;
+    } catch { /* transient */ }
+  }
   async function pollHealth() {
     try {
       const [hs, st] = await Promise.all([api.listNodeHealth(), api.getStatus()]);
@@ -126,7 +150,7 @@
     edit = { name: n.name, address: n.address, port: n.port, uuid: n.uuid, transport: n.transport,
              security: n.security, sni: n.sni, public_key: n.public_key, short_id: n.short_id,
              fingerprint: n.fingerprint, path: n.path, host: n.host, mode: n.mode, alpn: n.alpn,
-             tuning_profile_id: n.tuning_profile_id };
+             note: n.note, tuning_profile_id: n.tuning_profile_id };
   }
   async function saveEdit(e: Event) {
     e.preventDefault();
@@ -138,7 +162,7 @@
     form = { name: n.name + " copy", address: n.address, port: n.port, uuid: n.uuid,
              transport: n.transport, security: n.security, sni: n.sni, public_key: n.public_key,
              short_id: n.short_id, fingerprint: n.fingerprint, path: n.path, host: n.host,
-             mode: n.mode, alpn: n.alpn };
+             mode: n.mode, alpn: n.alpn, note: n.note };
     validateMsg = ""; addOpen = true;
   }
   async function del(n: Node) {
@@ -154,13 +178,13 @@
   let applyingId = $state<number | null>(null);   // NF2
   async function connect(id: number) {
     applyingId = id;
-    try { await api.apply(id); await refresh(); }
+    try { await api.apply(id); await refreshNodes(); }
     catch (err) { setMsg(errText(err, "connect failed"), "err"); }
     finally { applyingId = null; }
   }
   async function disconnect(id: number) {
     applyingId = id;
-    try { await api.disconnect(id); await refresh(); }
+    try { await api.disconnect(id); await refreshNodes(); }
     catch (err) { setMsg(errText(err, "disconnect failed"), "err"); }
     finally { applyingId = null; }
   }
@@ -269,11 +293,12 @@
 </div>
 
 <div class="ping-bar">
-  <input class="input search" bind:value={query} placeholder="search name / address…" />
+  <input class="input search" bind:value={query} placeholder="search name / address / note…" />
   <button class="btn" onclick={() => pingAll("tcp")} disabled={pinging !== null}>{pinging === "tcp" ? "TCP…" : "TCP ping"}</button>
   <button class="btn" onclick={() => pingAll("http")} disabled={pinging !== null}>{pinging === "http" ? "HTTP…" : "HTTP ping"}</button>
   <button class="btn" onclick={testAllReal} disabled={testAllN > 0 || shown.length === 0} title="Real request through every node in this group (sequential)">{testAllN > 0 ? `Testing ${testAllN}…` : "Test all (real)"}</button>
   <button class="btn" onclick={connectBest} disabled={connectingBest || shown.length === 0} title="Connect to the healthiest node here">{connectingBest ? "Connecting…" : "Connect best"}</button>
+  <button class="btn btn-ghost density" onclick={toggleDensity} aria-pressed={dense} title="Toggle row density">{dense ? "Comfortable" : "Compact"}</button>
 </div>
 
 {#if selIds.length}
@@ -296,59 +321,62 @@
   {:else}<span class="hp-none">—</span>{/if}
 {/snippet}
 {#snippet healthCells(h: NodeHealth | undefined)}
-  <td>{@render hpill(h?.last_tcp_ok, h?.last_tcp_ms)}</td>
-  <td>{@render hpill(h?.last_http_ok, h?.last_http_ms)}</td>
-  <td>{@render hpill(h?.last_real_ok, h?.last_real_ms)}</td>
-  <td class="egress mono">{h?.egress_ip ?? "—"}</td>
-  <td class="trend">
+  <td data-label="TCP">{@render hpill(h?.last_tcp_ok, h?.last_tcp_ms)}</td>
+  <td data-label="HTTP">{@render hpill(h?.last_http_ok, h?.last_http_ms)}</td>
+  <td data-label="real">{@render hpill(h?.last_real_ok, h?.last_real_ms)}</td>
+  <td class="egress mono col-egress" data-label="egress">{h?.egress_ip ?? "—"}</td>
+  <td class="trend col-trend" data-label="trend">
     {#if h && h.lat_history && h.lat_history.length > 1}
-      <svg width="56" height="14" viewBox="0 0 56 14" preserveAspectRatio="none"><polyline points={spark(h.lat_history)} fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      <svg width="56" height="14" viewBox="0 0 56 14" preserveAspectRatio="none"><path d={sparkPath(h.lat_history, 56, 14)} fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
     {:else}<span class="hp-none">—</span>{/if}
   </td>
-  <td class="muted small" title={h?.checked_at ?? ""}>{relTime(h?.checked_at ?? null)}</td>
+  <td class="muted small col-checked" data-label="checked" title={h?.checked_at ?? ""}>{relTime(h?.checked_at ?? null)}</td>
 {/snippet}
 
 {#snippet sortTh(key: typeof sortKey, label: string)}
-  <th class="sortable" onclick={() => { if (sortKey === key) sortDir = (sortDir * -1) as 1 | -1; else { sortKey = key; sortDir = 1; } }}>
-    {label}{#if sortKey === key}<span class="caret">{sortDir === 1 ? "▲" : "▼"}</span>{/if}
+  <th class="sortable" aria-sort={sortKey === key ? (sortDir === 1 ? "ascending" : "descending") : "none"}>
+    <button type="button" class="th-sort" onclick={() => { if (sortKey === key) sortDir = (sortDir * -1) as 1 | -1; else { sortKey = key; sortDir = 1; } }}>
+      {label}{#if sortKey === key}<span class="caret">{sortDir === 1 ? "▲" : "▼"}</span>{/if}
+    </button>
   </th>
 {/snippet}
 
 <div class="card">
-  <div class="table-wrap"><table class="table">
+  <div class="table-wrap"><table class="table nodes" class:dense>
     <thead><tr>
       <th class="ck"><input type="checkbox" checked={shown.length > 0 && selIds.length === shown.length} onchange={(e) => e.currentTarget.checked ? selectAllShown() : clearSel()} aria-label="select all" /></th>
-      <th>id</th>{@render sortTh("name", "name")}{@render sortTh("address", "address")}<th>port</th><th>transport</th>
-      {@render sortTh("tcp", "TCP")}{@render sortTh("http", "HTTP")}<th>real</th><th>egress</th><th>trend</th><th>checked</th><th></th>
+      <th class="col-id">id</th>{@render sortTh("name", "name")}{@render sortTh("address", "address")}<th class="col-port">port</th><th class="col-transport">transport</th>
+      {@render sortTh("tcp", "TCP")}{@render sortTh("http", "HTTP")}<th>real</th><th class="col-egress">egress</th><th class="col-trend">trend</th><th class="col-checked">checked</th><th><span class="sr-only">actions</span></th>
     </tr></thead>
     <tbody>
       {#each shown as n, i (n.id)}
         <tr class:stale={n.stale} class:active={n.id === activeId}>
-          <td class="ck"><input type="checkbox" checked={selected.has(n.id)} onchange={() => toggleSel(n.id)} aria-label="select" /></td>
-          <td>{n.id}</td>
-          <td>
-            {n.name}
+          <td class="ck" data-label=""><input type="checkbox" checked={selected.has(n.id)} onchange={() => toggleSel(n.id)} aria-label={`select ${n.name}`} /></td>
+          <td class="col-id" data-label="id">{n.id}</td>
+          <td class="col-name" data-label="name">
+            <span class="nm">{n.name}</span>
             {#if n.stale}<span class="badge stale-b" title="Vanished from its subscription; kept because it was active or for history">stale</span>{/if}
             {#if n.id === activeId}<span class="connected">● connected{#if status?.active_since} · {uptime(status.active_since)}{/if}</span>{/if}
             {#if n.id === activeId && (health[n.id]?.fail_count ?? 0) > 0}<span class="badge warn-b" title="Consecutive real-request failures (auto-failover counter)">fail {health[n.id]?.fail_count}</span>{/if}
+            {#if n.note}<span class="note" title={n.note}>{@html I.note}{n.note}</span>{/if}
           </td>
-          <td>{n.address}</td><td>{n.port}</td><td>{n.transport}{n.security === "tls" ? "·tls" : ""}</td>
+          <td data-label="address">{n.address}</td><td class="col-port" data-label="port">{n.port}</td><td class="col-transport" data-label="transport">{n.transport}{n.security === "tls" ? "·tls" : ""}</td>
           {@render healthCells(health[n.id])}
-          <td class="actions">
-            {#if tab === "servers" && sortKey === "pos"}
-              <button class="btn ord" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="up">▲</button>
-              <button class="btn ord" title="Move down" onclick={() => move(i, 1)} disabled={i === shown.length - 1} aria-label="down">▼</button>
+          <td class="actions" data-label="">
+            {#if canReorder}
+              <button class="btn iconbtn ord" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">{@html I.up}</button>
+              <button class="btn iconbtn ord" title="Move down" onclick={() => move(i, 1)} disabled={i === shown.length - 1} aria-label="move down">{@html I.down}</button>
             {/if}
             {#if n.id === activeId}
               <button class="btn" onclick={() => disconnect(n.id)} disabled={applyingId === n.id}>{applyingId === n.id ? "…" : "Disconnect"}</button>
             {:else}
               <button class="btn btn-primary" onclick={() => connect(n.id)} disabled={applyingId === n.id}>{applyingId === n.id ? "…" : "Connect"}</button>
             {/if}
-            <button class="btn t-btn" title="Test this node — TCP + HTTP + real through it" onclick={() => probeNode(n.id)} disabled={probingId === n.id}>{probingId === n.id ? "…" : "Test"}</button>
-            <button class="btn" onclick={() => startEdit(n)}>Edit</button>
-            <button class="btn" title="Export / share" aria-label="Export / share" onclick={() => (exportNode = n)}>⤴</button>
-            <button class="btn" title="Clone" aria-label="Clone" onclick={() => cloneNode(n)}>⧉</button>
-            {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n)}>Delete</button>{/if}
+            <button class="btn iconbtn t-btn" title="Test — TCP + HTTP + real through this node" aria-label="Test node" onclick={() => probeNode(n.id)} disabled={probingId === n.id}>{#if probingId === n.id}…{:else}{@html I.test}{/if}</button>
+            <button class="btn iconbtn" title="Edit" aria-label="Edit node" onclick={() => startEdit(n)}>{@html I.edit}</button>
+            <button class="btn iconbtn" title="Export / share" aria-label="Export / share" onclick={() => (exportNode = n)}>{@html I.share}</button>
+            <button class="btn iconbtn" title="Clone" aria-label="Clone node" onclick={() => cloneNode(n)}>{@html I.clone}</button>
+            {#if tab === "servers"}<button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete node" onclick={() => del(n)}>{@html I.trash}</button>{/if}
           </td>
         </tr>
       {/each}
@@ -384,6 +412,7 @@
         <input class="input" bind:value={form.host} placeholder="xhttp host" />
         <input class="input" bind:value={form.mode} placeholder="xhttp mode (optional)" />
       {/if}
+      <input class="input note-input" bind:value={form.note} placeholder="note / label (optional)" />
       {#if validateMsg}<div class="vmsg" class:bad={validateMsg.startsWith("✗")}>{validateMsg}</div>{/if}
       <div class="form-actions">
         <button class="btn btn-primary">Add server</button>
@@ -445,6 +474,7 @@
         <label class="field"><span>xhttp host</span><input class="input" bind:value={edit.host} /></label>
         <label class="field"><span>xhttp mode</span><input class="input" bind:value={edit.mode} /></label>
       {/if}
+      <label class="field note-field"><span>note / label</span><input class="input" bind:value={edit.note} placeholder="e.g. paid until July · fast EU" /></label>
       <label class="field"><span>tuning profile</span>
         <select class="input" value={edit.tuning_profile_id === null ? "" : String(edit.tuning_profile_id)}
                 onchange={(e) => (edit.tuning_profile_id = e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}>
@@ -469,20 +499,38 @@
   .switcher .import-btn { margin-left: auto; }
   .ping-bar { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; flex-wrap: wrap; align-items: center; }
   .ping-bar .search { max-width: 16rem; }
-  .bulk { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; padding: 0.45rem 0.7rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
-  .actions { white-space: nowrap; display: flex; gap: 0.3rem; flex-wrap: wrap; }
-  .t-btn { font-weight: 700; }
-  .ord { min-width: 1.7rem; padding-left: 0.4rem; padding-right: 0.4rem; font-size: 0.72rem; }
+  .ping-bar .density { margin-left: auto; }
+  .bulk { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; padding: 0.45rem 0.7rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); flex-wrap: wrap; }
+
+  /* compact, single-row action cell (A2) — icon buttons keep the column narrow */
+  .actions { white-space: nowrap; display: flex; gap: 0.25rem; flex-wrap: nowrap; align-items: center; }
+  .iconbtn { padding: 0.32rem; display: inline-grid; place-items: center; line-height: 0; }
+  .iconbtn :global(svg) { display: block; }
+  .ord { color: var(--muted); }
+  .t-btn { color: var(--accent); }
   .ck { width: 1.6rem; text-align: center; }
-  .sortable { cursor: pointer; user-select: none; white-space: nowrap; }
-  .caret { font-size: 0.6rem; margin-left: 0.15rem; }
+
+  /* keyboard- and SR-friendly sort headers (B1) */
+  .sortable { white-space: nowrap; padding: 0; }
+  .th-sort {
+    width: 100%; background: none; border: none; cursor: pointer; user-select: none;
+    color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit;
+    padding: 0.5rem 0.6rem; display: inline-flex; align-items: center; gap: 0.15rem;
+  }
+  .th-sort:hover { color: var(--text); }
+  .th-sort:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent-ring); border-radius: var(--radius-sm); }
+  .caret { font-size: 0.6rem; }
+
   tr.stale { opacity: 0.55; }
   tr.active td { background: var(--accent-soft); }
   tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .nm { font-weight: 500; }
   .badge { margin-left: 0.4rem; font-size: 0.62rem; font-weight: 700; padding: 0.02rem 0.35rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
   .stale-b { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
   .warn-b { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
   .connected { margin-left: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; vertical-align: middle; }
+  .note { display: inline-flex; align-items: center; gap: 0.22rem; margin-left: 0.5rem; max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.74rem; }
+  .note :global(svg) { width: 13px; height: 13px; flex: none; opacity: 0.7; }
   .hpill { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.08rem 0.45rem; border-radius: 999px; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.74rem; font-weight: 500; }
   .hpill small { opacity: 0.65; margin-left: 0.05rem; }
   .hpill .hp-dot { width: 0.42rem; height: 0.42rem; border-radius: 50%; flex: none; }
@@ -497,10 +545,58 @@
   .empty { text-align: center; padding: 1.2rem; }
   .fo { font-size: 0.74rem; margin-top: 0.5rem; }
   .grid-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.6rem; }
+  .grid-form .note-input, .grid-form .note-field { grid-column: 1 / -1; }
   .form-actions { grid-column: 1 / -1; display: flex; gap: 0.5rem; }
   .field { display: grid; gap: 0.2rem; }
   .vmsg { grid-column: 1 / -1; font-family: var(--mono); font-size: 0.78rem; color: var(--success); white-space: pre-wrap; }
   .vmsg.bad { color: var(--danger); }
   .import { display: grid; gap: 0.7rem; }
   .import .ta { font-family: var(--mono); font-size: 0.8rem; width: 100%; resize: vertical; }
+
+  /* density toggle (N-E) */
+  .table.dense :global(th), .table.dense :global(td) { padding-top: 0.28rem; padding-bottom: 0.28rem; }
+  .table.dense .th-sort { padding-top: 0.28rem; padding-bottom: 0.28rem; }
+
+  /* sticky header during long-list vertical scroll (N-B). Offset by the app's sticky topbar
+     (~2.9rem) so it parks just below it rather than hiding behind it; z below the topbar's. */
+  .nodes :global(thead th) { position: sticky; top: 2.9rem; z-index: 1; background: var(--surface); }
+
+  /* responsive column hiding (A1) — between the desktop table and the phone card view.
+     Each breakpoint drops lower-priority columns; name · address · health · actions stay. */
+  @media (max-width: 1100px) and (min-width: 601px) {
+    .nodes .col-id, .nodes .col-port, .nodes .col-transport { display: none; }
+  }
+  @media (max-width: 880px) and (min-width: 601px) {
+    .nodes .col-trend, .nodes .col-checked { display: none; }
+  }
+  @media (max-width: 740px) and (min-width: 601px) {
+    .nodes .col-egress { display: none; }
+  }
+
+  /* phone card layout (N-A) — each node becomes a stacked card, all fields shown with labels */
+  @media (max-width: 600px) {
+    .nodes, .nodes :global(thead), .nodes :global(tbody), .nodes :global(tr), .nodes :global(td) { display: block; }
+    .nodes :global(thead) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .nodes :global(tbody tr) {
+      border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 0.6rem;
+      padding: 0.3rem 0.2rem; background: var(--surface);
+    }
+    .nodes :global(tbody tr.active) { box-shadow: inset 3px 0 0 var(--accent); }
+    .nodes :global(td) {
+      display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+      border: none; padding: 0.32rem 0.7rem;
+    }
+    .nodes :global(td)::before {
+      content: attr(data-label); color: var(--faint); font-size: 0.66rem; font-weight: 650;
+      text-transform: uppercase; letter-spacing: 0.05em; flex: none;
+    }
+    .nodes :global(td[data-label=""])::before { content: none; }
+    .nodes .col-name { display: block; padding-top: 0.5rem; }
+    .nodes .col-name::before { content: none; }            /* name is the card title, no label */
+    .nodes .col-name .nm { font-size: 0.95rem; font-weight: 600; }
+    .nodes .col-name .note { max-width: none; white-space: normal; margin-left: 0; margin-top: 0.2rem; }
+    .nodes .actions { justify-content: flex-start; flex-wrap: wrap; padding-top: 0.5rem; }
+    .nodes .ck { justify-content: flex-start; }
+    .nodes :global(.empty) { display: block; }
+  }
 </style>

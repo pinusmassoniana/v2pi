@@ -55,7 +55,7 @@ class _SafeConn:
 
 _NODE_COLS = ("name", "address", "port", "uuid", "transport", "sni",
               "public_key", "short_id", "fingerprint", "flow",
-              "network", "security", "path", "host", "mode", "alpn",
+              "network", "security", "path", "host", "mode", "alpn", "note",
               "subscription_id", "stale", "tuning_profile_id", "position")
 
 # Scalar profile columns (attr name == column name). `noises` is stored separately as JSON.
@@ -82,7 +82,7 @@ def _row_to_node(row: sqlite3.Row) -> Node:
         public_key=row["public_key"], short_id=row["short_id"],
         fingerprint=row["fingerprint"], flow=row["flow"],
         network=row["network"], security=row["security"], path=row["path"],
-        host=row["host"], mode=row["mode"], alpn=row["alpn"],
+        host=row["host"], mode=row["mode"], alpn=row["alpn"], note=row["note"],
         subscription_id=row["subscription_id"], stale=bool(row["stale"]),
         tuning_profile_id=row["tuning_profile_id"], position=row["position"],
     )
