@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, ApiError, type RoutingRuleIn, type PresetInfo } from "./api";
+  import { confirmDialog } from "./confirm.svelte";
 
   type Row = RoutingRuleIn & { uid: number; enabled: boolean; label: string };
   let _uid = 0;
@@ -59,7 +60,7 @@
     rules = next;
   }
   async function save() {
-    if (defaultAction === "block" && !confirm("Default action is BLOCK — all non-matching traffic from the segment will be dropped. Continue?"))
+    if (defaultAction === "block" && !(await confirmDialog("Default action is BLOCK — all non-matching traffic from the segment will be dropped. Continue?")))
       return;
     try {
       const r = await api.putRouting({ rules: strip(nonEmpty), default_action: defaultAction, domain_strategy: domainStrategy });
@@ -82,8 +83,8 @@
       validateMsg = r.ok ? "✓ ruleset valid" : `✗ ${r.error}`;
     } catch (err) { validateMsg = errText(err, "validate failed"); }
   }
-  function resetRules() {
-    if (!confirm("Reset to the default ruleset (no rules, default = proxy)?")) return;
+  async function resetRules() {
+    if (!(await confirmDialog("Reset to the default ruleset (no rules, default = proxy)?"))) return;
     rules = []; defaultAction = "proxy"; domainStrategy = "IPIfNonMatch";
   }
   function exportJSON() {
@@ -140,11 +141,11 @@
   $effect(() => { load(); });
 </script>
 
-{#if msg}<p class="msg" class:err={msgKind === "err"}>{msg}{#if dirty} · <span class="dirty">unsaved changes</span>{/if}</p>{/if}
+{#if msg || dirty}<p class="msg" class:err={msgKind === "err"} role={msgKind === "err" ? "alert" : "status"} aria-live="polite">{msg}{#if dirty} · <span class="dirty">unsaved changes</span>{/if}</p>{/if}
 
 <div class="card">
   <h3>Routing rules <small class="muted">matched top-to-bottom · private IPs always go direct first</small></h3>
-  <table class="table">
+  <div class="table-wrap"><table class="table">
     <thead><tr><th>#</th><th>on</th><th>type</th><th>value</th><th>action</th><th>label</th><th></th></tr></thead>
     <tbody>
       <tr class="anchor"><td>—</td><td></td><td>ip</td><td>private ranges</td><td>direct</td><td class="muted">implicit, always first</td><td></td></tr>
@@ -180,7 +181,7 @@
       {/if}
       <tr class="anchor"><td>—</td><td></td><td>all</td><td>everything else</td><td>{defaultAction}</td><td class="muted">default catch-all, always last</td><td></td></tr>
     </tbody>
-  </table>
+  </table></div>
   <datalist id="geo-tokens">{#each GEO_TOKENS as t}<option value={t}></option>{/each}</datalist>
   <p class="note muted">DNS / QUIC / stats rules are injected automatically when those features are enabled.</p>
 
@@ -246,7 +247,6 @@
   .vmsg { font-family: var(--mono); font-size: 0.8rem; color: var(--success); margin-top: 0.5rem; white-space: pre-wrap; }
   .vmsg.bad { color: var(--danger); }
   .dirty { color: var(--danger); font-weight: 600; }
-  .msg.err { color: var(--danger); }
   .tester { margin-top: 0.8rem; }
   .trow { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .trow .input { max-width: 22rem; }

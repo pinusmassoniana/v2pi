@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api, ApiError, type Node, type NodeHealth, type TuningProfile, type Status, type Subscription, type Settings } from "./api";
   import Modal from "./Modal.svelte";
+  import Alert from "./Alert.svelte";
+  import { confirmDialog } from "./confirm.svelte";
 
   let nodes = $state<Node[]>([]);
   let health = $state<Record<number, NodeHealth>>({});
@@ -140,7 +142,7 @@
     validateMsg = ""; addOpen = true;
   }
   async function del(n: Node) {
-    if (!confirm(`Delete server “${n.name}” (${n.address})?`)) return;
+    if (!(await confirmDialog(`Delete server “${n.name}” (${n.address})?`))) return;
     try { await api.deleteNode(n.id); await refresh(); }
     catch (err) { setMsg(errText(err, "delete failed"), "err"); }
   }
@@ -225,7 +227,7 @@
   function clearSel() { selected = new Set(); }
   const selIds = $derived([...selected].filter((id) => shown.some((n) => n.id === id)));
   async function bulkDelete() {
-    if (!selIds.length || !confirm(`Delete ${selIds.length} server(s)?`)) return;
+    if (!selIds.length || !(await confirmDialog(`Delete ${selIds.length} server(s)?`))) return;
     try { for (const id of selIds) await api.deleteNode(id); clearSel(); await refresh(); }
     catch (err) { setMsg(errText(err, "bulk delete failed"), "err"); }
   }
@@ -253,13 +255,13 @@
   const failoverArmed = $derived(settings?.failover_enabled ?? false);
 </script>
 
-{#if msg}<p class="msg" class:err={msgKind === "err"}>{msg}</p>{/if}
+<Alert {msg} kind={msgKind} />
 
 <div class="switcher">
   {#each subs as s (s.id)}
-    <button class="tab" class:active={tab === s.id} onclick={() => { tab = s.id; clearSel(); }}>{s.name}</button>
+    <button class="tab" class:active={tab === s.id} aria-current={tab === s.id ? "true" : undefined} onclick={() => { tab = s.id; clearSel(); }}>{s.name}</button>
   {/each}
-  <button class="tab" class:active={tab === "servers"} onclick={() => { tab = "servers"; clearSel(); }}>Servers</button>
+  <button class="tab" class:active={tab === "servers"} aria-current={tab === "servers" ? "true" : undefined} onclick={() => { tab = "servers"; clearSel(); }}>Servers</button>
   {#if tab === "servers"}
     <button class="btn import-btn" onclick={() => (importOpen = true)}>Import</button>
     <button class="btn btn-primary" onclick={() => { form = blankForm(); validateMsg = ""; addOpen = true; }}>+ Add server</button>
@@ -313,7 +315,7 @@
 {/snippet}
 
 <div class="card">
-  <table class="table">
+  <div class="table-wrap"><table class="table">
     <thead><tr>
       <th class="ck"><input type="checkbox" checked={shown.length > 0 && selIds.length === shown.length} onchange={(e) => e.currentTarget.checked ? selectAllShown() : clearSel()} aria-label="select all" /></th>
       <th>id</th>{@render sortTh("name", "name")}{@render sortTh("address", "address")}<th>port</th><th>transport</th>
@@ -344,8 +346,8 @@
             {/if}
             <button class="btn t-btn" title="Test this node — TCP + HTTP + real through it" onclick={() => probeNode(n.id)} disabled={probingId === n.id}>{probingId === n.id ? "…" : "Test"}</button>
             <button class="btn" onclick={() => startEdit(n)}>Edit</button>
-            <button class="btn" title="Export / clone" onclick={() => (exportNode = n)}>⤴</button>
-            <button class="btn" title="Clone" onclick={() => cloneNode(n)}>⧉</button>
+            <button class="btn" title="Export / share" aria-label="Export / share" onclick={() => (exportNode = n)}>⤴</button>
+            <button class="btn" title="Clone" aria-label="Clone" onclick={() => cloneNode(n)}>⧉</button>
             {#if tab === "servers"}<button class="btn btn-danger" onclick={() => del(n)}>Delete</button>{/if}
           </td>
         </tr>
@@ -354,7 +356,7 @@
         <tr><td colspan="13" class="muted empty">No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}</td></tr>
       {/if}
     </tbody>
-  </table>
+  </table></div>
 </div>
 
 {#if status?.last_failover_at || failoverArmed}
@@ -501,5 +503,4 @@
   .vmsg.bad { color: var(--danger); }
   .import { display: grid; gap: 0.7rem; }
   .import .ta { font-family: var(--mono); font-size: 0.8rem; width: 100%; resize: vertical; }
-  .msg.err { color: var(--danger); }
 </style>

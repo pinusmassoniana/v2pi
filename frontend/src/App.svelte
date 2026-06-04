@@ -8,6 +8,7 @@
   import Routing from "./lib/Routing.svelte";
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
+  import ConfirmModal from "./lib/ConfirmModal.svelte";
   import { api, type Status } from "./lib/api";
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
@@ -80,10 +81,14 @@
     authed = false;
     view = "dashboard";
   }
+
+  // a11y: move focus to the page heading when the view changes so SR users hear the new screen
+  let titleEl = $state<HTMLElement>();
+  $effect(() => { view; titleEl?.focus(); });
 </script>
 
 {#if !ready}
-  <p class="boot">…</p>
+  <div class="boot"><span class="spinner" role="status" aria-label="Loading"></span></div>
 {:else if needsSetup}
   <Setup onDone={() => { needsSetup = false; authed = true; }} />
 {:else if authed}
@@ -95,7 +100,8 @@
       </div>
       <nav>
         {#each tabs as t (t.id)}
-          <button class="nav-item" class:active={view === t.id} onclick={() => (view = t.id)}>
+          <button class="nav-item" class:active={view === t.id} onclick={() => (view = t.id)}
+                  aria-label={t.label} aria-current={view === t.id ? "page" : undefined}>
             {@html icons[t.id]}<span>{t.label}</span>
           </button>
         {/each}
@@ -110,7 +116,7 @@
     </aside>
     <div class="content">
       <header class="topbar">
-        <h1 class="page-title">{tabs.find((t) => t.id === view)?.label}</h1>
+        <h1 class="page-title" tabindex="-1" bind:this={titleEl}>{tabs.find((t) => t.id === view)?.label}</h1>
         <button class="btn-ghost icon-btn" onclick={toggleThemeNow} aria-label="Toggle theme" title="Toggle theme">
           {@html theme === "dark" ? icons.sun : icons.moon}
         </button>
@@ -133,12 +139,14 @@
       </main>
     </div>
   </div>
+  <ConfirmModal />
 {:else}
   <Login onLogin={() => (authed = true)} />
 {/if}
 
 <style>
-  .boot { padding: 2rem; color: var(--muted); }
+  .boot { min-height: 100dvh; display: grid; place-items: center; }
+  .page-title:focus { outline: none; }   /* programmatic focus for SR, no visible ring */
   .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100dvh; }
   .sidebar {
     background: var(--surface-2);

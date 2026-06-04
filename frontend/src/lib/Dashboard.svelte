@@ -2,6 +2,8 @@
   import { api, ApiError, type Node, type Status, type TrafficMessage } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
   import NetworkCard from "./NetworkCard.svelte";
+  import Alert from "./Alert.svelte";
+  import { confirmDialog } from "./confirm.svelte";
 
   let status = $state<Status | null>(null);
   let nodes = $state<Node[]>([]);
@@ -51,6 +53,7 @@
     } catch (err) { msg = err instanceof ApiError ? err.message : "refresh failed"; }
   }
   async function rollback() {
+    if (!(await confirmDialog("Roll back the live config to the previously applied node?"))) return;
     try { await api.rollback(); await refresh(); msg = "rolled back"; }
     catch (err) { msg = err instanceof ApiError ? err.message : "rollback failed"; }
   }
@@ -123,7 +126,7 @@
     </div>
   {/if}
   <span class="hero-spacer"></span>
-  <button class="btn" onclick={rollback}>Rollback</button>
+  <button class="btn" onclick={rollback} title="Revert the live config to the previously applied node">Rollback</button>
 </div>
 
 <div class="metrics">
@@ -178,7 +181,7 @@
 
 <NetworkCard />
 
-{#if msg}<p class="msg">{msg}</p>{/if}
+<Alert {msg} />
 
 <style>
   /* status hero */

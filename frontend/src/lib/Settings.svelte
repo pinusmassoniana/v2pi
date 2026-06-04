@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api, ApiError, type Settings, type Diagnostics } from "./api";
   import Toggle from "./Toggle.svelte";
+  import Alert from "./Alert.svelte";
+  import { confirmDialog } from "./confirm.svelte";
 
   let s = $state<Settings | null>(null);
   let msg = $state("");
@@ -44,7 +46,7 @@
     catch (err) { setMsg(errText(err, "save failed"), "err"); }
   }
   async function resetDefaults() {
-    if (!confirm("Reset all settings on this screen to their defaults?")) return;
+    if (!(await confirmDialog("Reset all settings on this screen to their defaults?"))) return;
     try { s = await api.resetSettings(); setMsg("reset to defaults", "ok"); }
     catch (err) { setMsg(errText(err, "reset failed"), "err"); }
   }
@@ -73,7 +75,7 @@
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
-    if (!confirm("Restore replaces all nodes, subscriptions, profiles, routing and settings. Continue?")) {
+    if (!(await confirmDialog("Restore replaces all nodes, subscriptions, profiles, routing and settings. Continue?"))) {
       input.value = ""; return;
     }
     try {
@@ -145,7 +147,7 @@
   });
 </script>
 
-{#if msg}<p class="msg" class:err={msgKind === "err"}>{msg}</p>{/if}
+<Alert {msg} kind={msgKind} />
 
 {#if s}
   <form onsubmit={save} class="card settings">
@@ -199,7 +201,7 @@
       <button class="btn" type="button" onclick={downloadBackup}>Download backup (JSON)</button>
       <label class="file btn">Restore…<input type="file" accept="application/json,.json" onchange={onRestoreFile} /></label>
     </div>
-    {#if restoreMsg}<p class="msg" class:err={restoreKind === "err"}>{restoreMsg}</p>{/if}
+    <Alert msg={restoreMsg} kind={restoreKind} />
   </div>
 
   <form onsubmit={changePassword} class="card pw">
@@ -209,7 +211,7 @@
     <input class="input" type="password" bind:value={pw.confirm} placeholder="confirm new password" autocomplete="new-password" />
     {#if pw.next}<p class="muted hint">strength: {pwStrength}{#if pw.confirm && pw.next !== pw.confirm} · <span class="nomatch">does not match</span>{/if}</p>{/if}
     <div><button class="btn btn-primary" disabled={!pwOk}>Change password</button></div>
-    {#if pwMsg}<p class="msg" class:err={pwKind === "err"}>{pwMsg}</p>{/if}
+    <Alert msg={pwMsg} kind={pwKind} />
   </form>
 
   <div class="card">
@@ -254,7 +256,6 @@
   .hint { font-size: 0.8rem; }
   .live { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); background: var(--accent-soft); padding: 0.02rem 0.35rem; border-radius: 999px; }
   .nomatch { color: var(--danger); }
-  .msg.err { color: var(--danger); }
   .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .row .auto { width: auto; }
   .row .num { width: 5rem; }

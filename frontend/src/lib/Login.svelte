@@ -29,8 +29,8 @@
       <span class="auth-mark">{BRAND.slice(0, 2)}</span>
       <span class="auth-word">{BRAND.slice(2)}</span>
     </div>
-    <input class="input" bind:value={username} placeholder="username" autocomplete="username" />
-    <input class="input" type="password" bind:value={password} placeholder="password" autocomplete="current-password" />
+    <input class="input" bind:value={username} placeholder="username" aria-label="username" autocomplete="username" />
+    <input class="input" type="password" bind:value={password} placeholder="password" aria-label="password" autocomplete="current-password" />
     <button class="btn btn-primary block" disabled={busy || !username || !password}>{busy ? "…" : "Log in"}</button>
     {#if error}<p class="err">{error}</p>{/if}
   </form>

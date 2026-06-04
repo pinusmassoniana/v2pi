@@ -2,12 +2,37 @@
   import type { Snippet } from "svelte";
   let { title = "", onClose, children }:
     { title?: string; onClose: () => void; children: Snippet } = $props();
+
+  let dialogEl = $state<HTMLElement>();
+  const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),'
+    + 'select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+  // a11y: move focus into the dialog on open, restore it on close.
+  $effect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    queueMicrotask(() => {
+      const first = dialogEl?.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? dialogEl)?.focus();
+    });
+    return () => prev?.focus?.();
+  });
+
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") { onClose(); return; }
+    if (e.key !== "Tab" || !dialogEl) return;
+    const f = [...dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE)]
+      .filter((el) => el.offsetParent !== null);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onClose()} />
+<svelte:window onkeydown={onKeydown} />
 <div class="backdrop" role="presentation"
      onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-  <div class="modal" role="dialog" aria-modal="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialogEl}>
     <div class="modal-head">
       <h3>{title}</h3>
       <button class="btn-ghost icon-btn close" onclick={onClose} aria-label="Close">

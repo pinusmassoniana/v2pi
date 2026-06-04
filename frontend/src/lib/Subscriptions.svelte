@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api, ApiError, type Subscription, type Preview, type PreviewNodes, type TuningProfile } from "./api";
   import Modal from "./Modal.svelte";
+  import Alert from "./Alert.svelte";
+  import { confirmDialog } from "./confirm.svelte";
 
   let subs = $state<Subscription[]>([]);
   let profiles = $state<TuningProfile[]>([]);
@@ -134,7 +136,7 @@
     } catch (err) { setMsg(errText(err, "save failed"), "err"); }
   }
   async function del(s: Subscription) {
-    if (!confirm(`Delete subscription “${s.name}”?\nIts ${s.node_count} node(s) are detached to Servers (an active connection is kept).`))
+    if (!(await confirmDialog(`Delete subscription “${s.name}”?\nIts ${s.node_count} node(s) are detached to Servers (an active connection is kept).`)))
       return;
     try { await api.deleteSub(s.id); editId = null; setMsg("deleted", "ok"); await refresh(); }
     catch (err) { setMsg(errText(err, "delete failed"), "err"); }
@@ -147,7 +149,7 @@
   $effect(() => { refresh(); });
 </script>
 
-{#if msg}<p class="msg" class:err={msgKind === "err"}>{msg}</p>{/if}
+<Alert {msg} kind={msgKind} />
 
 <div class="bar">
   <button class="btn" onclick={refreshAll} disabled={refreshingAll || subs.length === 0}>
@@ -156,7 +158,7 @@
 </div>
 
 <div class="card">
-  <table class="table">
+  <div class="table-wrap"><table class="table">
     <thead><tr><th>id</th><th>name</th><th>url</th><th>nodes</th><th>autoupdate</th><th>last</th><th>fetched</th><th></th></tr></thead>
     <tbody>
       {#each subs as s (s.id)}
@@ -186,13 +188,13 @@
         <tr><td colspan="8" class="muted empty">No subscriptions yet — add one below.</td></tr>
       {/if}
     </tbody>
-  </table>
+  </table></div>
 </div>
 
 <form onsubmit={add} class="card add">
   <h3>Add subscription</h3>
-  <input class="input" bind:value={form.name} placeholder="name" required />
-  <input class="input" bind:value={form.url} placeholder="https://…/sub" required />
+  <input class="input" bind:value={form.name} placeholder="name" aria-label="subscription name" required />
+  <input class="input" bind:value={form.url} placeholder="https://…/sub" aria-label="subscription URL" required />
   <label class="field"><span>Autoupdate (minutes, 0 = off; min 1)</span>
     <input class="input" type="number" min="0" bind:value={form.interval_min} /></label>
 
@@ -235,14 +237,14 @@
     {#if previewNodes.count === 0}
       <p class="muted">No nodes parsed — check the URL, token, or format.</p>
     {:else}
-      <table class="table">
+      <div class="table-wrap"><table class="table">
         <thead><tr><th>name</th><th>address</th><th>port</th><th>transport</th><th>security</th></tr></thead>
         <tbody>
           {#each previewNodes.nodes as n (n.address + n.port)}
             <tr><td>{n.name}</td><td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td><td>{n.security}</td></tr>
           {/each}
         </tbody>
-      </table>
+      </table></div>
     {/if}
   </div>
 {/if}
@@ -309,7 +311,6 @@
   .field { display: grid; gap: 0.2rem; }
   .check { display: flex; align-items: center; gap: 0.45rem; }
   .empty { text-align: center; padding: 1.2rem; }
-  .msg.err { color: var(--danger); }
   .pn { margin-top: 0.6rem; }
   .preview {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);

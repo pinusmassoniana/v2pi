@@ -12,7 +12,7 @@
   --border-strong: #ccd3df;
   --text: #0d1626;
   --muted: #586273;
-  --faint: #8b94a4;
+  --faint: #6b7280;   /* AA-passing (~4.7:1 on surface) — was #8b94a4 (2.9:1) */
   /* accent — electric cobalt + soft/ring derivatives */
   --accent: #0b6bd8;
   --accent-hover: #0a5cbb;
@@ -46,7 +46,7 @@
   --border-strong: #39414e;
   --text: #e8ecf3;
   --muted: #98a2b3;
-  --faint: #6a7382;
+  --faint: #8b94a4;   /* ~6:1 on the dark bg — was #6a7382 (~3.8:1) */
   --accent: #3b9bff;
   --accent-hover: #5cabff;
   --accent-soft: rgba(59, 155, 255, 0.14);
@@ -67,7 +67,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 14px;
+  font-size: 15px;   /* was 14px — lifts micro-labels off the ~9.5px floor */
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -160,6 +160,9 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
 .label, .field > span { font-size: 0.8rem; color: var(--muted); }
 
 /* data */
+/* horizontal scroll for wide tables on narrow screens (instead of crushing columns) */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap > .table { min-width: 44rem; }
 table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .table th, .table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
 .table th { color: var(--faint); font-weight: 650; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -189,3 +192,19 @@ table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-v
 }
 
 .msg { color: var(--muted); font-size: 0.85rem; }
+.msg.err { color: var(--danger); }
+
+/* screen-reader-only (accessible names without visual labels) */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* lightweight loading spinner */
+.spinner {
+  width: 1.5rem; height: 1.5rem; border-radius: 50%;
+  border: 2px solid var(--border-strong); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }

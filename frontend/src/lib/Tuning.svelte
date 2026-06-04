@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api, ApiError, type TuningProfile, type ProfilePreset } from "./api";
   import Toggle from "./Toggle.svelte";
+  import Alert from "./Alert.svelte";
+  import { confirmDialog } from "./confirm.svelte";
 
   // editor doubles as "add" (id=null) and "edit" (id set) — one form, no duplication.
   const blank = () => ({
@@ -65,7 +67,7 @@
     catch (err) { validateMsg = errText(err, "validate failed"); }
   }
   async function del(p: TuningProfile) {
-    if (!confirm(`Delete profile “${p.name}”?${p.node_count ? `\n${p.node_count} node(s) using it fall back to the default.` : ""}`)) return;
+    if (!(await confirmDialog(`Delete profile “${p.name}”?${p.node_count ? `\n${p.node_count} node(s) using it fall back to the default.` : ""}`))) return;
     try { await api.deleteProfile(p.id); if (editor.id === p.id) editor = blank(); await refresh(); }
     catch (err) { setMsg(errText(err, "delete failed"), "err"); }
   }
@@ -83,12 +85,12 @@
   $effect(() => { refresh(); });
 </script>
 
-{#if msg}<p class="msg" class:err={msgKind === "err"}>{msg}</p>{/if}
+<Alert {msg} kind={msgKind} />
 
 <div class="card">
   <h3>Tuning profiles</h3>
   <p class="muted hint">Global anti-DPI profiles. Assign one per node from its <strong>Edit</strong> on the Nodes tab. The profile governing the live tunnel right now is marked <span class="badge active-b">● active</span>.</p>
-  <table class="table">
+  <div class="table-wrap"><table class="table">
     <thead><tr><th>name</th><th>used by</th><th>fingerprint</th><th>frag</th><th>noise</th><th>mux</th><th>DoH</th><th>QUIC</th><th></th></tr></thead>
     <tbody>
       {#each profiles as p (p.id)}
@@ -117,7 +119,7 @@
         </tr>
       {/each}
     </tbody>
-  </table>
+  </table></div>
 </div>
 
 <form onsubmit={save} class="card editor">
@@ -229,5 +231,4 @@
   .badge.active-b { background: var(--accent-soft); color: var(--accent); }
   .vmsg { font-family: var(--mono); font-size: 0.8rem; color: var(--success); white-space: pre-wrap; }
   .vmsg.bad { color: var(--danger); }
-  .msg.err { color: var(--danger); }
 </style>
