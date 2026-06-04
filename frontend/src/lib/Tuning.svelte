@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api, ApiError, type TuningProfile, type Node } from "./api";
+  import { api, ApiError, type TuningProfile } from "./api";
+  import Toggle from "./Toggle.svelte";
 
   // editor doubles as "add" (id=null) and "edit" (id set) — one form, no duplication.
   const blank = () => ({
@@ -9,12 +10,11 @@
   });
 
   let profiles = $state<TuningProfile[]>([]);
-  let nodes = $state<Node[]>([]);
   let msg = $state("");
   let editor = $state(blank());
 
   async function refresh() {
-    try { [profiles, nodes] = await Promise.all([api.listProfiles(), api.listNodes()]); }
+    try { profiles = await api.listProfiles(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "load failed"; }
   }
   function edit(p: TuningProfile) {
@@ -42,10 +42,6 @@
     try { await api.setDefaultProfile(id); await refresh(); }
     catch (err) { msg = err instanceof ApiError ? err.message : "set-default failed"; }
   }
-  async function assign(n: Node, value: string) {
-    try { await api.updateNode(n.id, { tuning_profile_id: value === "" ? null : Number(value) }); await refresh(); }
-    catch (err) { msg = err instanceof ApiError ? err.message : "assign failed"; }
-  }
 
   $effect(() => { refresh(); });
 </script>
@@ -54,6 +50,7 @@
 
 <div class="card">
   <h3>Tuning profiles</h3>
+  <p class="muted hint">Global anti-DPI profiles. Assign one per node from its <strong>Edit</strong> on the Nodes tab.</p>
   <table class="table">
     <thead><tr><th>name</th><th>fingerprint</th><th>frag</th><th>mux</th><th>DoH</th><th>QUIC</th><th></th></tr></thead>
     <tbody>
@@ -90,12 +87,12 @@
       <option value="">empty</option>
     </select>
   </label>
-  <label class="check"><input type="checkbox" bind:checked={editor.frag_enabled} /> TLS fragmentation</label>
+  <div class="check"><Toggle checked={editor.frag_enabled} onchange={(v) => (editor.frag_enabled = v)} label="TLS fragmentation" /> <span>TLS fragmentation</span></div>
   <label class="field"><span>packets</span><input class="input" bind:value={editor.frag_packets} /></label>
   <label class="field"><span>length</span><input class="input" bind:value={editor.frag_length} /></label>
   <label class="field"><span>interval</span><input class="input" bind:value={editor.frag_interval} /></label>
-  <label class="check"><input type="checkbox" bind:checked={editor.mux_enabled} /> Mux</label>
-  <label class="check"><input type="checkbox" bind:checked={editor.doh_enabled} /> DoH</label>
+  <div class="check"><Toggle checked={editor.mux_enabled} onchange={(v) => (editor.mux_enabled = v)} label="Mux" /> <span>Mux</span></div>
+  <div class="check"><Toggle checked={editor.doh_enabled} onchange={(v) => (editor.doh_enabled = v)} label="DoH" /> <span>DoH</span></div>
   <label class="field"><span>DoH URL</span><input class="input" bind:value={editor.doh_url} placeholder="(default resolver)" /></label>
   <label class="field"><span>QUIC</span>
     <select class="input" bind:value={editor.quic}>
@@ -110,33 +107,10 @@
   </div>
 </form>
 
-<div class="card">
-  <h3>Per-node profile</h3>
-  <table class="table">
-    <thead><tr><th>node</th><th>address</th><th>profile</th></tr></thead>
-    <tbody>
-      {#each nodes as n (n.id)}
-        <tr>
-          <td>{n.name}</td>
-          <td>{n.address}</td>
-          <td>
-            <select class="input" value={n.tuning_profile_id === null ? "" : String(n.tuning_profile_id)}
-                    onchange={(e) => assign(n, e.currentTarget.value)}>
-              <option value="">(inherit default)</option>
-              {#each profiles as p (p.id)}
-                <option value={String(p.id)}>{p.name}</option>
-              {/each}
-            </select>
-          </td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-</div>
-
 <style>
   .editor { max-width: 30rem; }
   .row-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-  .check { display: flex; gap: 0.5rem; align-items: center; }
+  .check { display: flex; gap: 0.6rem; align-items: center; }
   .actions { display: flex; gap: 0.5rem; }
+  .hint { margin: 0 0 0.6rem; font-size: 0.85rem; }
 </style>

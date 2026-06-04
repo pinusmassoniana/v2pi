@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, ApiError, type Node, type Status, type TrafficMessage } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
+  import NetworkCard from "./NetworkCard.svelte";
 
   let status = $state<Status | null>(null);
   let nodes = $state<Node[]>([]);
@@ -76,6 +77,8 @@
     <TrafficGraph {samples} />
   {/if}
 </div>
+
+<NetworkCard />
 
 {#if msg}<p class="msg">{msg}</p>{/if}
 

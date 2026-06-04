@@ -6,14 +6,13 @@
   import Subscriptions from "./lib/Subscriptions.svelte";
   import Tuning from "./lib/Tuning.svelte";
   import Routing from "./lib/Routing.svelte";
-  import Network from "./lib/Network.svelte";
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
   import { api, type Status } from "./lib/api";
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
-  type View = "dashboard" | "nodes" | "subs" | "tuning" | "routing" | "network" | "settings";
+  type View = "dashboard" | "nodes" | "subs" | "tuning" | "routing" | "settings";
   let authed = $state(false);
   let needsSetup = $state(false);
   let ready = $state(false);
@@ -54,7 +53,6 @@
     { id: "subs", label: "Subscriptions" },
     { id: "tuning", label: "Tuning" },
     { id: "routing", label: "Routing" },
-    { id: "network", label: "Network" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -126,8 +124,6 @@
           <Tuning />
         {:else if view === "routing"}
           <Routing />
-        {:else if view === "network"}
-          <Network />
         {:else}
           <Settings />
         {/if}
