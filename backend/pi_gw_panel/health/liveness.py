@@ -66,6 +66,11 @@ class LivenessLoop:
         probe_url = store.get_setting("health_probe_url") or DEFAULT_PROBE_URL
         proxy_url = f"http://127.0.0.1:{st.settings.local_proxy_port}"
         real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
+        # IPv6 egress, when the tunnel carries v6: a v6-only echo through the same live proxy.
+        egress6 = None
+        if (store.get_setting("ipv6_enabled") or "0") == "1":
+            url6 = store.get_setting("health_probe_url6") or "https://api6.ipify.org?format=json"
+            egress6 = self._real_request(proxy_url, url6)[3]
         prev = store.get_health(aid)
         store.upsert_health(NodeHealth(
             node_id=aid,
@@ -73,7 +78,7 @@ class LivenessLoop:
             last_tcp_ms=prev.last_tcp_ms if prev else None,
             last_http_ok=prev.last_http_ok if prev else None,
             last_http_ms=prev.last_http_ms if prev else None,
-            last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress,
+            last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress, egress_ip6=egress6,
             checked_at=self._now_iso(),
             fail_count=0 if real_ok else (prev.fail_count if prev else 0) + 1))
         if real_ok and real_ms is not None:

@@ -376,6 +376,7 @@ class NodeHealthOut(BaseModel):
     last_real_ok: bool | None = None
     last_real_ms: int | None = None
     egress_ip: str | None = None
+    egress_ip6: str | None = None
     checked_at: str | None = None
     fail_count: int = 0
     lat_history: list[int] = []

@@ -210,6 +210,13 @@ def _migration_9(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN note TEXT NOT NULL DEFAULT ''")
 
 
+def _migration_10(conn: sqlite3.Connection) -> None:
+    # Per-node IPv6 egress (shown alongside the v4 egress on the dashboard + Nodes tab).
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(node_health)").fetchall()}
+    if "egress_ip6" not in cols:
+        conn.execute("ALTER TABLE node_health ADD COLUMN egress_ip6 TEXT")
+
+
 def _migration_8(conn: sqlite3.Connection) -> None:
     # Anti-DPI tuning knobs: freedom noises, xhttp padding/xmux, mux concurrency/xudp, tls alpn/version.
     if not conn.execute(
@@ -236,7 +243,7 @@ def _migration_8(conn: sqlite3.Connection) -> None:
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
-               (9, _migration_9)]
+               (9, _migration_9), (10, _migration_10)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

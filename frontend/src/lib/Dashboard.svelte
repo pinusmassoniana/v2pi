@@ -205,6 +205,7 @@
   <div class="metric">
     <span class="eyebrow">Egress IP</span>
     <span class="metric-val mono sm">{liveActive?.egress_ip ?? "—"}</span>
+    {#if liveActive?.egress_ip6}<span class="metric-v6 mono" title={liveActive.egress_ip6}>v6 {liveActive.egress_ip6}</span>{/if}
     <span class="metric-sub">{liveActive?.egress_ip ? (freshness(liveActive.checked_at) || "tunnel exit") : "unknown"}</span>
   </div>
   <div class="metric">
@@ -310,6 +311,7 @@
   .metric-val.rate-down { color: var(--accent); }
   .metric-val.rate-up { color: var(--success); }
   .metric-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .metric-v6 { font-size: 0.78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .spark { flex: none; overflow: visible; }
   .spark path { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
 

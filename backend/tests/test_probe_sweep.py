@@ -90,9 +90,9 @@ def test_real_through_node_spawns_and_probes(monkeypatch):
     def fake_spawn(path):
         spawned.append(_j.load(open(path))); return _Proc()
     monkeypatch.setattr(probe, "real_request", lambda proxy, url, timeout=5.0: (True, 200, 77, "9.9.9.9"))
-    ok, ms, egress = probe.real_through_node(n, "xray", "https://probe",
-                                             spawn=fake_spawn, wait_ready=lambda p: None)
-    assert ok is True and ms == 77 and egress == "9.9.9.9"
+    ok, ms, egress, egress6 = probe.real_through_node(n, "xray", "https://probe",
+                                                      spawn=fake_spawn, wait_ready=lambda p: None)
+    assert ok is True and ms == 77 and egress == "9.9.9.9" and egress6 is None
     cfg = spawned[0]
     assert cfg["inbounds"][0]["protocol"] == "http"
     assert cfg["outbounds"][0]["settings"]["vnext"][0]["address"] == "aa"
@@ -101,7 +101,7 @@ def test_real_through_node_spawns_and_probes(monkeypatch):
 def test_probe_node_endpoint_runs_all_three(settings, stub_xray, monkeypatch):
     monkeypatch.setattr(probe, "tcp_ping", lambda a, p, **k: (True, 5))
     monkeypatch.setattr(probe, "http_ping", lambda a, p, sni, **k: (True, 9))
-    monkeypatch.setattr(probe, "real_through_node", lambda node, xb, url, **k: (True, 42, "9.9.9.9"))
+    monkeypatch.setattr(probe, "real_through_node", lambda node, xb, url, **k: (True, 42, "9.9.9.9", None))
     c = _client(settings, stub_xray); tok = _login(c)
     nid = _add(c, tok, "a")
     r = c.post(f"/api/nodes/{nid}/probe", headers={"X-CSRF-Token": tok})

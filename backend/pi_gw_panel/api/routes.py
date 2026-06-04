@@ -699,6 +699,9 @@ def probe_node(node_id: int, request: Request, real_only: bool = False,
     if node is None:
         raise HTTPException(status_code=404, detail="node not found")
     probe_url = store.get_setting("health_probe_url") or SETTINGS_DEFAULTS["health_probe_url"]
+    # v6 egress: only when the IPv6 tunnel is on (a v6-only echo → the node's v6 egress, or None)
+    url6 = (store.get_setting("health_probe_url6") or SETTINGS_DEFAULTS["health_probe_url6"]
+            if (store.get_setting("ipv6_enabled") or "0") == "1" else None)
     active = store.get_setting("active_node_id")
     tunneled_on = (store.get_setting("tunneled_fetch") or "1") == "1"
     if (active and int(active) == node_id and tunneled_on
@@ -707,13 +710,15 @@ def probe_node(node_id: int, request: Request, real_only: bool = False,
         # second throwaway xray that dials the same server.
         proxy_url = f"http://127.0.0.1:{state.settings.local_proxy_port}"
         real_ok, _status, real_ms, egress = probe.real_request(proxy_url, probe_url)
+        egress6 = probe.real_request(proxy_url, url6)[3] if url6 else None
     else:
-        real_ok, real_ms, egress = probe.real_through_node(node, state.xray_bin, probe_url)
+        real_ok, real_ms, egress, egress6 = probe.real_through_node(
+            node, state.xray_bin, probe_url, probe_url6=url6)
     h = store.get_health(node_id) or NodeHealth(node_id=node_id)
     if not real_only:
         h.last_tcp_ok, h.last_tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
         h.last_http_ok, h.last_http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
-    h.last_real_ok, h.last_real_ms, h.egress_ip = real_ok, real_ms, egress
+    h.last_real_ok, h.last_real_ms, h.egress_ip, h.egress_ip6 = real_ok, real_ms, egress, egress6
     h.checked_at = datetime.now(timezone.utc).isoformat()
     store.upsert_health(h)
     if real_only:

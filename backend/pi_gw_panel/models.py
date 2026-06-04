@@ -120,6 +120,7 @@ class NodeHealth:
     last_real_ok: bool | None = None      # real request through the node (active / on-demand)
     last_real_ms: int | None = None
     egress_ip: str | None = None
+    egress_ip6: str | None = None         # IPv6 egress (when the node carries v6); None if no v6
     checked_at: str | None = None
     fail_count: int = 0
     lat_history: list[int] = field(default_factory=list)   # recent HTTPS-handshake latencies (NN4)

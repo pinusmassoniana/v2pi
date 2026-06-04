@@ -136,6 +136,7 @@ def _row_to_health(row: sqlite3.Row) -> NodeHealth:
         last_http_ok=b(row["last_http_ok"]), last_http_ms=row["last_http_ms"],
         last_real_ok=b(row["last_real_ok"]), last_real_ms=row["last_real_ms"],
         egress_ip=row["egress_ip"], checked_at=row["checked_at"], fail_count=row["fail_count"],
+        egress_ip6=(row["egress_ip6"] if "egress_ip6" in keys else None),
         lat_history=lat,
     )
 
@@ -339,19 +340,19 @@ class NodeStore:
         self._conn.execute(
             """INSERT INTO node_health
                (node_id, last_tcp_ok, last_tcp_ms, last_http_ok, last_http_ms,
-                last_real_ok, last_real_ms, egress_ip, checked_at, fail_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_real_ok, last_real_ms, egress_ip, egress_ip6, checked_at, fail_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(node_id) DO UPDATE SET
                  last_tcp_ok=excluded.last_tcp_ok, last_tcp_ms=excluded.last_tcp_ms,
                  last_http_ok=excluded.last_http_ok, last_http_ms=excluded.last_http_ms,
                  last_real_ok=excluded.last_real_ok, last_real_ms=excluded.last_real_ms,
-                 egress_ip=excluded.egress_ip, checked_at=excluded.checked_at,
-                 fail_count=excluded.fail_count""",
+                 egress_ip=excluded.egress_ip, egress_ip6=excluded.egress_ip6,
+                 checked_at=excluded.checked_at, fail_count=excluded.fail_count""",
             (h.node_id,
              None if h.last_tcp_ok is None else int(h.last_tcp_ok), h.last_tcp_ms,
              None if h.last_http_ok is None else int(h.last_http_ok), h.last_http_ms,
              None if h.last_real_ok is None else int(h.last_real_ok), h.last_real_ms,
-             h.egress_ip, h.checked_at, h.fail_count))
+             h.egress_ip, h.egress_ip6, h.checked_at, h.fail_count))
         self._conn.commit()
 
     def get_health(self, node_id: int) -> NodeHealth | None:

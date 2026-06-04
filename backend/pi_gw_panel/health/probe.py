@@ -134,15 +134,18 @@ def _probe_outbound(node) -> dict:
 
 
 def real_through_node(node, xray_bin: str, probe_url: str, timeout: float = 8.0,
-                      spawn=None, wait_ready=None) -> tuple[bool, int | None, str | None]:
+                      spawn=None, wait_ready=None, probe_url6: str | None = None
+                      ) -> tuple[bool, int | None, str | None, str | None]:
     """Spin up a throwaway xray (local http inbound + `node` as outbound), do a real request
     through it, then tear it down — so ANY node can be probed without touching the live tunnel.
-    Returns (ok, latency_ms, egress_ip). `spawn`/`wait_ready` are injectable for tests."""
+    Returns ``(ok, latency_ms, egress_ip, egress_ip6)``; ``egress_ip6`` is the v6 egress when
+    ``probe_url6`` (a v6-only echo) is given and the node carries v6, else None. ``spawn`` /
+    ``wait_ready`` are injectable for tests."""
     with _PROBE_SEM:
-        return _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready)
+        return _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready, probe_url6)
 
 
-def _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready):
+def _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready, probe_url6=None):
     port = _free_port()
     cfg = {
         "log": {"loglevel": "warning"},
@@ -169,8 +172,10 @@ def _real_through_node(node, xray_bin, probe_url, timeout, spawn, wait_ready):
             json.dump(cfg, f)
         proc = spawn(path)
         wait_ready(port)
-        ok, _status, ms, egress = real_request(f"http://127.0.0.1:{port}", probe_url, timeout=timeout)
-        return ok, ms, egress
+        proxy = f"http://127.0.0.1:{port}"
+        ok, _status, ms, egress = real_request(proxy, probe_url, timeout=timeout)
+        egress6 = real_request(proxy, probe_url6, timeout=timeout)[3] if probe_url6 else None
+        return ok, ms, egress, egress6
     finally:
         if proc is not None:
             proc.terminate()

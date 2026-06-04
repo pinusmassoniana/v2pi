@@ -11,7 +11,10 @@ from pi_gw_panel.state import build_state
 from pi_gw_panel.config import Settings
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.models import Node
+from pi_gw_panel.models import Node, NodeHealth
+from pi_gw_panel.health import probe as probe_mod
+from pi_gw_panel.health.snapshot import active_health
+from pi_gw_panel.health.liveness import LivenessLoop
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.net_control.linux import LinuxBackend
 from pi_gw_panel.net_control.plan import NetPlan
@@ -221,6 +224,78 @@ def test_network_payload_uplink6_none_on_dryrun(settings, stub_xray):
     c, h = _client(settings, stub_xray)
     c.put("/api/network", json={"ipv6_enabled": True}, headers=h)
     assert c.get("/api/network").json()["status"]["uplink6"] is None   # DryRun → v6 uplink not probed
+
+
+# --- N4: per-node IPv6 egress (dashboard + Nodes tab) -----------------------
+
+class _FakeProc:
+    def terminate(self): pass
+    def wait(self, timeout=None): pass
+
+
+def test_health_egress_ip6_round_trips():
+    store = _store()
+    nid = store.add_node(Node(id=None, name="n", address="1.1.1.1", port=443, uuid="u"))
+    store.upsert_health(NodeHealth(node_id=nid, last_real_ok=True, egress_ip="1.1.1.1",
+                                   egress_ip6="2606:4700:4700::1111"))
+    assert store.get_health(nid).egress_ip6 == "2606:4700:4700::1111"
+
+
+def test_active_health_carries_egress_ip6():
+    store = _store()
+    nid = store.add_node(Node(id=None, name="n", address="1.1.1.1", port=443, uuid="u"))
+    store.set_setting("active_node_id", str(nid))
+    store.upsert_health(NodeHealth(node_id=nid, last_real_ok=True, egress_ip="2.2.2.2",
+                                   egress_ip6="2606::9"))
+    assert active_health(store)["egress_ip6"] == "2606::9"
+
+
+def test_real_through_node_probes_v6_egress(monkeypatch):
+    seen = []
+    def fake_rr(proxy, url, timeout=5.0):
+        seen.append(url)
+        return (True, 200, 10, "2606::5" if "api6" in url else "9.9.9.9")
+    monkeypatch.setattr(probe_mod, "real_request", fake_rr)
+    n = Node(id=None, name="n", address="aa", port=443, uuid="u")
+    ok, ms, egress, egress6 = probe_mod.real_through_node(
+        n, "xray", "https://v4", spawn=lambda p: _FakeProc(), wait_ready=lambda p: None,
+        probe_url6="https://api6.echo")
+    assert egress == "9.9.9.9" and egress6 == "2606::5"
+    # no probe_url6 → no v6 request, egress6 None (still exactly the one v6 probe from above)
+    _, _, _, e6 = probe_mod.real_through_node(
+        n, "xray", "https://v4", spawn=lambda p: _FakeProc(), wait_ready=lambda p: None)
+    assert e6 is None and sum("api6" in u for u in seen) == 1
+
+
+def test_liveness_records_v6_egress_when_enabled():
+    store = _store()
+    nid = store.add_node(Node(id=None, name="n", address="1.1.1.1", port=443, uuid="u"))
+    store.set_setting("active_node_id", str(nid))
+    store.set_setting("ipv6_enabled", "1")
+
+    class _Sup:
+        def state(self): return "working"
+        def status(self): return {"running": True, "pid": 1}
+
+    class _St:
+        def __init__(s): s.store, s.settings, s.supervisor = store, Settings(), _Sup()
+    def rr(proxy, url, timeout=5.0):
+        return (True, 200, 5, "2606::a" if "api6" in url else "3.3.3.3")
+    LivenessLoop(_St(), real_request=rr)._probe_active()
+    h = store.get_health(nid)
+    assert h.egress_ip == "3.3.3.3" and h.egress_ip6 == "2606::a"
+
+
+def test_probe_node_endpoint_returns_v6_egress_for_live_node(settings, stub_xray, monkeypatch):
+    c, h = _client(settings, stub_xray)
+    nid = c.post("/api/nodes", json={"name": "n", "address": "1.2.3.4", "port": 443, "uuid": "u"},
+                 headers=h).json()["id"]
+    assert c.post(f"/api/nodes/{nid}/apply", headers=h).status_code == 200      # live tunnel
+    c.put("/api/network", json={"ipv6_enabled": True}, headers=h)
+    monkeypatch.setattr(probe_mod, "real_request",
+                        lambda proxy, url, timeout=5.0: (True, 200, 7, "2606::5" if "api6" in url else "2.2.2.2"))
+    out = c.post(f"/api/nodes/{nid}/probe?real_only=1", headers=h).json()
+    assert out["egress_ip"] == "2.2.2.2" and out["egress_ip6"] == "2606::5"
 
 
 def test_put_network_enable_ipv6_rebuilds_config_and_shows_hint(settings, stub_xray):

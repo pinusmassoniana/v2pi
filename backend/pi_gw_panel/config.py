@@ -106,6 +106,8 @@ SETTINGS_DEFAULTS = {
     "health_interval": "1800",
     "health_hysteresis": "3",
     "health_probe_url": "https://api.ipify.org?format=json",
+    # v6-only echo (AAAA-only host → forces v6 egress) for the per-node IPv6 egress readout
+    "health_probe_url6": "https://api6.ipify.org?format=json",
     "failover_enabled": "1",
     "failover_cooldown": "120",
     # Wave 3a — xray StatsService → live traffic graph

@@ -19,6 +19,7 @@ def active_health(store) -> dict | None:
         "real_ok": h.last_real_ok,
         "latency_ms": h.last_real_ms,
         "egress_ip": h.egress_ip,
+        "egress_ip6": h.egress_ip6,
         "checked_at": h.checked_at,
         "lat_history": list(h.lat_history or []),   # recent latencies → dashboard sparkline (B)
     }

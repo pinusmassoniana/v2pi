@@ -324,7 +324,7 @@
   <td data-label="TCP">{@render hpill(h?.last_tcp_ok, h?.last_tcp_ms)}</td>
   <td data-label="HTTP">{@render hpill(h?.last_http_ok, h?.last_http_ms)}</td>
   <td data-label="real">{@render hpill(h?.last_real_ok, h?.last_real_ms)}</td>
-  <td class="egress mono col-egress" data-label="egress">{h?.egress_ip ?? "—"}</td>
+  <td class="egress mono col-egress" data-label="egress">{h?.egress_ip ?? "—"}{#if h?.egress_ip6}<span class="eg6" title={h.egress_ip6}>v6 {h.egress_ip6}</span>{/if}</td>
   <td class="trend col-trend" data-label="trend">
     {#if h && h.lat_history && h.lat_history.length > 1}
       <svg width="56" height="14" viewBox="0 0 56 14" preserveAspectRatio="none"><path d={sparkPath(h.lat_history, 56, 14)} fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -540,6 +540,7 @@
   .hpill.bad .hp-dot { background: var(--danger); }
   .hp-none { color: var(--faint); }
   .egress { color: var(--muted); font-size: 0.78rem; }
+  .eg6 { display: block; color: var(--faint); font-size: 0.72rem; }
   .trend { color: var(--accent); }
   .small { font-size: 0.72rem; }
   .empty { text-align: center; padding: 1.2rem; }

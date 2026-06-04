@@ -48,7 +48,7 @@ export interface TrafficFrame {
   outbounds: Record<string, OutboundRate>;
   totals: { up: number; down: number };   // proxy outbound bytes since xray start (resets on restart)
   lifetime?: { up: number; down: number };  // durable data-used total, survives xray restart (F)
-  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; lat_history: number[] } | null;
+  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; egress_ip6: string | null; checked_at: string | null; lat_history: number[] } | null;
 }
 export type TrafficMessage = TrafficFrame | { disabled: true } | { error: string };
 // long-window history seed: each sample is [ts_ms, up_bps, down_bps]
@@ -89,7 +89,7 @@ export interface NodeHealth {
   node_id: number; last_tcp_ok: boolean | null; last_tcp_ms: number | null;
   last_http_ok: boolean | null; last_http_ms: number | null;
   last_real_ok: boolean | null; last_real_ms: number | null;
-  egress_ip: string | null; checked_at: string | null; fail_count: number;
+  egress_ip: string | null; egress_ip6: string | null; checked_at: string | null; fail_count: number;
   lat_history: number[];
 }
 

@@ -92,7 +92,7 @@ def test_probe_real_only_skips_direct_probes(settings, stub_xray, monkeypatch):
     calls = []
     monkeypatch.setattr(probe_mod, "tcp_ping", lambda *a, **k: (calls.append("tcp"), (True, 10))[1])
     monkeypatch.setattr(probe_mod, "http_ping", lambda *a, **k: (calls.append("http"), (True, 20))[1])
-    monkeypatch.setattr(probe_mod, "real_through_node", lambda *a, **k: (True, 42, "5.5.5.5"))
+    monkeypatch.setattr(probe_mod, "real_through_node", lambda *a, **k: (True, 42, "5.5.5.5", None))
 
     out = c.post(f"/api/nodes/{nid}/probe?real_only=1", headers=h).json()
     assert calls == []                                  # neither direct probe ran (D6)

@@ -82,6 +82,7 @@ class HealthMonitor:
                     node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
                     last_http_ok=http_ok, last_http_ms=http_ms,
                     last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress,
+                    egress_ip6=(prev.egress_ip6 if prev else None),   # fast loop owns v6 egress — don't wipe it
                     checked_at=ts, fail_count=0 if real_ok else prev_fail + 1))
             else:
                 # non-active (or active with no proxy port): direct probes only. Preserve any
@@ -93,6 +94,7 @@ class HealthMonitor:
                     last_real_ok=(prev.last_real_ok if prev else None),
                     last_real_ms=(prev.last_real_ms if prev else None),
                     egress_ip=(prev.egress_ip if prev else None),
+                    egress_ip6=(prev.egress_ip6 if prev else None),
                     checked_at=ts, fail_count=0))
             if http_ok and http_ms is not None:
                 store.record_latency(node.id, http_ms)   # NN4: HTTPS-handshake latency trend
