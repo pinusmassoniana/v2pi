@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import shutil
 import subprocess
@@ -163,11 +164,11 @@ def _network_out(state) -> NetworkOut:
     running = state.supervisor.status().get("running", False)
     st = netcheck.network_status(store, settings, uplink_check=uplink_check)
     st["wan_blocked"] = kill_switch and not running   # N1: leak-guard holding while tunnel down
-    # DHCPv6-PD 'auto': observe the host-delegated segment prefix (Linux backend only — reads
-    # /proc/net/if_inet6; dev/CI = None).
-    if (ipv6_enabled and (ov("segment_ip6") or "").strip().lower() == "auto"
-            and type(state.net).__name__ == "LinuxBackend"):
-        st["ipv6_prefix"] = netcheck.segment_prefix6(ov("segment_iface"))
+    if ipv6_enabled and type(state.net).__name__ == "LinuxBackend":
+        # DHCPv6-PD 'auto': observe the host-delegated segment prefix (reads /proc/net/if_inet6).
+        if (ov("segment_ip6") or "").strip().lower() == "auto":
+            st["ipv6_prefix"] = netcheck.segment_prefix6(ov("segment_iface"))
+        st["uplink6"] = netcheck.uplink_up("2606:4700:4700::1111")   # G: v6 uplink reachability
     return NetworkOut(
         segment=NetworkSegmentOut(
             iface=ov("segment_iface"), ip=ov("segment_ip"), ip6=ov("segment_ip6"),
@@ -1011,6 +1012,13 @@ def put_network(body: NetworkIn, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NetworkOut:
     state = get_state(request)
     data = body.model_dump(exclude_none=True)
+    if "segment_ip6" in data:                       # F: validate before it can reach the nft render
+        v6 = (data["segment_ip6"] or "").strip()
+        if v6 and v6.lower() != "auto":
+            try:
+                ipaddress.ip_network(v6, strict=False)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="segment_ip6 must be an IPv6 CIDR or 'auto'")
     for k in _NET_EDITABLE:
         if k in data:
             state.store.set_setting(k, data[k])

@@ -117,7 +117,8 @@ def test_render_nft6_present_only_with_killswitch():
     p.kill_switch = True
     t = render_nft6(p)
     assert "table ip6 pi_gw_panel" in t
-    assert 'iifname "eth0.2" ip6 daddr != { ::1/128, fe80::/10, fc00::/7 } drop' in t
+    # the leak-guard drop now also bypasses multicast (ff00::/8) — unified with the tproxy local set
+    assert 'iifname "eth0.2" ip6 daddr != { ::1/128, fe80::/10, fc00::/7, ff00::/8 } drop' in t
 
 
 def test_linux_apply_guard_drops_no_tproxy_and_loads_v6():

@@ -8,6 +8,7 @@ export type Tone = "ok" | "bad" | "unknown";
 export interface NetworkView {
   segment: { tone: Tone; label: string };
   uplink: { tone: Tone; label: string };
+  uplink6: { tone: Tone; label: string };
   dhcp_clients: number;
   tunnel: { tone: Tone; egress: string; latency: string };
   wan_blocked: boolean;
@@ -20,10 +21,12 @@ function boolTone(v: boolean | null | undefined): Tone {
 export function networkView(net: Network): NetworkView {
   const up = net.status.segment_up;
   const ul = net.status.uplink ?? null;
+  const ul6 = net.status.uplink6 ?? null;
   const t = net.status.tunnel;
   return {
     segment: { tone: boolTone(up), label: up === null ? "unknown" : up ? "up" : "down" },
     uplink: { tone: boolTone(ul), label: ul === null ? "unknown" : ul ? "up" : "down" },
+    uplink6: { tone: boolTone(ul6), label: ul6 === null ? "unknown" : ul6 ? "up" : "down" },
     dhcp_clients: net.status.dhcp_clients,
     tunnel: {
       tone: boolTone(t.real_ok),

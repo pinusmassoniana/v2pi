@@ -65,6 +65,7 @@
     <div class="status">
       <span><span class="dot {v.segment.tone}"></span> Segment: {v.segment.label}</span>
       <span><span class="dot {v.uplink.tone}"></span> Uplink: {v.uplink.label}</span>
+      {#if net.ipv6_enabled}<span><span class="dot {v.uplink6.tone}"></span> Uplink v6: {v.uplink6.label}</span>{/if}
       <span>
         <span class="dot {v.dhcp_clients > 0 ? 'ok' : 'unknown'}"></span> DHCP clients: {v.dhcp_clients}
         {#if net.status.clients?.length}

@@ -409,6 +409,7 @@ class DhcpClientOut(BaseModel):
 class NetworkStatusOut(BaseModel):
     segment_up: bool | None = None
     uplink: bool | None = None          # C1: Pi WAN/Home-leg reachability (None = unknown/dev)
+    uplink6: bool | None = None         # G: IPv6 uplink reachability (only when v6 enabled)
     dhcp_clients: int = 0
     clients: list[DhcpClientOut] = []
     tunnel: NetworkTunnelOut

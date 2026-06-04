@@ -10,6 +10,15 @@ def _run(cmd: list[str], input: str | None = None) -> subprocess.CompletedProces
     return subprocess.run(cmd, input=input, capture_output=True, text=True, check=True)
 
 
+def _write_proc(path: str, value: str) -> None:
+    """Best-effort write a sysctl /proc file (absent on dev → ignored)."""
+    try:
+        with open(path, "w") as f:
+            f.write(value)
+    except OSError:
+        pass
+
+
 class LinuxBackend:
     """Real Pi backend: applies the rendered nft tproxy ruleset + tproxy policy routing
     to the host netns (the panel runs host-net + NET_ADMIN, so these affect the host).
@@ -18,9 +27,10 @@ class LinuxBackend:
     the segment's DHCP. ``run`` is the injectable subprocess seam for tests.
     """
 
-    def __init__(self, settings, run=_run):
+    def __init__(self, settings, run=_run, write_proc=None):
         self.settings = settings
         self._run = run
+        self._write_proc = write_proc or _write_proc
 
     def _nft_script(self, plan: NetPlan, tunnel_up: bool) -> str:
         """Atomic idempotent (re)load of both families. `add table` makes the following
@@ -48,6 +58,8 @@ class LinuxBackend:
                 self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])
                 self._run(["ip", "-6", "rule", "add", "fwmark", fw, "lookup", tbl])
                 self._run(["ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
+            else:                            # E: drop any stale v6 routing left from a prior v6 on
+                self._remove_v6_policy_routing(plan.fwmark, plan.table)
             self._ensure_forward(ipv6=plan.ipv6_enabled)
             return NetResult(ok=True, rendered=nft_text)
         except subprocess.CalledProcessError as exc:
@@ -79,7 +91,11 @@ class LinuxBackend:
         fw, tbl = f"0x{fwmark:x}", str(table)
         self._run_ok(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
         self._run_ok(["ip", "route", "flush", "table", tbl])
-        self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])   # v6 (no-op if absent)
+        self._remove_v6_policy_routing(fwmark, table)
+
+    def _remove_v6_policy_routing(self, fwmark: int, table: int) -> None:
+        fw, tbl = f"0x{fwmark:x}", str(table)
+        self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])   # no-op if absent
         self._run_ok(["ip", "-6", "route", "flush", "table", tbl])
 
     def _run_ok(self, cmd: list[str]) -> None:
@@ -91,12 +107,10 @@ class LinuxBackend:
 
     def _ensure_forward(self, ipv6: bool = False) -> None:
         """Ensure IPv4 (and, when tunnelling v6, IPv6) forwarding (best-effort)."""
-        paths = ["/proc/sys/net/ipv4/ip_forward"]
+        self._write_proc("/proc/sys/net/ipv4/ip_forward", "1")
         if ipv6:
-            paths.append("/proc/sys/net/ipv6/conf/all/forwarding")
-        for p in paths:
-            try:
-                with open(p, "w") as f:
-                    f.write("1")
-            except OSError:
-                pass
+            self._write_proc("/proc/sys/net/ipv6/conf/all/forwarding", "1")
+            # D: enabling v6 forwarding makes the kernel stop accepting RAs by default, so the
+            # Pi's Home leg can lose its own v6 (address + default route → no v6 egress).
+            # accept_ra=2 keeps accepting RA on the uplink even while forwarding.
+            self._write_proc(f"/proc/sys/net/ipv6/conf/{self.settings.mgmt_iface}/accept_ra", "2")

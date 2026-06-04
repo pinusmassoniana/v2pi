@@ -22,6 +22,8 @@ def segment_prefix6(iface: str, proc_path: str = "/proc/net/if_inet6", read=None
         if len(parts) < 6 or parts[5] != iface or parts[3] != "00":   # match iface + global scope
             continue
         try:
+            if int(parts[4], 16) & 0x01:      # F: skip IFA_F_TEMPORARY (privacy) addresses
+                continue
             addr = ipaddress.IPv6Address(int(parts[0], 16))
             return f"{addr.compressed}/{int(parts[2], 16)}"
         except ValueError:

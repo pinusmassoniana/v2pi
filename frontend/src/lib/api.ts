@@ -100,7 +100,7 @@ export interface NetworkSegment {
 export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; }
 export interface DhcpClient { ip: string; mac: string; hostname: string; expiry: number; }
 export interface NetworkStatus {
-  segment_up: boolean | null; uplink: boolean | null; dhcp_clients: number;
+  segment_up: boolean | null; uplink: boolean | null; uplink6: boolean | null; dhcp_clients: number;
   clients: DhcpClient[]; tunnel: NetworkTunnel; wan_blocked: boolean;
   ipv6_prefix: string | null;   // DHCPv6-PD 'auto': host-delegated segment v6 prefix
 }

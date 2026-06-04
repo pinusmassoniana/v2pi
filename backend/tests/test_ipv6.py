@@ -51,9 +51,39 @@ def test_render_nft6_tproxy_when_enabled_and_up():
     t = render_nft6(_plan(ipv6_enabled=True), tunnel_up=True)
     assert "chain prerouting" in t and "tproxy ip6 to :52346" in t
     assert "meta mark 0x80 return" in t                 # anti-loop egress mark
-    assert "meta l4proto ipv6-icmp return" in t         # NDP/RA must stay local
     assert "udp dport { 546, 547 } return" in t          # DHCPv6 carve-out
-    assert 'iifname "eth0.2"' in t
+    assert "ipv6-icmp" not in t                          # C: misleading icmpv6 bypass line removed
+    # A: forward-drop backstop — non-tcp/udp (ICMPv6) global v6 is dropped, not leaked
+    assert "chain forward" in t
+    assert 'iifname "eth0.2" ip6 daddr != { ::1/128, fe80::/10, fc00::/7, ff00::/8 } drop' in t
+
+
+def test_render_nft6_carves_out_static_segment_prefix():
+    t = render_nft6(_plan(ipv6_enabled=True, segment_ip6="2001:db8:0:2::1/64"), tunnel_up=True)
+    assert "2001:db8:0:2::/64" in t            # B: segment /64 bypassed → intra-segment v6 stays local
+    # auto / blank → no segment carve-out (documented limitation until observed)
+    assert "2001:db8" not in render_nft6(_plan(ipv6_enabled=True, segment_ip6="auto"), tunnel_up=True)
+
+
+def test_apply_v6_sets_accept_ra_on_uplink():
+    writes = []
+    be = LinuxBackend(Settings(), run=FakeRun(), write_proc=lambda p, v: writes.append((p, v)))
+    be.apply_tproxy(_plan(ipv6_enabled=True))
+    assert ("/proc/sys/net/ipv6/conf/all/forwarding", "1") in writes
+    assert ("/proc/sys/net/ipv6/conf/eth0/accept_ra", "2") in writes   # D: keep RA on the Home leg
+    # v4-only apply touches no v6 sysctls
+    w4 = []
+    LinuxBackend(Settings(), run=FakeRun(), write_proc=lambda p, v: w4.append((p, v))).apply_tproxy(
+        NetPlan.from_settings(Settings()))
+    assert ("/proc/sys/net/ipv4/ip_forward", "1") in w4 and not any("ipv6" in p for p, _ in w4)
+
+
+def test_segment_prefix6_skips_temporary_address():
+    sample = (
+        "20010db8000000020000000000000abc 03 40 00 01 eth0.2\n"   # flags 01 = temporary → skip
+        "20010db8000000020000000000000001 03 40 00 00 eth0.2\n"   # stable → match
+    )
+    assert netcheck.segment_prefix6("eth0.2", read=lambda: sample) == "2001:db8:0:2::1/64"
 
 
 def test_render_nft6_guard_when_enabled_but_tunnel_down_and_killswitch():
@@ -83,10 +113,12 @@ def test_linux_apply_installs_v6_tproxy_and_routing_when_enabled():
     assert ["ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", "100"] in cmds
 
 
-def test_linux_apply_no_v6_routing_when_off():
+def test_linux_apply_cleans_stale_v6_routing_when_off():
     fake = FakeRun()
     LinuxBackend(Settings(), run=fake).apply_tproxy(NetPlan.from_settings(Settings()))
-    assert not any(c[:2] == ["ip", "-6"] for c in fake.cmds())   # v4-only
+    cmds = fake.cmds()
+    assert ["ip", "-6", "rule", "add", "fwmark", "0x40", "lookup", "100"] not in cmds   # no v6 tproxy
+    assert ["ip", "-6", "rule", "del", "fwmark", "0x40", "lookup", "100"] in cmds        # E: stale cleanup
 
 
 def test_linux_teardown_flushes_v6_routing():
@@ -175,6 +207,20 @@ def test_put_network_auto_prefix_persists_and_recommends_pd(settings, stub_xray)
     assert body["segment"]["ip6"] == "auto"
     assert any("DHCPv6-PD client" in r["title"] for r in body["recommendations"])
     assert body["status"]["ipv6_prefix"] is None   # DryRun backend → prefix not observed
+
+
+def test_put_network_validates_segment_ip6(settings, stub_xray):
+    c, h = _client(settings, stub_xray)
+    assert c.put("/api/network", json={"segment_ip6": "not-a-prefix"}, headers=h).status_code == 422
+    assert c.put("/api/network", json={"segment_ip6": "2001:db8:0:2::/64"}, headers=h).status_code == 200
+    assert c.put("/api/network", json={"segment_ip6": "auto"}, headers=h).status_code == 200
+    assert c.put("/api/network", json={"segment_ip6": ""}, headers=h).status_code == 200   # clears
+
+
+def test_network_payload_uplink6_none_on_dryrun(settings, stub_xray):
+    c, h = _client(settings, stub_xray)
+    c.put("/api/network", json={"ipv6_enabled": True}, headers=h)
+    assert c.get("/api/network").json()["status"]["uplink6"] is None   # DryRun → v6 uplink not probed
 
 
 def test_put_network_enable_ipv6_rebuilds_config_and_shows_hint(settings, stub_xray):
