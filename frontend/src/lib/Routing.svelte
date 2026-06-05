@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, ApiError, type RoutingRuleIn, type PresetInfo } from "./api";
   import { confirmDialog } from "./confirm.svelte";
+  import { I } from "./icons";
 
   type Row = RoutingRuleIn & { uid: number; enabled: boolean; label: string };
   let _uid = 0;
@@ -170,9 +171,9 @@
           </td>
           <td><input class="input label" bind:value={rule.label} placeholder="note (optional)" /></td>
           <td class="row-actions">
-            <button class="btn btn-ghost" type="button" onclick={() => move(i, -1)} disabled={i === 0} aria-label="up">↑</button>
-            <button class="btn btn-ghost" type="button" onclick={() => move(i, 1)} disabled={i === rules.length - 1} aria-label="down">↓</button>
-            <button class="btn btn-ghost" type="button" onclick={() => removeRule(rule.uid)} aria-label="remove">✕</button>
+            <button class="btn iconbtn" type="button" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">{@html I.up}</button>
+            <button class="btn iconbtn" type="button" title="Move down" onclick={() => move(i, 1)} disabled={i === rules.length - 1} aria-label="move down">{@html I.down}</button>
+            <button class="btn iconbtn btn-danger" type="button" title="Remove rule" onclick={() => removeRule(rule.uid)} aria-label="remove rule">{@html I.trash}</button>
           </td>
         </tr>
       {/each}
@@ -233,8 +234,7 @@
 
 <style>
   h3 small { font-weight: 400; font-size: 0.8rem; }
-  .row-actions { display: flex; gap: 0.25rem; }
-  .row-actions .btn { padding: 0.3rem 0.5rem; }
+  .row-actions { display: flex; gap: 0.25rem; align-items: center; white-space: nowrap; }
   .empty { font-style: italic; }
   tr.anchor td { background: var(--surface-2); color: var(--muted); font-size: 0.8rem; }
   tr.disabled { opacity: 0.5; }

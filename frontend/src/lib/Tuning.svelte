@@ -3,6 +3,7 @@
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { I } from "./icons";
 
   // editor doubles as "add" (id=null) and "edit" (id set) — one form, no duplication.
   const blank = () => ({
@@ -108,12 +109,12 @@
           <td><span class="onoff" class:on={p.doh_enabled}>{p.doh_enabled ? "on" : "off"}</span></td>
           <td class="mono">{p.quic}</td>
           <td class="row-actions">
-            <button class="btn" onclick={() => edit(p)}>Edit</button>
-            <button class="btn" onclick={() => cloneOf(p)}>Clone</button>
-            <button class="btn" title="Assign to the active node and re-apply now" onclick={() => applyActive(p.id)}>Apply to active</button>
+            <button class="btn iconbtn" title="Edit" aria-label="Edit profile" onclick={() => edit(p)}>{@html I.edit}</button>
+            <button class="btn iconbtn" title="Clone" aria-label="Clone profile" onclick={() => cloneOf(p)}>{@html I.clone}</button>
+            <button class="btn iconbtn" title="Apply to the active node and re-apply now" aria-label="Apply to active" onclick={() => applyActive(p.id)}>{@html I.zap}</button>
             {#if !p.is_default}
-              <button class="btn" onclick={() => makeDefault(p.id)}>Make default</button>
-              <button class="btn btn-danger" onclick={() => del(p)}>Delete</button>
+              <button class="btn iconbtn" title="Make default" aria-label="Make default" onclick={() => makeDefault(p.id)}>{@html I.star}</button>
+              <button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete profile" onclick={() => del(p)}>{@html I.trash}</button>
             {/if}
           </td>
         </tr>
@@ -218,7 +219,7 @@
   .ed-head { display: flex; align-items: center; gap: 0.6rem; }
   .ed-head h3 { margin-right: auto; }
   .ed-head .auto { width: auto; }
-  .row-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  .row-actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; align-items: center; white-space: nowrap; }
   .check { display: flex; gap: 0.6rem; align-items: center; }
   .actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
   .hint { margin: 0 0 0.6rem; font-size: 0.85rem; }

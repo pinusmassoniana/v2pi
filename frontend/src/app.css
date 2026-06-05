@@ -168,6 +168,9 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
 .table-wrap > .table { min-width: 44rem; }
 table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .table th, .table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+/* compact square icon button for table action cells (shared by Nodes/Tuning/Subscriptions/Routing) */
+.iconbtn { padding: 0.32rem; display: inline-grid; place-items: center; line-height: 0; }
+.iconbtn svg { display: block; }
 .table th { color: var(--faint); font-weight: 650; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .table tbody tr { transition: background 0.12s; }
 .table tbody tr:not(.active):hover td { background: var(--surface-2); }

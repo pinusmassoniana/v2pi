@@ -3,6 +3,7 @@
   import Modal from "./Modal.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { I } from "./icons";
 
   let subs = $state<Subscription[]>([]);
   let profiles = $state<TuningProfile[]>([]);
@@ -177,10 +178,10 @@
           </td>
           <td class="muted" title={s.last_fetched ?? ""}>{relTime(s.last_fetched)}</td>
           <td class="actions">
-            <button class="btn" onclick={() => refreshSub(s.id)} disabled={refreshing[s.id]}>{refreshing[s.id] ? "…" : "Refresh"}</button>
-            <button class="btn" onclick={() => toggleEnabled(s)}>{s.enabled ? "Pause" : "Resume"}</button>
-            <button class="btn" onclick={() => startEdit(s)}>Edit</button>
-            <button class="btn btn-danger" onclick={() => del(s)}>Delete</button>
+            <button class="btn iconbtn" title="Refresh now" aria-label="Refresh subscription" onclick={() => refreshSub(s.id)} disabled={refreshing[s.id]}>{#if refreshing[s.id]}…{:else}{@html I.refresh}{/if}</button>
+            <button class="btn iconbtn" title={s.enabled ? "Pause auto-update" : "Resume auto-update"} aria-label={s.enabled ? "Pause" : "Resume"} onclick={() => toggleEnabled(s)}>{@html s.enabled ? I.pause : I.play}</button>
+            <button class="btn iconbtn" title="Edit" aria-label="Edit subscription" onclick={() => startEdit(s)}>{@html I.edit}</button>
+            <button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete subscription" onclick={() => del(s)}>{@html I.trash}</button>
           </td>
         </tr>
       {/each}
@@ -306,7 +307,7 @@
   td .sub { font-size: 0.72rem; margin-top: 0.1rem; }
   tr.paused { opacity: 0.5; }
   .warn { color: var(--danger); cursor: help; margin-left: 0.2rem; }
-  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; align-items: center; white-space: nowrap; }
   .edit { display: grid; gap: 0.6rem; }
   .field { display: grid; gap: 0.2rem; }
   .check { display: flex; align-items: center; gap: 0.45rem; }
