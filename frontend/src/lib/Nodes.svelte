@@ -352,7 +352,8 @@
           </td>
           <td data-label="address">{n.address}</td><td class="col-port" data-label="port">{n.port}</td><td class="col-transport" data-label="transport">{n.transport}{n.security === "tls" ? "·tls" : ""}</td>
           {@render healthCells(health[n.id])}
-          <td class="actions" data-label="">
+          <td data-label="">
+            <div class="actions">
             {#if canReorder}
               <button class="btn iconbtn ord" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">{@html I.up}</button>
               <button class="btn iconbtn ord" title="Move down" onclick={() => move(i, 1)} disabled={i === shown.length - 1} aria-label="move down">{@html I.down}</button>
@@ -367,6 +368,7 @@
             <button class="btn iconbtn" title="Export / share" aria-label="Export / share" onclick={() => (exportNode = n)}>{@html I.share}</button>
             <button class="btn iconbtn" title="Clone" aria-label="Clone node" onclick={() => cloneNode(n)}>{@html I.clone}</button>
             {#if tab === "servers"}<button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete node" onclick={() => del(n)}>{@html I.trash}</button>{/if}
+            </div>
           </td>
         </tr>
       {/each}

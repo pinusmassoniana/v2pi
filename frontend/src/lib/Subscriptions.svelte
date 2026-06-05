@@ -177,11 +177,13 @@
             {#if s.last_error}<span class="warn" title={s.last_error}>⚠</span>{/if}
           </td>
           <td class="muted" title={s.last_fetched ?? ""}>{relTime(s.last_fetched)}</td>
-          <td class="actions">
+          <td>
+            <div class="actions">
             <button class="btn iconbtn" title="Refresh now" aria-label="Refresh subscription" onclick={() => refreshSub(s.id)} disabled={refreshing[s.id]}>{#if refreshing[s.id]}…{:else}{@html I.refresh}{/if}</button>
             <button class="btn iconbtn" title={s.enabled ? "Pause auto-update" : "Resume auto-update"} aria-label={s.enabled ? "Pause" : "Resume"} onclick={() => toggleEnabled(s)}>{@html s.enabled ? I.pause : I.play}</button>
             <button class="btn iconbtn" title="Edit" aria-label="Edit subscription" onclick={() => startEdit(s)}>{@html I.edit}</button>
             <button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete subscription" onclick={() => del(s)}>{@html I.trash}</button>
+            </div>
           </td>
         </tr>
       {/each}

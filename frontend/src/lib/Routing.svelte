@@ -170,10 +170,12 @@
             </select>
           </td>
           <td><input class="input label" bind:value={rule.label} placeholder="note (optional)" /></td>
-          <td class="row-actions">
+          <td>
+            <div class="row-actions">
             <button class="btn iconbtn" type="button" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">{@html I.up}</button>
             <button class="btn iconbtn" type="button" title="Move down" onclick={() => move(i, 1)} disabled={i === rules.length - 1} aria-label="move down">{@html I.down}</button>
             <button class="btn iconbtn btn-danger" type="button" title="Remove rule" onclick={() => removeRule(rule.uid)} aria-label="remove rule">{@html I.trash}</button>
+            </div>
           </td>
         </tr>
       {/each}

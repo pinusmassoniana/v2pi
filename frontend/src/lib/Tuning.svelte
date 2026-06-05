@@ -108,7 +108,8 @@
           <td><span class="onoff" class:on={p.mux_enabled}>{p.mux_enabled ? "on" : "off"}</span></td>
           <td><span class="onoff" class:on={p.doh_enabled}>{p.doh_enabled ? "on" : "off"}</span></td>
           <td class="mono">{p.quic}</td>
-          <td class="row-actions">
+          <td>
+            <div class="row-actions">
             <button class="btn iconbtn" title="Edit" aria-label="Edit profile" onclick={() => edit(p)}>{@html I.edit}</button>
             <button class="btn iconbtn" title="Clone" aria-label="Clone profile" onclick={() => cloneOf(p)}>{@html I.clone}</button>
             <button class="btn iconbtn" title="Apply to the active node and re-apply now" aria-label="Apply to active" onclick={() => applyActive(p.id)}>{@html I.zap}</button>
@@ -116,6 +117,7 @@
               <button class="btn iconbtn" title="Make default" aria-label="Make default" onclick={() => makeDefault(p.id)}>{@html I.star}</button>
               <button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete profile" onclick={() => del(p)}>{@html I.trash}</button>
             {/if}
+            </div>
           </td>
         </tr>
       {/each}
