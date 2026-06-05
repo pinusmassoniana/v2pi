@@ -46,8 +46,8 @@ gateway on the host itself** — so the host needs nothing but Docker, and you o
 **Deploy** — fresh install on an arm64 Linux host with Docker:
 
 ```bash
-git clone https://github.com/pinusmassoniana/v2pi-x.git
-cd v2pi-x
+git clone https://github.com/pinusmassoniana/v2pi.git
+cd v2pi
 docker compose pull      # pull the pre-built arm64 image — no on-device build
 docker compose up -d
 ```
@@ -55,7 +55,7 @@ docker compose up -d
 **Update** to the latest published image later:
 
 ```bash
-cd v2pi-x
+cd v2pi
 git pull                 # refresh docker-compose.yml if it changed
 docker compose pull
 docker compose up -d
@@ -195,8 +195,8 @@ NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запус
 **Деплой** — установка с нуля на arm64 Linux-хосте с Docker:
 
 ```bash
-git clone https://github.com/pinusmassoniana/v2pi-x.git
-cd v2pi-x
+git clone https://github.com/pinusmassoniana/v2pi.git
+cd v2pi
 docker compose pull      # скачать готовый arm64-образ — без сборки на устройстве
 docker compose up -d
 ```
@@ -204,7 +204,7 @@ docker compose up -d
 **Обновление** до свежего опубликованного образа:
 
 ```bash
-cd v2pi-x
+cd v2pi
 git pull                 # обновить docker-compose.yml, если менялся
 docker compose pull
 docker compose up -d

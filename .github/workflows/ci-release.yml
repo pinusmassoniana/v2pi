@@ -16,7 +16,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}   # ghcr.io/pinusmassoniana/v2pi-x (already lowercase)
+  # Hardcoded (not ${{ github.repository }}) so the published package name stays `v2pi-x` even
+  # though the repo was renamed to `v2pi` — keeps the existing public GHCR package + the Pi's pull.
+  IMAGE: ghcr.io/pinusmassoniana/v2pi-x
 
 jobs:
   backend-tests:
