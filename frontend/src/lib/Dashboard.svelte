@@ -2,11 +2,14 @@
   import { api, ApiError, type Node, type TrafficMessage, type Network, type Subscription } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
   import NetworkCard from "./NetworkCard.svelte";
+  import ConnFlow from "./ConnFlow.svelte";
+  import LatencyChart from "./LatencyChart.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
   import { statusStore, subscribeStatus, pollStatusOnce, serverNow } from "./status.svelte";
-  import { subWarnings, sparkPath, agoLabel } from "./dashboard";
+  import { subWarnings, agoLabel } from "./dashboard";
   import { flagEmoji } from "./flag";
+  import { fmtRate, fmtBytes } from "./format";
 
   const UNTUNNELED_WARN_BPS = 50_000;   // D10: throughput leaking outside the tunnel above this → warn
 
@@ -18,7 +21,8 @@
   let msg = $state("");
   let net = $state<Network | null>(null);       // C: connected-clients count
   let subs = $state<Subscription[]>([]);          // E: expiry / data-cap warnings
-  let failoverDismissed = $state<number | null>(null);
+  // U3: remember the dismissed failover across reloads
+  let failoverDismissed = $state<number | null>(Number(localStorage.getItem("failoverDismissed")) || null);
 
   let activeName = $derived(nodes.find((n) => n.id === status?.active_node_id)?.name ?? null);
   let liveFrame = $derived(live && !("disabled" in live) && !("error" in live) ? live : null);
@@ -32,7 +36,15 @@
   let liveDirect = $derived(liveFrame ? (liveFrame.outbounds.direct ?? { up_bps: 0, down_bps: 0 }) : { up_bps: 0, down_bps: 0 });
   let latest = $derived(samples.length ? samples[samples.length - 1] : { up: 0, down: 0 });
   let clients = $derived(net?.status.dhcp_clients ?? null);
-  let spark = $derived(liveActive?.lat_history?.length ? sparkPath(liveActive.lat_history, 56, 16) : "");
+  let clientNames = $derived(net?.status.clients?.map((c) => c.hostname || c.ip) ?? []);
+  // NF4: data used this session (since (re)connect)
+  let sessionUp = $derived(liveFrame?.session?.up ?? null);
+  let sessionDown = $derived(liveFrame?.session?.down ?? null);
+  // NF3: untunneled (leak) rates surfaced on the ConnFlow tunnel link
+  let directDown = $derived(liveDirect.down_bps);
+  let directUp = $derived(liveDirect.up_bps);
+  // U1: distinguish a crashed xray (watchdog restarting) from a deliberate stop
+  let xrayError = $derived(status?.xray_state === "error");
   // A: surface an auto-failover from the last 24h until the operator dismisses it
   let failover = $derived(
     status?.last_failover_at && status.last_failover_at !== failoverDismissed
@@ -40,15 +52,6 @@
       ? status.last_failover_at : null);
   let warnings = $derived(subWarnings(subs, serverNow() / 1000));
 
-  const fmtRate = (bps: number) =>
-    bps >= 1e6 ? (bps / 1e6).toFixed(1) + " Mbit/s"
-    : bps >= 1e3 ? (bps / 1e3).toFixed(0) + " kbit/s"
-    : Math.round(bps) + " bit/s";
-  const fmtBytes = (b: number) =>
-    b >= 1e9 ? (b / 1e9).toFixed(2) + " GB"
-    : b >= 1e6 ? (b / 1e6).toFixed(1) + " MB"
-    : b >= 1e3 ? (b / 1e3).toFixed(0) + " KB"
-    : Math.round(b) + " B";
   function freshness(iso: string | null | undefined): string {
     if (!iso) return "";
     const t = Date.parse(iso);
@@ -98,13 +101,8 @@
     return () => { clearInterval(t); stop(); };
   });
 
-  // C: connected-clients count — its own light poll (5s, visibility-gated)
-  $effect(() => {
-    const load = () => api.getNetwork().then((n) => (net = n)).catch(() => {});
-    load();
-    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 5000);
-    return () => clearInterval(t);
-  });
+  // E1: the embedded <NetworkCard> is the sole /api/network poller; it lifts the value here via
+  // `onnet` (below) so the client count + ConnFlow read it without a duplicate poll.
 
   // E: subscription expiry / data-cap warnings — subs change rarely, poll slowly
   $effect(() => {
@@ -146,15 +144,11 @@
   });
 </script>
 
-<div class="hero" class:up={status?.running} class:down={status?.running === false}>
-  <span class="status-dot" class:live={status?.running} class:bad={status?.running === false}></span>
+<div class="hero" class:up={status?.running} class:down={status?.running === false && !xrayError} class:warn={xrayError}>
+  <span class="status-dot" class:live={status?.running} class:warn={xrayError} class:bad={status?.running === false && !xrayError}></span>
   <div class="hero-state">
     <span class="eyebrow">Gateway</span>
-    <span class="hero-headline" aria-live="polite">{status?.running ? "Connected" : status?.running === false ? "Disconnected" : "—"}</span>
-  </div>
-  <div class="hero-node">
-    <span class="eyebrow">Active node</span>
-    <span class="hero-nodename">{activeName ?? "—"}</span>
+    <span class="hero-headline" aria-live="polite">{status?.running ? "Connected" : xrayError ? "Reconnecting…" : status?.running === false ? "Disconnected" : "—"}</span>
   </div>
   {#if status?.running && status?.active_since}
     <div class="hero-node">
@@ -169,13 +163,14 @@
     </div>
   {/if}
   <span class="hero-spacer"></span>
-  <button class="btn" onclick={rollback} title="Revert the live config to the previously applied node">Rollback</button>
+  <button class="btn" onclick={rollback} disabled={!status?.prev_active_node_id}
+          title={status?.prev_active_node_id ? "Revert the live config to the previously applied node" : "No previous node to roll back to"}>Rollback</button>
 </div>
 
 {#if failover}
   <div class="banner warn" role="status">
     <span>⚠ Auto-failover {agoLabel(failover, serverNow() / 1000)} — the gateway switched node on its own.</span>
-    <button class="banner-x" onclick={() => (failoverDismissed = failover)} aria-label="Dismiss">✕</button>
+    <button class="banner-x" onclick={() => { failoverDismissed = failover; if (failover) localStorage.setItem("failoverDismissed", String(failover)); }} aria-label="Dismiss">✕</button>
   </div>
 {/if}
 
@@ -187,13 +182,29 @@
   </div>
 {/if}
 
+<ConnFlow
+  running={!!status?.running}
+  segmentUp={net?.status.segment_up ?? null}
+  {clients}
+  {clientNames}
+  nodeName={activeName}
+  realOk={liveActive?.real_ok ?? null}
+  latencyMs={liveActive?.latency_ms ?? null}
+  egressIp={liveActive?.egress_ip ?? null}
+  egressCc={liveActive?.egress_cc ?? null}
+  uplink={net?.status.uplink ?? null}
+  uplink6={net?.status.uplink6 ?? null}
+  ipv6Enabled={!!net?.ipv6_enabled}
+  proxyDown={latest.down}
+  proxyUp={latest.up}
+  {directDown}
+  {directUp}
+/>
+
 <div class="metrics">
   <div class="metric">
     <span class="eyebrow">Real latency</span>
-    <span class="metric-row">
-      <span class="metric-val mono">{liveActive?.real_ok ? liveActive.latency_ms : "—"}{#if liveActive?.real_ok}<small>ms</small>{/if}</span>
-      {#if spark}<svg class="spark" width="56" height="16" viewBox="0 0 56 16" aria-hidden="true"><path d={spark} /></svg>{/if}
-    </span>
+    <span class="metric-val mono">{liveActive?.real_ok ? liveActive.latency_ms : "—"}{#if liveActive?.real_ok}<small>ms</small>{/if}</span>
     <span class="metric-sub">{liveActive ? (liveActive.checked_at ? freshness(liveActive.checked_at) : (liveActive.real_ok === false ? "probe failed" : "no probe yet")) : "waiting…"}</span>
   </div>
   <div class="metric">
@@ -215,12 +226,12 @@
   <div class="metric">
     <span class="eyebrow">Data down</span>
     <span class="metric-val mono">{dataDown !== null ? fmtBytes(dataDown) : "—"}</span>
-    <span class="metric-sub">total used</span>
+    <span class="metric-sub">{sessionDown !== null ? fmtBytes(sessionDown) + " this session" : "total used"}</span>
   </div>
   <div class="metric">
     <span class="eyebrow">Data up</span>
     <span class="metric-val mono">{dataUp !== null ? fmtBytes(dataUp) : "—"}</span>
-    <span class="metric-sub">total used</span>
+    <span class="metric-sub">{sessionUp !== null ? fmtBytes(sessionUp) + " this session" : "total used"}</span>
   </div>
 </div>
 
@@ -241,7 +252,9 @@
   {/if}
 </div>
 
-<NetworkCard />
+<LatencyChart values={liveActive?.lat_history ?? []} stale={liveActive?.real_ok === false} />
+
+<NetworkCard onnet={(n) => (net = n)} />
 
 <Alert {msg} />
 
@@ -261,9 +274,11 @@
   }
   .hero.up::before { background: var(--success); }
   .hero.down::before { background: var(--danger); }
+  .hero.warn::before { background: var(--warn); }
   .status-dot { width: 0.85rem; height: 0.85rem; border-radius: 50%; flex: none; background: var(--muted); }
   .status-dot.live { background: var(--success); animation: pulse-ring 2.4s ease-out infinite; }
   .status-dot.bad { background: var(--danger); }
+  .status-dot.warn { background: var(--warn); }
   .hero-state, .hero-node { display: grid; gap: 0.12rem; }
   .hero-headline { font-size: 1.3rem; font-weight: 720; letter-spacing: -0.02em; line-height: 1.1; }
   .hero-nodename { font-weight: 600; font-size: 0.95rem; }
@@ -295,7 +310,6 @@
     box-shadow: var(--shadow-sm); overflow: hidden;
   }
   .metric { background: var(--surface); padding: 0.85rem 1.1rem; display: grid; gap: 0.25rem; min-width: 0; }
-  .metric-row { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
   .metric-val {
     font-size: 1.4rem; font-weight: 680; letter-spacing: -0.02em; line-height: 1.1;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -306,8 +320,6 @@
   .metric-val.rate-up { color: var(--success); }
   .metric-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .metric-v6 { font-size: 0.78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .spark { flex: none; overflow: visible; }
-  .spark path { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
 
   /* traffic graph card */
   .graph-card { gap: 0.7rem; }

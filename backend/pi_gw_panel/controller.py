@@ -157,6 +157,10 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
             store.set_setting("prev_active_node_id", prev if prev is not None else "")
             store.set_setting("active_node_id", str(node.id))
             store.set_setting("active_since", str(int(time.time())))   # uptime anchor (P3)
+            # NF4: snapshot the lifetime data-used baseline so the Dashboard can show "this
+            # session" (since (re)connect) = lifetime − baseline, beside the lifetime total.
+            store.set_setting("session_base_up", store.get_setting("data_used_up") or "0")
+            store.set_setting("session_base_down", store.get_setting("data_used_down") or "0")
         return ApplyResult(ok=True)
 
 

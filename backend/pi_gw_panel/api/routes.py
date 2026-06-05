@@ -271,11 +271,13 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     active = state.store.get_setting("active_node_id")
     since = state.store.get_setting("active_since")
     last_fo = state.store.get_setting("last_failover_at")
+    prev = state.store.get_setting("prev_active_node_id")
     return StatusOut(running=st["running"], pid=st["pid"],
                      active_node_id=int(active) if active else None,  # "" (post-rollback) → None
                      xray_state=state.supervisor.state(),
                      active_since=int(since) if since else None,
                      last_failover_at=float(last_fo) if last_fo else None,
+                     prev_active_node_id=int(prev) if prev else None,  # U2: gate the Rollback button
                      server_now=time.time())   # D4: client offsets freshness/uptime by this
 
 

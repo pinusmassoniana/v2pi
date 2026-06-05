@@ -1,4 +1,4 @@
-export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; last_failover_at: number | null; server_now: number; }
+export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; last_failover_at: number | null; prev_active_node_id: number | null; server_now: number; }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   network: string; security: string;
@@ -48,6 +48,7 @@ export interface TrafficFrame {
   outbounds: Record<string, OutboundRate>;
   totals: { up: number; down: number };   // proxy outbound bytes since xray start (resets on restart)
   lifetime?: { up: number; down: number };  // durable data-used total, survives xray restart (F)
+  session?: { up: number; down: number };   // data used since the last (re)connect (NF4)
   active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; egress_ip6: string | null; egress_cc: string | null; egress_cc6: string | null; checked_at: string | null; lat_history: number[] } | null;
 }
 export type TrafficMessage = TrafficFrame | { disabled: true } | { error: string };

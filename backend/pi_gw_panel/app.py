@@ -27,12 +27,17 @@ def _traffic_frame(state) -> dict:
     store = state.store
     lifetime = {"up": int(store.get_setting("data_used_up") or "0"),
                 "down": int(store.get_setting("data_used_down") or "0")}
+    # NF4: data used "this session" = lifetime − the baseline snapshotted at the last (re)connect.
+    base_up = int(store.get_setting("session_base_up") or "0")
+    base_down = int(store.get_setting("session_base_down") or "0")
+    session = {"up": max(0, lifetime["up"] - base_up), "down": max(0, lifetime["down"] - base_down)}
     return {
         "ts": int(time.time() * 1000),
         "outbounds": outbounds,
         "active": active_health(store),
         "totals": totals,
         "lifetime": lifetime,
+        "session": session,
     }
 
 

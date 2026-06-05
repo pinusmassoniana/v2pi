@@ -47,7 +47,8 @@ def test_status_and_nodes(settings, stub_xray):
     assert st["server_now"] > 0   # D4: Pi wall-clock for client clock-skew correction (varies)
     assert {k: v for k, v in st.items() if k != "server_now"} == {
         "running": False, "pid": None, "active_node_id": None,
-        "xray_state": "stopped", "active_since": None, "last_failover_at": None}
+        "xray_state": "stopped", "active_since": None, "last_failover_at": None,
+        "prev_active_node_id": None}
     # add a node (mutation -> needs csrf)
     body = {"name": "n1", "address": "1.2.3.4", "port": 47000, "uuid": "u-1",
             "sni": "www.microsoft.com", "public_key": "PK", "short_id": "ab12"}

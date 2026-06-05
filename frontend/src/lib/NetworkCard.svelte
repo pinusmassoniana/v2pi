@@ -6,6 +6,10 @@
   import Modal from "./Modal.svelte";
   import Toggle from "./Toggle.svelte";
 
+  // E1: this card is the SOLE poller of /api/network; `onnet` lifts the value to a parent
+  // (the Dashboard) so it doesn't poll the same endpoint a second time for the client count.
+  let { onnet }: { onnet?: (n: Network) => void } = $props();
+
   let net = $state<Network | null>(null);
   let msg = $state("");
   let editOpen = $state(false);
@@ -22,7 +26,7 @@
   }
 
   async function load() {
-    try { net = await api.getNetwork(); }
+    try { net = await api.getNetwork(); onnet?.(net); }
     catch (err) { msg = err instanceof ApiError ? err.message : "load failed"; }
   }
   async function save() {
@@ -44,7 +48,11 @@
   // never clobbers the fields the user is editing (they two-way-bind net.segment.*)
   $effect(() => {
     load();
-    const t = setInterval(() => { if (!editOpen) load(); }, 5000);
+    // E2: pause while the Edit modal is open (don't clobber edited fields) AND while the tab
+    // is hidden (no background polling).
+    const t = setInterval(() => {
+      if (!editOpen && document.visibilityState === "visible") load();
+    }, 5000);
     return () => clearInterval(t);
   });
 </script>
