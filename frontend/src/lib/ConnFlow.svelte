@@ -1,10 +1,11 @@
 <script lang="ts">
-  // NF1: live connection topology — Devices → Pi gateway → tunnel(node) → Internet. Each hop is
-  // coloured by health; the tunnel link carries the live ↓/↑ rate and (NF3) an "untunneled"
-  // leak readout drawn around it. Pure presentation — all data comes from the Dashboard.
+  // NF1: connection topology as a fixed-geometry SVG that matches the app style — subtle surface
+  // circles with lucide icons (no emoji except the country flag), small status dots for health,
+  // thin lines. Baseline: Devices —Lan— Gateway ——— Internet, the exit Node elevated above centre
+  // reached by two tunnel legs (Gateway ↗ Node ↘ Internet). The straight "untunneled" bypass is
+  // ALWAYS drawn — faint when unused, amber when traffic leaks around the tunnel (NF3).
   import { fmtRate } from "./format";
   import { flagEmoji } from "./flag";
-  import { I } from "./icons";
 
   type Tone = "ok" | "bad" | "idle";
   let {
@@ -21,87 +22,104 @@
     proxyDown?: number; proxyUp?: number; directDown?: number; directUp?: number;
   } = $props();
 
+  // inner lucide paths (stroked via the parent <g>); no <svg> wrapper so they embed in the diagram
+  const P = {
+    devices: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    server: '<rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/>',
+    exit: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18z"/>',
+  };
   const tone = (v: boolean | null | undefined): Tone => (v == null ? "idle" : v ? "ok" : "bad");
+  const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
   let leaking = $derived(directDown + directUp > 0);
-  let tunTone = $derived<Tone>(!running ? "idle" : realOk === false ? "bad" : realOk ? "ok" : "idle");
+  let tunCls = $derived(!running ? "off" : realOk === false ? "bad" : realOk ? "ok" : "off");
   let names = $derived(clientNames.filter(Boolean));
+  let devSub = $derived(names.length ? trunc(names.slice(0, 2).join(", ") + (names.length > 2 ? ` +${names.length - 2}` : ""), 22) : "client segment");
+  let tunnelRate = $derived(
+    !running ? "off" : realOk === false ? "no traffic" :
+    `↓ ${fmtRate(proxyDown)} · ↑ ${fmtRate(proxyUp)}` + (realOk && latencyMs != null ? ` · ${latencyMs}ms` : ""));
 </script>
 
 <div class="card flow-card">
   <span class="eyebrow">Connection</span>
-  <div class="flow">
-    <div class="hop">
-      <span class="hop-ic">{@html I.devices}</span>
-      <span class="hop-title"><span class="num">{clients ?? "—"}</span> {clients === 1 ? "device" : "devices"}</span>
-      <span class="hop-sub" title={names.join(", ")}>{names.length ? names.slice(0, 2).join(", ") + (names.length > 2 ? ` +${names.length - 2}` : "") : "client segment"}</span>
-    </div>
+  <div class="diagram-scroll">
+  <svg viewBox="0 0 760 208" class="diagram" role="img"
+       aria-label="connection path: devices, gateway, tunnel node, internet">
+    <!-- lines -->
+    <line class="ln {tone(segmentUp)}" x1="86" y1="140" x2="220" y2="140" />
+    <text class="lbl" x="153" y="131">Lan</text>
 
-    <div class="link"><div class="line {tone(segmentUp)}"></div><span class="cap">LAN</span></div>
+    <line class="ln {leaking ? 'leak' : 'faint'}" x1="280" y1="140" x2="674" y2="140" />
+    <text class="lbl {leaking ? 'leak' : 'faint'}" x="477" y="157">untunneled{#if leaking} ↓ {fmtRate(directDown)} · ↑ {fmtRate(directUp)}{/if}</text>
 
-    <div class="hop">
-      <span class="hop-ic">{@html I.server}</span>
-      <span class="hop-title"><span class="dot {tone(segmentUp)}"></span> Pi gateway</span>
-      <span class="hop-sub">{segmentUp == null ? "segment —" : segmentUp ? "segment up" : "segment down"}</span>
-    </div>
+    <line class="tun {tunCls}" x1="272" y1="123" x2="446" y2="68" />
+    <line class="tun {tunCls}" x1="494" y1="68" x2="678" y2="123" />
+    <text class="lbl" x="470" y="16">Tunnel</text>
+    <text class="rate {tunCls === 'bad' ? 'bad' : ''}" x="470" y="31">{tunnelRate}</text>
 
-    <div class="link tunnel" class:leak={leaking}>
-      <div class="line {tunTone}"></div>
-      <span class="cap {tunTone}">{running ? (realOk === false ? "tunnel ✕" : "tunnel") : "off"}</span>
-      <span class="rates">↓ {fmtRate(proxyDown)} · ↑ {fmtRate(proxyUp)}{#if running && realOk && latencyMs != null} · {latencyMs}ms{/if}</span>
-      {#if leaking}<span class="leak-note" title="Traffic leaving the segment WITHOUT the tunnel">⚠ untunneled ↓ {fmtRate(directDown)} · ↑ {fmtRate(directUp)}</span>{/if}
-    </div>
+    <!-- Devices -->
+    <circle class="cir" cx="56" cy="140" r="26" />
+    <g class="ic" transform="translate(47,131) scale(0.75)">{@html P.devices}</g>
+    <circle class="sdot {tone(segmentUp)}" cx="74" cy="122" r="4.5" />
+    <text class="ctitle" x="56" y="184">{clients ?? "—"} {clients === 1 ? "device" : "devices"}</text>
+    <text class="csub" x="56" y="198">{devSub}</text>
 
-    <div class="hop">
-      <span class="hop-ic flag">{#if egressCc}{flagEmoji(egressCc)}{:else}{@html I.exit}{/if}</span>
-      <span class="hop-title"><span class="dot {tone(running ? realOk : null)}"></span> {nodeName ?? "—"}</span>
-      <span class="hop-sub mono" title={egressIp ?? ""}>{egressIp ?? "no exit"}</span>
-    </div>
+    <!-- Gateway -->
+    <circle class="cir" cx="250" cy="140" r="26" />
+    <g class="ic" transform="translate(241,131) scale(0.75)">{@html P.server}</g>
+    <circle class="sdot {tone(segmentUp)}" cx="268" cy="122" r="4.5" />
+    <text class="ctitle" x="250" y="184">Pi gateway</text>
+    <text class="csub" x="250" y="198">{segmentUp == null ? "segment —" : segmentUp ? "segment up" : "segment down"}</text>
 
-    <div class="link"><div class="line {tone(uplink)}"></div><span class="cap">WAN</span></div>
+    <!-- Node (elevated) -->
+    <circle class="cir" cx="470" cy="54" r="28" />
+    {#if egressCc}<text class="flag" x="470" y="62">{flagEmoji(egressCc)}</text>
+    {:else}<g class="ic" transform="translate(461,45) scale(0.75)">{@html P.exit}</g>{/if}
+    <circle class="sdot {running ? tone(realOk) : 'idle'}" cx="490" cy="35" r="4.5" />
+    <text class="ctitle" x="470" y="100">{trunc(nodeName ?? "—", 24)}</text>
+    <text class="csub mono" x="470" y="114">{egressIp ? trunc(egressIp, 22) : "no exit"}</text>
 
-    <div class="hop">
-      <span class="hop-ic">{@html I.globe}</span>
-      <span class="hop-title"><span class="dot {tone(uplink)}"></span> Internet</span>
-      <span class="hop-sub">{uplink == null ? "—" : uplink ? "reachable" : "unreachable"}{#if ipv6Enabled} · v6 {uplink6 == null ? "?" : uplink6 ? "ok" : "✕"}{/if}</span>
-    </div>
+    <!-- Internet -->
+    <circle class="cir" cx="704" cy="140" r="26" />
+    <g class="ic" transform="translate(695,131) scale(0.75)">{@html P.globe}</g>
+    <circle class="sdot {tone(uplink)}" cx="722" cy="122" r="4.5" />
+    <text class="ctitle" x="704" y="184">Internet</text>
+    <text class="csub" x="704" y="198">{uplink == null ? "—" : uplink ? "reachable" : "down"}{#if ipv6Enabled} · v6 {uplink6 == null ? "?" : uplink6 ? "ok" : "✕"}{/if}</text>
+  </svg>
   </div>
 </div>
 
 <style>
-  .flow-card { display: grid; gap: 0.6rem; }
-  .flow {
-    display: flex; align-items: stretch; gap: 0.2rem; overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  .hop {
-    flex: 1 1 0; min-width: 7.5rem; display: grid; gap: 0.2rem; justify-items: center; text-align: center;
-    padding: 0.5rem 0.4rem;
-  }
-  .hop-ic {
-    width: 2rem; height: 2rem; display: inline-grid; place-items: center; border-radius: 50%;
-    background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
-    font-size: 1.1rem; line-height: 1;
-  }
-  .hop-ic :global(svg) { width: 17px; height: 17px; display: block; }
-  .hop-title { font-weight: 600; font-size: 0.86rem; display: inline-flex; align-items: center; gap: 0.3rem;
-    white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  .hop-title .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  .hop-sub { font-size: 0.7rem; color: var(--muted); white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; max-width: 100%; }
-  .hop-sub.mono { font-family: var(--mono); }
-  .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex: none; background: var(--muted); }
-  .dot.ok { background: var(--success); } .dot.bad { background: var(--danger); } .dot.idle { background: var(--muted); }
+  .flow-card { display: grid; gap: 0.5rem; }
+  /* fill the card width (start at the left edge, not centered) — scroll on phones rather than
+     shrinking the text to nothing. */
+  .diagram-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .diagram { width: 100%; min-width: 480px; height: auto; display: block; }
 
-  .link { flex: 1 1 0; min-width: 4.5rem; display: grid; gap: 0.18rem; align-content: center;
-    justify-items: center; padding: 0 0.2rem; position: relative; }
-  .line { width: 100%; height: 2px; border-radius: 2px; background: var(--border); }
-  .line.ok { background: var(--success); } .line.bad { background: var(--danger); } .line.idle { background: var(--border); }
-  .cap { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); font-weight: 650; }
-  .cap.ok { color: var(--success); } .cap.bad { color: var(--danger); }
-  .tunnel { min-width: 8rem; }
-  .tunnel .line { height: 3px; }
-  .rates { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.66rem; color: var(--muted); white-space: nowrap; }
-  .leak-note { font-size: 0.64rem; color: var(--warn); font-weight: 600; white-space: nowrap; }
-  .tunnel.leak .line { background: var(--warn); }
-  .flag { font-size: 1.15rem; }
+  .ln { stroke-width: 1.75; stroke-linecap: round; fill: none; }
+  .ln.ok { stroke: var(--success); }
+  .ln.bad { stroke: var(--danger); }
+  .ln.idle { stroke: var(--border-strong); }
+  .ln.faint { stroke: var(--border); }
+  .ln.leak { stroke: var(--warn); }
+  .tun { stroke-width: 2; stroke-linecap: round; fill: none; }
+  .tun.ok { stroke: var(--accent); }
+  .tun.bad { stroke: var(--danger); }
+  .tun.off { stroke: var(--border); stroke-dasharray: 5 6; }
+
+  .cir { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; }
+  .ic { fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .sdot { stroke: var(--surface); stroke-width: 2.5; }
+  .sdot.ok { fill: var(--success); }
+  .sdot.bad { fill: var(--danger); }
+  .sdot.idle { fill: var(--muted); }
+  .flag { font-size: 23px; text-anchor: middle; }
+
+  .ctitle { fill: var(--text); font-size: 12.5px; font-weight: 600; text-anchor: middle; }
+  .csub { fill: var(--muted); font-size: 10.5px; text-anchor: middle; }
+  .csub.mono { font-family: var(--mono); }
+  .lbl { fill: var(--faint); font-size: 10.5px; text-anchor: middle; letter-spacing: 0.03em; }
+  .lbl.leak { fill: var(--warn); font-weight: 600; }
+  .rate { fill: var(--muted); font-size: 10.5px; text-anchor: middle; font-family: var(--mono); }
+  .rate.bad { fill: var(--danger); }
 </style>
