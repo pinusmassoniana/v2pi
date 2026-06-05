@@ -135,6 +135,12 @@ safe dry-run network backend by default).
 
 [MIT](LICENSE) © Pinus Massoniana
 
+## Attribution
+
+Egress country flags use the [DB-IP IP-to-Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
+database by DB-IP, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (bundled
+in the image and refreshed on each rebuild).
+
 ---
 
 <a id="russian"></a>
@@ -277,3 +283,9 @@ xray.
 ## Лицензия
 
 [MIT](LICENSE) © Pinus Massoniana
+
+## Атрибуция
+
+Флаги стран у egress используют базу [DB-IP IP-to-Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
+от DB-IP по лицензии [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (вшита в образ,
+обновляется при каждой пересборке).

@@ -377,6 +377,8 @@ class NodeHealthOut(BaseModel):
     last_real_ms: int | None = None
     egress_ip: str | None = None
     egress_ip6: str | None = None
+    egress_cc: str | None = None      # ISO-2 country of the egress (v4) — flag in the UI
+    egress_cc6: str | None = None     # and v6
     checked_at: str | None = None
     fail_count: int = 0
     lat_history: list[int] = []

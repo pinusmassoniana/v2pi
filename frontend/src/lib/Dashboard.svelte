@@ -6,6 +6,7 @@
   import { confirmDialog } from "./confirm.svelte";
   import { statusStore, subscribeStatus, pollStatusOnce, serverNow } from "./status.svelte";
   import { subWarnings, sparkPath, agoLabel } from "./dashboard";
+  import { flagEmoji } from "./flag";
 
   const UNTUNNELED_WARN_BPS = 50_000;   // D10: throughput leaking outside the tunnel above this → warn
 
@@ -197,8 +198,8 @@
   </div>
   <div class="metric">
     <span class="eyebrow">Egress IP</span>
-    <span class="metric-val mono sm">{liveActive?.egress_ip ?? "—"}</span>
-    {#if liveActive?.egress_ip6}<span class="metric-v6 mono" title={liveActive.egress_ip6}>v6 {liveActive.egress_ip6}</span>{/if}
+    <span class="metric-val mono sm">{#if liveActive?.egress_cc}<span class="flag" title={liveActive.egress_cc}>{flagEmoji(liveActive.egress_cc)}</span> {/if}{liveActive?.egress_ip ?? "—"}</span>
+    {#if liveActive?.egress_ip6}<span class="metric-v6 mono" title={liveActive.egress_ip6}>{#if liveActive.egress_cc6}<span class="flag" title={liveActive.egress_cc6}>{flagEmoji(liveActive.egress_cc6)}</span> {/if}v6 {liveActive.egress_ip6}</span>{/if}
     <span class="metric-sub">{liveActive?.egress_ip ? (freshness(liveActive.checked_at) || "tunnel exit") : "unknown"}</span>
   </div>
   <div class="metric">

@@ -121,7 +121,7 @@
         </button>
         <button class="btn-ghost" onclick={logout}>Log out</button>
       </header>
-      <main class="page">
+      <main class="page" class:wide={view === "nodes"}>
         {#if view === "dashboard"}
           <Dashboard />
         {:else if view === "nodes"}

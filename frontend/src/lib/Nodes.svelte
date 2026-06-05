@@ -5,6 +5,7 @@
   import { confirmDialog } from "./confirm.svelte";
   import { serverNow } from "./status.svelte";
   import { sparkPath } from "./dashboard";
+  import { flagEmoji } from "./flag";
 
   let nodes = $state<Node[]>([]);
   let health = $state<Record<number, NodeHealth>>({});
@@ -324,7 +325,7 @@
   <td data-label="TCP">{@render hpill(h?.last_tcp_ok, h?.last_tcp_ms)}</td>
   <td data-label="HTTP">{@render hpill(h?.last_http_ok, h?.last_http_ms)}</td>
   <td data-label="real">{@render hpill(h?.last_real_ok, h?.last_real_ms)}</td>
-  <td class="egress mono col-egress" data-label="egress">{h?.egress_ip ?? "—"}{#if h?.egress_ip6}<span class="eg6" title={h.egress_ip6}>v6 {h.egress_ip6}</span>{/if}</td>
+  <td class="egress mono col-egress" data-label="egress">{#if h?.egress_cc}<span class="flag" title={h.egress_cc}>{flagEmoji(h.egress_cc)}</span> {/if}{h?.egress_ip ?? "—"}{#if h?.egress_ip6}<span class="eg6" title={h.egress_ip6}>{#if h.egress_cc6}<span class="flag" title={h.egress_cc6}>{flagEmoji(h.egress_cc6)}</span> {/if}v6 {h.egress_ip6}</span>{/if}</td>
   <td class="trend col-trend" data-label="trend">
     {#if h && h.lat_history && h.lat_history.length > 1}
       <svg width="56" height="14" viewBox="0 0 56 14" preserveAspectRatio="none"><path d={sparkPath(h.lat_history, 56, 14)} fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -576,6 +577,9 @@
 
   /* phone card layout (N-A) — each node becomes a stacked card, all fields shown with labels */
   @media (max-width: 600px) {
+    /* drop the desktop 44rem table min-width (app.css) so the card fits the phone instead of
+       overflowing — otherwise each row stretches to 704px and the values flex off-screen. */
+    .table-wrap > .nodes { min-width: 0; }
     .nodes, .nodes :global(thead), .nodes :global(tbody), .nodes :global(tr), .nodes :global(td) { display: block; }
     .nodes :global(thead) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .nodes :global(tbody tr) {

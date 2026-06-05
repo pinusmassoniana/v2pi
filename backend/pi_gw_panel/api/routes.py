@@ -26,7 +26,7 @@ from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, N
 from pi_gw_panel.controller import (
     apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net)
 from pi_gw_panel.net_control import netcheck, events as conn_events
-from pi_gw_panel.health import probe
+from pi_gw_panel.health import probe, geo
 from pi_gw_panel.health.selection import best_node
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
@@ -41,6 +41,12 @@ from pi_gw_panel.subs.fetcher import fetch
 from pi_gw_panel.subs.parsers.dispatch import parse_subscription, detect
 
 router = APIRouter(prefix="/api")
+
+
+def _health_out(h) -> NodeHealthOut:
+    """Serialize a NodeHealth row + the derived egress country (flag in the UI)."""
+    return NodeHealthOut(**vars(h), egress_cc=geo.country_code(h.egress_ip),
+                         egress_cc6=geo.country_code(h.egress_ip6))
 
 
 def _node_out(n: Node) -> NodeOut:
@@ -631,7 +637,7 @@ def routing_preset(name: str, request: Request,
 @router.get("/node-health", response_model=list[NodeHealthOut])
 def node_health(request: Request, _: None = Depends(require_auth)) -> list[NodeHealthOut]:
     state = get_state(request)
-    return [NodeHealthOut(**vars(h)) for h in state.store.list_health()]
+    return [_health_out(h) for h in state.store.list_health()]
 
 
 def _scoped_nodes(store, scope: str | None) -> list:
@@ -662,7 +668,7 @@ def _probe_sweep(store, nodes, probe_one, assign, record_http=False) -> list[Nod
         store.upsert_health(h)
         if record_http and ok and ms is not None:
             store.record_latency(nid, ms)   # NN4: HTTPS latency trend
-    return [NodeHealthOut(**vars(h)) for h in store.list_health()]
+    return [_health_out(h) for h in store.list_health()]
 
 
 @router.post("/probe/tcp", response_model=list[NodeHealthOut])
@@ -715,7 +721,7 @@ def probe_node(node_id: int, request: Request,
     store.upsert_health(h)
     if h.last_http_ok and h.last_http_ms is not None:
         store.record_latency(node_id, h.last_http_ms)   # NN4
-    return NodeHealthOut(**vars(store.get_health(node_id)))
+    return _health_out(store.get_health(node_id))
 
 
 _LOG_SOURCES = {"xray-error": "xray_error_log", "xray-access": "xray_access_log", "app": "app_log"}

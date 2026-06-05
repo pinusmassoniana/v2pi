@@ -18,8 +18,19 @@ RUN npx vite build --outDir /spa --emptyOutDir
 FROM python:${PYTHON_VERSION} AS runtime
 ARG XRAY_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      nftables dnsmasq isc-dhcp-client iproute2 ca-certificates curl unzip tini \
+      nftables dnsmasq isc-dhcp-client iproute2 ca-certificates curl unzip gzip tini \
     && rm -rf /var/lib/apt/lists/*
+# DB-IP IP-to-Country Lite (CC-BY-4.0) for the egress country flag. Try the current month, fall
+# back to the previous one (a build on the 1st may pre-date that month's file). Best-effort: if
+# the download fails the panel just shows egress IPs without flags (geo degrades to None).
+RUN set -eu; \
+    for ym in "$(date +%Y-%m)" "$(date -d 'last month' +%Y-%m)"; do \
+      if curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-${ym}.mmdb.gz" -o /tmp/cc.gz; then \
+        gunzip -c /tmp/cc.gz > /usr/local/share/dbip-country-lite.mmdb && break; \
+      fi; \
+    done; \
+    rm -f /tmp/cc.gz; \
+    ls -l /usr/local/share/dbip-country-lite.mmdb || echo "WARN: geoip db not bundled (flags disabled)"
 RUN curl -fsSL -o /tmp/xray.zip \
       "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-arm64-v8a.zip" \
     && unzip -o /tmp/xray.zip xray geoip.dat geosite.dat -d /usr/local/bin/ \

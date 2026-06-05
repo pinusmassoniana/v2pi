@@ -30,6 +30,8 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     wiring path; production passes None and gets select_backend(settings).
     """
     settings.ensure_dirs()
+    from pi_gw_panel.health import geo
+    geo.configure(settings.geoip_db)        # egress IP→country flag (no-op if the db is absent)
     conn = connect(settings.db_path, check_same_thread=False)
     init_schema(conn)
     store = NodeStore(conn)

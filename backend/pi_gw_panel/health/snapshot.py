@@ -2,6 +2,7 @@
 result, egress IP, and freshness (`checked_at`). Shared by the live traffic WS frame and
 the Network status panel so they never disagree (audit F3). Returns None when no node is
 active or the active node has no recorded health yet."""
+from pi_gw_panel.health import geo
 
 
 def active_health(store) -> dict | None:
@@ -20,6 +21,8 @@ def active_health(store) -> dict | None:
         "latency_ms": h.last_real_ms,
         "egress_ip": h.egress_ip,
         "egress_ip6": h.egress_ip6,
+        "egress_cc": geo.country_code(h.egress_ip),     # country flag next to the egress (v4)
+        "egress_cc6": geo.country_code(h.egress_ip6),   # and v6
         "checked_at": h.checked_at,
         "lat_history": list(h.lat_history or []),   # recent latencies → dashboard sparkline (B)
     }

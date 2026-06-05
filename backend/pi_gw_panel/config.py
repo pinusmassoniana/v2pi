@@ -34,6 +34,7 @@ class Settings:
     client_dns: str = "1.1.1.1"   # handed to clients via DHCP; tproxy'd through the tunnel
     client_dns6: str = "2606:4700:4700::1111"   # v6 DNS handed to clients via RA (when IPv6 on)
     dnsmasq_bin: str = "dnsmasq"
+    geoip_db: str = "/usr/local/share/dbip-country-lite.mmdb"  # egress IP→country flag (absent in dev → no flag)
     dnsmasq_leases: str = "data/dnsmasq.leases"  # the panel's own dnsmasq leasefile (under data_dir)
     # mgmt = Home leg: panel bind + SSH + tunnel egress
     mgmt_iface: str = "eth0"
@@ -81,6 +82,7 @@ class Settings:
             session_secret=env.get("PI_GW_SESSION_SECRET", ""),
             dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", os.path.join(data, "dnsmasq.leases")),
             client_dns6=env.get("PI_GW_CLIENT_DNS6", "2606:4700:4700::1111"),
+            geoip_db=env.get("PI_GW_GEOIP_DB", "/usr/local/share/dbip-country-lite.mmdb"),
         )
 
     # Log file paths derive from data_dir (Wave 3a logs viewer) so they always track
