@@ -11,16 +11,35 @@ def _run_text(cmd: list[str]) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 
-def foreign_ra(iface: str, run=_run_text) -> bool | None:
-    """Detect another router advertising on the client segment (the leak we hit with the
-    Keenetic): any IPv6 neighbor on `iface` flagged `router`. The Pi is the gateway and does not
-    appear as a router-neighbor of itself, so a `router` entry here is foreign. None when we
-    can't tell (dev / `ip` absent). `run` is an injectable seam for tests."""
+def _iface_mac(iface: str, sysfs: str = "/sys/class/net") -> str | None:
+    try:
+        with open(os.path.join(sysfs, iface, "address")) as f:
+            return f.read().strip().lower()
+    except OSError:
+        return None
+
+
+def foreign_ra(iface: str, run=_run_text, own_mac=None) -> bool | None:
+    """Detect *another* router advertising on the client segment (the leak we hit with the
+    Keenetic): an IPv6 neighbor on `iface` flagged `router` whose link-layer address is NOT the
+    segment's own. The Pi advertises RA itself, and on a hairpinning L2 the kernel can list the
+    Pi's own RA back as a `router` neighbor — that's not foreign, so we exclude our own MAC.
+    None when we can't tell (dev / `ip` absent). `run`/`own_mac` are injectable seams for tests."""
     try:
         text = run(["ip", "-6", "neigh", "show", "dev", iface])
     except (subprocess.CalledProcessError, OSError):
         return None
-    return any("router" in line.split()[2:] for line in text.splitlines() if line.strip())
+    own = (own_mac if own_mac is not None else _iface_mac(iface)) or ""
+    own = own.lower()
+    for line in text.splitlines():
+        parts = line.split()
+        if "router" not in parts[2:]:
+            continue
+        mac = parts[parts.index("lladdr") + 1].lower() if "lladdr" in parts else ""
+        if own and mac == own:        # our own RA reflected back (hairpin) — not foreign
+            continue
+        return True
+    return False
 
 
 def segment_prefix6(iface: str, proc_path: str = "/proc/net/if_inet6", read=None) -> str | None:

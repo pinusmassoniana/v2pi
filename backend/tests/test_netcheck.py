@@ -99,7 +99,17 @@ def test_router_recommendations_v6_includes_disable_router_ra():
 def test_foreign_ra_detects_other_router():
     sample = ("fe80::1 lladdr aa:bb:cc:dd:ee:ff router REACHABLE\n"
               "fe80::2 lladdr 11:22:33:44:55:66 STALE\n")
-    assert netcheck.foreign_ra("eth0.2", run=lambda cmd: sample) is True
+    assert netcheck.foreign_ra("eth0.2", run=lambda cmd: sample, own_mac="88:a2:9e:3b:0f:66") is True
+
+
+def test_foreign_ra_ignores_own_reflected_ra():
+    # the Pi's own RA hairpinned back onto the segment must NOT count as foreign
+    sample = "fe80::8aa2:9eff:fe3b:f66 lladdr 88:a2:9e:3b:0f:66 router STALE\n"
+    assert netcheck.foreign_ra("eth0.2", run=lambda cmd: sample, own_mac="88:A2:9E:3B:0F:66") is False
+    # but a different router on the same segment still fires
+    sample2 = ("fe80::8aa2:9eff:fe3b:f66 lladdr 88:a2:9e:3b:0f:66 router STALE\n"
+               "fe80::1 lladdr aa:bb:cc:dd:ee:ff router REACHABLE\n")
+    assert netcheck.foreign_ra("eth0.2", run=lambda cmd: sample2, own_mac="88:a2:9e:3b:0f:66") is True
 
 
 def test_foreign_ra_false_when_no_router_neighbor():
