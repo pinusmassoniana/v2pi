@@ -9,13 +9,15 @@
 
   type Tone = "ok" | "bad" | "idle";
   let {
-    running = false, segmentUp = null, clients = null, clientNames = [],
+    running = false, segmentUp = null, clients = null,
+    segmentIp = null, segmentIface = null,
     nodeName = null, realOk = null, latencyMs = null,
     egressIp = null, egressCc = null,
     uplink = null, uplink6 = null, ipv6Enabled = false,
     proxyDown = 0, proxyUp = 0, directDown = 0, directUp = 0,
   }: {
-    running?: boolean; segmentUp?: boolean | null; clients?: number | null; clientNames?: string[];
+    running?: boolean; segmentUp?: boolean | null; clients?: number | null;
+    segmentIp?: string | null; segmentIface?: string | null;
     nodeName?: string | null; realOk?: boolean | null; latencyMs?: number | null;
     egressIp?: string | null; egressCc?: string | null;
     uplink?: boolean | null; uplink6?: boolean | null; ipv6Enabled?: boolean;
@@ -33,58 +35,77 @@
   const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
   let leaking = $derived(directDown + directUp > 0);
   let tunCls = $derived(!running ? "off" : realOk === false ? "bad" : realOk ? "ok" : "off");
-  let names = $derived(clientNames.filter(Boolean));
-  let devSub = $derived(names.length ? trunc(names.slice(0, 2).join(", ") + (names.length > 2 ? ` +${names.length - 2}` : ""), 22) : "client segment");
+  let gwSub = $derived(
+    segmentIp ? segmentIp + (segmentIface ? " · " + segmentIface : "")
+    : segmentUp == null ? "segment —" : segmentUp ? "segment up" : "segment down");
   let tunnelRate = $derived(
     !running ? "off" : realOk === false ? "no traffic" :
     `↓ ${fmtRate(proxyDown)} · ↑ ${fmtRate(proxyUp)}` + (realOk && latencyMs != null ? ` · ${latencyMs}ms` : ""));
+
+  // SVG <text> neither wraps nor auto-shrinks. The node name + egress IP sit centred in a fixed slot
+  // under the node (between the two tunnel legs ≈208u wide); a long server name / IPv6 address would
+  // overflow. Measure the natural width and, only when it exceeds the slot, scale the glyphs to fit
+  // (lengthAdjust=spacingAndGlyphs) so the full text stays visible instead of being chopped.
+  const NODE_SLOT = 208;
+  let nodeTitleEl = $state<SVGTextElement | null>(null);
+  let nodeSubEl = $state<SVGTextElement | null>(null);
+  function fitText(el: SVGTextElement | null, max: number) {
+    if (!el || typeof el.getComputedTextLength !== "function") return;
+    el.removeAttribute("textLength");
+    el.removeAttribute("lengthAdjust");
+    if (el.getComputedTextLength() > max) {
+      el.setAttribute("textLength", String(max));
+      el.setAttribute("lengthAdjust", "spacingAndGlyphs");
+    }
+  }
+  // re-measure whenever the node name or egress IP changes (effect runs after the DOM text updates)
+  $effect(() => { void nodeName; void egressIp; fitText(nodeTitleEl, NODE_SLOT); fitText(nodeSubEl, NODE_SLOT); });
 </script>
 
 <div class="card flow-card">
   <span class="eyebrow">Connection</span>
   <div class="diagram-scroll">
-  <svg viewBox="0 0 760 208" class="diagram" role="img"
+  <svg viewBox="0 0 760 218" class="diagram" role="img"
        aria-label="connection path: devices, gateway, tunnel node, internet">
     <!-- lines -->
-    <line class="ln {tone(segmentUp)}" x1="86" y1="140" x2="220" y2="140" />
-    <text class="lbl" x="153" y="131">Lan</text>
+    <line class="ln {tone(segmentUp)}" x1="86" y1="150" x2="220" y2="150" />
+    <text class="lbl" x="153" y="141">Lan</text>
 
-    <line class="ln {leaking ? 'leak' : 'faint'}" x1="280" y1="140" x2="674" y2="140" />
-    <text class="lbl {leaking ? 'leak' : 'faint'}" x="477" y="157">untunneled{#if leaking} ↓ {fmtRate(directDown)} · ↑ {fmtRate(directUp)}{/if}</text>
+    <line class="ln {leaking ? 'leak' : 'faint'}" x1="280" y1="150" x2="674" y2="150" />
+    <text class="lbl {leaking ? 'leak' : 'faint'}" x="477" y="167">untunneled{#if leaking} ↓ {fmtRate(directDown)} · ↑ {fmtRate(directUp)}{/if}</text>
 
-    <line class="tun {tunCls}" x1="272" y1="123" x2="446" y2="68" />
-    <line class="tun {tunCls}" x1="494" y1="68" x2="678" y2="123" />
+    <line class="tun {tunCls}" x1="272" y1="133" x2="448" y2="84" />
+    <line class="tun {tunCls}" x1="492" y1="84" x2="682" y2="133" />
     <text class="lbl" x="470" y="16">Tunnel</text>
     <text class="rate {tunCls === 'bad' ? 'bad' : ''}" x="470" y="31">{tunnelRate}</text>
 
     <!-- Devices -->
-    <circle class="cir" cx="56" cy="140" r="26" />
-    <g class="ic" transform="translate(47,131) scale(0.75)">{@html P.devices}</g>
-    <circle class="sdot {tone(segmentUp)}" cx="74" cy="122" r="4.5" />
-    <text class="ctitle" x="56" y="184">{clients ?? "—"} {clients === 1 ? "device" : "devices"}</text>
-    <text class="csub" x="56" y="198">{devSub}</text>
+    <circle class="cir" cx="56" cy="150" r="26" />
+    <g class="ic" transform="translate(47,141) scale(0.75)">{@html P.devices}</g>
+    <circle class="sdot {tone(segmentUp)}" cx="74" cy="132" r="4.5" />
+    <text class="ctitle" x="56" y="194">{clients ?? "—"} {clients === 1 ? "device" : "devices"}</text>
 
     <!-- Gateway -->
-    <circle class="cir" cx="250" cy="140" r="26" />
-    <g class="ic" transform="translate(241,131) scale(0.75)">{@html P.server}</g>
-    <circle class="sdot {tone(segmentUp)}" cx="268" cy="122" r="4.5" />
-    <text class="ctitle" x="250" y="184">Pi gateway</text>
-    <text class="csub" x="250" y="198">{segmentUp == null ? "segment —" : segmentUp ? "segment up" : "segment down"}</text>
+    <circle class="cir" cx="250" cy="150" r="26" />
+    <g class="ic" transform="translate(241,141) scale(0.75)">{@html P.server}</g>
+    <circle class="sdot {tone(segmentUp)}" cx="268" cy="132" r="4.5" />
+    <text class="ctitle" x="250" y="194">Pi gateway</text>
+    <text class="csub {segmentIp ? 'mono' : ''}" x="250" y="208">{gwSub}</text>
 
     <!-- Node (elevated) -->
-    <circle class="cir" cx="470" cy="54" r="28" />
-    {#if egressCc}<text class="flag" x="470" y="62">{flagEmoji(egressCc)}</text>
-    {:else}<g class="ic" transform="translate(461,45) scale(0.75)">{@html P.exit}</g>{/if}
-    <circle class="sdot {running ? tone(realOk) : 'idle'}" cx="490" cy="35" r="4.5" />
-    <text class="ctitle" x="470" y="100">{trunc(nodeName ?? "—", 24)}</text>
-    <text class="csub mono" x="470" y="114">{egressIp ? trunc(egressIp, 22) : "no exit"}</text>
+    <circle class="cir" cx="470" cy="70" r="28" />
+    {#if egressCc}<text class="flag" x="470" y="78">{flagEmoji(egressCc)}</text>
+    {:else}<g class="ic" transform="translate(461,61) scale(0.75)">{@html P.exit}</g>{/if}
+    <circle class="sdot {running ? tone(realOk) : 'idle'}" cx="490" cy="51" r="4.5" />
+    <text bind:this={nodeTitleEl} class="ctitle" x="470" y="116">{trunc(nodeName ?? "—", 38)}</text>
+    <text bind:this={nodeSubEl} class="csub mono" x="470" y="130">{egressIp ? trunc(egressIp, 42) : "no exit"}</text>
 
     <!-- Internet -->
-    <circle class="cir" cx="704" cy="140" r="26" />
-    <g class="ic" transform="translate(695,131) scale(0.75)">{@html P.globe}</g>
-    <circle class="sdot {tone(uplink)}" cx="722" cy="122" r="4.5" />
-    <text class="ctitle" x="704" y="184">Internet</text>
-    <text class="csub" x="704" y="198">{uplink == null ? "—" : uplink ? "reachable" : "down"}{#if ipv6Enabled} · v6 {uplink6 == null ? "?" : uplink6 ? "ok" : "✕"}{/if}</text>
+    <circle class="cir" cx="704" cy="150" r="26" />
+    <g class="ic" transform="translate(695,141) scale(0.75)">{@html P.globe}</g>
+    <circle class="sdot {tone(uplink)}" cx="722" cy="132" r="4.5" />
+    <text class="ctitle" x="704" y="194">Internet</text>
+    <text class="csub" x="704" y="208">{uplink == null ? "—" : uplink ? "reachable" : "down"}{#if ipv6Enabled} · v6 {uplink6 == null ? "?" : uplink6 ? "ok" : "✕"}{/if}</text>
   </svg>
   </div>
 </div>

@@ -36,7 +36,6 @@
   let liveDirect = $derived(liveFrame ? (liveFrame.outbounds.direct ?? { up_bps: 0, down_bps: 0 }) : { up_bps: 0, down_bps: 0 });
   let latest = $derived(samples.length ? samples[samples.length - 1] : { up: 0, down: 0 });
   let clients = $derived(net?.status.dhcp_clients ?? null);
-  let clientNames = $derived(net?.status.clients?.map((c) => c.hostname || c.ip) ?? []);
   // NF4: data used this session (since (re)connect)
   let sessionUp = $derived(liveFrame?.session?.up ?? null);
   let sessionDown = $derived(liveFrame?.session?.down ?? null);
@@ -186,7 +185,8 @@
   running={!!status?.running}
   segmentUp={net?.status.segment_up ?? null}
   {clients}
-  {clientNames}
+  segmentIp={net?.segment.ip ?? null}
+  segmentIface={net?.segment.iface ?? null}
   nodeName={activeName}
   realOk={liveActive?.real_ok ?? null}
   latencyMs={liveActive?.latency_ms ?? null}
