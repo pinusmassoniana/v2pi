@@ -1,19 +1,20 @@
 # v2pi
 
 <a id="english"></a>
-**Self-hosted control panel for an xray VPN gateway — runs on any arm64 Linux device.**
+**Self-hosted control panel for an xray VPN gateway — runs on amd64/x86-64 or arm64 Linux.**
 
 [English](#english) · [Русский](#russian)
 
-v2pi turns any **headless arm64 (aarch64) Linux box** into a managed VPN gateway. It supervises
-the xray proxy engine, manages your nodes and subscriptions, tunes anti-DPI evasion per node,
-routes traffic by ordered rules, health-checks upstreams with automatic failover, and controls the
-device's own network (segment / DHCP / DNS plus a fail-closed kill-switch) — all from a light/dark
-web dashboard. No monitor, no keyboard: everything is driven over your LAN.
+v2pi turns any **headless Linux box** — **amd64/x86-64** (Intel or AMD) **or arm64/aarch64** — into a
+managed VPN gateway. It supervises the xray proxy engine, manages your nodes and subscriptions, tunes
+anti-DPI evasion per node, routes traffic by ordered rules, health-checks upstreams with automatic
+failover, and controls the device's own network (segment / DHCP / DNS plus a fail-closed kill-switch)
+— all from a light/dark web dashboard. No monitor, no keyboard: everything is driven over your LAN.
 
-It is **not** Pi-specific. Any arm64 single-board computer (Raspberry Pi, Orange Pi, Radxa Rock,
-NanoPi…), an arm64 mini-PC, or an arm64 VPS that can run Docker will do. The Raspberry Pi 5 is just
-the reference device it's developed and tested on (see [Tested on](#tested-on)).
+It is **not** Pi-specific. Any x86-64 mini-PC, thin client, or VPS, or any arm64 single-board computer
+(Raspberry Pi, Orange Pi, Radxa Rock, NanoPi…) that can run Docker will do. The image is built and
+published for **both architectures**; the Raspberry Pi 5 is just the reference device it's developed
+and tested on (see [Tested on](#tested-on)).
 
 ## Features
 
@@ -31,24 +32,25 @@ the reference device it's developed and tested on (see [Tested on](#tested-on)).
 
 ## Requirements
 
-- A 64-bit **arm64 / aarch64 Linux** host (headless is fine — and the point).
+- A 64-bit **Linux** host — **amd64/x86-64** (Intel or AMD) **or arm64/aarch64** (headless is fine — and the point).
 - **Docker** + **Docker Compose**.
 - The shipped Compose file runs the container `privileged` with `network_mode: host` so it can own
   the whole gateway on the host (sysctls, the client VLAN, addressing, DHCP, IPv6 RA). This is a
   dedicated single-purpose appliance box — that's the trade-off.
 
-The container is fully self-contained: it bundles a pinned **Xray-core (arm64)** plus
-`nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, and on `up` it **provisions the entire
-gateway on the host itself** — so the host needs nothing but Docker, and you only configure your router.
+The container is fully self-contained: it bundles a pinned **Xray-core** (matched to the host
+architecture) plus `nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, and on `up` it
+**provisions the entire gateway on the host itself** — so the host needs nothing but Docker, and you
+only configure your router.
 
 ## Quickstart (Docker)
 
-**Deploy** — fresh install on an arm64 Linux host with Docker:
+**Deploy** — fresh install on a Linux host (amd64 or arm64) with Docker:
 
 ```bash
 git clone https://github.com/pinusmassoniana/v2pi.git
 cd v2pi
-docker compose pull      # pull the pre-built arm64 image — no on-device build
+docker compose pull      # pull the pre-built multi-arch image — Docker picks your host's arch, no on-device build
 docker compose up -d
 ```
 
@@ -61,9 +63,10 @@ docker compose pull
 docker compose up -d
 ```
 
-The published image is `ghcr.io/pinusmassoniana/v2pi-x` — `:latest` plus a tag per version
-(e.g. `:1.6`). To **build from source** instead (dev / local changes), swap the two `compose`
-lines above for `docker compose up -d --build`.
+The published image is `ghcr.io/pinusmassoniana/v2pi-x` — a multi-arch manifest (`linux/amd64` +
+`linux/arm64`), `:latest` plus a tag per version (e.g. `:1.6`); `docker compose pull` resolves your
+host's architecture automatically. To **build from source** instead (dev / local changes), swap the
+two `compose` lines above for `docker compose up -d --build` — it builds for the host's own arch.
 
 Open `http://<device-ip>:8080` and complete the first-run admin setup. The session secret is
 auto-generated and persisted in the data volume; the panel binds `0.0.0.0` (reachable over the LAN,
@@ -106,10 +109,10 @@ Developed and continuously tested on a **Raspberry Pi 5 Model B**:
 | RAM | 16 GB |
 | OS | Debian GNU/Linux 13 (trixie), kernel `6.12.75+rpt-rpi-2712` |
 | Container engine | Docker 26.1 |
-| Bundled Xray-core | v26.3.27 (linux/arm64) |
+| Bundled Xray-core | v26.3.27 (linux/arm64 on this board; the image also ships linux/amd64) |
 
-A Pi 5 is not required — the panel itself is lightweight; any arm64 board that can run Docker and
-xray will do.
+A Pi 5 is not required — the panel itself is lightweight; any amd64/x86-64 (Intel or AMD) or arm64
+host that can run Docker and xray will do.
 
 ## Configuration
 
@@ -146,21 +149,21 @@ in the image and refreshed on each rebuild).
 <a id="russian"></a>
 # v2pi — Русский
 
-**Self-hosted панель управления VPN-шлюзом на базе xray — работает на любом arm64 Linux-устройстве.**
+**Self-hosted панель управления VPN-шлюзом на базе xray — работает на amd64/x86-64 или arm64 Linux.**
 
 [English](#english) · [Русский](#russian)
 
-v2pi превращает **любую headless arm64 (aarch64) Linux-машину** в управляемый VPN-шлюз. Она
-супервизит прокси-движок xray, управляет нодами и подписками, настраивает обход DPI индивидуально
-для каждой ноды, маршрутизирует трафик по упорядоченным правилам, проверяет доступность аплинков с
-автопереключением (failover) и управляет собственной сетью устройства (сегмент / DHCP / DNS плюс
-fail-closed kill-switch) — всё из веб-дашборда со светлой и тёмной темой. Без монитора и клавиатуры:
-всё управляется по локальной сети.
+v2pi превращает **любую headless Linux-машину** — **amd64/x86-64** (Intel или AMD) **или
+arm64/aarch64** — в управляемый VPN-шлюз. Она супервизит прокси-движок xray, управляет нодами и
+подписками, настраивает обход DPI индивидуально для каждой ноды, маршрутизирует трафик по
+упорядоченным правилам, проверяет доступность аплинков с автопереключением (failover) и управляет
+собственной сетью устройства (сегмент / DHCP / DNS плюс fail-closed kill-switch) — всё из
+веб-дашборда со светлой и тёмной темой. Без монитора и клавиатуры: всё управляется по локальной сети.
 
-Это **не** привязано к Pi. Подойдёт любой arm64 одноплатник (Raspberry Pi, Orange Pi, Radxa Rock,
-NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запускается Docker. Raspberry Pi 5 — лишь
-референсное устройство, на котором проект разрабатывается и тестируется (см.
-[На чём протестировано](#на-чём-протестировано)).
+Это **не** привязано к Pi. Подойдёт любой x86-64 мини-ПК, тонкий клиент или VPS, либо любой arm64
+одноплатник (Raspberry Pi, Orange Pi, Radxa Rock, NanoPi…), на котором запускается Docker. Образ
+собирается и публикуется для **обеих архитектур**; Raspberry Pi 5 — лишь референсное устройство, на
+котором проект разрабатывается и тестируется (см. [На чём протестировано](#на-чём-протестировано)).
 
 ## Возможности
 
@@ -180,24 +183,24 @@ NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запус
 
 ## Требования
 
-- 64-битный хост на **arm64 / aarch64 Linux** (headless — это норма и сам смысл).
+- 64-битный **Linux**-хост — **amd64/x86-64** (Intel или AMD) **или arm64/aarch64** (headless — это норма и сам смысл).
 - **Docker** + **Docker Compose**.
 - Готовый Compose-файл запускает контейнер `privileged` с `network_mode: host`, чтобы он сам владел
   всем шлюзом на хосте (sysctl, клиентский VLAN, адресация, DHCP, IPv6 RA). Это выделенная коробка
   под одну задачу — таков размен.
 
-Контейнер полностью самодостаточен: внутри уже лежат зафиксированный **Xray-core (arm64)** плюс
-`nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, и при `up` он **сам разворачивает весь шлюз
-на хосте** — так что хосту не нужно ничего, кроме Docker, а вам — только настроить роутер.
+Контейнер полностью самодостаточен: внутри уже лежат зафиксированный **Xray-core** (под архитектуру
+хоста) плюс `nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, и при `up` он **сам разворачивает
+весь шлюз на хосте** — так что хосту не нужно ничего, кроме Docker, а вам — только настроить роутер.
 
 ## Быстрый старт (Docker)
 
-**Деплой** — установка с нуля на arm64 Linux-хосте с Docker:
+**Деплой** — установка с нуля на Linux-хосте (amd64 или arm64) с Docker:
 
 ```bash
 git clone https://github.com/pinusmassoniana/v2pi.git
 cd v2pi
-docker compose pull      # скачать готовый arm64-образ — без сборки на устройстве
+docker compose pull      # скачать готовый мультиарх-образ — Docker сам берёт нужную для хоста арку, без сборки на устройстве
 docker compose up -d
 ```
 
@@ -210,9 +213,10 @@ docker compose pull
 docker compose up -d
 ```
 
-Опубликованный образ — `ghcr.io/pinusmassoniana/v2pi-x`: тег `:latest` плюс тег на каждую версию
-(например `:1.6`). Чтобы **собрать из исходников** (разработка / локальные правки), замените две
-строки `compose` выше на `docker compose up -d --build`.
+Опубликованный образ — `ghcr.io/pinusmassoniana/v2pi-x`: мультиарх-манифест (`linux/amd64` +
+`linux/arm64`), тег `:latest` плюс тег на каждую версию (например `:1.6`); `docker compose pull` сам
+подбирает архитектуру хоста. Чтобы **собрать из исходников** (разработка / локальные правки), замените
+две строки `compose` выше на `docker compose up -d --build` — соберётся под арку самого хоста.
 
 Откройте `http://<ip-устройства>:8080` и пройдите настройку администратора при первом запуске.
 Секрет сессии генерируется автоматически и сохраняется в data-томе; панель слушает `0.0.0.0`
@@ -255,10 +259,10 @@ docker compose up -d
 | ОЗУ | 16 ГБ |
 | ОС | Debian GNU/Linux 13 (trixie), ядро `6.12.75+rpt-rpi-2712` |
 | Движок контейнеров | Docker 26.1 |
-| Встроенный Xray-core | v26.3.27 (linux/arm64) |
+| Встроенный Xray-core | v26.3.27 (linux/arm64 на этой плате; образ также собирается под linux/amd64) |
 
-Pi 5 не обязателен — сама панель лёгкая; подойдёт любая arm64-плата, способная запустить Docker и
-xray.
+Pi 5 не обязателен — сама панель лёгкая; подойдёт любой хост amd64/x86-64 (Intel или AMD) или arm64,
+способный запустить Docker и xray.
 
 ## Конфигурация
 

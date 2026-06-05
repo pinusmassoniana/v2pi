@@ -1,7 +1,7 @@
 services:
   v2pi:
-    image: ghcr.io/pinusmassoniana/v2pi-x:latest   # published arm64 image — `docker compose pull` grabs it
-    build: .                                        # `docker compose up --build` builds from source instead (dev)
+    image: ghcr.io/pinusmassoniana/v2pi-x:latest   # published multi-arch image (amd64+arm64) — `docker compose pull` grabs the host arch
+    build: .                                        # `docker compose up --build` builds from source for the host arch instead (dev)
     network_mode: host          # tproxy / nft / dnsmasq live in the host netns (Pi)
     privileged: true            # writable /proc/sys (forwarding/accept_ra) + full host net ownership
     pid: host                   # manage host services during migration (stop legacy dhcp/radvd via nsenter)
