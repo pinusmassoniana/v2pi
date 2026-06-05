@@ -386,11 +386,12 @@ class NodeHealthOut(BaseModel):
 class NetworkSegmentOut(BaseModel):
     iface: str
     ip: str
-    ip6: str = ""           # segment static IPv6 /64 (opt-in IPv6 tunnel; RA host-managed)
+    ip6: str = ""           # segment IPv6 /64 (static CIDR / 'auto' for DHCPv6-PD / blank = auto-ULA)
     dhcp_start: str
     dhcp_end: str
     dhcp_lease: str
     client_dns: str
+    client_dns6: str = "2606:4700:4700::1111"   # v6 DNS handed to clients via RA
 
 
 class NetworkTunnelOut(BaseModel):
@@ -416,6 +417,8 @@ class NetworkStatusOut(BaseModel):
     tunnel: NetworkTunnelOut
     wan_blocked: bool = False           # N1: kill-switch leak-guard is holding (tunnel down)
     ipv6_prefix: str | None = None      # DHCPv6-PD 'auto': the host-delegated segment v6 prefix
+    foreign_ra: bool | None = None      # Phase C: another router advertising v6 on the segment (leak)
+    ipv6_prefix_source: str | None = None   # "static" | "ula" | "pd" — where the segment /64 came from
 
 
 class RouterRecOut(BaseModel):
@@ -448,6 +451,7 @@ class NetworkIn(BaseModel):
     dhcp_end: str | None = Field(default=None, min_length=1)
     dhcp_lease: str | None = Field(default=None, min_length=1)
     client_dns: str | None = Field(default=None, min_length=1)
+    client_dns6: str | None = Field(default=None, min_length=1)
     segment_ip6: str | None = None          # empty allowed (clears the prefix / v6 off)
     kill_switch_enabled: bool | None = None
     ipv6_enabled: bool | None = None

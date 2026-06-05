@@ -12,6 +12,7 @@ export interface NetworkView {
   dhcp_clients: number;
   tunnel: { tone: Tone; egress: string; latency: string };
   wan_blocked: boolean;
+  foreign_ra: boolean;
 }
 
 function boolTone(v: boolean | null | undefined): Tone {
@@ -34,5 +35,6 @@ export function networkView(net: Network): NetworkView {
       latency: t.latency_ms === null ? "—" : `${t.latency_ms} ms`,
     },
     wan_blocked: net.status.wan_blocked ?? false,
+    foreign_ra: net.status.foreign_ra === true,
   };
 }

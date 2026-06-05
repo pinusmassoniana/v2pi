@@ -32,7 +32,9 @@ class Settings:
     dhcp_end: str = "192.168.10.200"
     dhcp_lease: str = "12h"
     client_dns: str = "1.1.1.1"   # handed to clients via DHCP; tproxy'd through the tunnel
-    dnsmasq_leases: str = "/var/lib/misc/pi-gw.leases"  # pi-gw-dhcp.service leasefile (absent in dev → 0 clients)
+    client_dns6: str = "2606:4700:4700::1111"   # v6 DNS handed to clients via RA (when IPv6 on)
+    dnsmasq_bin: str = "dnsmasq"
+    dnsmasq_leases: str = "data/dnsmasq.leases"  # the panel's own dnsmasq leasefile (under data_dir)
     # mgmt = Home leg: panel bind + SSH + tunnel egress
     mgmt_iface: str = "eth0"
     mgmt_ip: str = "192.168.1.120"
@@ -77,7 +79,8 @@ class Settings:
             static_dir=env.get("PI_GW_STATIC_DIR", _packaged_static()),
             xray_bin=env.get("PI_GW_XRAY_BIN", "xray"),
             session_secret=env.get("PI_GW_SESSION_SECRET", ""),
-            dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", "/var/lib/misc/pi-gw.leases"),
+            dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", os.path.join(data, "dnsmasq.leases")),
+            client_dns6=env.get("PI_GW_CLIENT_DNS6", "2606:4700:4700::1111"),
         )
 
     # Log file paths derive from data_dir (Wave 3a logs viewer) so they always track
@@ -125,4 +128,9 @@ SETTINGS_DEFAULTS = {
     # host-managed). segment_ip6 is the segment's static /64, informational + recommendation.
     "ipv6_enabled": "0",
     "segment_ip6": "",
+    # self-provisioning gateway: the container owns the host segment + dnsmasq (+ opt DHCPv6-PD)
+    "manage_segment": "1",
+    "manage_dnsmasq": "1",
+    "ipv6_pd": "0",
+    "client_dns6": "2606:4700:4700::1111",
 }

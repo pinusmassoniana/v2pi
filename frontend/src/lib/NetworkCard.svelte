@@ -32,11 +32,11 @@
       net = await api.putNetwork({
         segment_iface: s.iface, segment_ip: s.ip, segment_ip6: s.ip6,
         dhcp_start: s.dhcp_start, dhcp_end: s.dhcp_end, dhcp_lease: s.dhcp_lease,
-        client_dns: s.client_dns, kill_switch_enabled: net.kill_switch_enabled,
-        ipv6_enabled: net.ipv6_enabled,
+        client_dns: s.client_dns, client_dns6: s.client_dns6,
+        kill_switch_enabled: net.kill_switch_enabled, ipv6_enabled: net.ipv6_enabled,
       });
       editOpen = false;
-      msg = "saved · network rules applied";   // A3: don't claim a DHCP apply we don't do
+      msg = "saved · network + DHCP applied";   // the panel now serves DHCP/RA itself
     } catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
   }
 
@@ -60,6 +60,12 @@
     {#if v.wan_blocked}
       <div class="wan-banner" role="status">
         <span class="dot bad"></span> WAN blocked — kill-switch is holding traffic (tunnel down). No leak.
+      </div>
+    {/if}
+    {#if v.foreign_ra}
+      <div class="wan-banner" role="alert">
+        <span class="dot bad"></span> Another router is advertising IPv6 on your client VLAN —
+        clients will leak around the tunnel. Disable IPv6 / RA for this VLAN on your router.
       </div>
     {/if}
     <div class="status">
@@ -107,13 +113,12 @@
     <div class="net-form">
       <label class="field"><span>Segment interface</span><input class="input" bind:value={net.segment.iface} /></label>
       <label class="field"><span>Segment IP (gateway)</span><input class="input" bind:value={net.segment.ip} /></label>
-      <p class="muted hint dhcp-note">DHCP range / lease / client-DNS are served by the host
-        (<code>pi-gw-dhcp.service</code>) — saved here for reference, but applied on the host, not by
-        the panel. The segment interface &amp; IP above take effect live.</p>
-      <label class="field"><span>DHCP start <small>(host)</small></span><input class="input" bind:value={net.segment.dhcp_start} /></label>
-      <label class="field"><span>DHCP end <small>(host)</small></span><input class="input" bind:value={net.segment.dhcp_end} /></label>
-      <label class="field"><span>DHCP lease <small>(host)</small></span><input class="input" bind:value={net.segment.dhcp_lease} /></label>
-      <label class="field"><span>Client DNS <small>(host)</small></span><input class="input" bind:value={net.segment.client_dns} /></label>
+      <p class="muted hint dhcp-note">DHCP, DNS and (when IPv6 is on) Router Advertisements are
+        served by the panel's own dnsmasq on the segment — edits here apply live on the Pi.</p>
+      <label class="field"><span>DHCP start</span><input class="input" bind:value={net.segment.dhcp_start} /></label>
+      <label class="field"><span>DHCP end</span><input class="input" bind:value={net.segment.dhcp_end} /></label>
+      <label class="field"><span>DHCP lease</span><input class="input" bind:value={net.segment.dhcp_lease} /></label>
+      <label class="field"><span>Client DNS (v4)</span><input class="input" bind:value={net.segment.client_dns} /></label>
       <div class="check">
         <Toggle checked={net.kill_switch_enabled}
                 onchange={(v) => { if (net) net.kill_switch_enabled = v; }} label="kill-switch" />
@@ -129,8 +134,10 @@
           setup</strong> below.</span>
       </div>
       {#if net.ipv6_enabled}
-        <label class="field"><span>Segment IPv6 /64 <small>(static, or <code>auto</code> for DHCPv6-PD)</small></span>
-          <input class="input mono" bind:value={net.segment.ip6} placeholder="2001:db8:0:2::1/64  ·  auto" /></label>
+        <label class="field"><span>Segment IPv6 /64 <small>(static, <code>auto</code> for DHCPv6-PD, or blank for auto-ULA)</small></span>
+          <input class="input mono" bind:value={net.segment.ip6} placeholder="2001:db8:0:2::/64  ·  auto  ·  blank = ULA" /></label>
+        <label class="field"><span>Client DNS (v6)</span>
+          <input class="input mono" bind:value={net.segment.client_dns6} placeholder="2606:4700:4700::1111" /></label>
         {#if net.segment.ip6.trim().toLowerCase() === "auto"}
           <p class="muted hint">DHCPv6-PD: a host PD client (odhcp6c / dhcpcd&nbsp;-6) acquires the prefix —
             {#if net.status.ipv6_prefix}delegated <span class="mono">{net.status.ipv6_prefix}</span>.{:else}none observed yet (set up the PD client + RA on the host).{/if}</p>

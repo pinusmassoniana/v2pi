@@ -54,6 +54,11 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         # First close the boot leak window: with the kill-switch on, install the leak-guard
         # BEFORE the tunnel comes up so a reboot never leaks client→WAN (A1).
         from pi_gw_panel.controller import reapply_active_node, boot_guard
+        from pi_gw_panel.net_control.provision import host_provision
+        # Self-provision the host gateway (sysctls, VLAN, v4/v6 addressing, dnsmasq DHCP+RA, and
+        # the PD client in auto mode) before the tunnel — gated on the linux backend +
+        # manage_segment, best-effort (never crashes boot; a no-op on dev/CI's DryRun backend).
+        host_provision(app_state)
         boot_guard(app_state)
         res = reapply_active_node(app_state)
         if res is not None and not res.ok:
@@ -73,6 +78,10 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             await backup_scheduler.stop()
             if app_state.recorder is not None:
                 await app_state.recorder.stop()
+            if getattr(app_state, "dnsmasq", None) is not None:
+                app_state.dnsmasq.stop()
+            if getattr(app_state, "pd_client", None) is not None:
+                app_state.pd_client.stop()
 
     logs_mod.setup_app_logging(app_state.settings.app_log)   # app logs → data_dir/app.log
 

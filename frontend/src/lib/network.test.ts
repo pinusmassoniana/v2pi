@@ -37,4 +37,9 @@ describe("networkView", () => {
     expect(v.segment.label).toBe("down");
     expect(v.tunnel.tone).toBe("bad");
   });
+
+  it("flags a foreign router advertising v6 on the segment", () => {
+    expect(networkView(sample()).foreign_ra).toBe(false);          // absent/unknown -> not flagged
+    expect(networkView(sample({ foreign_ra: true })).foreign_ra).toBe(true);
+  });
 });

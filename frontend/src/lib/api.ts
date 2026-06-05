@@ -95,7 +95,8 @@ export interface NodeHealth {
 
 // --- Wave 3b: editable Pi network config + kill-switch + live status ---
 export interface NetworkSegment {
-  iface: string; ip: string; ip6: string; dhcp_start: string; dhcp_end: string; dhcp_lease: string; client_dns: string;
+  iface: string; ip: string; ip6: string; dhcp_start: string; dhcp_end: string; dhcp_lease: string;
+  client_dns: string; client_dns6: string;
 }
 export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; checked_at: string | null; }
 export interface DhcpClient { ip: string; mac: string; hostname: string; expiry: number; }
@@ -103,6 +104,8 @@ export interface NetworkStatus {
   segment_up: boolean | null; uplink: boolean | null; uplink6: boolean | null; dhcp_clients: number;
   clients: DhcpClient[]; tunnel: NetworkTunnel; wan_blocked: boolean;
   ipv6_prefix: string | null;   // DHCPv6-PD 'auto': host-delegated segment v6 prefix
+  foreign_ra: boolean | null;   // another router advertising v6 on the segment (leak)
+  ipv6_prefix_source: string | null;   // "static" | "ula" | "pd"
 }
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
@@ -113,7 +116,7 @@ export interface Network {
 // PUT is partial + flat: editable settings keys (segment_iface/ip is long-form here) + kill-switch.
 export interface NetworkPatch {
   segment_iface?: string; segment_ip?: string; segment_ip6?: string;
-  dhcp_start?: string; dhcp_end?: string; dhcp_lease?: string; client_dns?: string;
+  dhcp_start?: string; dhcp_end?: string; dhcp_lease?: string; client_dns?: string; client_dns6?: string;
   kill_switch_enabled?: boolean; ipv6_enabled?: boolean;
 }
 

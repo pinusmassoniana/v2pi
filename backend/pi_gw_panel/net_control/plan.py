@@ -5,7 +5,7 @@ from pi_gw_panel.config import Settings
 # Pi-side net config that is editable end-to-end (segment iface/IP/v6-prefix, DHCP, client DNS)
 # defaults to the config values but can be overridden per-field in the settings k/v.
 _EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
-             "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns")
+             "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns", "client_dns6")
 
 
 @dataclass
@@ -20,6 +20,8 @@ class NetPlan:
     dhcp_end: str
     dhcp_lease: str
     client_dns: str
+    client_dns6: str = "2606:4700:4700::1111"
+    dnsmasq_leases: str = "data/dnsmasq.leases"
     kill_switch: bool = False
     # IPv6 tunnel (opt-in): tunnel segment client v6 through xray to tproxy_port6.
     ipv6_enabled: bool = False
@@ -32,7 +34,8 @@ class NetPlan:
             tproxy_port=s.tproxy_port, fwmark=s.fwmark, egress_mark=s.egress_mark,
             table=s.table, segment_iface=s.segment_iface, segment_ip=s.segment_ip,
             dhcp_start=s.dhcp_start, dhcp_end=s.dhcp_end, dhcp_lease=s.dhcp_lease,
-            client_dns=s.client_dns, segment_ip6=s.segment_ip6, tproxy_port6=s.tproxy_port6,
+            client_dns=s.client_dns, client_dns6=s.client_dns6, dnsmasq_leases=s.dnsmasq_leases,
+            segment_ip6=s.segment_ip6, tproxy_port6=s.tproxy_port6,
         )
 
     @classmethod
@@ -42,7 +45,7 @@ class NetPlan:
         ov = {k: (store.get_setting(k) or getattr(s, k)) for k in _EDITABLE}
         return cls(
             tproxy_port=s.tproxy_port, fwmark=s.fwmark, egress_mark=s.egress_mark,
-            table=s.table, tproxy_port6=s.tproxy_port6, **ov,
+            table=s.table, tproxy_port6=s.tproxy_port6, dnsmasq_leases=s.dnsmasq_leases, **ov,
             kill_switch=(store.get_setting("kill_switch_enabled") or "0") == "1",
             ipv6_enabled=(store.get_setting("ipv6_enabled") or "0") == "1",
         )

@@ -3,19 +3,22 @@ services:
     image: ghcr.io/pinusmassoniana/v2pi-x:latest   # published arm64 image — `docker compose pull` grabs it
     build: .                                        # `docker compose up --build` builds from source instead (dev)
     network_mode: host          # tproxy / nft / dnsmasq live in the host netns (Pi)
+    privileged: true            # writable /proc/sys (forwarding/accept_ra) + full host net ownership
+    pid: host                   # manage host services during migration (stop legacy dhcp/radvd via nsenter)
     cap_add:
-      - NET_ADMIN               # nftables
+      - NET_ADMIN               # nftables (documented; redundant under privileged)
       - NET_RAW                 # tproxy / raw sockets
     env_file:
       - path: .env              # optional overrides; absent .env is fine (zero-config)
         required: false
     environment:
-      PI_GW_NET_BACKEND: linux    # Plan 8: real nft tproxy + policy-routing apply (LinuxBackend)
+      PI_GW_NET_BACKEND: linux    # real nft tproxy + policy-routing + host provisioning (LinuxBackend)
       PI_GW_DATA_DIR: /data
+      PI_GW_DNSMASQ_LEASES: /data/dnsmasq.leases   # the panel's own dnsmasq leasefile (in the volume)
       PI_GW_PORT: "8080"
     volumes:
       - v2pi-data:/data
-      - /var/lib/misc:/var/lib/misc:ro   # host dnsmasq leasefile (pi-gw-dhcp.service) → DHCP-client count
+      - /etc/NetworkManager/conf.d:/etc/NetworkManager/conf.d   # write the unmanaged drop-in
     restart: unless-stopped
 
 volumes:

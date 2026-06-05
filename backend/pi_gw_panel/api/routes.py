@@ -150,7 +150,7 @@ def _settings_out(state) -> SettingsOut:
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
-                 "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns")
+                 "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns", "client_dns6")
 
 
 def _network_out(state) -> NetworkOut:
@@ -166,14 +166,18 @@ def _network_out(state) -> NetworkOut:
     st["wan_blocked"] = kill_switch and not running   # N1: leak-guard holding while tunnel down
     if ipv6_enabled and type(state.net).__name__ == "LinuxBackend":
         # DHCPv6-PD 'auto': observe the host-delegated segment prefix (reads /proc/net/if_inet6).
-        if (ov("segment_ip6") or "").strip().lower() == "auto":
+        v6 = (ov("segment_ip6") or "").strip().lower()
+        if v6 == "auto":
             st["ipv6_prefix"] = netcheck.segment_prefix6(ov("segment_iface"))
         st["uplink6"] = netcheck.uplink_up("2606:4700:4700::1111")   # G: v6 uplink reachability
+        st["foreign_ra"] = netcheck.foreign_ra(ov("segment_iface"))  # Phase C: rogue-RA leak
+        st["ipv6_prefix_source"] = "pd" if v6 == "auto" else "static" if v6 else "ula"
     return NetworkOut(
         segment=NetworkSegmentOut(
             iface=ov("segment_iface"), ip=ov("segment_ip"), ip6=ov("segment_ip6"),
             dhcp_start=ov("dhcp_start"), dhcp_end=ov("dhcp_end"),
-            dhcp_lease=ov("dhcp_lease"), client_dns=ov("client_dns")),
+            dhcp_lease=ov("dhcp_lease"), client_dns=ov("client_dns"),
+            client_dns6=ov("client_dns6")),
         kill_switch_enabled=kill_switch,
         ipv6_enabled=ipv6_enabled,
         status=NetworkStatusOut(**st),
@@ -1026,6 +1030,10 @@ def put_network(body: NetworkIn, request: Request,
         if on6 != was6:
             ipv6_changed = True
             conn_events.record(state.store, "ipv6", "enabled" if on6 else "disabled")
+    # Re-assert the host segment (addresses) + reload dnsmasq for the new config — idempotent,
+    # gated on the linux backend + manage_segment, best-effort (a no-op on dev/CI's DryRun).
+    from pi_gw_panel.net_control.provision import host_provision
+    host_provision(state)
     # Apply to match the CURRENT tunnel state. Toggling IPv6 changes the xray config (the
     # tproxy-in6 inbound), so on a live tunnel do a full reapply (rebuild config + net); other
     # edits only re-render the net rules (tproxy if up, else leak-guard/teardown — A1).

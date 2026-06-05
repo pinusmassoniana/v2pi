@@ -74,6 +74,28 @@ def test_nft_killswitch_on_drops_segment_to_wan():
     assert "tproxy ip to :52345" in text             # prerouting chain still present
 
 
+def test_dnsmasq_has_leasefile():
+    text = render_dnsmasq(_plan())
+    assert any(l.startswith("dhcp-leasefile=") and l.endswith("dnsmasq.leases")
+               for l in text.splitlines())
+
+
+def test_dnsmasq_no_v6_block_when_disabled():
+    text = render_dnsmasq(_plan())          # ipv6_enabled defaults False
+    assert "enable-ra" not in text
+    assert "constructor:" not in text
+
+
+def test_dnsmasq_v6_block_when_enabled():
+    p = NetPlan.from_settings(Settings())
+    p.ipv6_enabled = True
+    p.segment_ip6 = "fd00:1:2:3::/64"
+    text = render_dnsmasq(p)
+    assert "enable-ra" in text
+    assert "dhcp-range=::,constructor:eth0.2,ra-stateless,64,12h" in text
+    assert "dhcp-option=option6:dns-server,[2606:4700:4700::1111]" in text
+
+
 def test_from_store_override_beats_config_and_resolves_killswitch():
     store = _store()
     # absent overrides ⇒ config defaults, kill-switch off

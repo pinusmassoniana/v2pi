@@ -109,13 +109,24 @@ table ip6 pi_gw_panel {{
 
 
 def render_dnsmasq(plan: NetPlan) -> str:
-    # dnsmasq is the segment's DHCP server (router DHCP is off on VLAN2). It hands
-    # clients the Pi as gateway and a public DNS that the tproxy rule above
-    # intercepts and carries through the tunnel (no RU-resolver leak).
-    return f"""\
+    # dnsmasq is the segment's DHCP (v4) + RA (v6) server — the panel's own supervised child
+    # (router DHCP/RA is off on the VLAN). It hands clients the Pi as gateway and a public DNS
+    # the tproxy rule above intercepts and carries through the tunnel (no RU-resolver leak).
+    # When the v6 tunnel is on, `enable-ra` + `constructor:<seg>` advertises whatever /64 sits
+    # on the segment iface (the ULA or the PD GUA); `ra-stateless` = SLAAC addresses + DHCPv6
+    # DNS only (no stateful v6 leases).
+    base = f"""\
 interface={plan.segment_iface}
 bind-interfaces
+dhcp-leasefile={plan.dnsmasq_leases}
 dhcp-range={plan.dhcp_start},{plan.dhcp_end},{plan.dhcp_lease}
 dhcp-option=3,{plan.segment_ip}
 dhcp-option=6,{plan.client_dns}
 """
+    if plan.ipv6_enabled:
+        base += f"""\
+enable-ra
+dhcp-range=::,constructor:{plan.segment_iface},ra-stateless,64,{plan.dhcp_lease}
+dhcp-option=option6:dns-server,[{plan.client_dns6}]
+"""
+    return base

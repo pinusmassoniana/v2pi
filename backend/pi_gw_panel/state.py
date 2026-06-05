@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS
 from pi_gw_panel.nodes.store import NodeStore
@@ -18,6 +19,8 @@ class AppState:
     sampler: object | None = None   # TrafficSampler for the live WS (stubbed in WS tests)
     history: object | None = None   # TrafficHistory ring buffer (long-window graph)
     recorder: object | None = None  # TrafficRecorder background task (started in lifespan)
+    dnsmasq: object | None = None   # DnsmasqSupervisor (segment DHCP + IPv6 RA)
+    pd_client: object | None = None # DHCPv6-PD client (odhcp6c) — auto-prefix mode
 
 
 def build_state(settings: Settings, net: object | None = None) -> AppState:
@@ -42,6 +45,13 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     # buffer (3600 @ 1s) so the graph has a full window the moment the Dashboard opens.
     history = TrafficHistory(maxlen=3600)
     supervisor = XraySupervisor(settings.xray_bin, settings.config_path)
+    # The panel owns the host gateway's DHCP + IPv6 RA via its own supervised dnsmasq, and (in
+    # `auto` mode) a DHCPv6-PD client. Constructed always; only *applied* by host_provision on
+    # the linux backend (dev/CI never spawns them — host_provision early-returns on DryRun).
+    from pi_gw_panel.net_control.dnsmasq_supervisor import DnsmasqSupervisor
+    from pi_gw_panel.net_control.pd_client import PdClient
+    dnsmasq = DnsmasqSupervisor(settings.dnsmasq_bin, os.path.join(settings.data_dir, "dnsmasq.conf"))
+    pd_client = PdClient(settings.mgmt_iface, os.path.join(settings.data_dir, "odhcp6c.sh"))
 
     def _add_data_used(up_delta: int, down_delta: int) -> None:
         """Durably accumulate proxy bytes so "data used" survives an xray restart (audit F)."""
@@ -65,4 +75,6 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         sampler=sampler,
         history=history,
         recorder=recorder,
+        dnsmasq=dnsmasq,
+        pd_client=pd_client,
     )

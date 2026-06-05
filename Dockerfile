@@ -18,7 +18,7 @@ RUN npx vite build --outDir /spa --emptyOutDir
 FROM python:${PYTHON_VERSION} AS runtime
 ARG XRAY_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      nftables dnsmasq iproute2 ca-certificates curl unzip tini \
+      nftables dnsmasq odhcp6c iproute2 ca-certificates curl unzip tini \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL -o /tmp/xray.zip \
       "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-arm64-v8a.zip" \

@@ -88,3 +88,26 @@ def test_router_recommendations_parse_vlan_and_guidance():
     assert "VLAN 2" in blob                                  # parsed from eth0.2
     assert "192.168.10.30" in blob and "192.168.10.200" in blob   # Pi serves this range
     assert "DHCP" in blob                                    # disable router DHCP on that VLAN
+
+
+def test_router_recommendations_v6_includes_disable_router_ra():
+    recs = netcheck.router_recommendations(Settings(), ipv6_enabled=True, segment_ip6="fd00:1:2:3::/64")
+    blob = " ".join(r["title"] + " " + r["detail"] for r in recs)
+    assert "Router Advertisement" in blob and "leak" in blob
+
+
+def test_foreign_ra_detects_other_router():
+    sample = ("fe80::1 lladdr aa:bb:cc:dd:ee:ff router REACHABLE\n"
+              "fe80::2 lladdr 11:22:33:44:55:66 STALE\n")
+    assert netcheck.foreign_ra("eth0.2", run=lambda cmd: sample) is True
+
+
+def test_foreign_ra_false_when_no_router_neighbor():
+    sample = "fe80::2 lladdr 11:22:33:44:55:66 STALE\n"
+    assert netcheck.foreign_ra("eth0.2", run=lambda cmd: sample) is False
+
+
+def test_foreign_ra_none_on_error():
+    def boom(cmd):
+        raise OSError("no ip")
+    assert netcheck.foreign_ra("eth0.2", run=boom) is None

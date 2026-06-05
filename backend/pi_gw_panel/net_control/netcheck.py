@@ -1,9 +1,26 @@
 import ipaddress
 import os
 import socket
+import subprocess
 import time
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
+
+
+def _run_text(cmd: list[str]) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+def foreign_ra(iface: str, run=_run_text) -> bool | None:
+    """Detect another router advertising on the client segment (the leak we hit with the
+    Keenetic): any IPv6 neighbor on `iface` flagged `router`. The Pi is the gateway and does not
+    appear as a router-neighbor of itself, so a `router` entry here is foreign. None when we
+    can't tell (dev / `ip` absent). `run` is an injectable seam for tests."""
+    try:
+        text = run(["ip", "-6", "neigh", "show", "dev", iface])
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    return any("router" in line.split()[2:] for line in text.splitlines() if line.strip())
 
 
 def segment_prefix6(iface: str, proc_path: str = "/proc/net/if_inet6", read=None) -> str | None:
@@ -121,7 +138,7 @@ def router_recommendations(settings: Settings, ipv6_enabled: bool = False,
          "detail": f"Add VLAN {vlan} on the router and tag the client switch port to it "
                    f"(the Pi's client leg is {iface})."},
         {"title": f"Disable the router's DHCP on VLAN {vlan}",
-         "detail": f"The Pi serves DHCP on this segment ({settings.dhcp_start}–{settings.dhcp_end}); "
+         "detail": f"The Pi serves DHCP + DNS on this segment ({settings.dhcp_start}–{settings.dhcp_end}); "
                    f"two DHCP servers on one VLAN conflict."},
         {"title": "Give the Pi's Home leg internet",
          "detail": f"The Pi reaches the tunnel through its Home leg {settings.mgmt_iface} "
@@ -141,10 +158,10 @@ def router_recommendations(settings: Settings, ipv6_enabled: bool = False,
                                f"(Set the prefix to `auto` to read it from a host PD client instead.)"}
         recs += [
             first,
-            {"title": f"Advertise IPv6 on {iface} (host)",
-             "detail": "The host must advertise that prefix as Router Advertisements on the segment "
-                       "(dnsmasq enable-ra / radvd) so clients get a v6 address — the panel tunnels "
-                       "v6 but does not manage RA."},
+            {"title": f"Disable the router's IPv6 / Router Advertisement on VLAN {vlan}",
+             "detail": "The Pi advertises IPv6 (RA) on this segment itself; a second router "
+                       "advertising its ISP prefix here makes clients leak around the tunnel "
+                       "(they'd pick the router's prefix, not the Pi's)."},
             {"title": "Use a node with IPv6 egress",
              "detail": "v6 traffic exits via the active node; pick one with working IPv6 or v6-only "
                        "sites will fail (no leak — they just won't connect)."},

@@ -33,10 +33,13 @@ the reference device it's developed and tested on (see [Tested on](#tested-on)).
 
 - A 64-bit **arm64 / aarch64 Linux** host (headless is fine — and the point).
 - **Docker** + **Docker Compose**.
-- Host networking with `NET_ADMIN` / `NET_RAW` (the shipped Compose file already requests these).
+- The shipped Compose file runs the container `privileged` with `network_mode: host` so it can own
+  the whole gateway on the host (sysctls, the client VLAN, addressing, DHCP, IPv6 RA). This is a
+  dedicated single-purpose appliance box — that's the trade-off.
 
 The container is fully self-contained: it bundles a pinned **Xray-core (arm64)** plus
-`nftables` / `dnsmasq` / `iproute2`, so the host needs nothing but Docker.
+`nftables` / `dnsmasq` / `odhcp6c` / `iproute2`, and on `up` it **provisions the entire gateway on
+the host itself** — so the host needs nothing but Docker, and you only configure your router.
 
 ## Quickstart (Docker)
 
@@ -66,10 +69,27 @@ Open `http://<device-ip>:8080` and complete the first-run admin setup. The sessi
 auto-generated and persisted in the data volume; the panel binds `0.0.0.0` (reachable over the LAN,
 protected by login).
 
-The shipped `docker-compose.yml` runs with `network_mode: host` and the `NET_ADMIN` / `NET_RAW`
-caps, sets `PI_GW_NET_BACKEND=linux` (so network changes are applied to the host for real — nftables
-tproxy + policy routing + dnsmasq), and persists all state (SQLite, xray config, logs, session
-secret) in the `v2pi-data` volume. `restart: unless-stopped` brings it back after a reboot.
+The shipped `docker-compose.yml` runs `privileged` with `network_mode: host`, sets
+`PI_GW_NET_BACKEND=linux` (so the panel applies everything to the host for real — sysctls, the
+client VLAN + addresses, nftables tproxy + policy routing, and its own `dnsmasq` for DHCP + IPv6
+RA), and persists all state (SQLite, xray config, logs, session secret) in the `v2pi-data` volume.
+`restart: unless-stopped` brings it back after a reboot.
+
+**What you set up on your router** (the one box the panel never touches):
+
+- Create the client VLAN (default **VLAN 2**) and tag the client switch port to it.
+- **Disable the router's DHCP** on that VLAN — the Pi serves it.
+- If you use IPv6, **disable the router's IPv6 / Router Advertisement** on that VLAN — the Pi
+  advertises IPv6 itself; a second advertiser makes clients leak around the tunnel. (The panel
+  detects this and shows a red banner.)
+- Keep the Pi's Home leg (`eth0`) on your normal LAN with internet.
+
+The Network screen verifies each of these visually and lists the exact steps.
+
+**Migrating an existing manual install** (you previously set up `pi-gw-dhcp.service` / `radvd` /
+the VLAN by hand): run `scripts/migrate-host.sh` as root on the Pi once — it snapshots state, stops
+the legacy host services, hands the segment to the container, and verifies (restoring on failure).
+Fresh installs don't need it.
 
 > Dev / CI default to a **dry-run** network backend (`PI_GW_NET_BACKEND` unset or `dryrun`) that
 > renders the nftables + dnsmasq rulesets but never touches the host — so you can run the panel on a
@@ -156,10 +176,13 @@ NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запус
 
 - 64-битный хост на **arm64 / aarch64 Linux** (headless — это норма и сам смысл).
 - **Docker** + **Docker Compose**.
-- Host-networking с `NET_ADMIN` / `NET_RAW` (готовый Compose-файл уже их запрашивает).
+- Готовый Compose-файл запускает контейнер `privileged` с `network_mode: host`, чтобы он сам владел
+  всем шлюзом на хосте (sysctl, клиентский VLAN, адресация, DHCP, IPv6 RA). Это выделенная коробка
+  под одну задачу — таков размен.
 
 Контейнер полностью самодостаточен: внутри уже лежат зафиксированный **Xray-core (arm64)** плюс
-`nftables` / `dnsmasq` / `iproute2`, так что хосту не нужно ничего, кроме Docker.
+`nftables` / `dnsmasq` / `odhcp6c` / `iproute2`, и при `up` он **сам разворачивает весь шлюз на
+хосте** — так что хосту не нужно ничего, кроме Docker, а вам — только настроить роутер.
 
 ## Быстрый старт (Docker)
 
@@ -189,11 +212,27 @@ docker compose up -d
 Секрет сессии генерируется автоматически и сохраняется в data-томе; панель слушает `0.0.0.0`
 (доступна по локальной сети, защищена логином).
 
-Готовый `docker-compose.yml` запускается с `network_mode: host` и капабилити `NET_ADMIN` /
-`NET_RAW`, выставляет `PI_GW_NET_BACKEND=linux` (то есть сетевые изменения реально применяются к
-хосту — nftables tproxy + policy-routing + dnsmasq) и хранит всё состояние (SQLite, конфиг xray,
-логи, секрет сессии) в томе `v2pi-data`. `restart: unless-stopped` поднимает контейнер после
-перезагрузки.
+Готовый `docker-compose.yml` запускается `privileged` с `network_mode: host`, выставляет
+`PI_GW_NET_BACKEND=linux` (то есть панель реально применяет всё к хосту — sysctl, клиентский VLAN и
+адреса, nftables tproxy + policy-routing и собственный `dnsmasq` для DHCP + IPv6 RA) и хранит всё
+состояние (SQLite, конфиг xray, логи, секрет сессии) в томе `v2pi-data`. `restart: unless-stopped`
+поднимает контейнер после перезагрузки.
+
+**Что настроить на роутере** (единственная коробка, которую панель не трогает):
+
+- Создайте клиентский VLAN (по умолчанию **VLAN 2**) и протегируйте в него клиентский порт свитча.
+- **Отключите DHCP роутера** на этом VLAN — его раздаёт Pi.
+- Если используете IPv6 — **отключите IPv6 / Router Advertisement роутера** на этом VLAN: RA
+  раздаёт сам Pi, а второй источник заставит клиентов течь мимо туннеля. (Панель это детектит и
+  показывает красный баннер.)
+- Домашнюю ногу Pi (`eth0`) держите в обычной LAN с интернетом.
+
+Экран Network визуально проверяет каждый пункт и показывает точные шаги.
+
+**Миграция существующей ручной установки** (раньше вы вручную поднимали `pi-gw-dhcp.service` /
+`radvd` / VLAN): один раз запустите на Pi от root `scripts/migrate-host.sh` — он снимет снапшот,
+остановит легаси-сервисы хоста, передаст сегмент контейнеру и проверит результат (с откатом при
+ошибке). Чистым установкам это не нужно.
 
 > Dev / CI по умолчанию используют **dry-run** сетевой бэкенд (`PI_GW_NET_BACKEND` не задан или
 > `dryrun`): он рендерит наборы правил nftables + dnsmasq, но не трогает хост — так панель можно

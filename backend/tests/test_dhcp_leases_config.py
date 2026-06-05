@@ -1,9 +1,10 @@
 from pi_gw_panel.config import Settings
 
 
-def test_dnsmasq_leases_default_points_at_pi_gw_leasefile():
-    # must match the host's pi-gw-dhcp.service `dhcp-leasefile=/var/lib/misc/pi-gw.leases`
-    assert Settings.from_env({}).dnsmasq_leases == "/var/lib/misc/pi-gw.leases"
+def test_dnsmasq_leases_default_points_under_data_dir():
+    # the container's own dnsmasq writes its leasefile into the data volume now
+    assert Settings.from_env({}).dnsmasq_leases == "data/dnsmasq.leases"
+    assert Settings.from_env({"PI_GW_DATA_DIR": "/data"}).dnsmasq_leases == "/data/dnsmasq.leases"
 
 
 def test_dnsmasq_leases_env_override():
