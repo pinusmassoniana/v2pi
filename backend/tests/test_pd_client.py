@@ -35,14 +35,14 @@ class FakeProc:
         return 99
 
 
-def test_pd_client_starts_odhcp6c_on_mgmt_iface():
+def test_pd_client_starts_dhclient_on_mgmt_iface():
     spawned = []
     cl = pd_client.PdClient("eth0", "/tmp/pd.sh",
                             popen=lambda cmd: spawned.append(cmd) or FakeProc())
     cl.start()
-    assert spawned and spawned[0][0] == "odhcp6c"
+    assert spawned and spawned[0][0] == "dhclient"
     assert "eth0" in spawned[0]
-    assert "-P" in spawned[0]        # request a prefix (IA_PD)
+    assert "-P" in spawned[0] and "-6" in spawned[0]   # DHCPv6 prefix delegation (IA_PD)
 
 
 def test_pd_client_start_is_idempotent():

@@ -38,8 +38,8 @@ the reference device it's developed and tested on (see [Tested on](#tested-on)).
   dedicated single-purpose appliance box — that's the trade-off.
 
 The container is fully self-contained: it bundles a pinned **Xray-core (arm64)** plus
-`nftables` / `dnsmasq` / `odhcp6c` / `iproute2`, and on `up` it **provisions the entire gateway on
-the host itself** — so the host needs nothing but Docker, and you only configure your router.
+`nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, and on `up` it **provisions the entire
+gateway on the host itself** — so the host needs nothing but Docker, and you only configure your router.
 
 ## Quickstart (Docker)
 
@@ -181,8 +181,8 @@ NanoPi…), arm64 мини-ПК или arm64 VPS, на котором запус
   под одну задачу — таков размен.
 
 Контейнер полностью самодостаточен: внутри уже лежат зафиксированный **Xray-core (arm64)** плюс
-`nftables` / `dnsmasq` / `odhcp6c` / `iproute2`, и при `up` он **сам разворачивает весь шлюз на
-хосте** — так что хосту не нужно ничего, кроме Docker, а вам — только настроить роутер.
+`nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, и при `up` он **сам разворачивает весь шлюз
+на хосте** — так что хосту не нужно ничего, кроме Docker, а вам — только настроить роутер.
 
 ## Быстрый старт (Docker)
 

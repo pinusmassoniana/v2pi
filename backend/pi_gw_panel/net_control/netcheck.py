@@ -146,10 +146,10 @@ def router_recommendations(settings: Settings, ipv6_enabled: bool = False,
     ]
     if ipv6_enabled:
         if segment_ip6.strip().lower() == "auto":
-            first = {"title": "Run a DHCPv6-PD client on the Pi's Home leg",
-                     "detail": f"`auto` mode: a host DHCPv6-PD client (odhcp6c / dhcpcd -6) on "
-                               f"{settings.mgmt_iface} requests a prefix from the router (enable PD "
-                               f"there); the panel shows the delegated prefix once it lands."}
+            first = {"title": "Enable DHCPv6-PD on the router",
+                     "detail": f"`auto` mode: the panel runs a DHCPv6-PD client (dhclient -6 -P) on "
+                               f"{settings.mgmt_iface} and requests a prefix — enable prefix "
+                               f"delegation on the router; the panel shows it once it lands."}
         else:
             prefix = segment_ip6 or "your /64"
             first = {"title": f"Delegate an IPv6 /64 to VLAN {vlan}",

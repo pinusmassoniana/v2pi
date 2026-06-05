@@ -1,8 +1,8 @@
-"""DHCPv6-PD client (Phase D): run `odhcp6c` on the mgmt/uplink leg requesting a delegated
-prefix (IA_PD only — the host keeps its own SLAAC address on a separate IA, no conflict). When
-a prefix lands, the caller derives the segment /64 and re-addresses it; with no delegation the
-gateway falls back to an auto-ULA so v6 still works (tunnelled). The logic here is unit-tested;
-the odhcp6c child is Pi-only."""
+"""DHCPv6-PD client (Phase D): run `dhclient -6 -P` (isc-dhcp-client) on the mgmt/uplink leg
+requesting a delegated prefix (IA_PD only — the host keeps its own SLAAC address on a separate IA,
+no conflict). When a prefix lands, the caller derives the segment /64 and re-addresses it; with no
+delegation the gateway falls back to an auto-ULA so v6 still works (tunnelled). The logic here is
+unit-tested; the dhclient child is Pi-only."""
 import ipaddress
 import subprocess
 
@@ -27,8 +27,8 @@ def derive_segment_prefix(delegated: str, vlan_id: int) -> str | None:
 
 
 class PdClient:
-    """Supervises an odhcp6c child requesting IA_PD on the uplink. `script` is the odhcp6c
-    state-change hook the host runs on (re)delegation; `popen` is the injectable spawn seam."""
+    """Supervises a `dhclient -6 -P` child requesting IA_PD on the uplink. `script` is the
+    state-change hook dhclient runs on (re)delegation; `popen` is the injectable spawn seam."""
 
     def __init__(self, mgmt_iface: str, script: str, popen=subprocess.Popen):
         self.mgmt_iface = mgmt_iface
@@ -39,9 +39,9 @@ class PdClient:
     def start(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
-        # -P 0: request a prefix (IA_PD) with no length hint; -s: run the state-change script on
-        # (re)delegation. PD-only — we don't request a normal address (the host keeps its SLAAC).
-        self._proc = self._popen(["odhcp6c", "-P", "0", "-s", self.script, self.mgmt_iface])
+        # -6 -P: DHCPv6 prefix-delegation mode (IA_PD); -d: stay in the foreground as our child;
+        # -sf: the state-change script run on (re)delegation. PD-only — we don't take an address.
+        self._proc = self._popen(["dhclient", "-6", "-P", "-d", "-sf", self.script, self.mgmt_iface])
 
     def stop(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
