@@ -559,9 +559,10 @@
   .table.dense :global(th), .table.dense :global(td) { padding-top: 0.28rem; padding-bottom: 0.28rem; }
   .table.dense .th-sort { padding-top: 0.28rem; padding-bottom: 0.28rem; }
 
-  /* sticky header during long-list vertical scroll (N-B). Offset by the app's sticky topbar
-     (~2.9rem) so it parks just below it rather than hiding behind it; z below the topbar's. */
-  .nodes :global(thead th) { position: sticky; top: 2.9rem; z-index: 1; background: var(--surface); }
+  /* Header pinned to the top of the table. NOTE: .table-wrap's `overflow-x` makes IT the sticky
+     scroll-container (not the window), so `top` is measured from the table's top, not the viewport
+     — any non-zero offset pushes the header DOWN over the first row (visual bug). Must be top:0. */
+  .nodes :global(thead th) { position: sticky; top: 0; z-index: 1; background: var(--surface); }
 
   /* responsive column hiding (A1) — between the desktop table and the phone card view.
      Each breakpoint drops lower-priority columns; name · address · health · actions stay. */
