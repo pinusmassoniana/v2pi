@@ -107,6 +107,9 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
     and the pre-flight validate route (NN10). With no store this is the Wave-0 path."""
     if store is not None:
         profile = resolve_profile(store, node)
+        # Only an EXPLICITLY-assigned profile overrides the node's own fingerprint; the default
+        # fallback profile must not (resolve_profile returns the default when unassigned/dangling).
+        explicit = profile is not None and profile.id == node.tuning_profile_id
         routing = _resolve_routing(store)
         tunneled = _tunneled_fetch(store)
         stats = _resolve_stats(store)
@@ -115,10 +118,11 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
         domain_strategy = store.get_setting("routing_domain_strategy") or "IPIfNonMatch"
     else:
         profile, routing, tunneled, stats, dns_intercept, ipv6 = None, None, False, None, False, False
+        explicit = False
         domain_strategy = "IPIfNonMatch"
     return build_config(node, settings, profile=profile, routing=routing,
                         tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept,
-                        domain_strategy=domain_strategy, ipv6_tproxy=ipv6)
+                        domain_strategy=domain_strategy, ipv6_tproxy=ipv6, profile_explicit=explicit)
 
 
 def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,

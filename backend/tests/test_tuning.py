@@ -5,6 +5,7 @@ from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.xray_config.builder import build_config
 from pi_gw_panel.xray_config.tuning import resolve_profile
 from pi_gw_panel.xray_config.validate import validate_config
+from pi_gw_panel.controller import build_node_config
 
 
 def _node(**kw) -> Node:
@@ -48,10 +49,19 @@ def test_build_config_defaults_are_wave0():
 
 # --- profile-driven knobs --------------------------------------------------
 
-def test_profile_fingerprint_overrides_node():
+def test_explicit_profile_fingerprint_overrides_node():
+    # an EXPLICITLY-assigned profile (profile_explicit=True) overrides the node's fingerprint
     p = TuningProfile(id=1, name="p", fingerprint="randomized")
-    cfg = build_config(_node(fingerprint="chrome"), Settings(), profile=p)
+    cfg = build_config(_node(fingerprint="chrome"), Settings(), profile=p, profile_explicit=True)
     assert cfg["outbounds"][0]["streamSettings"]["realitySettings"]["fingerprint"] == "randomized"
+
+
+def test_default_profile_does_not_override_node_fingerprint():
+    # the auto-applied DEFAULT profile (profile_explicit=False) must NOT clobber the node's own
+    # fingerprint — some reality servers reject `chrome` but accept the node's chosen one (e.g. qq)
+    p = TuningProfile(id=1, name="default", fingerprint="chrome")
+    cfg = build_config(_node(fingerprint="qq"), Settings(), profile=p)   # profile_explicit defaults False
+    assert cfg["outbounds"][0]["streamSettings"]["realitySettings"]["fingerprint"] == "qq"
 
 
 def test_profile_fragmentation_and_mux():
@@ -106,6 +116,29 @@ def test_tunneled_fetch_adds_local_http_inbound():
     http = next(i for i in cfg["inbounds"] if i["tag"] == "sub-fetch")
     assert http["protocol"] == "http" and http["listen"] == "127.0.0.1" and http["port"] == 10808
     assert cfg["inbounds"][0]["protocol"] == "dokodemo-door"               # tproxy still first
+
+
+def test_default_profile_does_not_override_node_alpn():
+    n = _node(security="tls", network="xhttp", alpn="h3")
+    cfg = build_config(n, Settings(), profile=TuningProfile(id=1, name="default", fingerprint="chrome"))
+    assert cfg["outbounds"][0]["streamSettings"]["tlsSettings"]["alpn"] == ["h3"]   # node alpn kept
+    p = TuningProfile(id=2, name="x", fingerprint="chrome", alpn="h2,http/1.1")
+    cfg2 = build_config(n, Settings(), profile=p, profile_explicit=True)
+    assert cfg2["outbounds"][0]["streamSettings"]["tlsSettings"]["alpn"] == ["h2", "http/1.1"]
+
+
+def test_build_node_config_respects_node_fingerprint_over_default(settings):
+    # end-to-end through the controller: the seeded default profile is 'chrome', but a node
+    # carrying its own fingerprint (from a subscription) must keep it — only an explicitly
+    # assigned profile overrides. (regression: default 'chrome' broke nodes whose server rejects it)
+    conn = connect(settings.db_path)
+    init_schema(conn)
+    s = NodeStore(conn)
+    cfg = build_node_config(_node(fingerprint="qq", tuning_profile_id=None), Settings(), store=s)
+    assert cfg["outbounds"][0]["streamSettings"]["realitySettings"]["fingerprint"] == "qq"
+    pid = s.add_profile(TuningProfile(id=None, name="ff", fingerprint="firefox"))
+    cfg2 = build_node_config(_node(fingerprint="qq", tuning_profile_id=pid), Settings(), store=s)
+    assert cfg2["outbounds"][0]["streamSettings"]["realitySettings"]["fingerprint"] == "firefox"
 
 
 def test_full_profile_validates_with_stub(settings, stub_xray):

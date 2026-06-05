@@ -6,7 +6,7 @@ from pi_gw_panel.xray_config.routing import rules_to_xray
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
                  dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch",
-                 ipv6_tproxy: bool = False) -> dict:
+                 ipv6_tproxy: bool = False, profile_explicit: bool = False) -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -24,7 +24,11 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
       traffic counters + an api dokodemo inbound on ``127.0.0.1`` + a first routing
       rule dispatching that inbound to the api (Wave 3a traffic graph).
     """
-    fingerprint = profile.fingerprint if profile is not None else node.fingerprint
+    # The node's own fingerprint is server-specific (it comes from the subscription, and some
+    # reality servers reject other uTLS fingerprints — e.g. one that fails on `chrome`). The
+    # auto-applied DEFAULT profile must NOT clobber it; only an EXPLICITLY-assigned profile
+    # (profile_explicit) overrides the node's fingerprint. Other profile knobs still apply.
+    fingerprint = profile.fingerprint if (profile is not None and profile_explicit) else node.fingerprint
     doh_on = profile.doh_enabled if profile is not None else True
     doh_url = profile.doh_url if profile is not None and profile.doh_url else settings.doh_url
     # gateway DNS interception needs a tunnelled resolver present even if a profile disabled DoH
@@ -45,7 +49,9 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
                                      "publicKey": node.public_key, "shortId": node.short_id}
     else:
         tls: dict = {"serverName": node.sni, "fingerprint": fingerprint}
-        alpn = profile.alpn if profile is not None and profile.alpn else node.alpn
+        # alpn is also a subscription-carried node field — same rule as fingerprint: only an
+        # explicitly-assigned profile overrides it; the default profile keeps the node's own.
+        alpn = profile.alpn if (profile is not None and profile_explicit and profile.alpn) else node.alpn
         if alpn:
             tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
         if profile is not None and profile.tls_min:
