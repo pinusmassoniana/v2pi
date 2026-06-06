@@ -72,3 +72,40 @@ def test_teardown_removes_table_rule_and_route_best_effort():
 def test_factory_linux_returns_linuxbackend(monkeypatch):
     monkeypatch.setenv("PI_GW_NET_BACKEND", "linux")
     assert type(select_backend(Settings())).__name__ == "LinuxBackend"
+
+
+# --- LAN access: segment → home-LAN forward accepts in DOCKER-USER ---
+_FWD = ["DOCKER-USER", "-i", "eth0.2", "-o", "eth0", "-d", "192.168.1.0/24", "-j", "ACCEPT"]
+_RET = ["DOCKER-USER", "-i", "eth0", "-o", "eth0.2",
+        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]
+
+
+def test_apply_lan_access_on_inserts_docker_user_forward_rules():
+    fake = FakeRun()
+    LinuxBackend(Settings(), run=fake).apply_tproxy(NetPlan.from_settings(Settings()))  # lan_access on
+    cmds = fake.cmds()
+    assert ["iptables", "-I", *_FWD] in cmds          # segment → LAN
+    assert ["iptables", "-I", *_RET] in cmds          # established return
+    # idempotent: a `-D` precedes each `-I` so re-apply never stacks duplicates
+    assert ["iptables", "-D", *_FWD] in cmds
+    assert cmds.index(["iptables", "-D", *_FWD]) < cmds.index(["iptables", "-I", *_FWD])
+    # scoped to the LAN cidr — the rule never names a WAN/0.0.0.0 dest
+    assert all("0.0.0.0/0" not in c for c in cmds if c[:2] == ["iptables", "-I"])
+
+
+def test_apply_lan_access_off_removes_but_never_inserts():
+    fake = FakeRun()
+    plan = NetPlan.from_settings(Settings())
+    plan.lan_access = False
+    LinuxBackend(Settings(), run=fake).apply_tproxy(plan)
+    cmds = fake.cmds()
+    assert not any(c[:3] == ["iptables", "-I", "DOCKER-USER"] for c in cmds)   # never opened
+    assert ["iptables", "-D", *_FWD] in cmds                                   # stale copy cleared
+
+
+def test_teardown_removes_lan_access_forward_rules():
+    fake = FakeRun()
+    LinuxBackend(Settings(), run=fake).teardown()
+    cmds = fake.cmds()
+    assert ["iptables", "-D", *_FWD] in cmds
+    assert ["iptables", "-D", *_RET] in cmds

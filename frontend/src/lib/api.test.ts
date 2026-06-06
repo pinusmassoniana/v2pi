@@ -68,7 +68,7 @@ function networkFixture(changed: boolean) {
   return {
     segment: { iface: "eth0.2", ip: "192.168.10.2", dhcp_start: "192.168.10.30",
                dhcp_end: changed ? "192.168.10.250" : "192.168.10.200", dhcp_lease: "12h", client_dns: "1.1.1.1" },
-    kill_switch_enabled: changed,
+    kill_switch_enabled: changed, lan_access_enabled: true,
     status: { segment_up: null, dhcp_clients: 0, tunnel: { real_ok: null, latency_ms: null, egress_ip: null } },
     recommendations: [{ title: "Create VLAN 2", detail: "tag the client port to eth0.2" }],
   };
@@ -181,6 +181,7 @@ describe("api client", () => {
     const net = await api.getNetwork();
     expect(net.segment.iface).toBe("eth0.2");
     expect(net.kill_switch_enabled).toBe(false);
+    expect(net.lan_access_enabled).toBe(true);
     expect(net.status.tunnel.egress_ip).toBeNull();
     expect(net.recommendations[0].title).toBe("Create VLAN 2");
     const updated = await api.putNetwork({ dhcp_end: "192.168.10.250", kill_switch_enabled: true });

@@ -112,14 +112,14 @@ export interface NetworkStatus {
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
 export interface Network {
-  segment: NetworkSegment; kill_switch_enabled: boolean; ipv6_enabled: boolean;
+  segment: NetworkSegment; kill_switch_enabled: boolean; lan_access_enabled: boolean; ipv6_enabled: boolean;
   status: NetworkStatus; recommendations: RouterRec[]; events: ConnEvent[];
 }
-// PUT is partial + flat: editable settings keys (segment_iface/ip is long-form here) + kill-switch.
+// PUT is partial + flat: editable settings keys (segment_iface/ip is long-form here) + toggles.
 export interface NetworkPatch {
   segment_iface?: string; segment_ip?: string; segment_ip6?: string;
   dhcp_start?: string; dhcp_end?: string; dhcp_lease?: string; client_dns?: string; client_dns6?: string;
-  kill_switch_enabled?: boolean; ipv6_enabled?: boolean;
+  kill_switch_enabled?: boolean; lan_access_enabled?: boolean; ipv6_enabled?: boolean;
 }
 
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }

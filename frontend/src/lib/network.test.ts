@@ -6,7 +6,7 @@ function sample(over: Partial<Network["status"]> = {}): Network {
   return {
     segment: { iface: "eth0.2", ip: "192.168.10.2", dhcp_start: "192.168.10.30",
                dhcp_end: "192.168.10.200", dhcp_lease: "12h", client_dns: "1.1.1.1" },
-    kill_switch_enabled: false,
+    kill_switch_enabled: false, lan_access_enabled: true,
     status: { segment_up: null, dhcp_clients: 0,
               tunnel: { real_ok: null, latency_ms: null, egress_ip: null }, ...over },
     recommendations: [],

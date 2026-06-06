@@ -111,3 +111,27 @@ def test_from_store_override_beats_config_and_resolves_killswitch():
     assert p1.dhcp_end == "192.168.10.250"
     assert p1.kill_switch is True
     assert p1.tproxy_port == 52345                   # system knobs stay config-only
+
+
+# --- LAN access: segment → home-LAN masquerade (default on) ---
+def test_nft_lan_access_on_masquerades_segment_to_lan():
+    text = render_nft(_plan())                       # lan_access defaults on (config)
+    assert "chain postrouting" in text
+    assert "type nat hook postrouting" in text
+    # scoped: segment /24 → home-LAN /24 out the mgmt iface only — never the WAN
+    assert "ip saddr 192.168.10.0/24 ip daddr 192.168.1.0/24" in text
+    assert 'oifname "eth0" masquerade' in text
+
+
+def test_nft_lan_access_off_has_no_masquerade():
+    p = NetPlan.from_settings(Settings())
+    p.lan_access = False
+    text = render_nft(p)
+    assert "masquerade" not in text
+    assert "chain postrouting" not in text
+    assert "tproxy ip to :52345" in text             # tproxy path still intact
+
+
+def test_nft_lan_access_masquerade_independent_of_tunnel_state():
+    # Reaching the router/host needs no tunnel, so the masquerade must render even tunnel-down.
+    assert "masquerade" in render_nft(_plan(), tunnel_up=False)

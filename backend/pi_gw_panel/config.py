@@ -39,6 +39,10 @@ class Settings:
     # mgmt = Home leg: panel bind + SSH + tunnel egress
     mgmt_iface: str = "eth0"
     mgmt_ip: str = "192.168.1.120"
+    # LAN access (default on): segment clients reach the home LAN (the mgmt /24) directly —
+    # forward-accept in DOCKER-USER + masquerade. Off = the segment is isolated from the home
+    # LAN. Internet stays tunnel-only either way (tproxy untouched; forward/NAT scoped to the LAN).
+    lan_access: bool = True
     doh_url: str = "https://1.1.1.1/dns-query"   # xray's own DoH resolver
     # HTTP layer (Plan 2)
     password: str = "changeme"  # DEPRECATED (Wave 3a): unused — the panel credential

@@ -166,6 +166,7 @@ def _network_out(state) -> NetworkOut:
     # C1: only the real Pi backend probes the uplink (a live socket); dev/CI = unknown.
     uplink_check = netcheck.uplink_up if type(state.net).__name__ == "LinuxBackend" else (lambda: None)
     kill_switch = (store.get_setting("kill_switch_enabled") or "0") == "1"
+    lan_access = (store.get_setting("lan_access_enabled") or ("1" if settings.lan_access else "0")) == "1"
     ipv6_enabled = (store.get_setting("ipv6_enabled") or "0") == "1"
     running = state.supervisor.status().get("running", False)
     st = netcheck.network_status(store, settings, uplink_check=uplink_check)
@@ -185,6 +186,7 @@ def _network_out(state) -> NetworkOut:
             dhcp_lease=ov("dhcp_lease"), client_dns=ov("client_dns"),
             client_dns6=ov("client_dns6")),
         kill_switch_enabled=kill_switch,
+        lan_access_enabled=lan_access,
         ipv6_enabled=ipv6_enabled,
         status=NetworkStatusOut(**st),
         recommendations=[RouterRecOut(**r) for r in
@@ -1030,6 +1032,13 @@ def put_network(body: NetworkIn, request: Request,
         state.store.set_setting("kill_switch_enabled", "1" if now_on else "0")
         if now_on != was:
             conn_events.record(state.store, "kill-switch", "enabled" if now_on else "disabled")
+    if "lan_access_enabled" in data:
+        was_lan = (state.store.get_setting("lan_access_enabled")
+                   or ("1" if state.settings.lan_access else "0")) == "1"
+        lan_on = bool(data["lan_access_enabled"])
+        state.store.set_setting("lan_access_enabled", "1" if lan_on else "0")
+        if lan_on != was_lan:
+            conn_events.record(state.store, "lan-access", "enabled" if lan_on else "disabled")
     ipv6_changed = False
     if "ipv6_enabled" in data:
         was6 = (state.store.get_setting("ipv6_enabled") or "0") == "1"

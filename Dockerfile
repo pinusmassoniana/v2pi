@@ -21,7 +21,7 @@ ARG XRAY_VERSION
 # `docker build` it's empty, so fall back to the base image's own dpkg arch (same names).
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      nftables dnsmasq isc-dhcp-client iproute2 ca-certificates curl unzip gzip tini \
+      nftables iptables dnsmasq isc-dhcp-client iproute2 ca-certificates curl unzip gzip tini \
     && rm -rf /var/lib/apt/lists/*
 # DB-IP IP-to-Country Lite (CC-BY-4.0) for the egress country flag. Try the current month, fall
 # back to the previous one (a build on the 1st may pre-date that month's file). Best-effort: if

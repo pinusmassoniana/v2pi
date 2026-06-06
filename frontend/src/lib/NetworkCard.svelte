@@ -37,7 +37,8 @@
         segment_iface: s.iface, segment_ip: s.ip, segment_ip6: s.ip6,
         dhcp_start: s.dhcp_start, dhcp_end: s.dhcp_end, dhcp_lease: s.dhcp_lease,
         client_dns: s.client_dns, client_dns6: s.client_dns6,
-        kill_switch_enabled: net.kill_switch_enabled, ipv6_enabled: net.ipv6_enabled,
+        kill_switch_enabled: net.kill_switch_enabled, lan_access_enabled: net.lan_access_enabled,
+        ipv6_enabled: net.ipv6_enabled,
       });
       editOpen = false;
       msg = "saved · network + DHCP applied";   // the panel now serves DHCP/RA itself
@@ -133,6 +134,13 @@
         <span>Kill-switch — fail closed: drops client→WAN that isn't tunnelled, and <strong>keeps
           blocking even when you stop the tunnel</strong> (incl. IPv6). Clients lose internet rather
           than leak.</span>
+      </div>
+      <div class="check">
+        <Toggle checked={net.lan_access_enabled}
+                onchange={(v) => { if (net) net.lan_access_enabled = v; }} label="lan-access" />
+        <span>LAN access — let segment clients reach the <strong>home LAN</strong> (router, NAS,
+          this host) directly. Internet still goes only through the tunnel. Off isolates the
+          segment from the home LAN.</span>
       </div>
       <div class="check">
         <Toggle checked={net.ipv6_enabled}

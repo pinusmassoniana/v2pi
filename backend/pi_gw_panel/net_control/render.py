@@ -1,5 +1,5 @@
 import ipaddress
-from pi_gw_panel.net_control.plan import NetPlan
+from pi_gw_panel.net_control.plan import NetPlan, net24
 
 
 def _seg_prefix6(plan: NetPlan) -> str | None:
@@ -64,9 +64,23 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
         iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
     }}
 """
+    # LAN access (independent of tunnel state): SNAT segment→home-LAN so replies return via the
+    # mgmt leg (the router/Proxmox have no route back to the segment). Scoped to the LAN cidr +
+    # mgmt iface so it can NEVER NAT internet-bound traffic — that stays tproxy'd through the
+    # tunnel. The forward-accept that lets these packets past Docker's `FORWARD policy=drop` is
+    # added by LinuxBackend in DOCKER-USER (a base chain's drop can't be overridden from here).
+    postrouting = ""
+    seg_net, lan = net24(plan.segment_ip), net24(plan.mgmt_ip)
+    if plan.lan_access and seg_net and lan:
+        postrouting = f"""\
+    chain postrouting {{
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr {seg_net} ip daddr {lan} oifname "{plan.mgmt_iface}" masquerade
+    }}
+"""
     return f"""\
 table ip pi_gw_panel {{
-{prerouting}{forward}}}
+{prerouting}{forward}{postrouting}}}
 """
 
 

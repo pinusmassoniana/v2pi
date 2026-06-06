@@ -1,8 +1,19 @@
 import subprocess
-from pi_gw_panel.net_control.plan import NetPlan, NetResult
+from pi_gw_panel.net_control.plan import NetPlan, NetResult, net24
 from pi_gw_panel.net_control.render import render_nft, render_nft6
 
 NFT_TABLE = "pi_gw_panel"
+
+
+def _lan_forward_rules(seg_if: str, lan_if: str, lan_cidr: str) -> list[list[str]]:
+    """The two DOCKER-USER forward bodies that let segment↔home-LAN traffic past Docker's
+    `filter FORWARD policy=drop` (the panel's own nft forward chain can't override another base
+    chain's drop). Shared by the apply (`-I`) and the remove (`-D`) so they always match."""
+    return [
+        ["DOCKER-USER", "-i", seg_if, "-o", lan_if, "-d", lan_cidr, "-j", "ACCEPT"],
+        ["DOCKER-USER", "-i", lan_if, "-o", seg_if,
+         "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    ]
 
 
 def _run(cmd: list[str], input: str | None = None) -> subprocess.CompletedProcess:
@@ -61,6 +72,7 @@ class LinuxBackend:
             else:                            # E: drop any stale v6 routing left from a prior v6 on
                 self._remove_v6_policy_routing(plan.fwmark, plan.table)
             self._ensure_forward(ipv6=plan.ipv6_enabled)
+            self._apply_lan_access(plan)
             return NetResult(ok=True, rendered=nft_text)
         except subprocess.CalledProcessError as exc:
             return NetResult(ok=False, rendered=nft_text,
@@ -75,6 +87,7 @@ class LinuxBackend:
         try:
             self._run(["nft", "-f", "-"], input=self._nft_script(plan, tunnel_up=False))
             self._remove_policy_routing(plan.fwmark, plan.table)   # no tproxy → drop the fwmark route
+            self._apply_lan_access(plan)            # LAN access is independent of tunnel state
             return NetResult(ok=True, rendered=nft_text)
         except subprocess.CalledProcessError as exc:
             return NetResult(ok=False, rendered=nft_text,
@@ -85,6 +98,10 @@ class LinuxBackend:
         self._run_ok(["nft", "delete", "table", "ip", NFT_TABLE])
         self._run_ok(["nft", "delete", "table", "ip6", NFT_TABLE])
         self._remove_policy_routing(self.settings.fwmark, self.settings.table)
+        lan = net24(self.settings.mgmt_ip)          # drop the segment→LAN forward accepts too
+        if lan:
+            for r in _lan_forward_rules(self.settings.segment_iface, self.settings.mgmt_iface, lan):
+                self._run_ok(["iptables", "-D", *r])
         return NetResult(ok=True)
 
     def _remove_policy_routing(self, fwmark: int, table: int) -> None:
@@ -114,3 +131,19 @@ class LinuxBackend:
             # Pi's Home leg can lose its own v6 (address + default route → no v6 egress).
             # accept_ra=2 keeps accepting RA on the uplink even while forwarding.
             self._write_proc(f"/proc/sys/net/ipv6/conf/{self.settings.mgmt_iface}/accept_ra", "2")
+
+    def _apply_lan_access(self, plan: NetPlan) -> None:
+        """Let the segment reach the home LAN: (re)insert the forward-accepts into Docker's
+        DOCKER-USER chain (the masquerade itself rides the panel's own nft table, rendered above).
+        Idempotent — delete any prior copy, then insert only when lan_access is on. Best-effort:
+        a missing DOCKER-USER (non-Docker host) or absent iptables just no-ops. Scoped to the
+        LAN /24 so it can never open a WAN path."""
+        lan = net24(plan.mgmt_ip)
+        if not lan or not plan.segment_iface or not plan.mgmt_iface:
+            return
+        rules = _lan_forward_rules(plan.segment_iface, plan.mgmt_iface, lan)
+        for r in rules:
+            self._run_ok(["iptables", "-D", *r])        # clear any stale copy (idempotent)
+        if plan.lan_access:
+            for r in rules:
+                self._run_ok(["iptables", "-I", *r])    # (re)insert at the top of DOCKER-USER

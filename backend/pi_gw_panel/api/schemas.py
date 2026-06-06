@@ -438,6 +438,7 @@ class ConnEventOut(BaseModel):
 class NetworkOut(BaseModel):
     segment: NetworkSegmentOut
     kill_switch_enabled: bool
+    lan_access_enabled: bool = True     # segment → home-LAN reachability (default on)
     ipv6_enabled: bool = False          # opt-in IPv6 tunnel
     status: NetworkStatusOut
     recommendations: list[RouterRecOut]
@@ -457,6 +458,7 @@ class NetworkIn(BaseModel):
     client_dns6: str | None = Field(default=None, min_length=1)
     segment_ip6: str | None = None          # empty allowed (clears the prefix / v6 off)
     kill_switch_enabled: bool | None = None
+    lan_access_enabled: bool | None = None
     ipv6_enabled: bool | None = None
 
 
