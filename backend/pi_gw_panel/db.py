@@ -217,6 +217,25 @@ def _migration_10(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE node_health ADD COLUMN egress_ip6 TEXT")
 
 
+def _migration_11(conn: sqlite3.Connection) -> None:
+    # API tokens (read / read-write) for programmatic REST access. The secret is a 256-bit random
+    # value shown once at creation; only its SHA-256 hash is stored. `prefix` is a non-secret slice
+    # for identifying a row in the token list.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT    NOT NULL,
+            token_hash   TEXT    NOT NULL UNIQUE,
+            scope        TEXT    NOT NULL,
+            prefix       TEXT    NOT NULL DEFAULT '',
+            created_at   INTEGER NOT NULL,
+            last_used_at INTEGER
+        )
+        """
+    )
+
+
 def _migration_8(conn: sqlite3.Connection) -> None:
     # Anti-DPI tuning knobs: freedom noises, xhttp padding/xmux, mux concurrency/xudp, tls alpn/version.
     if not conn.execute(
@@ -243,7 +262,7 @@ def _migration_8(conn: sqlite3.Connection) -> None:
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
-               (9, _migration_9), (10, _migration_10)]
+               (9, _migration_9), (10, _migration_10), (11, _migration_11)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

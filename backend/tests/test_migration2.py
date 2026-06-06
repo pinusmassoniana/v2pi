@@ -24,7 +24,10 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "note" in cols  # migration 9 — per-node operator note
     hcols3 = {r["name"] for r in conn.execute("PRAGMA table_info(node_health)").fetchall()}
     assert "egress_ip6" in hcols3  # migration 10 — per-node IPv6 egress
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+    assert "api_tokens" in tables  # migration 11 — API tokens
+    tcols = {r["name"] for r in conn.execute("PRAGMA table_info(api_tokens)").fetchall()}
+    assert {"name", "token_hash", "scope", "prefix", "created_at", "last_used_at"} <= tcols
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

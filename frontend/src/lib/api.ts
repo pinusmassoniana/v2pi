@@ -122,6 +122,10 @@ export interface NetworkPatch {
   kill_switch_enabled?: boolean; lan_access_enabled?: boolean; ipv6_enabled?: boolean;
 }
 
+// API tokens (programmatic REST access). `token` (the full secret) is returned ONLY by createToken.
+export interface ApiToken { id: number; name: string; scope: "read" | "readwrite"; prefix: string; created_at: number; last_used_at: number | null; }
+export interface ApiTokenCreated extends ApiToken { token: string; }
+
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
 
 let _csrf: string | null = null;
@@ -215,6 +219,10 @@ export const api = {
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
+
+  listTokens(): Promise<ApiToken[]> { return req("/tokens"); },
+  createToken(name: string, scope: "read" | "readwrite"): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope }); },
+  deleteToken(id: number) { return mutate("DELETE", `/tokens/${id}`); },
 
   getBackup(): Promise<BackupDoc> { return req("/backup"); },
   restore(doc: BackupDoc): Promise<any> { return mutate("POST", "/restore", doc); },

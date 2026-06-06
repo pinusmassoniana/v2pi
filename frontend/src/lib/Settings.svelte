@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Settings, type Diagnostics } from "./api";
+  import { api, ApiError, type Settings, type Diagnostics, type ApiToken, type ApiTokenCreated } from "./api";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
@@ -126,6 +126,35 @@
     } catch (err) { pwMsg = errText(err, "change failed"); pwKind = "err"; }
   }
 
+  // API tokens
+  let tokens = $state<ApiToken[]>([]);
+  let tokName = $state(""); let tokScope = $state<"read" | "readwrite">("read");
+  let newToken = $state<ApiTokenCreated | null>(null);   // shown once, right after creation
+  let tokMsg = $state(""); let tokKind = $state<"ok" | "err">("ok");
+  let copied = $state(false);
+  async function loadTokens() {
+    try { tokens = await api.listTokens(); }
+    catch (err) { tokMsg = errText(err, "load failed"); tokKind = "err"; }
+  }
+  async function createTok(e: Event) {
+    e.preventDefault();
+    if (!tokName.trim()) return;
+    try {
+      newToken = await api.createToken(tokName.trim(), tokScope);
+      tokName = ""; copied = false; tokMsg = ""; await loadTokens();
+    } catch (err) { tokMsg = errText(err, "create failed"); tokKind = "err"; }
+  }
+  async function revokeTok(t: ApiToken) {
+    if (!(await confirmDialog(`Revoke token "${t.name}"? Anything using it stops working immediately.`))) return;
+    try { await api.deleteToken(t.id); if (newToken?.id === t.id) newToken = null; await loadTokens(); }
+    catch (err) { tokMsg = errText(err, "revoke failed"); tokKind = "err"; }
+  }
+  async function copyToken() {
+    if (!newToken) return;
+    try { await navigator.clipboard.writeText(newToken.token); copied = true; } catch { /* clipboard blocked */ }
+  }
+  function fmtDate(sec: number | null): string { return sec ? new Date(sec * 1000).toLocaleString() : "—"; }
+
   async function loadLogs() {
     try { logLines = (await api.getLogs(logSource, Math.max(1, Math.min(logCount, 1000)))).lines; }
     catch (err) { logLines = [errText(err, "load failed")]; }
@@ -139,7 +168,7 @@
     URL.revokeObjectURL(a.href);
   }
 
-  $effect(() => { load(); });
+  $effect(() => { load(); loadTokens(); });
   $effect(() => {                       // SN4 auto-refresh
     if (!logAuto) return;
     const id = setInterval(loadLogs, 5000);
@@ -214,6 +243,47 @@
     <Alert msg={pwMsg} kind={pwKind} />
   </form>
 
+  <div class="card tokens">
+    <h3>API tokens</h3>
+    <p class="muted hint">Programmatic REST access via <code>Authorization: Bearer &lt;token&gt;</code>.
+      <strong>read</strong> = GET only · <strong>read/write</strong> = full access (same as a login).</p>
+
+    {#if newToken}
+      <div class="reveal">
+        <p><strong>New token “{newToken.name}” · {newToken.scope}</strong> — copy it now, it is shown only once:</p>
+        <div class="row">
+          <code class="secret mono">{newToken.token}</code>
+          <button class="btn" type="button" onclick={copyToken}>{copied ? "Copied ✓" : "Copy"}</button>
+          <button class="btn btn-ghost" type="button" onclick={() => (newToken = null)}>Done</button>
+        </div>
+      </div>
+    {/if}
+
+    {#if tokens.length}
+      <ul class="tlist">
+        {#each tokens as t (t.id)}
+          <li>
+            <span class="tname">{t.name}</span>
+            <span class="badge {t.scope === 'readwrite' ? 'active-b' : ''}">{t.scope === 'readwrite' ? 'read/write' : 'read'}</span>
+            <code class="mono prefix">{t.prefix}…</code>
+            <span class="muted when">created {fmtDate(t.created_at)} · last used {fmtDate(t.last_used_at)}</span>
+            <button class="btn btn-danger" type="button" onclick={() => revokeTok(t)}>Revoke</button>
+          </li>
+        {/each}
+      </ul>
+    {:else}<p class="muted">No tokens yet.</p>{/if}
+
+    <form onsubmit={createTok} class="row create">
+      <input class="input" bind:value={tokName} placeholder="token name (e.g. monitor)" maxlength="64" />
+      <select class="input auto" bind:value={tokScope}>
+        <option value="read">read</option>
+        <option value="readwrite">read/write</option>
+      </select>
+      <button class="btn btn-primary" disabled={!tokName.trim()}>Create token</button>
+    </form>
+    <Alert msg={tokMsg} kind={tokKind} />
+  </div>
+
   <div class="card">
     <h3>Logs</h3>
     <div class="row">
@@ -267,4 +337,14 @@
     padding: 0.6rem; border-radius: var(--radius-sm); max-height: 16rem; overflow: auto;
     font-size: 0.78rem; white-space: pre-wrap; font-family: var(--mono);
   }
+  .tokens { max-width: 44rem; }
+  .tokens .create { margin-top: 0.6rem; }
+  .reveal { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 0.6rem 0.7rem; margin-bottom: 0.6rem; }
+  .reveal p { margin: 0 0 0.4rem; font-size: 0.85rem; }
+  .secret { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.3rem 0.5rem; word-break: break-all; flex: 1; min-width: 12rem; }
+  .tlist { list-style: none; margin: 0.4rem 0 0; padding: 0; display: grid; gap: 0.4rem; }
+  .tlist li { display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.45rem 0.6rem; background: var(--surface-2); }
+  .tlist .tname { font-weight: 600; }
+  .tlist .prefix { color: var(--muted); font-size: 0.78rem; }
+  .tlist .when { font-size: 0.75rem; margin-left: auto; }
 </style>

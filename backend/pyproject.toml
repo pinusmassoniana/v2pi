@@ -1,6 +1,6 @@
 [project]
 name = "pi-gw-panel"
-version = "1.10.5"
+version = "1.11"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",

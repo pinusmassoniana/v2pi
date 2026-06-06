@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+import time
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 
 
@@ -232,6 +233,44 @@ class NodeStore:
         """All settings in one query — for hot read paths that need several at once."""
         rows = self._conn.execute("SELECT key, value FROM settings").fetchall()
         return {r["key"]: r["value"] for r in rows}
+
+    # --- api tokens ---
+    def create_token(self, name: str, scope: str, token_hash: str, prefix: str) -> dict:
+        """Insert a token (caller generates the secret + hash). Returns the metadata row only —
+        the caller adds the one-time full secret to its response; the secret is never stored."""
+        now = int(time.time())
+        cur = self._conn.execute(
+            "INSERT INTO api_tokens(name, token_hash, scope, prefix, created_at) "
+            "VALUES(?, ?, ?, ?, ?)", (name, token_hash, scope, prefix, now))
+        self._conn.commit()
+        return {"id": int(cur.lastrowid), "name": name, "scope": scope, "prefix": prefix,
+                "created_at": now, "last_used_at": None}
+
+    def list_tokens(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, name, scope, prefix, created_at, last_used_at FROM api_tokens "
+            "ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_token_by_hash(self, token_hash: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, scope FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+        return dict(row) if row else None
+
+    def touch_token(self, token_id: int) -> None:
+        """Throttled last-used stamp: at most ~once/60s, so token auth doesn't write per request."""
+        now = int(time.time())
+        self._conn.execute(
+            "UPDATE api_tokens SET last_used_at = ? WHERE id = ? "
+            "AND (last_used_at IS NULL OR last_used_at < ?)", (now, token_id, now - 60))
+        self._conn.commit()
+
+    def delete_token(self, token_id: int) -> bool:
+        found = self._conn.execute(
+            "SELECT 1 FROM api_tokens WHERE id = ?", (token_id,)).fetchone()
+        self._conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+        self._conn.commit()
+        return found is not None
 
     # --- subscriptions ---
     def add_subscription(self, sub: Subscription) -> int:

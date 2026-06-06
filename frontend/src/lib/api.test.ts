@@ -27,6 +27,9 @@ function mockFetch() {
     if (url.endsWith("/api/node-health")) return jsonRes([nodeHealthFixture()]);
     if (url.endsWith("/api/network") && opts.method === "PUT") return jsonRes(networkFixture(true));
     if (url.endsWith("/api/network")) return jsonRes(networkFixture(false));
+    if (url.match(/\/api\/tokens\/\d+$/) && opts.method === "DELETE") return jsonRes({}, 204);
+    if (url.endsWith("/api/tokens") && opts.method === "POST") return jsonRes(tokenCreatedFixture());
+    if (url.endsWith("/api/tokens")) return jsonRes([tokenFixture()]);
     if (url.endsWith("/api/setup") && opts.method === "POST") return jsonRes({ ok: true });
     if (url.endsWith("/api/setup")) return jsonRes({ needs_setup: false });
     if (url.endsWith("/api/password")) return jsonRes({ ok: true });
@@ -72,6 +75,13 @@ function networkFixture(changed: boolean) {
     status: { segment_up: null, dhcp_clients: 0, tunnel: { real_ok: null, latency_ms: null, egress_ip: null } },
     recommendations: [{ title: "Create VLAN 2", detail: "tag the client port to eth0.2" }],
   };
+}
+function tokenFixture() {
+  return { id: 1, name: "monitor", scope: "read", prefix: "pgwp_AbC12", created_at: 1700000000, last_used_at: null };
+}
+function tokenCreatedFixture() {
+  return { id: 2, name: "ci", scope: "readwrite", prefix: "pgwp_XyZ98", created_at: 1700000001, last_used_at: null,
+           token: "pgwp_full-secret-shown-once" };
 }
 function jsonRes(body: any, status = 200) {
   return { ok: status < 400, status, json: async () => body } as Response;
@@ -190,6 +200,24 @@ describe("api client", () => {
     const put = calls.find((c) => c.url.endsWith("/api/network") && c.opts.method === "PUT");
     expect(put.opts.headers["X-CSRF-Token"]).toBe("tok-123");
     expect(JSON.parse(put.opts.body)).toEqual({ dhcp_end: "192.168.10.250", kill_switch_enabled: true });
+  });
+
+  it("api tokens: list (no secret), create reveals secret once, delete sends DELETE", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const list = await api.listTokens();
+    expect(list[0].scope).toBe("read");
+    expect(list[0]).not.toHaveProperty("token");                 // list never carries the secret
+    const created = await api.createToken("ci", "readwrite");
+    expect(created.token).toBe("pgwp_full-secret-shown-once");   // returned once
+    expect(created.scope).toBe("readwrite");
+    const post = calls.find((c) => c.url.endsWith("/api/tokens") && c.opts.method === "POST");
+    expect(JSON.parse(post.opts.body)).toEqual({ name: "ci", scope: "readwrite" });
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    await api.deleteToken(2);
+    const del = calls.find((c) => c.url.endsWith("/api/tokens/2") && c.opts.method === "DELETE");
+    expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
   });
 
   it("setup: getSetup reads status, setup posts username+password", async () => {

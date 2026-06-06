@@ -17,11 +17,13 @@ from pi_gw_panel.api.schemas import (
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
+    TokenCreateIn, TokenOut, TokenCreatedOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import (
     SESSION_AUTHED, SESSION_CSRF, SESSION_EPOCH, SESSION_LASTSEEN, new_csrf_token)
 from pi_gw_panel.auth import service as auth_service
+from pi_gw_panel.auth import tokens
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 from pi_gw_panel.controller import (
     apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net)
@@ -1060,3 +1062,24 @@ def put_network(body: NetworkIn, request: Request,
     else:
         sync_net(state)
     return _network_out(state)
+
+
+# --- api tokens (programmatic REST access: read / read-write) ---
+@router.get("/tokens", response_model=list[TokenOut])
+def list_tokens(request: Request, _: None = Depends(require_auth)) -> list[TokenOut]:
+    return [TokenOut(**t) for t in get_state(request).store.list_tokens()]
+
+
+@router.post("/tokens", response_model=TokenCreatedOut, status_code=201)
+def create_token(body: TokenCreateIn, request: Request,
+                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> TokenCreatedOut:
+    full, token_hash, prefix = tokens.generate()
+    row = get_state(request).store.create_token(body.name, body.scope, token_hash, prefix)
+    return TokenCreatedOut(**row, token=full)
+
+
+@router.delete("/tokens/{token_id}", status_code=204)
+def delete_token(token_id: int, request: Request,
+                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> None:
+    if not get_state(request).store.delete_token(token_id):
+        raise HTTPException(status_code=404, detail="token not found")

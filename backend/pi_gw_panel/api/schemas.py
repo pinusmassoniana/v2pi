@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -9,6 +11,24 @@ class LoginIn(BaseModel):
 class SetupIn(BaseModel):
     username: str = Field(min_length=1)
     password: str = Field(min_length=8)   # SS1: minimum password length
+
+
+class TokenCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    scope: Literal["read", "readwrite"]
+
+
+class TokenOut(BaseModel):
+    id: int
+    name: str
+    scope: str
+    prefix: str
+    created_at: int
+    last_used_at: int | None = None
+
+
+class TokenCreatedOut(TokenOut):
+    token: str    # the full secret — returned ONCE at creation, never stored or shown again
 
 
 class PasswordChangeIn(BaseModel):
