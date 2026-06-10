@@ -4,6 +4,7 @@ Both functions are blocking I/O, designed to be offloaded to a thread by the
 monitor and fully stubbed in tests via the injected `connect` / `opener_factory`
 / `clock` seams — no real network is touched on the dev host. Real probing is
 exercised on the Pi (Plan 8)."""
+import ipaddress
 import json
 import os
 import socket
@@ -54,10 +55,23 @@ def http_ping(address: str, port: int, sni: str, timeout: float = 5.0,
     return True, int((clock() - start) * 1000)
 
 
+def _valid_ip(s: str | None) -> str | None:
+    """Strict gate (audit B5): only a parseable IPv4/IPv6 literal may be stored as an
+    egress IP — anything else (HTML error pages, hex-looking junk) becomes None instead
+    of leaking into the UI / flag lookup."""
+    if not s:
+        return None
+    try:
+        ipaddress.ip_address(s)
+    except ValueError:
+        return None
+    return s
+
+
 def _parse_egress_ip(body: str) -> str | None:
     """Best-effort egress-IP extraction from common IP-echo responses: JSON
     (``{"ip": …}`` / ``{"origin": …}``), Cloudflare ``ip=…`` trace lines, or a
-    bare-IP body."""
+    bare-IP body. Every candidate is validated as a real IP literal."""
     body = body.strip()
     if not body:
         return None
@@ -66,16 +80,13 @@ def _parse_egress_ip(body: str) -> str | None:
         if isinstance(data, dict):
             for key in ("ip", "origin", "query"):
                 if data.get(key):
-                    return str(data[key]).split(",")[0].strip()
+                    return _valid_ip(str(data[key]).split(",")[0].strip())
     except (ValueError, TypeError):
         pass
     for line in body.splitlines():
         if line.startswith("ip="):
-            return line[3:].strip()
-    first = body.split()[0]
-    if all(c in "0123456789abcdefABCDEF.:" for c in first):   # looks like an IPv4/IPv6 literal
-        return first
-    return None
+            return _valid_ip(line[3:].strip())
+    return _valid_ip(body.split()[0])
 
 
 def real_request(proxy_url: str, probe_url: str, timeout: float = 5.0,

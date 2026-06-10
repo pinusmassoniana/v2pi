@@ -126,14 +126,27 @@ export interface NetworkPatch {
 export interface ApiToken { id: number; name: string; scope: "read" | "readwrite"; prefix: string; created_at: number; last_used_at: number | null; }
 export interface ApiTokenCreated extends ApiToken { token: string; }
 
+// audit log (N2): successful mutations — who/what/when
+export interface AuditEntry { ts: number; actor: string; method: string; path: string; status: number; }
+
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
 
 let _csrf: string | null = null;
+// F1: session died mid-use (expiry / password change elsewhere) — the app shell registers a
+// handler that drops back to the Login screen instead of leaving dead panels around.
+let _onUnauthorized: (() => void) | null = null;
+export function setOnUnauthorized(fn: (() => void) | null) { _onUnauthorized = fn; }
 
 async function req(path: string, opts: RequestInit = {}): Promise<any> {
   const res = await fetch(`/api${path}`, { credentials: "include", ...opts });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, body?.detail ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 401) {
+      _csrf = null;                              // the CSRF token died with the session
+      if (path !== "/login") _onUnauthorized?.(); // a failed login is not a lost session
+    }
+    throw new ApiError(res.status, body?.detail ?? `HTTP ${res.status}`);
+  }
   return body;
 }
 
@@ -223,6 +236,8 @@ export const api = {
   listTokens(): Promise<ApiToken[]> { return req("/tokens"); },
   createToken(name: string, scope: "read" | "readwrite"): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope }); },
   deleteToken(id: number) { return mutate("DELETE", `/tokens/${id}`); },
+
+  listAudit(limit = 100): Promise<AuditEntry[]> { return req(`/audit?limit=${limit}`); },
 
   getBackup(): Promise<BackupDoc> { return req("/backup"); },
   restore(doc: BackupDoc): Promise<any> { return mutate("POST", "/restore", doc); },

@@ -33,9 +33,10 @@ def session_invalid_reason(session, store) -> str | None:
 
 
 def _token_principal(request: Request) -> dict | None:
-    """Resolve an `Authorization: Bearer <token>` to {scope, id}, or None. Cached per-request so
-    require_auth + require_csrf agree and the DB is hit at most once. Only fires when a Bearer
-    header is present (cookie/session requests carry none → no token lookup)."""
+    """Resolve an `Authorization: Bearer <token>` to {scope, id, prefix}, or None. Cached
+    per-request so require_auth + require_csrf (and the audit middleware) agree and the DB is
+    hit at most once. Only fires when a Bearer header is present (cookie/session requests
+    carry none → no token lookup)."""
     if hasattr(request.state, "_token_principal"):
         return request.state._token_principal
     p = None
@@ -47,7 +48,7 @@ def _token_principal(request: Request) -> dict | None:
             row = store.get_token_by_hash(hash_token(secret))
             if row is not None:
                 store.touch_token(int(row["id"]))
-                p = {"scope": row["scope"], "id": int(row["id"])}
+                p = {"scope": row["scope"], "id": int(row["id"]), "prefix": row.get("prefix", "")}
     request.state._token_principal = p
     return p
 

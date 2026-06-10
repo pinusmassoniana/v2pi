@@ -26,9 +26,12 @@ def _sub_server(body: str):
     return srv, f"http://127.0.0.1:{srv.server_address[1]}/sub"
 
 
-def test_real_fetch_refresh_creates_nodes(settings, stub_xray):
+def test_real_fetch_refresh_creates_nodes(settings, stub_xray, monkeypatch):
     """End-to-end through the REAL urllib fetch path (direct, no tunnel) against a live
-    local HTTP server → base64-vless parse → reconcile → node appears under the sub."""
+    local HTTP server → base64-vless parse → reconcile → node appears under the sub.
+    The stub server is loopback, which production fetch refuses (audit B6) — opt in here."""
+    from pi_gw_panel.subs import fetcher
+    monkeypatch.setattr(fetcher, "ALLOW_LOOPBACK", True)
     uri = ("vless://u-int@7.7.7.7:443?security=reality&sni=s&pbk=PK&sid=sid"
            "&flow=xtls-rprx-vision#int1")
     body = base64.b64encode((uri + "\n").encode()).decode()

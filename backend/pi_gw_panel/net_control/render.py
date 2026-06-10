@@ -94,8 +94,13 @@ def render_nft6(plan: NetPlan, tunnel_up: bool = True) -> str:
       drop only catches the leak-prone remainder. The `_local6` set (loopback/link-local/ULA/
       multicast + the segment's own /64) stays direct, so NDP/RA and intra-segment v6 work; the
       DHCPv6 (546/547) carve-out keeps address assignment working.
-    - **otherwise + kill-switch on** → fail-closed drop of client→global-v6 (the v1.8 leak-guard).
-    - **otherwise + kill-switch off** → empty (the v6 table is removed)."""
+    - **tunnel up, IPv6 tunnel off** → forward-drop only. The v4 tunnel being up means the
+      operator wants client traffic tunneled; a client holding a leftover v6 default route via
+      the gateway (the RA-lifetime window right after disabling v6) would otherwise forward
+      DIRECT around the up tunnel (audit B3). Fail-open stays a tunnel-DOWN property only.
+      (A foreign-RA L2 bypass never traverses this gateway — that case is detection-only.)
+    - **tunnel down + kill-switch on** → fail-closed drop of client→global-v6 (the v1.8 leak-guard).
+    - **tunnel down + kill-switch off** → empty (the v6 table is removed; clients fall back direct)."""
     local6 = _local6(plan)
     drop = (f'        iifname "{plan.segment_iface}" ip6 daddr != {local6} drop\n')
     forward = (f"    chain forward {{\n"
@@ -114,7 +119,7 @@ table ip6 pi_gw_panel {{
     }}
 {forward}}}
 """
-    if plan.kill_switch:
+    if plan.kill_switch or tunnel_up:
         return f"""\
 table ip6 pi_gw_panel {{
 {forward}}}

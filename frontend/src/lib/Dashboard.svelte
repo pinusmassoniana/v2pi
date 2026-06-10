@@ -92,6 +92,27 @@
     } catch {}
   }
 
+  // N4: 24h/7d windows ride the durable per-minute series (the live ring only spans ~1h).
+  // Fetched on selection + refreshed each minute while a long window is active.
+  let graphWindow = $state(600);
+  let longSamples = $state<{ ts: number; up: number; down: number }[]>([]);
+  async function loadLong(sec: number) {
+    try {
+      const h = await api.getTrafficHistory(sec, 1200);
+      longSamples = h.samples.map(([ts, up, down]) => ({ ts, up, down }));
+    } catch {}
+  }
+  function onGraphWindow(sec: number) {
+    graphWindow = sec;
+    if (sec > 3600) loadLong(sec);
+  }
+  $effect(() => {
+    if (graphWindow <= 3600) return;
+    const sec = graphWindow;
+    const t = setInterval(() => { if (document.visibilityState === "visible") loadLong(sec); }, 60000);
+    return () => clearInterval(t);
+  });
+
   // shared status poller + a nodes refresh, both paused while the tab is hidden
   $effect(() => {
     const stop = subscribeStatus(3000);
@@ -248,7 +269,7 @@
   {#if disabled}
     <p class="msg">Traffic stats disabled — enable in Settings.</p>
   {:else}
-    <TrafficGraph series={samples} />
+    <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} onwindow={onGraphWindow} />
   {/if}
 </div>
 

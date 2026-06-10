@@ -259,10 +259,42 @@ def _migration_8(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE tuning_profiles ADD COLUMN {name} {ddl}")
 
 
+def _migration_12(conn: sqlite3.Connection) -> None:
+    # Mutation audit log (N2): who (session user / token prefix) did what (method+path) when.
+    # Bounded by the store (oldest rows pruned on insert), so no retention policy needed here.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts     INTEGER NOT NULL,
+            actor  TEXT    NOT NULL,
+            method TEXT    NOT NULL,
+            path   TEXT    NOT NULL,
+            status INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _migration_13(conn: sqlite3.Connection) -> None:
+    # Durable traffic history (N4): proxy bytes per minute (ts_min = unix//60), feeding the
+    # Dashboard's 24h/7d windows and monthly data-used reports. Pruned to ~90 days on insert.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS traffic_minutes (
+            ts_min     INTEGER PRIMARY KEY,
+            up_bytes   INTEGER NOT NULL DEFAULT 0,
+            down_bytes INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
-               (9, _migration_9), (10, _migration_10), (11, _migration_11)]
+               (9, _migration_9), (10, _migration_10), (11, _migration_11),
+               (12, _migration_12), (13, _migration_13)]
 
 
 def migrate(conn: sqlite3.Connection) -> None:

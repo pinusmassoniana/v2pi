@@ -89,8 +89,11 @@ def import_state(store, doc: dict) -> dict:
         raise ValueError(f"unsupported backup schema_version: {doc.get('schema_version')!r}")
     conn = store._conn
     with conn:                                          # one transaction (rolls back on error)
-        for table in ("node_health", "nodes", "subscriptions", "routing_rules", "tuning_profiles"):
-            conn.execute(f"DELETE FROM {table}")
+        conn.execute("DELETE FROM node_health")
+        conn.execute("DELETE FROM nodes")
+        conn.execute("DELETE FROM subscriptions")
+        conn.execute("DELETE FROM routing_rules")
+        conn.execute("DELETE FROM tuning_profiles")
         for p in doc["profiles"]:
             prof = _profile_from(p)
             cols = ("id",) + _PROFILE_COLS + ("noises_json",)

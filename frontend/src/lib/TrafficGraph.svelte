@@ -1,13 +1,17 @@
 <script lang="ts">
-  // Rich rolling throughput chart over a selectable window (1m/10m/1h). Renders at the
+  // Rich rolling throughput chart over a selectable window (1m … 7d). Renders at the
   // measured pixel width so axis text stays crisp (no SVG stretching). Zero chart deps.
+  // N4: windows beyond 1h are fed by the durable per-minute series — `onwindow` lets the
+  // parent fetch the right data when the selection changes.
   type Pt = { ts: number; up: number; down: number };
-  let { series = [] }: { series?: Pt[] } = $props();
+  let { series = [], onwindow }: { series?: Pt[]; onwindow?: (sec: number) => void } = $props();
 
   const WINDOWS = [
     { label: "1m", sec: 60 },
     { label: "10m", sec: 600 },
     { label: "1h", sec: 3600 },
+    { label: "24h", sec: 86400 },
+    { label: "7d", sec: 604800 },
   ];
   let windowSec = $state(600);
   let w = $state(640);
@@ -39,14 +43,18 @@
     if (s <= 0) return "now";
     if (windowSec <= 120) return `-${s}s`;
     const m = Math.round(s / 60);
-    return m >= 60 ? `-${Math.round(m / 60)}h` : `-${m}m`;
+    if (m < 60) return `-${m}m`;
+    const h = Math.round(m / 60);
+    return h >= 48 ? `-${Math.round(h / 24)}d` : `-${h}h`;
   }
   function agoLabel(secAgo: number): string {
     const s = Math.max(0, Math.round(secAgo));
     if (s < 1) return "now";
     if (s < 60) return `${s}s ago`;
     const m = Math.floor(s / 60), r = s % 60;
-    return r && m < 10 ? `${m}m ${r}s ago` : `${m}m ago`;
+    if (m < 60) return r && m < 10 ? `${m}m ${r}s ago` : `${m}m ago`;
+    const h = Math.floor(m / 60);
+    return h >= 48 ? `${Math.round(h / 24)}d ago` : `${h}h ${m % 60}m ago`;
   }
   function absLabel(ts: number): string {
     return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -108,7 +116,8 @@
   <div class="tg-head">
     <div class="win" role="tablist" aria-label="Throughput window">
       {#each WINDOWS as wd (wd.sec)}
-        <button class="win-btn" class:on={windowSec === wd.sec} onclick={() => (windowSec = wd.sec)}
+        <button class="win-btn" class:on={windowSec === wd.sec}
+                onclick={() => { windowSec = wd.sec; onwindow?.(wd.sec); }}
                 role="tab" aria-selected={windowSec === wd.sec}>{wd.label}</button>
       {/each}
     </div>

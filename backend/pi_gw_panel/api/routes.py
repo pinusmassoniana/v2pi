@@ -17,7 +17,7 @@ from pi_gw_panel.api.schemas import (
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
-    TokenCreateIn, TokenOut, TokenCreatedOut,
+    TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import (
@@ -229,14 +229,19 @@ def setup_create(body: SetupIn, request: Request) -> dict:
 @router.post("/login")
 def login(body: LoginIn, request: Request) -> dict:
     state = get_state(request)
-    guard = request.app.state.login_guard          # per-app counter (SS3)
+    guards = request.app.state.login_guard         # per-client-IP buckets (SS3 / audit B8)
     now = time.time()
+    ip = request.client.host if request.client else "?"
+    if len(guards) > 1000:                          # bound memory: drop expired buckets
+        for k in [k for k, g in guards.items() if g["until"] <= now]:
+            del guards[k]
+    guard = guards.setdefault(ip, {"count": 0, "until": 0.0})
     if guard["until"] > now:
         raise HTTPException(status_code=429, detail="too many attempts — try again shortly")
     if not auth_service.verify_login(state.store, body.username, body.password):
         guard["count"] += 1
-        if guard["count"] >= 5:
-            guard["until"] = now + 60               # lock out for 60s after 5 fails
+        if guard["count"] >= 5:                     # lock this client out after 5 fails
+            guard["until"] = now + state.settings.login_lockout_sec
             guard["count"] = 0
         raise HTTPException(status_code=401, detail="bad credentials")
     guard["count"] = 0
@@ -289,15 +294,33 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
 def traffic_history(request: Request, window_sec: int = 3600, max_points: int = 600,
                     _: None = Depends(require_auth)) -> TrafficHistoryOut:
     """Seed the Dashboard graph with the recorded proxy throughput over the last
-    `window_sec`, downsampled to at most `max_points` points (proxy outbound)."""
+    `window_sec`, downsampled to at most `max_points` points (proxy outbound).
+
+    Windows beyond the in-memory hour (N4) are served from the durable per-minute table
+    (avg bit/s per minute), with the in-memory ring appended for the most recent stretch."""
     state = get_state(request)
     interval = int(state.store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"])
     hist = getattr(state, "history", None)
-    if hist is None:
-        return TrafficHistoryOut(samples=[], interval_ms=interval)
-    since = int(datetime.now(timezone.utc).timestamp() * 1000) - max(1, window_sec) * 1000
-    series = hist.series(since_ms=since, max_points=max(1, max_points))
-    return TrafficHistoryOut(samples=[[s[0], s[1], s[2]] for s in series], interval_ms=interval)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    since_ms = now_ms - max(1, window_sec) * 1000
+    if window_sec <= 3600:
+        if hist is None:
+            return TrafficHistoryOut(samples=[], interval_ms=interval)
+        series = hist.series(since_ms=since_ms, max_points=max(1, max_points))
+        return TrafficHistoryOut(samples=[[s[0], s[1], s[2]] for s in series], interval_ms=interval)
+    minutes = state.store.traffic_minutes(since_min=since_ms // 60000)
+    # minute of bytes → avg bit/s, stamped at the minute's end (when those bytes finished)
+    samples = [[(m["ts_min"] + 1) * 60000, round(m["up_bytes"] * 8 / 60), round(m["down_bytes"] * 8 / 60)]
+               for m in minutes]
+    last_ts = samples[-1][0] if samples else since_ms
+    if hist is not None:                       # freshen the tail with the live ring
+        samples += [[s[0], s[1], s[2]] for s in hist.series(since_ms=last_ts)]
+    if len(samples) > max(1, max_points):      # stride down, always keeping the newest point
+        step = len(samples) / max(1, max_points)
+        out = [samples[int(i * step)] for i in range(max(1, max_points))]
+        out[-1] = samples[-1]
+        samples = out
+    return TrafficHistoryOut(samples=samples, interval_ms=60000)
 
 
 # --- nodes ---
@@ -1083,3 +1106,11 @@ def delete_token(token_id: int, request: Request,
                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> None:
     if not get_state(request).store.delete_token(token_id):
         raise HTTPException(status_code=404, detail="token not found")
+
+
+# --- audit log (N2: who changed what, when) ---
+@router.get("/audit", response_model=list[AuditEntryOut])
+def audit_log(request: Request, limit: int = 100,
+              _: None = Depends(require_auth)) -> list[AuditEntryOut]:
+    """Newest-first log of successful mutations (recorded by the audit middleware)."""
+    return [AuditEntryOut(**e) for e in get_state(request).store.list_audit(limit)]

@@ -111,11 +111,16 @@ def test_boot_guard_only_when_killswitch_on():
 
 # --- A2: IPv6 leak-guard ----------------------------------------------------
 
-def test_render_nft6_present_only_with_killswitch():
+def test_render_nft6_guard_states():
     p = NetPlan.from_settings(Settings())
-    assert render_nft6(p) == ""                             # off → no v6 table
+    # B3: with the (v4) tunnel UP the v6 forward-drop is always present — a leftover client
+    # v6 route must not forward around the up tunnel even with the kill-switch off.
+    t_up = render_nft6(p)                                   # tunnel_up defaults True
+    assert "table ip6 pi_gw_panel" in t_up and " drop" in t_up and "tproxy" not in t_up
+    # tunnel down + kill-switch off → fail-open, no v6 table
+    assert render_nft6(p, tunnel_up=False) == ""
     p.kill_switch = True
-    t = render_nft6(p)
+    t = render_nft6(p, tunnel_up=False)
     assert "table ip6 pi_gw_panel" in t
     # the leak-guard drop now also bypasses multicast (ff00::/8) — unified with the tproxy local set
     assert 'iifname "eth0.2" ip6 daddr != { ::1/128, fe80::/10, fc00::/7, ff00::/8 } drop' in t

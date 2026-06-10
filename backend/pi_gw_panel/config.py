@@ -49,6 +49,7 @@ class Settings:
                                 # now lives in the DB (auth_username/auth_password_hash),
                                 # created at first run via /api/setup. Kept to avoid churn.
     session_secret: str = "dev-insecure-secret"
+    login_lockout_sec: int = 60   # per-IP lockout after 5 failed logins (e2e overrides it down)
     bind_host: str = "127.0.0.1"  # prod binds mgmt_ip (Home); dev = localhost
     static_dir: str = ""
     local_proxy_port: int = 10808  # gated 127.0.0.1 http inbound for tunneled sub-fetch
@@ -84,6 +85,7 @@ class Settings:
             static_dir=env.get("PI_GW_STATIC_DIR", _packaged_static()),
             xray_bin=env.get("PI_GW_XRAY_BIN", "xray"),
             session_secret=env.get("PI_GW_SESSION_SECRET", ""),
+            login_lockout_sec=int(env.get("PI_GW_LOGIN_LOCKOUT_SEC", "60")),
             dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", os.path.join(data, "dnsmasq.leases")),
             client_dns6=env.get("PI_GW_CLIENT_DNS6", "2606:4700:4700::1111"),
             geoip_db=env.get("PI_GW_GEOIP_DB", "/usr/local/share/dbip-country-lite.mmdb"),

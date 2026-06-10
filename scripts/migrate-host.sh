@@ -36,10 +36,22 @@ echo "==> (re)starting the container so it re-provisions"
 ( cd "${COMPOSE_DIR}" && docker compose up -d )
 
 echo "==> verifying (segment up + container healthy)"
-sleep 8
+# Poll instead of a fixed sleep (audit I2): slow hosts can take >8s to provision, and a
+# single transient blip must not trigger the legacy rollback. Budget ~60s for the segment
+# interface, then 3 health attempts 2s apart.
 ok=1
-ip link show "${SEG}" >/dev/null 2>&1 || { echo "   !! ${SEG} missing"; ok=0; }
-curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1 || { echo "   !! panel unhealthy"; ok=0; }
+seg_ok=0
+for _ in $(seq 1 120); do
+  if ip link show "${SEG}" >/dev/null 2>&1; then seg_ok=1; break; fi
+  sleep 0.5
+done
+[ "${seg_ok}" = 1 ] || { echo "   !! ${SEG} missing after 60s"; ok=0; }
+health_ok=0
+for _ in 1 2 3; do
+  if curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1; then health_ok=1; break; fi
+  sleep 2
+done
+[ "${health_ok}" = 1 ] || { echo "   !! panel unhealthy after 3 attempts"; ok=0; }
 if [ "${ok}" = 1 ]; then
   echo "==> migration OK. Snapshot kept at ${SNAP}"
 else

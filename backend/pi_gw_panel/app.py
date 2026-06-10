@@ -14,6 +14,7 @@ from pi_gw_panel.health.liveness import LivenessLoop
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.health.snapshot import active_health
 from pi_gw_panel.api.deps import session_invalid_reason
+from pi_gw_panel.auth.auth import SESSION_AUTHED
 
 
 def _traffic_frame(state) -> dict:
@@ -94,12 +95,44 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     app.state.app_state = app_state
     app.state.scheduler = scheduler
     app.state.monitor = monitor
-    app.state.login_guard = {"count": 0, "until": 0.0}   # per-app login rate-limit (SS3)
+    app.state.login_guard = {}   # per-client-IP login rate-limit buckets (SS3 / audit B8)
+    # B7: never run on the dataclass dev default. The CLI entrypoint replaces it with a
+    # persisted secret; any other entry path (uvicorn factory, direct import) gets a fresh
+    # ephemeral one — sessions won't survive a restart there, but they're never forgeable.
+    secret = settings.session_secret
+    if not secret or secret == "dev-insecure-secret":
+        import secrets as _secrets
+        secret = _secrets.token_urlsafe(32)
+        logging.getLogger("pi_gw_panel").warning(
+            "session_secret unset/dev-default — using an ephemeral secret (sessions reset on restart)")
     # SameSite=strict (first-party SPA) + a bounded lifetime, defense-in-depth atop CSRF.
-    app.add_middleware(SessionMiddleware, secret_key=settings.session_secret,
+    app.add_middleware(SessionMiddleware, secret_key=secret,
                        same_site="strict", max_age=7 * 24 * 3600)
     # Register future middleware AFTER this line: Starlette runs middleware in
     # reverse order, so later-registered (e.g. auth) runs first and sees the session.
+
+    @app.middleware("http")
+    async def audit_mw(request, call_next):
+        """N2: append successful mutations to the audit_log table — who (session user or
+        token prefix), what (method + path), when. Telemetry must never break the request."""
+        response = await call_next(request)
+        try:
+            if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+                    and request.url.path.startswith("/api")
+                    and response.status_code < 400):
+                store = app_state.store
+                principal = getattr(request.state, "_token_principal", None)
+                if principal is not None:
+                    actor = f"token:{principal.get('prefix', principal['id'])}"
+                elif request.session.get(SESSION_AUTHED):
+                    actor = f"user:{store.get_setting('auth_username') or '?'}"
+                else:
+                    actor = "anon"          # /setup, /login (pre-session)
+                store.add_audit(int(time.time()), actor, request.method,
+                                request.url.path, response.status_code)
+        except Exception:
+            logging.getLogger("pi_gw_panel").debug("audit log write failed", exc_info=True)
+        return response
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

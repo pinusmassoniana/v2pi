@@ -254,7 +254,7 @@ class NodeStore:
 
     def get_token_by_hash(self, token_hash: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, scope FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+            "SELECT id, scope, prefix FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
         return dict(row) if row else None
 
     def touch_token(self, token_id: int) -> None:
@@ -271,6 +271,48 @@ class NodeStore:
         self._conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
         self._conn.commit()
         return found is not None
+
+    # --- audit log (N2) ---
+    _AUDIT_CAP = 2000
+
+    def add_audit(self, ts: int, actor: str, method: str, path: str, status: int) -> None:
+        """Append one mutation record, pruning everything older than the newest _AUDIT_CAP
+        rows in the same commit (O(1) — id is monotonic)."""
+        cur = self._conn.execute(
+            "INSERT INTO audit_log(ts, actor, method, path, status) VALUES(?, ?, ?, ?, ?)",
+            (ts, actor, method, path, status))
+        self._conn.execute("DELETE FROM audit_log WHERE id <= ?",
+                           (int(cur.lastrowid) - self._AUDIT_CAP,))
+        self._conn.commit()
+
+    def list_audit(self, limit: int = 100) -> list[dict]:
+        """Newest-first audit entries."""
+        rows = self._conn.execute(
+            "SELECT ts, actor, method, path, status FROM audit_log ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, self._AUDIT_CAP)),)).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- traffic minutes (N4) ---
+    _TRAFFIC_RETENTION_MIN = 90 * 24 * 60   # ~90 days of 1-min samples
+
+    def add_traffic_minute(self, ts_min: int, up_bytes: int, down_bytes: int) -> None:
+        """Upsert one minute of proxy bytes (additive on conflict — a recorder restart within
+        the same minute must not lose the earlier slice). Prunes beyond the retention window."""
+        self._conn.execute(
+            "INSERT INTO traffic_minutes(ts_min, up_bytes, down_bytes) VALUES(?, ?, ?) "
+            "ON CONFLICT(ts_min) DO UPDATE SET up_bytes = up_bytes + excluded.up_bytes, "
+            "down_bytes = down_bytes + excluded.down_bytes",
+            (ts_min, up_bytes, down_bytes))
+        self._conn.execute("DELETE FROM traffic_minutes WHERE ts_min < ?",
+                           (ts_min - self._TRAFFIC_RETENTION_MIN,))
+        self._conn.commit()
+
+    def traffic_minutes(self, since_min: int) -> list[dict]:
+        """Per-minute samples (ascending) since `since_min` (unix//60)."""
+        rows = self._conn.execute(
+            "SELECT ts_min, up_bytes, down_bytes FROM traffic_minutes "
+            "WHERE ts_min >= ? ORDER BY ts_min", (since_min,)).fetchall()
+        return [dict(r) for r in rows]
 
     # --- subscriptions ---
     def add_subscription(self, sub: Subscription) -> int:

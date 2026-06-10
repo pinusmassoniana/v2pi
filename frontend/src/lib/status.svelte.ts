@@ -32,21 +32,38 @@ function onVisible() {
   if (document.visibilityState === "visible") pollStatusOnce();
 }
 
+// F2: every subscriber's requested cadence is tracked; the shared timer always runs at the
+// fastest one (previously the first subscriber's interval silently won for everyone).
+const _wanted: number[] = [];
+
+function _retime() {
+  if (_timer) { clearInterval(_timer); _timer = null; }
+  if (!_wanted.length) return;
+  const ms = Math.min(..._wanted);
+  _timer = setInterval(() => {
+    if (document.visibilityState === "visible") pollStatusOnce();
+  }, ms);
+}
+
 export function subscribeStatus(intervalMs = 3000): () => void {
   _refs++;
+  _wanted.push(intervalMs);
   if (_refs === 1) {
     pollStatusOnce();
-    _timer = setInterval(() => {
-      if (document.visibilityState === "visible") pollStatusOnce();
-    }, intervalMs);
     document.addEventListener("visibilitychange", onVisible);
   }
+  _retime();
   return () => {
+    const i = _wanted.indexOf(intervalMs);
+    if (i !== -1) _wanted.splice(i, 1);
     if (--_refs <= 0) {
       _refs = 0;
+      _wanted.length = 0;
       if (_timer) clearInterval(_timer);
       _timer = null;
       document.removeEventListener("visibilitychange", onVisible);
+    } else {
+      _retime();
     }
   };
 }

@@ -51,6 +51,26 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  # Non-blocking dependency audit (audit I4): surfaces known CVEs in Python/npm deps in the
+  # run log without gating the release (advisories for unused codepaths shouldn't block a fix).
+  dep-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.13"
+      - name: pip-audit (backend)
+        working-directory: backend
+        run: uv tool run pip-audit --local --skip-editable || true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: npm audit (frontend, prod deps)
+        working-directory: frontend
+        run: npm audit --omit=dev || true
+
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -121,6 +141,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # I4: attach SLSA provenance + SBOM attestations so pullers can verify the image
+          # was built by this workflow from this commit (`gh attestation verify` / cosign).
+          provenance: mode=max
+          sbom: true
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}

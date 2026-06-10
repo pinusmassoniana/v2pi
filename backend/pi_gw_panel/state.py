@@ -46,7 +46,21 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     # Always-on history: a SECOND sampler (independent prev-counters) feeds a 1h ring
     # buffer (3600 @ 1s) so the graph has a full window the moment the Dashboard opens.
     history = TrafficHistory(maxlen=3600)
-    supervisor = XraySupervisor(settings.xray_bin, settings.config_path)
+
+    def _xray_listening() -> bool:
+        """B1 readiness probe: the tproxy dokodemo inbound answers a local TCP connect the
+        moment xray is up (it is always present in a node config)."""
+        import socket
+        try:
+            socket.create_connection(("127.0.0.1", settings.tproxy_port), timeout=0.1).close()
+            return True
+        except OSError:
+            return False
+
+    # Only the real Pi backend gets the readiness gate — dev/CI run a stub xray that never
+    # listens, and waiting the full budget there would slow every test apply.
+    ready = _xray_listening if type(net).__name__ == "LinuxBackend" else None
+    supervisor = XraySupervisor(settings.xray_bin, settings.config_path, ready_check=ready)
     # The panel owns the host gateway's DHCP + IPv6 RA via its own supervised dnsmasq, and (in
     # `auto` mode) a DHCPv6-PD client. Constructed always; only *applied* by host_provision on
     # the linux backend (dev/CI never spawns them — host_provision early-returns on DryRun).
@@ -67,6 +81,7 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         running=lambda: supervisor.status()["running"],   # don't poke a dead stats port (F5)
         interval_ms=lambda: int(store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"]),
         on_total=_add_data_used,
+        on_minute=store.add_traffic_minute,   # N4: durable 1-min downsample for 24h/7d windows
     )
     return AppState(
         settings=settings,

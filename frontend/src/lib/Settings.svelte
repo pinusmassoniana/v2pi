@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Settings, type Diagnostics, type ApiToken, type ApiTokenCreated } from "./api";
+  import { api, ApiError, type Settings, type Diagnostics, type ApiToken, type ApiTokenCreated, type AuditEntry } from "./api";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
@@ -154,6 +154,20 @@
     try { await navigator.clipboard.writeText(newToken.token); copied = true; } catch { /* clipboard blocked */ }
   }
   function fmtDate(sec: number | null): string { return sec ? new Date(sec * 1000).toLocaleString() : "—"; }
+  // F3: don't leave the one-time secret on screen indefinitely — auto-hide after 60s
+  $effect(() => {
+    if (!newToken) return;
+    const t = setTimeout(() => (newToken = null), 60_000);
+    return () => clearTimeout(t);
+  });
+
+  // audit log (N2)
+  let audit = $state<AuditEntry[]>([]);
+  let auditOpen = $state(false);
+  async function loadAudit() {
+    try { audit = await api.listAudit(100); } catch { audit = []; }
+  }
+  function fmtTs(sec: number): string { return new Date(sec * 1000).toLocaleString(); }
 
   async function loadLogs() {
     try { logLines = (await api.getLogs(logSource, Math.max(1, Math.min(logCount, 1000)))).lines; }
@@ -284,6 +298,29 @@
     <Alert msg={tokMsg} kind={tokKind} />
   </div>
 
+  <div class="card audit">
+    <h3>Audit log</h3>
+    <p class="muted hint">Successful changes made through the panel or the API — who, what, when.</p>
+    <div class="row">
+      <button class="btn" type="button" onclick={() => { auditOpen = true; loadAudit(); }}>
+        {auditOpen ? "Refresh" : "Show"}</button>
+    </div>
+    {#if auditOpen}
+      {#if audit.length}
+        <ul class="alist">
+          {#each audit as e, i (i)}
+            <li>
+              <span class="muted when">{fmtTs(e.ts)}</span>
+              <span class="badge">{e.actor}</span>
+              <code class="mono">{e.method} {e.path}</code>
+              <span class="muted">→ {e.status}</span>
+            </li>
+          {/each}
+        </ul>
+      {:else}<p class="muted">No recorded changes yet.</p>{/if}
+    {/if}
+  </div>
+
   <div class="card">
     <h3>Logs</h3>
     <div class="row">
@@ -347,4 +384,9 @@
   .tlist .tname { font-weight: 600; }
   .tlist .prefix { color: var(--muted); font-size: 0.78rem; }
   .tlist .when { font-size: 0.75rem; margin-left: auto; }
+  .audit { max-width: 44rem; }
+  .alist { list-style: none; margin: 0.6rem 0 0; padding: 0; display: grid; gap: 0.3rem; max-height: 18rem; overflow: auto; }
+  .alist li { display: flex; gap: 0.55rem; align-items: baseline; flex-wrap: wrap; font-size: 0.82rem; border-bottom: 1px solid var(--border); padding: 0.25rem 0; }
+  .alist .when { font-size: 0.72rem; min-width: 9.5rem; }
+  .alist code { font-size: 0.78rem; }
 </style>

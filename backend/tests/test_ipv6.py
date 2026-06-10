@@ -99,8 +99,13 @@ def test_render_nft6_block_when_off_but_killswitch():
     assert "chain forward" in t and " drop" in t and "tproxy" not in t
 
 
-def test_render_nft6_empty_when_off_and_no_killswitch():
-    assert render_nft6(_plan(), tunnel_up=True) == ""
+def test_render_nft6_drop_when_tunnel_up_and_empty_when_down():
+    # B3: tunnel up (v4) + ipv6 off + kill-switch off → forward-drop only (no tproxy), so a
+    # leftover client v6 default route can't forward around the up tunnel.
+    t = render_nft6(_plan(), tunnel_up=True)
+    assert "chain forward" in t and " drop" in t and "tproxy" not in t
+    # tunnel down + kill-switch off stays fail-open (no v6 table at all)
+    assert render_nft6(_plan(), tunnel_up=False) == ""
     assert render_nft6(_plan(ipv6_enabled=True), tunnel_up=False) == ""   # enabled but down, no ks
 
 

@@ -31,6 +31,14 @@ class TokenCreatedOut(TokenOut):
     token: str    # the full secret — returned ONCE at creation, never stored or shown again
 
 
+class AuditEntryOut(BaseModel):
+    ts: int
+    actor: str    # "user:<name>" | "token:<prefix>" | "anon" (setup/login)
+    method: str
+    path: str
+    status: int
+
+
 class PasswordChangeIn(BaseModel):
     current_password: str
     new_password: str = Field(min_length=8)
@@ -39,7 +47,7 @@ class PasswordChangeIn(BaseModel):
 class NodeIn(BaseModel):
     name: str
     address: str
-    port: int
+    port: int = Field(ge=1, le=65535)
     uuid: str
     transport: str = "vision"
     security: str = "reality"   # reality | tls (normalize() downgrades reality→tls if no key)
@@ -57,7 +65,7 @@ class NodeIn(BaseModel):
 class NodeUpdate(BaseModel):
     name: str | None = None
     address: str | None = None
-    port: int | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
     uuid: str | None = None
     transport: str | None = None
     security: str | None = None

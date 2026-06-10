@@ -1,10 +1,12 @@
 import http.cookiejar
+import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
 from pi_gw_panel.subs.inject import build_request
 
 ALLOWED_SCHEMES = ("http", "https")
+ALLOW_LOOPBACK = False   # test seam: integration tests fetch from a local stub server
 MAX_BYTES = 5 * 1024 * 1024   # cap the in-memory body so a hostile/huge endpoint can't OOM the Pi
 
 
@@ -45,9 +47,19 @@ def fetch(url: str, injection: dict, tokens: dict, *, proxy: str | None) -> tupl
     (tunnel); else direct. Returns (body, path, headers) with path in {'tunnel', 'direct'}.
     Only http/https URLs are accepted — file://, ftp:// etc. are rejected before any I/O."""
     req = build_request(url, injection, tokens)
-    scheme = urllib.parse.urlsplit(req.url).scheme.lower()
-    if scheme not in ALLOWED_SCHEMES:
-        raise ValueError(f"unsupported URL scheme '{scheme or '(none)'}': only http/https allowed")
+    parts = urllib.parse.urlsplit(req.url)
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        raise ValueError(f"unsupported URL scheme '{parts.scheme or '(none)'}': only http/https allowed")
+    # Defense-in-depth (audit B6): a subscription points at a provider, never at this host —
+    # refuse loopback targets so the admin-entered URL can't be used to poke the panel's own
+    # local-only services (stats gRPC, local proxy). Literal-IP / 'localhost' check only.
+    host = (parts.hostname or "").strip("[]").lower()
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host == "localhost"
+    if is_loopback and not ALLOW_LOOPBACK:
+        raise ValueError("loopback subscription URLs are not allowed")
     path = "tunnel" if proxy else "direct"
     body, resp_headers = _http_get(req.url, req.headers, proxy, 20.0)
     return body, path, resp_headers

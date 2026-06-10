@@ -1,6 +1,7 @@
 """Owns the panel's dnsmasq child (segment DHCP + IPv6 RA). Mirrors XraySupervisor: `apply`
 writes the rendered config and (re)starts only when the text changed (dnsmasq has no reliable
 live-reload for dhcp-range/RA, so reload = restart). `popen` is the injectable spawn seam."""
+import os
 import subprocess
 from typing import TypedDict
 
@@ -20,8 +21,12 @@ class DnsmasqSupervisor:
 
     def apply(self, text: str) -> None:
         changed = text != self._last_text
-        with open(self.conf_path, "w") as f:
+        # temp + rename (same as the xray ConfigManager): an interrupted write can never
+        # leave a partial config for dnsmasq to choke on at the next restart (audit B2).
+        tmp = f"{self.conf_path}.tmp"
+        with open(tmp, "w") as f:
             f.write(text)
+        os.replace(tmp, self.conf_path)
         self._last_text = text
         if changed or not self._running():
             self._restart()

@@ -5,6 +5,11 @@
 ARG NODE_VERSION=20-bookworm-slim
 ARG PYTHON_VERSION=3.13-slim-bookworm
 ARG XRAY_VERSION=v26.3.27
+# SHA256 of the pinned release assets (from the release's .dgst files) — release assets are
+# mutable on GitHub, so the version pin alone doesn't guarantee the bytes. Bump together
+# with XRAY_VERSION.
+ARG XRAY_SHA256_AMD64=23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+ARG XRAY_SHA256_ARM64=4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c
 
 # --- frontend: build the SPA into /spa (decoupled from the repo's ../backend outDir) ---
 FROM node:${NODE_VERSION} AS frontend
@@ -17,6 +22,8 @@ RUN npx vite build --outDir /spa --emptyOutDir
 # --- runtime: panel + pinned xray + nft/dnsmasq/iproute2 (cutover-ready) ---
 FROM python:${PYTHON_VERSION} AS runtime
 ARG XRAY_VERSION
+ARG XRAY_SHA256_AMD64
+ARG XRAY_SHA256_ARM64
 # buildx sets TARGETARCH per target platform (amd64/arm64); for a plain non-BuildKit
 # `docker build` it's empty, so fall back to the base image's own dpkg arch (same names).
 ARG TARGETARCH
@@ -35,15 +42,17 @@ RUN set -eu; \
     rm -f /tmp/cc.gz; \
     ls -l /usr/local/share/dbip-country-lite.mmdb || echo "WARN: geoip db not bundled (flags disabled)"
 # arch-aware xray fetch — XTLS names the amd64 asset `Xray-linux-64.zip`, arm64 `…-arm64-v8a.zip`.
+# The download is checksum-verified against the pinned SHA256 (audit I1).
 RUN set -eu; \
     arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in \
-      arm64) XR=Xray-linux-arm64-v8a.zip ;; \
-      amd64) XR=Xray-linux-64.zip ;; \
+      arm64) XR=Xray-linux-arm64-v8a.zip; SUM="$XRAY_SHA256_ARM64" ;; \
+      amd64) XR=Xray-linux-64.zip; SUM="$XRAY_SHA256_AMD64" ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/xray.zip \
       "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XR}" \
+    && echo "${SUM}  /tmp/xray.zip" | sha256sum -c - \
     && unzip -o /tmp/xray.zip xray geoip.dat geosite.dat -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/xray && rm /tmp/xray.zip
 WORKDIR /app
@@ -53,7 +62,7 @@ RUN pip install --no-cache-dir /app/backend
 ENV PI_GW_DATA_DIR=/data PI_GW_PORT=8080
 VOLUME /data
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=4s --start-period=20s \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s \
   CMD curl -fsS "http://127.0.0.1:${PI_GW_PORT}/api/health" || exit 1
 ENTRYPOINT ["tini", "--"]
 CMD ["python", "-m", "pi_gw_panel"]

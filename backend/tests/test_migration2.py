@@ -27,7 +27,13 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "api_tokens" in tables  # migration 11 — API tokens
     tcols = {r["name"] for r in conn.execute("PRAGMA table_info(api_tokens)").fetchall()}
     assert {"name", "token_hash", "scope", "prefix", "created_at", "last_used_at"} <= tcols
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    assert "audit_log" in tables  # migration 12 — mutation audit log
+    acols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    assert {"ts", "actor", "method", "path", "status"} <= acols
+    assert "traffic_minutes" in tables  # migration 13 — durable per-minute traffic history
+    mcols = {r["name"] for r in conn.execute("PRAGMA table_info(traffic_minutes)").fetchall()}
+    assert {"ts_min", "up_bytes", "down_bytes"} <= mcols
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

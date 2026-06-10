@@ -1,5 +1,6 @@
 import json
 from pi_gw_panel.models import Node
+from pi_gw_panel.subs.parsers import safe_port
 
 
 def parse(body: str) -> list[Node]:
@@ -10,9 +11,12 @@ def parse(body: str) -> list[Node]:
         net = str(it.get("network", ""))
         transport = it.get("transport") or ("xhttp" if net in ("xhttp", "splithttp") else "vision")
         pbk = str(it.get("public_key", ""))
+        port_n = safe_port(it.get("port"))
+        if port_n is None:
+            continue
         nodes.append(Node(
             id=None, name=str(it.get("name", it.get("address", ""))),
-            address=str(it["address"]), port=int(it.get("port", 443)),
+            address=str(it["address"]), port=port_n,
             uuid=str(it.get("uuid", "")), transport=transport,
             network=net or ("xhttp" if transport == "xhttp" else "tcp"),
             security=str(it.get("security", "")) or ("reality" if pbk else "tls"),

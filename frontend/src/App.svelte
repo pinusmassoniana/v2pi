@@ -9,7 +9,7 @@
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
   import ConfirmModal from "./lib/ConfirmModal.svelte";
-  import { api } from "./lib/api";
+  import { api, setOnUnauthorized } from "./lib/api";
   import { statusStore, subscribeStatus, pollStatusOnce } from "./lib/status.svelte";
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
@@ -22,6 +22,10 @@
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
   let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "light");
   const status = $derived(statusStore.value);   // shared, visibility-aware poller
+
+  // F1: any 401 mid-session (idle timeout, password change elsewhere) drops the whole app
+  // back to the Login screen instead of leaving panels showing dead-request errors.
+  setOnUnauthorized(() => { authed = false; });
 
   // On load: if first-run (no credential) show Setup; else probe the session for auth.
   $effect(() => {

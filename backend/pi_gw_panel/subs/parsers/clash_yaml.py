@@ -1,5 +1,6 @@
 import yaml
 from pi_gw_panel.models import Node
+from pi_gw_panel.subs.parsers import safe_port
 
 
 def _opts_path_host(p: dict) -> tuple[str, str]:
@@ -34,9 +35,12 @@ def parse(body: str) -> list[Node]:
         path, host = _opts_path_host(p)
         alpn = p.get("alpn")
         alpn = ",".join(str(a) for a in alpn) if isinstance(alpn, list) else str(alpn or "")
+        port_n = safe_port(p.get("port"))
+        if port_n is None:
+            continue
         nodes.append(Node(
             id=None, name=str(p.get("name", p.get("server", ""))),
-            address=str(p.get("server", "")), port=int(p.get("port", 443)),
+            address=str(p.get("server", "")), port=port_n,
             uuid=str(p.get("uuid", "")),
             transport="xhttp" if is_xhttp else "vision",
             network="xhttp" if is_xhttp else "tcp",

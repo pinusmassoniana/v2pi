@@ -19,6 +19,11 @@ class HealthMonitor:
     injected (`tcp_ping`/`real_request`) so tests run with no network. `after_tick` (if
     given) runs right after each probe sweep — the lifespan wires failover here."""
 
+    # N5: a node that failed BOTH direct probes sits out a growing number of sweeps
+    # (1 → 3 → 7, capped) so a dead pool doesn't burn a slow probe budget every tick;
+    # one success resets it. The active node is never skipped.
+    BACKOFF_MAX_SKIP = 7
+
     def __init__(self, state, tcp_ping=probe.tcp_ping, real_request=probe.real_request,
                  http_ping=probe.http_ping, now_iso=None, tick_sec: float | None = None,
                  after_tick=None):
@@ -30,6 +35,7 @@ class HealthMonitor:
         self._tick_override = tick_sec
         self._after_tick = after_tick
         self._task: asyncio.Task | None = None
+        self._backoff: dict[int, dict] = {}   # node_id → {"streak": int, "skip": int}
 
     # --- config knobs (settings k/v, with defaults) ---
     def _enabled(self) -> bool:
@@ -60,7 +66,19 @@ class HealthMonitor:
         ts = self._now_iso()
         nodes = store.list_nodes()
 
-        # Direct probes for EVERY node, concurrently: TCP liveness + an HTTPS handshake.
+        # N5: skip nodes that are sitting out a backoff window (decrement their counter);
+        # their previous health rows stay as-is. The active node is always probed.
+        due = []
+        for node in nodes:
+            bo = self._backoff.get(node.id)
+            if node.id != active_id and bo is not None and bo["skip"] > 0:
+                bo["skip"] -= 1
+                continue
+            due.append(node)
+        self._backoff = {nid: bo for nid, bo in self._backoff.items()
+                         if any(n.id == nid for n in nodes)}   # forget deleted nodes
+
+        # Direct probes for every DUE node, concurrently: TCP liveness + an HTTPS handshake.
         # The handshake fills the "real" column for all nodes — a real request *through* each
         # node isn't possible (xray has a single active outbound).
         def direct(node):
@@ -68,10 +86,18 @@ class HealthMonitor:
             http_ok, http_ms = self._http_ping(node.address, node.port, node.sni)
             return node, tcp_ok, tcp_ms, http_ok, http_ms
 
-        with ThreadPoolExecutor(max_workers=max(1, min(8, len(nodes)))) as ex:
-            swept = list(ex.map(direct, nodes))
+        if not due:
+            return
+        with ThreadPoolExecutor(max_workers=max(1, min(8, len(due)))) as ex:
+            swept = list(ex.map(direct, due))
 
         for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:
+            if tcp_ok or http_ok:
+                self._backoff.pop(node.id, None)              # alive → probe every sweep again
+            elif node.id != active_id:
+                bo = self._backoff.setdefault(node.id, {"streak": 0, "skip": 0})
+                bo["streak"] += 1
+                bo["skip"] = min(self.BACKOFF_MAX_SKIP, 2 ** min(bo["streak"], 3) - 1)
             prev = store.get_health(node.id)
             if node.id == active_id and tunneled_on:
                 # active node: the through-tunnel real request gives the true egress IP and

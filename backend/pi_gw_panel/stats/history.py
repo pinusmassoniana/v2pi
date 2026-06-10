@@ -62,7 +62,7 @@ class TrafficRecorder:
 
     def __init__(self, sampler, history: TrafficHistory, stats_enabled, interval_ms,
                  running=lambda: True, clock=lambda: time.time(),
-                 on_total=None, flush_interval=30.0):
+                 on_total=None, flush_interval=30.0, on_minute=None):
         self._sampler = sampler
         self._history = history
         self._stats_enabled = stats_enabled        # callable -> bool
@@ -78,6 +78,10 @@ class TrafficRecorder:
         self._prev_abs: dict | None = None         # last absolute proxy counters seen
         self._pending = {"up": 0, "down": 0}
         self._last_flush = 0.0
+        # N4: `on_minute(ts_min, up_bytes, down_bytes)` persists a 1-min downsample of the
+        # same deltas (one DB write/min) — the durable series behind the 24h/7d windows.
+        self._on_minute = on_minute
+        self._minute: dict | None = None           # current minute bucket {min, up, down}
 
     def record_sample(self, out: dict) -> None:
         """Map one sampler output to a history point (proxy outbound, zeros if absent)."""
@@ -88,7 +92,7 @@ class TrafficRecorder:
 
     def _accumulate_total(self) -> None:
         """Add this tick's proxy-byte delta to the durable counter (reset-safe, batched)."""
-        if self._on_total is None:
+        if self._on_total is None and self._on_minute is None:
             return
         tot = (getattr(self._sampler, "totals", {}) or {}).get("proxy")
         if not tot:
@@ -100,10 +104,33 @@ class TrafficRecorder:
                 du, dd = max(0, up), max(0, down)
             self._pending["up"] += du
             self._pending["down"] += dd
+            self._accumulate_minute(du, dd)
         self._prev_abs = {"up": up, "down": down}
         now = self._clock()
         if (self._pending["up"] or self._pending["down"]) and now - self._last_flush >= self._flush_interval:
             self.flush_total()
+
+    def _accumulate_minute(self, du: int, dd: int) -> None:
+        """Bucket this tick's byte delta by wall-clock minute; persist a bucket when the
+        minute rolls over (N4). Empty minutes write nothing (gaps stay gaps)."""
+        if self._on_minute is None:
+            return
+        cur = int(self._clock() // 60)
+        if self._minute is not None and self._minute["min"] != cur:
+            self.flush_minute()
+        if du or dd:
+            if self._minute is None:
+                self._minute = {"min": cur, "up": 0, "down": 0}
+            self._minute["up"] += du
+            self._minute["down"] += dd
+
+    def flush_minute(self) -> None:
+        """Persist and clear the current minute bucket (also called on shutdown). The store
+        upsert is additive, so a partial flush + restart within one minute never loses bytes."""
+        if self._on_minute is not None and self._minute is not None:
+            if self._minute["up"] or self._minute["down"]:
+                self._on_minute(self._minute["min"], self._minute["up"], self._minute["down"])
+            self._minute = None
 
     def flush_total(self) -> None:
         """Persist and clear the pending byte deltas (also called on shutdown)."""
@@ -126,6 +153,7 @@ class TrafficRecorder:
             self._task = None
         try:
             self.flush_total()        # don't lose the last batch of data-used on shutdown
+            self.flush_minute()
         except Exception:
             log.debug("data-used flush on stop failed", exc_info=True)
 
