@@ -142,14 +142,26 @@
   $effect(() => { load(); });
 </script>
 
-{#if msg || dirty}<p class="msg" class:err={msgKind === "err"} role={msgKind === "err" ? "alert" : "status"} aria-live="polite">{msg}{#if dirty} · <span class="dirty">unsaved changes</span>{/if}</p>{/if}
+{#if msg && !dirty}<p class="msg" class:err={msgKind === "err"} role={msgKind === "err" ? "alert" : "status"} aria-live="polite">{msg}</p>{/if}
+
+{#if dirty}
+  <div class="staged" role="status">
+    <span class="staged-chip">STAGED</span>
+    <span class="staged-txt"><strong>{nonEmpty.length} rules</strong> edited — not yet applied to the live config.{#if msg} · {msg}{/if}</span>
+    <button class="btn sm" type="button" onclick={load}>Discard</button>
+    <button class="btn btn-primary sm" type="button" onclick={save}>Apply staged</button>
+  </div>
+{/if}
 
 <div class="card">
-  <h3>Routing rules <small class="muted">matched top-to-bottom · private IPs always go direct first</small></h3>
+  <div class="card-top">
+    <span class="eyebrow">Routing rules</span>
+    <span class="muted-sm">{nonEmpty.length} rules · matched top→bottom · private IPs always direct first</span>
+  </div>
   <div class="table-wrap"><table class="table">
     <thead><tr><th>#</th><th>on</th><th>type</th><th>value</th><th>action</th><th>label</th><th></th></tr></thead>
     <tbody>
-      <tr class="anchor"><td>—</td><td></td><td>ip</td><td>private ranges</td><td>direct</td><td class="muted">implicit, always first</td><td></td></tr>
+      <tr class="anchor"><td>—</td><td></td><td>ip</td><td>private ranges</td><td class="act-direct">direct</td><td class="muted">implicit, always first</td><td></td></tr>
       {#each rules as rule, i (rule.uid)}
         <tr class:disabled={!rule.enabled}>
           <td>{i + 1}</td>
@@ -165,7 +177,7 @@
                    bind:value={rule.value} placeholder={placeholderFor(rule.type)} />
           </td>
           <td>
-            <select class="input" bind:value={rule.action}>
+            <select class="input act act-{rule.action}" bind:value={rule.action}>
               <option value="direct">direct</option><option value="proxy">proxy</option><option value="block">block</option>
             </select>
           </td>
@@ -182,7 +194,7 @@
       {#if rules.length === 0}
         <tr><td colspan="7" class="empty muted">no rules — all traffic follows the default action</td></tr>
       {/if}
-      <tr class="anchor"><td>—</td><td></td><td>all</td><td>everything else</td><td>{defaultAction}</td><td class="muted">default catch-all, always last</td><td></td></tr>
+      <tr class="anchor"><td>—</td><td></td><td>all</td><td>everything else</td><td class="act-{defaultAction}">{defaultAction}</td><td class="muted">default catch-all, always last</td><td></td></tr>
     </tbody>
   </table></div>
   <datalist id="geo-tokens">{#each GEO_TOKENS as t}<option value={t}></option>{/each}</datalist>
@@ -236,6 +248,20 @@
 
 <style>
   h3 small { font-weight: 400; font-size: 0.8rem; }
+  .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
+  .muted-sm { font-size: 0.72rem; color: var(--tx3); }
+  /* staged banner — accent-tinted, maps the unsaved/preset-staged state to the spec */
+  .staged { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0.9rem; margin-bottom: 0.2rem;
+    background: color-mix(in srgb, var(--acc) 9%, var(--bg1)); border: 1px solid var(--acc); border-radius: 9px; }
+  .staged-chip { font-size: 0.6rem; font-weight: 600; color: var(--acc); border: 1px solid var(--acc); border-radius: 4px; padding: 0.1rem 0.45rem; flex: none; }
+  .staged-txt { flex: 1; font-size: 0.78rem; color: var(--tx2); }
+  .staged-txt strong { color: var(--tx); }
+  .btn.sm { padding: 0.3rem 0.7rem; font-size: 0.72rem; }
+  /* colour-coded actions (select text + anchor cells) */
+  .act { font-weight: 600; }
+  .act-direct { color: var(--acc); font-weight: 600; }
+  .act-proxy { color: var(--down); font-weight: 600; }
+  .act-block { color: var(--err); font-weight: 600; }
   .row-actions { display: flex; gap: 0.25rem; align-items: center; white-space: nowrap; }
   .empty { font-style: italic; }
   tr.anchor td { background: var(--surface-2); color: var(--muted); font-size: 0.8rem; }
@@ -248,7 +274,6 @@
   .note { font-size: 0.75rem; margin-top: 0.5rem; }
   .vmsg { font-family: var(--mono); font-size: 0.8rem; color: var(--success); margin-top: 0.5rem; white-space: pre-wrap; }
   .vmsg.bad { color: var(--danger); }
-  .dirty { color: var(--danger); font-weight: 600; }
   .tester { margin-top: 0.8rem; }
   .trow { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .trow .input { max-width: 22rem; }
