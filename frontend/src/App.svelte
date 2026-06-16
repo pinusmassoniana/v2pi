@@ -20,7 +20,7 @@
   let ready = $state(false);
   let view = $state<View>("dashboard");
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
-  let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "light");
+  let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "dark");
   const status = $derived(statusStore.value);   // shared, visibility-aware poller
 
   // F1: any 401 mid-session (idle timeout, password change elsewhere) drops the whole app
@@ -52,24 +52,33 @@
   }
 
   const tabs: { id: View; label: string }[] = [
-    { id: "dashboard", label: "Dashboard" },
+    { id: "dashboard", label: "Overview" },
     { id: "nodes", label: "Nodes" },
     { id: "subs", label: "Subscriptions" },
-    { id: "tuning", label: "Tuning" },
+    { id: "tuning", label: "Anti-DPI" },
     { id: "routing", label: "Routing" },
     { id: "settings", label: "Settings" },
   ];
+  // NOC nav: grouped under dim section labels. Settings sits on its own below the groups
+  // (the spec's 8th screen). Health & Traffic / Network / Operations arrive with Phase 2.
+  const navGroups: { label: string; ids: View[] }[] = [
+    { label: "MONITOR", ids: ["dashboard"] },
+    { label: "CONFIGURE", ids: ["nodes", "subs", "tuning", "routing"] },
+  ];
 
+  // 24-viewBox icons (theme toggle) — thin line, currentColor
   const svg = (p: string) =>
     `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  // 16-viewBox nav glyphs — match the handoff's terse line icons (1.4 stroke)
+  const nsvg = (p: string) =>
+    `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const icons: Record<string, string> = {
-    dashboard: svg('<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>'),
-    nodes: svg('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7 8l4 8M17 8l-4 8"/>'),
-    subs: svg('<path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5"/>'),
-    tuning: svg('<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>'),
-    routing: svg('<path d="M5 19V7a2 2 0 0 1 2-2h7"/><path d="M11 2l3 3-3 3"/><circle cx="5" cy="19" r="2"/>'),
-    network: svg('<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/>'),
-    settings: svg('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>'),
+    dashboard: nsvg('<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>'),
+    nodes: nsvg('<rect x="2" y="2.5" width="12" height="4" rx="1"/><rect x="2" y="9.5" width="12" height="4" rx="1"/><circle cx="5" cy="4.5" r=".7" fill="currentColor" stroke="none"/><circle cx="5" cy="11.5" r=".7" fill="currentColor" stroke="none"/>'),
+    subs: nsvg('<path d="M2.5 9a6 6 0 0 1 6 6M2.5 4.5a10.5 10.5 0 0 1 10.5 10.5"/><circle cx="3.2" cy="13.3" r="1.1" fill="currentColor" stroke="none"/>'),
+    tuning: nsvg('<path d="M8 1.5l5 2v4c0 3.2-2.2 4.8-5 6-2.8-1.2-5-2.8-5-6v-4z"/>'),
+    routing: nsvg('<circle cx="3.5" cy="8" r="2"/><circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/><path d="M5.5 8h3l2.5-4M8.5 8l2.5 4"/>'),
+    settings: nsvg('<line x1="3" y1="4" x2="13" y2="4"/><circle cx="10" cy="4" r="1.6"/><line x1="3" y1="8" x2="13" y2="8"/><circle cx="6" cy="8" r="1.6"/><line x1="3" y1="12" x2="13" y2="12"/><circle cx="11" cy="12" r="1.6"/>'),
     moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
     sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>'),
   };
@@ -98,16 +107,28 @@
   <div class="shell">
     <aside class="sidebar">
       <div class="brand" aria-label={BRAND}>
-        <span class="brand-mark">{BRAND.slice(0, 2)}</span>
-        <span class="brand-word">{BRAND.slice(2)}</span>
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-dot"></span></span>
+        <span class="brand-text">
+          <span class="brand-word">{BRAND}</span>
+          <span class="brand-caption">gateway ctl</span>
+        </span>
       </div>
       <nav>
-        {#each tabs as t (t.id)}
-          <button class="nav-item" class:active={view === t.id} onclick={() => (view = t.id)}
-                  aria-label={t.label} aria-current={view === t.id ? "page" : undefined}>
-            {@html icons[t.id]}<span>{t.label}</span>
-          </button>
+        {#each navGroups as g (g.label)}
+          <div class="nav-group">{g.label}</div>
+          {#each g.ids as id (id)}
+            {@const t = tabs.find((x) => x.id === id)!}
+            <button class="nav-item" class:active={view === id} onclick={() => (view = id)}
+                    aria-label={t.label} aria-current={view === id ? "page" : undefined}>
+              {@html icons[id]}<span>{t.label}</span>
+            </button>
+          {/each}
         {/each}
+        <div class="nav-spacer"></div>
+        <button class="nav-item" class:active={view === "settings"} onclick={() => (view = "settings")}
+                aria-label="Settings" aria-current={view === "settings" ? "page" : undefined}>
+          {@html icons.settings}<span>Settings</span>
+        </button>
       </nav>
       {#if status}
         <div class="xray-box">
@@ -124,6 +145,12 @@
           {@html theme === "dark" ? icons.sun : icons.moon}
         </button>
         <button class="btn-ghost" onclick={logout}>Log out</button>
+        {#if status}
+          <div class="conn" class:up={status.xray_state === "working"} aria-live="polite">
+            <span class="conn-dot"></span>
+            <span class="conn-label">{status.xray_state === "working" ? "ONLINE" : "OFFLINE"}</span>
+          </div>
+        {/if}
       </header>
       <main class="page" class:wide={view === "nodes"}>
         {#if view === "dashboard"}
@@ -150,88 +177,107 @@
 <style>
   .boot { min-height: 100dvh; display: grid; place-items: center; }
   .page-title:focus { outline: none; }   /* programmatic focus for SR, no visible ring */
-  .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100dvh; }
+  .shell { display: grid; grid-template-columns: 212px 1fr; min-height: 100dvh; }
   .sidebar {
-    background: var(--surface-2);
-    border-right: 1px solid var(--border);
-    padding: 1.1rem 0.7rem;
+    background: var(--bg1);
+    border-right: 1px solid var(--bd);
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
     position: sticky;
     top: 0;
     height: 100dvh;
-    overflow-y: auto;
+    overflow: hidden;
   }
-  .brand { display: flex; align-items: center; gap: 0.55rem; padding: 0.3rem 0.55rem 1.1rem; }
+  /* brand — green chip + inner square + glow, wordmark + caption, bottom hairline */
+  .brand {
+    display: flex; align-items: center; gap: 0.65rem;
+    padding: 1rem 1rem 0.9rem;
+    border-bottom: 1px solid var(--bd);
+  }
   .brand-mark {
-    width: 27px; height: 27px; border-radius: 8px; flex: none;
-    display: grid; place-items: center; color: #fff;
-    font-weight: 800; font-size: 0.72rem; letter-spacing: -0.03em;
-    background: linear-gradient(150deg, var(--accent), color-mix(in srgb, var(--accent) 58%, #000));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), var(--shadow-sm);
+    width: 26px; height: 26px; border-radius: 6px; flex: none;
+    display: grid; place-items: center;
+    background: var(--acc);
+    box-shadow: 0 0 14px -2px var(--acc);
   }
-  .brand-word { font-weight: 720; font-size: 1.05rem; letter-spacing: -0.02em; color: var(--text); }
-  .xray-box {
-    margin-top: auto;
-    display: flex; align-items: center; gap: 0.55rem;
-    padding: 0.6rem 0.65rem;
-    border: 1px solid var(--border); border-radius: var(--radius);
-    background: var(--surface);
-    box-shadow: var(--shadow-sm);
+  .brand-mark-dot { width: 9px; height: 9px; border-radius: 2px; background: var(--on-acc); }
+  .brand-text { line-height: 1.1; display: grid; }
+  .brand-word { font-weight: 700; font-size: 0.95rem; letter-spacing: 0.04em; color: var(--tx); }
+  .brand-caption { font-size: 0.62rem; color: var(--tx3); letter-spacing: 0.18em; text-transform: uppercase; }
+  /* nav — grouped, scrollable, fills the column so Settings sits at the bottom */
+  .sidebar nav {
+    display: flex; flex-direction: column; gap: 2px;
+    flex: 1; min-height: 0; overflow-y: auto;
+    padding: 0.75rem 0.6rem;
   }
-  .xray-dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--muted); flex: none; }
-  .xray-dot.working { background: var(--success); animation: pulse-ring 2.4s ease-out infinite; }
-  .xray-dot.error { background: var(--danger); }
-  .xray-label { font-size: 0.78rem; line-height: 1.2; margin-right: auto; font-weight: 500; }
-  .xray-label small { color: var(--muted); font-size: 0.67rem; font-weight: 400; text-transform: capitalize; }
-  .sidebar nav { display: grid; gap: 0.2rem; }
+  .nav-group {
+    font-size: 0.62rem; color: var(--tx3); letter-spacing: 0.16em;
+    padding: 0.6rem 0.5rem 0.25rem;
+  }
+  .nav-group:first-child { padding-top: 0.25rem; }
+  .nav-spacer { flex: 1; min-height: 0.5rem; }
   .nav-item {
     display: flex;
-    gap: 0.6rem;
+    gap: 0.7rem;
     align-items: center;
     width: 100%;
     text-align: left;
     background: none;
     border: none;
-    color: var(--muted);
-    padding: 0.5rem 0.65rem;
-    border-radius: var(--radius-sm);
+    color: var(--tx2);
+    padding: 0.5rem 0.7rem;
+    border-radius: 7px;
     cursor: pointer;
-    font: inherit;
+    font: 500 0.82rem/1 var(--font);
     transition: background 0.13s, color 0.13s, box-shadow 0.13s;
   }
-  .nav-item :global(svg) { flex: none; opacity: 0.85; }
-  .nav-item:hover { background: var(--surface); color: var(--text); }
+  .nav-item :global(svg) { flex: none; }
+  .nav-item:hover { background: var(--bg2); color: var(--tx); }
   .nav-item.active {
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 600;
-    box-shadow: inset 2px 0 0 var(--accent);
+    background: var(--bg2);
+    color: var(--tx);
+    box-shadow: inset 2px 0 0 var(--acc);
   }
-  .nav-item.active :global(svg) { opacity: 1; }
+  /* xray-core footer box — top hairline, restyled by tokens */
+  .xray-box {
+    display: flex; align-items: center; gap: 0.55rem;
+    padding: 0.7rem 0.85rem;
+    border-top: 1px solid var(--bd);
+    background: var(--bg1);
+  }
+  .xray-dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--tx3); flex: none; }
+  .xray-dot.working { background: var(--acc); box-shadow: 0 0 8px var(--acc); animation: pulse-ring 2.4s ease-out infinite; }
+  .xray-dot.error { background: var(--err); }
+  .xray-label { font-size: 0.72rem; line-height: 1.2; margin-right: auto; font-weight: 500; }
+  .xray-label small { color: var(--tx3); font-size: 0.62rem; font-weight: 400; text-transform: capitalize; }
   .content { min-width: 0; display: flex; flex-direction: column; }
+  /* topbar — 54px, solid bg1, bottom hairline (no blur) */
   .topbar {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    padding: 0.7rem 1.5rem;
-    border-bottom: 1px solid var(--border);
+    height: 54px;
+    padding: 0 1.25rem;
+    border-bottom: 1px solid var(--bd);
+    background: var(--bg1);
     position: sticky;
     top: 0;
-    background: color-mix(in srgb, var(--bg) 82%, transparent);
-    backdrop-filter: saturate(1.4) blur(10px);
-    -webkit-backdrop-filter: saturate(1.4) blur(10px);
     z-index: 5;
   }
-  .topbar .page-title { margin-right: auto; }
+  .topbar .page-title { margin-right: auto; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.01em; }
   .icon-btn { padding: 0.4rem; display: inline-grid; place-items: center; line-height: 0; border-radius: var(--radius-sm); }
+  /* online/offline status indicator */
+  .conn { display: flex; align-items: center; gap: 0.4rem; padding-left: 0.25rem; }
+  .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--err); }
+  .conn-label { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em; color: var(--err); }
+  .conn.up .conn-dot { background: var(--acc); box-shadow: 0 0 8px var(--acc); animation: v2pulse 2.4s infinite; }
+  .conn.up .conn-label { color: var(--acc); }
+  @media (prefers-reduced-motion: reduce) { .conn.up .conn-dot { animation: none; } }
   @media (max-width: 760px) {
-    .shell { grid-template-columns: 64px 1fr; }
-    .sidebar { padding: 0.9rem 0.5rem; }
-    .nav-item span, .brand-word, .xray-label { display: none; }
+    .shell { grid-template-columns: 60px 1fr; }
+    .nav-item span, .brand-text, .xray-label, .nav-group, .conn-label { display: none; }
     .nav-item { justify-content: center; padding: 0.55rem; }
-    .brand { justify-content: center; padding: 0.3rem 0 1rem; }
+    .brand { justify-content: center; padding: 0.8rem 0; }
     .xray-box { flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.3rem; }
   }
 </style>

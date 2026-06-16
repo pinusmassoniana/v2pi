@@ -1,64 +1,82 @@
-/* v2pi design tokens + primitives — zero-dependency. Light is :root; dark overrides
-   the same variables via [data-theme="dark"] so component CSS never branches on theme.
-   Accent = electric cobalt (deliberately NOT the generic AI indigo). Neutrals are a
-   cool near-black zinc/slate ramp; shadows are tinted to the bg hue for real depth. */
+/* v2pi design tokens + primitives — zero-dependency. Terminal / NOC identity:
+   monospace-everywhere (IBM Plex Mono), dense, dark-first, single green signal accent.
+   Dark is :root (the primary theme); [data-theme="light"] overrides the same variables
+   so component CSS never branches on theme. The NOC token set (--bg0..3, --bd, --tx*,
+   --acc, --up/down/warn/err) is the source of truth; the legacy semantic names
+   (--surface, --accent, --text, …) are aliased onto it so older components keep working
+   unchanged while screens are migrated to the dense spec one at a time. */
 :root {
-  /* neutrals — cool slate, near-black text (never pure #000) */
-  --bg: #f4f6fa;
-  --surface: #ffffff;
-  --surface-2: #eef1f6;
-  --surface-3: #e5e9f1;
-  --border: #e2e7ef;
-  --border-strong: #ccd3df;
-  --text: #0d1626;
-  --muted: #586273;
-  --faint: #6b7280;   /* AA-passing (~4.7:1 on surface) — was #8b94a4 (2.9:1) */
-  /* accent — electric cobalt + soft/ring derivatives */
-  --accent: #0b6bd8;
-  --accent-hover: #0a5cbb;
-  --accent-soft: rgba(11, 107, 216, 0.10);
-  --accent-ring: rgba(11, 107, 216, 0.30);
-  --on-accent: #ffffff;
-  /* status */
-  --success: #0f9d6b;
-  --warn: #b9770a;
-  --danger: #d83a3a;
-  /* geometry */
-  --radius: 11px;
-  --radius-lg: 15px;
-  --radius-sm: 8px;
+  /* ===== NOC token set — dark (default/primary) ===== */
+  --bg0: #0a0d0f;  /* app background (deepest) */
+  --bg1: #10151a;  /* sidebar, topbar, cards */
+  --bg2: #161d23;  /* inner chips, inputs, raised rows */
+  --bg3: #1e272e;  /* tracks, hover fills, toggle-off */
+  --bd:  #212b32;  /* default hairline border */
+  --bd2: #2d3a43;  /* stronger border (hover/active) */
+  --tx:  #e7eef2;  /* primary text */
+  --tx2: #94a3ad;  /* secondary text */
+  --tx3: #5d6c76;  /* dim labels, captions */
+  --acc:  #3fd17e; /* green signal accent — up/online/active/primary */
+  --acc2: #5bf0a0; /* brighter green (glows) */
+  --up:   #3fd17e; /* download series / "up" */
+  --down: #4ea6dd; /* upload series / info (cool blue) */
+  --warn: #e3a544; /* warning / degraded (amber) */
+  --err:  #e5544b; /* error / block / danger (red) */
+  --on-acc: #04140b; /* text/icon on a green fill (both themes) */
+
+  /* ===== legacy aliases → NOC tokens (back-compat during migration) ===== */
+  --bg: var(--bg0);
+  --surface: var(--bg1);
+  --surface-2: var(--bg2);
+  --surface-3: var(--bg3);
+  --border: var(--bd);
+  --border-strong: var(--bd2);
+  --text: var(--tx);
+  --muted: var(--tx2);
+  --faint: var(--tx3);
+  --accent: var(--acc);
+  --accent-hover: var(--acc2);
+  --accent-soft: color-mix(in srgb, var(--acc) 14%, transparent);
+  --accent-ring: color-mix(in srgb, var(--acc) 38%, transparent);
+  --on-accent: var(--on-acc);
+  --success: var(--acc);
+  --danger: var(--err);
+
+  /* geometry — denser NOC scale */
+  --radius: 10px;
+  --radius-lg: 10px;
+  --radius-sm: 6px;
   --gap: 0.75rem;
-  /* elevation — tinted to the cool bg hue, layered (sm → lg) */
-  --shadow-sm: 0 1px 2px rgba(15, 30, 60, 0.06);
-  --shadow: 0 2px 6px -1px rgba(15, 30, 60, 0.07), 0 10px 26px -10px rgba(15, 30, 60, 0.12);
-  --shadow-lg: 0 18px 44px -14px rgba(15, 30, 60, 0.20);
-  /* type — no Inter; lead with the platform grotesk (SF/Segoe), mono for metrics */
-  --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
-  color-scheme: light;
-}
-[data-theme="dark"] {
-  --bg: #0a0c10;
-  --surface: #12161d;
-  --surface-2: #171c24;
-  --surface-3: #1e242e;
-  --border: #262d38;
-  --border-strong: #39414e;
-  --text: #e8ecf3;
-  --muted: #98a2b3;
-  --faint: #8b94a4;   /* ~6:1 on the dark bg — was #6a7382 (~3.8:1) */
-  --accent: #3b9bff;
-  --accent-hover: #5cabff;
-  --accent-soft: rgba(59, 155, 255, 0.14);
-  --accent-ring: rgba(59, 155, 255, 0.38);
-  --on-accent: #08111c;
-  --success: #2fcc7f;
-  --warn: #e0a52a;
-  --danger: #ff5d5d;
+  /* elevation — flat for the NOC look */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
   --shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 10px 30px -12px rgba(0, 0, 0, 0.6);
   --shadow-lg: 0 22px 50px -18px rgba(0, 0, 0, 0.7);
+  /* type — monospace everywhere; Plex Sans only for long prose */
+  --font: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --prose: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: dark;
+}
+[data-theme="light"] {
+  --bg0: #eceff1;
+  --bg1: #f6f8f9;
+  --bg2: #ffffff;
+  --bg3: #eaeef1;
+  --bd:  #dce2e6;
+  --bd2: #cad2d8;
+  --tx:  #0f171c;
+  --tx2: #475560;
+  --tx3: #7d8b94;
+  --acc:  #1f9d57;
+  --acc2: #15833f;
+  --up:   #1f9d57;
+  --down: #2b7fb8;
+  --warn: #b9791a;
+  --err:  #cf3b34;
+  --shadow-sm: 0 1px 2px rgba(15, 30, 60, 0.06);
+  --shadow: 0 2px 6px -1px rgba(15, 30, 60, 0.07), 0 10px 26px -10px rgba(15, 30, 60, 0.12);
+  --shadow-lg: 0 18px 44px -14px rgba(15, 30, 60, 0.20);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -67,7 +85,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 15px;   /* was 14px — lifts micro-labels off the ~9.5px floor */
+  font-size: 13px;   /* dense NOC base — the mono-everywhere terminal scale */
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -82,7 +100,7 @@ a { color: var(--accent); text-underline-offset: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* layout */
-.page { display: grid; gap: 1rem; padding: 1.5rem; max-width: 1140px; }
+.page { display: grid; gap: 0.9rem; padding: 1.15rem 1.25rem 1.75rem; max-width: 1480px; }
 /* data-dense views (the Nodes servers table) drop the reading-width cap so the table's right
    edge tracks the window instead of pinning at 1140px. */
 .page.wide { max-width: none; }
@@ -102,9 +120,9 @@ a { color: var(--accent); text-underline-offset: 2px; }
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  padding: 1.1rem 1.2rem;
+  padding: 1rem 1.1rem;
   display: grid;
-  gap: 0.7rem;
+  gap: 0.6rem;
 }
 .card > h2, .card > h3 { margin: 0 0 0.2rem; font-size: 0.92rem; font-weight: 650; letter-spacing: -0.01em; }
 /* fieldset legends read as premium eyebrow micro-labels, not headings */
@@ -192,6 +210,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-v
   70%  { box-shadow: 0 0 0 5px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
+/* NOC live-dot/badge breathing (spec) — opacity 1 → .32 → 1 */
+@keyframes v2pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.32; } }
 @media (prefers-reduced-motion: reduce) {
   .dot.ok, .dot.live { animation: none; }
   .btn:active { transform: none; }
