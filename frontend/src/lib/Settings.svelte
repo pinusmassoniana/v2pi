@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Settings, type Diagnostics, type ApiToken, type ApiTokenCreated, type AuditEntry } from "./api";
+  import { api, ApiError, type Settings, type ApiToken, type ApiTokenCreated, type AuditEntry } from "./api";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
@@ -7,11 +7,7 @@
   let s = $state<Settings | null>(null);
   let msg = $state("");
   let msgKind = $state<"ok" | "err">("ok");
-  let diag = $state<Diagnostics | null>(null);
 
-  let pw = $state({ current: "", next: "", confirm: "" });
-  let pwMsg = $state(""); let pwKind = $state<"ok" | "err">("ok");
-  let restoreMsg = $state(""); let restoreKind = $state<"ok" | "err">("ok");
   let logSource = $state("xray-error");
   let logLines = $state<string[]>([]);
   let logQuery = $state("");
@@ -36,7 +32,6 @@
   async function load() {
     try { s = await api.getSettings(); }
     catch (err) { setMsg(errText(err, "load failed"), "err"); }
-    try { diag = await api.getDiagnostics(); } catch { /* non-fatal */ }
   }
   async function save(e: Event) {
     e.preventDefault();
@@ -45,46 +40,7 @@
     try { s = await api.putSettings(patch); setMsg("saved", "ok"); }
     catch (err) { setMsg(errText(err, "save failed"), "err"); }
   }
-  async function resetDefaults() {
-    if (!(await confirmDialog("Reset all settings on this screen to their defaults?"))) return;
-    try { s = await api.resetSettings(); setMsg("reset to defaults", "ok"); }
-    catch (err) { setMsg(errText(err, "reset failed"), "err"); }
-  }
 
-  function fmtBytes(n: number): string {
-    const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0, v = n;
-    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-    return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
-  }
-  function fmtUptime(sec: number): string {
-    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
-  }
-
-  async function downloadBackup() {
-    try {
-      const doc = await api.getBackup();
-      const date = new Date().toISOString().slice(0, 10);
-      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob); a.download = `v2pi-backup-${date}.json`; a.click();
-      URL.revokeObjectURL(a.href);
-    } catch (err) { restoreMsg = errText(err, "backup failed"); restoreKind = "err"; }
-  }
-  async function onRestoreFile(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    if (!(await confirmDialog("Restore replaces all nodes, subscriptions, profiles, routing and settings. Continue?"))) {
-      input.value = ""; return;
-    }
-    try {
-      const r = await api.restore(JSON.parse(await file.text()));
-      restoreMsg = `restored ${r.restored.nodes} nodes, ${r.restored.profiles} profiles — reconnect to apply`;
-      restoreKind = "ok"; await load();
-    } catch (err) { restoreMsg = errText(err, "restore failed"); restoreKind = "err"; }
-    finally { input.value = ""; }
-  }
   function exportSettings() {
     if (!s) return;
     const { routing_default_action, ...rest } = s;
@@ -102,28 +58,6 @@
       s = await api.putSettings(doc); setMsg("settings imported", "ok");
     } catch (err) { setMsg(errText(err, "import failed"), "err"); }
     finally { input.value = ""; }
-  }
-
-  // password (SF4/SN5)
-  const pwStrength = $derived.by(() => {
-    const p = pw.next;
-    if (!p) return "";
-    if (p.length < 8) return "too short (min 8)";
-    let score = 0;
-    if (/[a-z]/.test(p) && /[A-Z]/.test(p)) score++;
-    if (/\d/.test(p)) score++;
-    if (/[^a-zA-Z0-9]/.test(p)) score++;
-    if (p.length >= 12) score++;
-    return ["weak", "ok", "good", "strong"][Math.min(score, 3)];
-  });
-  const pwOk = $derived(pw.current && pw.next.length >= 8 && pw.next === pw.confirm);
-  async function changePassword(e: Event) {
-    e.preventDefault();
-    try {
-      await api.changePassword(pw.current, pw.next);
-      pwMsg = "password changed — other sessions signed out"; pwKind = "ok";
-      pw = { current: "", next: "", confirm: "" };
-    } catch (err) { pwMsg = errText(err, "change failed"); pwKind = "err"; }
   }
 
   // API tokens
@@ -231,30 +165,10 @@
     {#if invalid}<p class="msg err">{invalid}</p>{/if}
     <div class="actions">
       <button class="btn btn-primary" disabled={!!invalid}>Save</button>
-      <button class="btn" type="button" onclick={resetDefaults}>Reset to defaults</button>
       <button class="btn" type="button" onclick={exportSettings}>Export settings</button>
       <label class="file btn">Import settings…<input type="file" accept="application/json,.json" onchange={onImportSettings} /></label>
     </div>
-    <p class="muted hint">Anti-DPI tuning (fingerprint, fragmentation, mux, DoH, QUIC) lives in <strong>Tuning</strong> profiles.</p>
-  </form>
-
-  <div class="card">
-    <h3>Backup / restore</h3>
-    <div class="row">
-      <button class="btn" type="button" onclick={downloadBackup}>Download backup (JSON)</button>
-      <label class="file btn">Restore…<input type="file" accept="application/json,.json" onchange={onRestoreFile} /></label>
-    </div>
-    <Alert msg={restoreMsg} kind={restoreKind} />
-  </div>
-
-  <form onsubmit={changePassword} class="card pw">
-    <h3>Change password</h3>
-    <input class="input" type="password" bind:value={pw.current} placeholder="current password" autocomplete="current-password" />
-    <input class="input" type="password" bind:value={pw.next} placeholder="new password (min 8)" autocomplete="new-password" />
-    <input class="input" type="password" bind:value={pw.confirm} placeholder="confirm new password" autocomplete="new-password" />
-    {#if pw.next}<p class="muted hint">strength: {pwStrength}{#if pw.confirm && pw.next !== pw.confirm} · <span class="nomatch">does not match</span>{/if}</p>{/if}
-    <div><button class="btn btn-primary" disabled={!pwOk}>Change password</button></div>
-    <Alert msg={pwMsg} kind={pwKind} />
+    <p class="muted hint">Anti-DPI tuning (fingerprint, fragmentation, mux, DoH, QUIC) lives in <strong>Anti-DPI</strong> profiles. Backups, password and system info are on <strong>Operations</strong>.</p>
   </form>
 
   <div class="card tokens">
@@ -337,24 +251,10 @@
     </div>
     {#if logLines.length}<pre class="logs">{shownLogs.join("\n")}</pre>{/if}
   </div>
-
-  <div class="card diag">
-    <h3>About / diagnostics</h3>
-    {#if diag}
-      <dl>
-        <dt>app version</dt><dd>{diag.app_version}</dd>
-        <dt>xray</dt><dd class="mono">{diag.xray_version}</dd>
-        <dt>panel uptime</dt><dd>{fmtUptime(diag.uptime_sec)}</dd>
-        <dt>database</dt><dd class="mono">{diag.db_path} · {fmtBytes(diag.db_bytes)}</dd>
-        <dt>disk free</dt><dd>{fmtBytes(diag.disk_free_bytes)} / {fmtBytes(diag.disk_total_bytes)}</dd>
-      </dl>
-    {:else}<p class="muted">diagnostics unavailable</p>{/if}
-  </div>
 {/if}
 
 <style>
-  .settings, .pw { max-width: 34rem; }
-  .pw { gap: 0.5rem; }
+  .settings { max-width: 34rem; }
   fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 0.95rem; display: grid; gap: 0.55rem; background: var(--surface-2); }
   .check { display: flex; gap: 0.55rem; align-items: center; }
   .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
@@ -362,13 +262,9 @@
   .file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   .hint { font-size: 0.8rem; }
   .live { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); background: var(--accent-soft); padding: 0.02rem 0.35rem; border-radius: 999px; }
-  .nomatch { color: var(--danger); }
   .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .row .auto { width: auto; }
   .row .num { width: 5rem; }
-  .diag dl { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; margin: 0; }
-  .diag dt { color: var(--muted); }
-  .diag dd { margin: 0; }
   .logs {
     background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
     padding: 0.6rem; border-radius: var(--radius-sm); max-height: 16rem; overflow: auto;
