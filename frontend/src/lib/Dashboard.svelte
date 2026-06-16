@@ -270,6 +270,12 @@
 <!-- ===== main row: live traffic | upstream health ===== -->
 <div class="main-row">
   <div class="card traffic">
+    {#if liveDirect && (liveDirect.down_bps > 0 || liveDirect.up_bps > 0)}
+      <span class="direct-note" class:warn={liveDirect.down_bps + liveDirect.up_bps > UNTUNNELED_WARN_BPS}
+            title="Traffic leaving the segment WITHOUT going through the tunnel">
+        untunneled ↓ {fmtRate(liveDirect.down_bps)} · ↑ {fmtRate(liveDirect.up_bps)}
+      </span>
+    {/if}
     <div class="card-top">
       <div class="row-tight">
         <span class="eyebrow">Live Traffic</span>
@@ -297,12 +303,6 @@
       <p class="msg">Traffic stats disabled — enable in Settings.</p>
     {:else}
       <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} onwindow={onGraphWindow} />
-    {/if}
-    {#if liveDirect && (liveDirect.down_bps > 0 || liveDirect.up_bps > 0)}
-      <div class="direct-note" class:warn={liveDirect.down_bps + liveDirect.up_bps > UNTUNNELED_WARN_BPS}
-           title="Traffic leaving the segment WITHOUT going through the tunnel">
-        untunneled ↓ {fmtRate(liveDirect.down_bps)} · ↑ {fmtRate(liveDirect.up_bps)}
-      </div>
     {/if}
   </div>
 
@@ -452,7 +452,9 @@
   .pill.ok { color: var(--acc); border-color: var(--acc); }
 
   /* ===== live traffic ===== */
-  .traffic { gap: 0.7rem; }
+  .traffic { gap: 0.7rem; position: relative; }
+  /* untunneled-leak note: out of flow (absolute) so it never reflows the page when it toggles */
+  .direct-note { position: absolute; top: 1rem; right: 1.1rem; z-index: 1; }
   .readouts { display: flex; gap: 1.8rem; align-items: flex-end; flex-wrap: wrap; }
   .ro-k { display: flex; align-items: center; gap: 0.4rem; font-size: 0.66rem; color: var(--tx3); letter-spacing: 0.04em; margin-bottom: 0.25rem; }
   .swatch { width: 9px; height: 2px; border-radius: 2px; }
@@ -461,7 +463,7 @@
   .ro-v.up { color: var(--up); } .ro-v.down { color: var(--down); }
   .ro.session { margin-left: auto; text-align: right; }
   .ro-sess { font-size: 0.82rem; color: var(--tx2); }
-  .direct-note { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.72rem; color: var(--tx2); }
+  .direct-note { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.72rem; color: var(--tx2); white-space: nowrap; }
   .direct-note.warn { color: var(--warn); font-weight: 600; }
 
   /* ===== upstream health ===== */
