@@ -487,7 +487,7 @@
   .switcher { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-bottom: 0.7rem; }
   .tab { background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); padding: 0.35rem 0.75rem; border-radius: 999px; cursor: pointer; font: inherit; }
   .tab:hover { color: var(--text); }
-  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tab.active { background: var(--accent); color: var(--on-acc); border-color: var(--accent); font-weight: 600; }
   .switcher .import-btn { margin-left: auto; }
   .ping-bar { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; flex-wrap: wrap; align-items: center; }
   .ping-bar .search { max-width: 16rem; }

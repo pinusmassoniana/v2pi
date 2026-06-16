@@ -16,7 +16,7 @@
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
-  type View = "dashboard" | "health" | "nodes" | "subs" | "tuning" | "routing" | "network" | "settings";
+  type View = "dashboard" | "health" | "nodes" | "tuning" | "routing" | "network" | "settings";
   let authed = $state(false);
   let needsSetup = $state(false);
   let ready = $state(false);
@@ -57,7 +57,6 @@
     { id: "dashboard", label: "Overview" },
     { id: "health", label: "Health & Traffic" },
     { id: "nodes", label: "Nodes" },
-    { id: "subs", label: "Subscriptions" },
     { id: "tuning", label: "Anti-DPI" },
     { id: "routing", label: "Routing" },
     { id: "network", label: "Network" },
@@ -67,7 +66,7 @@
   // (the spec's 8th screen). Health & Traffic / Operations arrive with later Phase-2 screens.
   const navGroups: { label: string; ids: View[] }[] = [
     { label: "MONITOR", ids: ["dashboard", "health"] },
-    { label: "CONFIGURE", ids: ["nodes", "subs", "tuning", "routing", "network"] },
+    { label: "CONFIGURE", ids: ["nodes", "tuning", "routing", "network"] },
   ];
 
   // 24-viewBox icons (theme toggle) — thin line, currentColor
@@ -165,7 +164,7 @@
           <Health />
         {:else if view === "nodes"}
           <Nodes />
-        {:else if view === "subs"}
+          <div class="fold-head"><span class="eyebrow">Subscriptions</span></div>
           <Subscriptions />
         {:else if view === "tuning"}
           <Tuning />
@@ -276,6 +275,8 @@
   }
   .topbar .page-title { margin-right: auto; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.01em; }
   .icon-btn { padding: 0.4rem; display: inline-grid; place-items: center; line-height: 0; border-radius: var(--radius-sm); }
+  /* folded-in section divider (Subscriptions under Nodes) */
+  .fold-head { border-top: 1px solid var(--bd); padding-top: 0.9rem; margin-top: 0.3rem; }
   /* online/offline status indicator */
   .conn { display: flex; align-items: center; gap: 0.4rem; padding-left: 0.25rem; }
   .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--err); }
