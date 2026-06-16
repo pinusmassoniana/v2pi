@@ -12,14 +12,14 @@
     running = false, segmentUp = null, clients = null,
     segmentIp = null, segmentIface = null,
     nodeName = null, realOk = null, latencyMs = null,
-    egressIp = null, egressCc = null,
+    egressIp = null, egressIp6 = null, egressCc = null,
     uplink = null, uplink6 = null, ipv6Enabled = false,
     proxyDown = 0, proxyUp = 0, directDown = 0, directUp = 0,
   }: {
     running?: boolean; segmentUp?: boolean | null; clients?: number | null;
     segmentIp?: string | null; segmentIface?: string | null;
     nodeName?: string | null; realOk?: boolean | null; latencyMs?: number | null;
-    egressIp?: string | null; egressCc?: string | null;
+    egressIp?: string | null; egressIp6?: string | null; egressCc?: string | null;
     uplink?: boolean | null; uplink6?: boolean | null; ipv6Enabled?: boolean;
     proxyDown?: number; proxyUp?: number; directDown?: number; directUp?: number;
   } = $props();
@@ -49,6 +49,7 @@
   const NODE_SLOT = 208;
   let nodeTitleEl = $state<SVGTextElement | null>(null);
   let nodeSubEl = $state<SVGTextElement | null>(null);
+  let nodeSub6El = $state<SVGTextElement | null>(null);
   function fitText(el: SVGTextElement | null, max: number) {
     if (!el || typeof el.getComputedTextLength !== "function") return;
     el.removeAttribute("textLength");
@@ -59,7 +60,7 @@
     }
   }
   // re-measure whenever the node name or egress IP changes (effect runs after the DOM text updates)
-  $effect(() => { void nodeName; void egressIp; fitText(nodeTitleEl, NODE_SLOT); fitText(nodeSubEl, NODE_SLOT); });
+  $effect(() => { void nodeName; void egressIp; void egressIp6; fitText(nodeTitleEl, NODE_SLOT); fitText(nodeSubEl, NODE_SLOT); fitText(nodeSub6El, NODE_SLOT); });
 </script>
 
 <div class="card flow-card">
@@ -99,6 +100,7 @@
     <circle class="sdot {running ? tone(realOk) : 'idle'}" cx="490" cy="51" r="4.5" />
     <text bind:this={nodeTitleEl} class="ctitle" x="470" y="116">{trunc(nodeName ?? "—", 38)}</text>
     <text bind:this={nodeSubEl} class="csub mono" x="470" y="130">{egressIp ? trunc(egressIp, 42) : "no exit"}</text>
+    {#if egressIp6}<text bind:this={nodeSub6El} class="csub6 mono" x="470" y="141">v6 {trunc(egressIp6, 44)}</text>{/if}
 
     <!-- Internet -->
     <circle class="cir" cx="704" cy="150" r="26" />
@@ -138,6 +140,7 @@
 
   .ctitle { fill: var(--text); font-size: 12.5px; font-weight: 600; text-anchor: middle; }
   .csub { fill: var(--muted); font-size: 10.5px; text-anchor: middle; }
+  .csub6 { fill: var(--faint); font-size: 8px; text-anchor: middle; font-family: var(--mono); }
   .csub.mono { font-family: var(--mono); }
   .lbl { fill: var(--faint); font-size: 10.5px; text-anchor: middle; letter-spacing: 0.03em; }
   .lbl.leak { fill: var(--warn); font-weight: 600; }

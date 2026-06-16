@@ -115,7 +115,7 @@
   <div class="shell">
     <aside class="sidebar">
       <div class="brand" aria-label={BRAND}>
-        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-dot"></span></span>
+        <span class="brand-mark" aria-hidden="true">v2</span>
         <span class="brand-text">
           <span class="brand-word">{BRAND}</span>
           <span class="brand-caption">gateway ctl</span>
@@ -213,8 +213,8 @@
     display: grid; place-items: center;
     background: var(--acc);
     box-shadow: 0 0 14px -2px var(--acc);
+    color: var(--on-acc); font-weight: 800; font-size: 13px; letter-spacing: -0.04em; line-height: 1;
   }
-  .brand-mark-dot { width: 9px; height: 9px; border-radius: 2px; background: var(--on-acc); }
   .brand-text { line-height: 1.1; display: grid; }
   .brand-word { font-weight: 700; font-size: 0.95rem; letter-spacing: 0.04em; color: var(--tx); }
   .brand-caption { font-size: 0.62rem; color: var(--tx3); letter-spacing: 0.18em; text-transform: uppercase; }

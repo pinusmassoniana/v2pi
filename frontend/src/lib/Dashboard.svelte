@@ -354,6 +354,7 @@
     realOk={liveActive?.real_ok ?? null}
     latencyMs={liveActive?.latency_ms ?? null}
     egressIp={liveActive?.egress_ip ?? null}
+    egressIp6={liveActive?.egress_ip6 ?? null}
     egressCc={liveActive?.egress_cc ?? null}
     uplink={net?.status.uplink ?? null}
     uplink6={net?.status.uplink6 ?? null}
