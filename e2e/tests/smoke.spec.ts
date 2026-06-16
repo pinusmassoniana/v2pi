@@ -28,14 +28,14 @@ test("setup → dashboard → logout → login → navigate", async ({ page }) =
     await fillCreds();
     await loginBtn.click();
   }
-  await expect(pageTitle).toHaveText("Dashboard", { timeout: 20_000 });
+  await expect(pageTitle).toHaveText("Overview", { timeout: 20_000 });
 
   // Auth round-trip: log out, then log back in with the same credentials.
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(loginBtn).toBeVisible({ timeout: 10_000 });
   await fillCreds();
   await loginBtn.click();
-  await expect(pageTitle).toHaveText("Dashboard", { timeout: 20_000 });
+  await expect(pageTitle).toHaveText("Overview", { timeout: 20_000 });
 
   // SPA navigation to an authenticated screen.
   await page.getByRole("button", { name: "Nodes", exact: true }).click();

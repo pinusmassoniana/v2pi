@@ -60,7 +60,7 @@ test("repeated failures hit the rate limit, which then expires", async ({ page }
   await user.fill(USER);
   await pass.fill(PASS);
   await btn.click();
-  await expect(page.locator("h1.page-title")).toHaveText("Dashboard", { timeout: 20_000 });
+  await expect(page.locator("h1.page-title")).toHaveText("Overview", { timeout: 20_000 });
 });
 
 test("mutations without a CSRF token are refused", async ({ page }) => {
