@@ -1,9 +1,7 @@
 <script lang="ts">
-  import { api, ApiError, type Node, type TrafficMessage, type Network, type Subscription } from "./api";
+  import { api, ApiError, type Node, type TrafficMessage, type Network, type Subscription, type Routing } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
-  import NetworkCard from "./NetworkCard.svelte";
   import ConnFlow from "./ConnFlow.svelte";
-  import LatencyChart from "./LatencyChart.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
   import { statusStore, subscribeStatus, pollStatusOnce, serverNow } from "./status.svelte";
@@ -19,31 +17,29 @@
   let live = $state<TrafficMessage | null>(null);
   let disabled = $state(false);
   let msg = $state("");
-  let net = $state<Network | null>(null);       // C: connected-clients count
+  let net = $state<Network | null>(null);       // polled directly (status strip, summaries, ConnFlow, events)
+  let routing = $state<Routing | null>(null);    // routing summary card
   let subs = $state<Subscription[]>([]);          // E: expiry / data-cap warnings
+  let tick = $state(0);                            // 1s heartbeat → live uptime / freshness labels
   // U3: remember the dismissed failover across reloads
   let failoverDismissed = $state<number | null>(Number(localStorage.getItem("failoverDismissed")) || null);
 
   let activeName = $derived(nodes.find((n) => n.id === status?.active_node_id)?.name ?? null);
+  let activeNode = $derived(nodes.find((n) => n.id === status?.active_node_id) ?? null);
   let liveFrame = $derived(live && !("disabled" in live) && !("error" in live) ? live : null);
   let liveActive = $derived(liveFrame ? liveFrame.active : null);
   let liveTotals = $derived(liveFrame ? liveFrame.totals : null);
-  // durable data-used (survives xray restart, F); fall back to the process-lifetime totals
   let dataUp = $derived(liveFrame?.lifetime?.up ?? liveTotals?.up ?? null);
   let dataDown = $derived(liveFrame?.lifetime?.down ?? liveTotals?.down ?? null);
-  // never null — a null here would crash the {#if} below (Svelte drops the parens around
-  // the `|| ` so `liveDirect && a || liveDirect.up_bps` reads up_bps on null). Default to zeros.
   let liveDirect = $derived(liveFrame ? (liveFrame.outbounds.direct ?? { up_bps: 0, down_bps: 0 }) : { up_bps: 0, down_bps: 0 });
   let latest = $derived(samples.length ? samples[samples.length - 1] : { up: 0, down: 0 });
   let clients = $derived(net?.status.dhcp_clients ?? null);
-  // NF4: data used this session (since (re)connect)
   let sessionUp = $derived(liveFrame?.session?.up ?? null);
   let sessionDown = $derived(liveFrame?.session?.down ?? null);
-  // NF3: untunneled (leak) rates surfaced on the ConnFlow tunnel link
   let directDown = $derived(liveDirect.down_bps);
   let directUp = $derived(liveDirect.up_bps);
-  // U1: distinguish a crashed xray (watchdog restarting) from a deliberate stop
   let xrayError = $derived(status?.xray_state === "error");
+  let killArmed = $derived(net?.kill_switch_enabled ?? null);
   // A: surface an auto-failover from the last 24h until the operator dismisses it
   let failover = $derived(
     status?.last_failover_at && status.last_failover_at !== failoverDismissed
@@ -51,21 +47,54 @@
       ? status.last_failover_at : null);
   let warnings = $derived(subWarnings(subs, serverNow() / 1000));
 
+  // DHCP pool size from the segment range (last octet of start/end on the same /24) — real "n / N leases"
+  let poolSize = $derived.by(() => {
+    const s = net?.segment.dhcp_start, e = net?.segment.dhcp_end;
+    if (!s || !e) return null;
+    const a = Number(s.split(".").pop()), b = Number(e.split(".").pop());
+    return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a + 1 : null;
+  });
+
+  // live uptime "Xd HH:MM:SS" (ticks every second via `tick`)
+  function fmtUptime(since: number | null | undefined): string {
+    if (!since) return "—";
+    const s = Math.max(0, Math.floor(serverNow() / 1000 - since));
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    const hms = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}`;
+    return d > 0 ? `${d}d ${hms}` : hms;
+  }
+  let uptimeStr = $derived((tick, fmtUptime(status?.active_since)));
+
   function freshness(iso: string | null | undefined): string {
     if (!iso) return "";
     const t = Date.parse(iso);
     if (Number.isNaN(t)) return "";
     const s = Math.max(0, Math.floor((serverNow() - t) / 1000));   // D4: Pi-clock aligned
-    if (s < 60) return `checked ${s}s ago`;
+    if (s < 60) return `${s}s ago`;
     const m = Math.floor(s / 60);
-    return m < 60 ? `checked ${m}m ago` : `checked ${Math.floor(m / 60)}h ago`;
+    return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
   }
-  function uptimeLabel(since: number | null | undefined): string {
-    if (!since) return "—";
-    const s = Math.max(0, Math.floor(serverNow() / 1000 - since));   // D4
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-    return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m` : `${s}s`;
+  // HH:MM:SS local time from an epoch-seconds event timestamp
+  function clockTime(ts: number): string {
+    const dt = new Date(ts * 1000);
+    return [dt.getHours(), dt.getMinutes(), dt.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
   }
+  // event kind → [level] token + colour class
+  function evLevel(kind: string): "ok" | "warn" | "err" | "info" {
+    const k = (kind || "").toLowerCase();
+    if (/ok|up|recover|restore|connect|apply|appl/.test(k)) return "ok";
+    if (/err|fail|drop|down|leak/.test(k)) return "err";
+    if (/warn|degrad|stale|retry|timeout/.test(k)) return "warn";
+    return "info";
+  }
+  // routing action → colour class (BLOCK=err, DIRECT=acc, PROXY=down)
+  function actClass(a: string): string {
+    const k = (a || "").toLowerCase();
+    if (k.includes("block")) return "act-block";
+    if (k.includes("direct")) return "act-direct";
+    return "act-proxy";
+  }
+  let ruleSummary = $derived((routing?.rules ?? []).filter((r) => r.enabled).slice(0, 4));
 
   async function refresh() {
     try { nodes = await api.listNodes(); }   // status comes from the shared store now
@@ -80,7 +109,7 @@
     } catch (err) { msg = err instanceof ApiError ? err.message : "rollback failed"; }
   }
 
-  // re-pull the recorded history and merge by timestamp (dedup), so the graph fills in after a
+  // re-pull recorded history and merge by timestamp (dedup) so the graph fills in after a
   // reconnect / long gap instead of only showing post-reconnect data (D5). Also the initial seed.
   async function seedHistory() {
     try {
@@ -93,7 +122,6 @@
   }
 
   // N4: 24h/7d windows ride the durable per-minute series (the live ring only spans ~1h).
-  // Fetched on selection + refreshed each minute while a long window is active.
   let graphWindow = $state(600);
   let longSamples = $state<{ ts: number; up: number; down: number }[]>([]);
   async function loadLong(sec: number) {
@@ -121,8 +149,21 @@
     return () => { clearInterval(t); stop(); };
   });
 
-  // E1: the embedded <NetworkCard> is the sole /api/network poller; it lifts the value here via
-  // `onnet` (below) so the client count + ConnFlow read it without a duplicate poll.
+  // network poll — drives the status strip (kill-switch/clients), ConnFlow, network summary, event log
+  $effect(() => {
+    const load = () => api.getNetwork().then((n) => (net = n)).catch(() => {});
+    load();
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 4000);
+    return () => clearInterval(t);
+  });
+
+  // routing summary — rules change rarely, poll slowly
+  $effect(() => {
+    const load = () => api.getRouting().then((r) => (routing = r)).catch(() => {});
+    load();
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
+    return () => clearInterval(t);
+  });
 
   // E: subscription expiry / data-cap warnings — subs change rarely, poll slowly
   $effect(() => {
@@ -132,12 +173,14 @@
     return () => clearInterval(t);
   });
 
+  // 1s heartbeat for live uptime / freshness, paused while hidden
+  $effect(() => {
+    const t = setInterval(() => { if (document.visibilityState === "visible") tick++; }, 1000);
+    return () => clearInterval(t);
+  });
+
   // seed the graph with recorded history so the full window shows immediately on open
   $effect(() => { seedHistory(); });
-
-  // active-node liveness is owned by the backend loop now (it probes the active node via a
-  // SEPARATE xray and pushes the result through the WS `active` frame) — no client-side re-probe
-  // here, which previously went through the live tunnel and disturbed the active connection.
 
   // live traffic WebSocket with reconnect/backoff; closes on unmount
   $effect(() => {
@@ -162,38 +205,22 @@
     open();
     return () => { stop = true; if (timer) clearTimeout(timer); try { ws?.close(); } catch {} };
   });
+
+  // upstream-health rows: active node first (real probe), the rest as standby (no fake latencies)
+  let healthRows = $derived.by(() => {
+    const act = activeNode;
+    const rest = nodes.filter((n) => n.id !== act?.id);
+    return [...(act ? [act] : []), ...rest].slice(0, 5);
+  });
 </script>
 
-<div class="hero" class:up={status?.running} class:down={status?.running === false && !xrayError} class:warn={xrayError}>
-  <span class="status-dot" class:live={status?.running} class:warn={xrayError} class:bad={status?.running === false && !xrayError}></span>
-  <div class="hero-state">
-    <span class="eyebrow">Gateway</span>
-    <span class="hero-headline" aria-live="polite">{status?.running ? "Connected" : xrayError ? "Reconnecting…" : status?.running === false ? "Disconnected" : "—"}</span>
-  </div>
-  {#if status?.running && status?.active_since}
-    <div class="hero-node">
-      <span class="eyebrow">Uptime</span>
-      <span class="hero-nodename mono">{uptimeLabel(status.active_since)}</span>
-    </div>
-  {/if}
-  {#if clients !== null}
-    <div class="hero-node">
-      <span class="eyebrow">Clients</span>
-      <span class="hero-nodename mono">{clients}</span>
-    </div>
-  {/if}
-  <span class="hero-spacer"></span>
-  <button class="btn" onclick={rollback} disabled={!status?.prev_active_node_id}
-          title={status?.prev_active_node_id ? "Revert the live config to the previously applied node" : "No previous node to roll back to"}>Rollback</button>
-</div>
-
+<!-- failover banner + subscription warnings (kept) -->
 {#if failover}
   <div class="banner warn" role="status">
     <span>⚠ Auto-failover {agoLabel(failover, serverNow() / 1000)} — the gateway switched node on its own.</span>
     <button class="banner-x" onclick={() => { failoverDismissed = failover; if (failover) localStorage.setItem("failoverDismissed", String(failover)); }} aria-label="Dismiss">✕</button>
   </div>
 {/if}
-
 {#if warnings.length}
   <div class="chips">
     {#each warnings as w (w.name + w.text)}
@@ -202,152 +229,291 @@
   </div>
 {/if}
 
-<ConnFlow
-  running={!!status?.running}
-  segmentUp={net?.status.segment_up ?? null}
-  {clients}
-  segmentIp={net?.segment.ip ?? null}
-  segmentIface={net?.segment.iface ?? null}
-  nodeName={activeName}
-  realOk={liveActive?.real_ok ?? null}
-  latencyMs={liveActive?.latency_ms ?? null}
-  egressIp={liveActive?.egress_ip ?? null}
-  egressCc={liveActive?.egress_cc ?? null}
-  uplink={net?.status.uplink ?? null}
-  uplink6={net?.status.uplink6 ?? null}
-  ipv6Enabled={!!net?.ipv6_enabled}
-  proxyDown={latest.down}
-  proxyUp={latest.up}
-  {directDown}
-  {directUp}
-/>
-
-<div class="metrics">
-  <div class="metric">
-    <span class="eyebrow">Real latency</span>
-    <span class="metric-val mono">{liveActive?.real_ok ? liveActive.latency_ms : "—"}{#if liveActive?.real_ok}<small>ms</small>{/if}</span>
-    <span class="metric-sub">{liveActive ? (liveActive.checked_at ? freshness(liveActive.checked_at) : (liveActive.real_ok === false ? "probe failed" : "no probe yet")) : "waiting…"}</span>
+<!-- ===== status strip ===== -->
+<div class="strip">
+  <div class="cell">
+    <div class="cell-k">GATEWAY</div>
+    <div class="cell-v">
+      <span class="sdot" class:on={status?.running} class:warn={xrayError} class:bad={status?.running === false && !xrayError}></span>
+      <span class="big" class:acc={status?.running} class:err={status?.running === false && !xrayError} class:warnc={xrayError}>
+        {status?.running ? "UP" : xrayError ? "RECONNECTING" : status?.running === false ? "DOWN" : "—"}
+      </span>
+    </div>
   </div>
-  <div class="metric">
-    <span class="eyebrow">Egress IP</span>
-    <span class="metric-val mono sm">{#if liveActive?.egress_cc}<span class="flag" title={liveActive.egress_cc}>{flagEmoji(liveActive.egress_cc)}</span> {/if}{liveActive?.egress_ip ?? "—"}</span>
-    {#if liveActive?.egress_ip6}<span class="metric-v6 mono" title={liveActive.egress_ip6}>{#if liveActive.egress_cc6}<span class="flag" title={liveActive.egress_cc6}>{flagEmoji(liveActive.egress_cc6)}</span> {/if}v6 {liveActive.egress_ip6}</span>{/if}
-    <span class="metric-sub">{liveActive?.egress_ip ? (freshness(liveActive.checked_at) || "tunnel exit") : "unknown"}</span>
+  <div class="cell">
+    <div class="cell-k">KILL-SWITCH</div>
+    <div class="cell-v">
+      <span class="sdot" class:on={killArmed} class:bad={killArmed === false}></span>
+      <span class="big" class:err={killArmed === false}>{killArmed == null ? "—" : killArmed ? "ARMED" : "OPEN"}</span>
+    </div>
   </div>
-  <div class="metric">
-    <span class="eyebrow">Download</span>
-    <span class="metric-val mono rate-down">{disabled ? "—" : fmtRate(latest.down)}</span>
-    <span class="metric-sub">{disabled ? "stats off" : "live"}</span>
+  <div class="cell">
+    <div class="cell-k">ACTIVE NODE</div>
+    <div class="cell-v">
+      {#if liveActive?.egress_cc}<span class="flagchip" title={liveActive.egress_cc}>{flagEmoji(liveActive.egress_cc)}</span>{/if}
+      <span class="mid">{activeName ?? "—"}</span>
+    </div>
   </div>
-  <div class="metric">
-    <span class="eyebrow">Upload</span>
-    <span class="metric-val mono rate-up">{disabled ? "—" : fmtRate(latest.up)}</span>
-    <span class="metric-sub">{disabled ? "stats off" : "live"}</span>
+  <div class="cell">
+    <div class="cell-k">UPTIME</div>
+    <div class="cell-v"><span class="mid mono" aria-live="off">{status?.running ? uptimeStr : "—"}</span></div>
   </div>
-  <div class="metric">
-    <span class="eyebrow">Data down</span>
-    <span class="metric-val mono">{dataDown !== null ? fmtBytes(dataDown) : "—"}</span>
-    <span class="metric-sub">{sessionDown !== null ? fmtBytes(sessionDown) + " this session" : "total used"}</span>
-  </div>
-  <div class="metric">
-    <span class="eyebrow">Data up</span>
-    <span class="metric-val mono">{dataUp !== null ? fmtBytes(dataUp) : "—"}</span>
-    <span class="metric-sub">{sessionUp !== null ? fmtBytes(sessionUp) + " this session" : "total used"}</span>
+  <div class="cell">
+    <div class="cell-k">CLIENTS</div>
+    <div class="cell-v">
+      <span class="big">{clients ?? "—"}</span>
+      {#if clients !== null && poolSize}<span class="cell-sub">/ {poolSize} leases</span>{/if}
+    </div>
   </div>
 </div>
 
-<div class="card graph-card">
-  <div class="graph-top">
-    <span class="eyebrow">Throughput</span>
+<!-- ===== main row: live traffic | upstream health ===== -->
+<div class="main-row">
+  <div class="card traffic">
+    <div class="card-top">
+      <div class="row-tight">
+        <span class="eyebrow">Live Traffic</span>
+        <span class="ws-pill" class:off={disabled}>● {disabled ? "off" : "ws"}</span>
+      </div>
+    </div>
+    <div class="readouts">
+      <div class="ro">
+        <div class="ro-k"><span class="swatch up"></span>DOWNLOAD ↓</div>
+        <div class="ro-v up">{disabled ? "—" : fmtRate(latest.down)}</div>
+      </div>
+      <div class="ro">
+        <div class="ro-k"><span class="swatch down"></span>UPLOAD ↑</div>
+        <div class="ro-v down">{disabled ? "—" : fmtRate(latest.up)}</div>
+      </div>
+      <div class="ro session">
+        <div class="ro-k">SESSION TOTAL</div>
+        <div class="ro-sess mono">
+          ↓ {(sessionDown ?? dataDown) !== null ? fmtBytes(sessionDown ?? dataDown!) : "—"}
+          · ↑ {(sessionUp ?? dataUp) !== null ? fmtBytes(sessionUp ?? dataUp!) : "—"}
+        </div>
+      </div>
+    </div>
+    {#if disabled}
+      <p class="msg">Traffic stats disabled — enable in Settings.</p>
+    {:else}
+      <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} onwindow={onGraphWindow} />
+    {/if}
     {#if liveDirect && (liveDirect.down_bps > 0 || liveDirect.up_bps > 0)}
-      <span class="direct-note" class:warn={liveDirect.down_bps + liveDirect.up_bps > UNTUNNELED_WARN_BPS}
-            title="Traffic leaving the segment WITHOUT going through the tunnel">
+      <div class="direct-note" class:warn={liveDirect.down_bps + liveDirect.up_bps > UNTUNNELED_WARN_BPS}
+           title="Traffic leaving the segment WITHOUT going through the tunnel">
         untunneled ↓ {fmtRate(liveDirect.down_bps)} · ↑ {fmtRate(liveDirect.up_bps)}
-      </span>
+      </div>
     {/if}
   </div>
-  {#if disabled}
-    <p class="msg">Traffic stats disabled — enable in Settings.</p>
-  {:else}
-    <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} onwindow={onGraphWindow} />
-  {/if}
+
+  <div class="card health">
+    <div class="card-top">
+      <span class="eyebrow">Upstream Health</span>
+      <span class="pill" class:ok={status?.running}>{status?.running ? "FAILOVER READY" : "OFFLINE"}</span>
+    </div>
+    <div class="health-list">
+      {#each healthRows as n (n.id)}
+        {@const isActive = n.id === activeNode?.id}
+        {@const degraded = isActive && liveActive?.real_ok === false}
+        <div class="hrow" class:active={isActive}>
+          <span class="sdot" class:on={isActive && !degraded} class:warn={degraded} class:idle={!isActive}></span>
+          <div class="hrow-main">
+            <div class="hrow-name">{n.name}</div>
+            <div class="hrow-sub">{n.transport || n.network || "—"}{#if isActive && liveActive?.egress_cc} · {liveActive.egress_cc}{/if}</div>
+          </div>
+          <div class="hrow-right">
+            {#if isActive && liveActive?.latency_ms != null && liveActive.real_ok}
+              <div class="hrow-lat" class:warnc={degraded}>{liveActive.latency_ms}ms</div>
+              <div class="hrow-state acc">active</div>
+            {:else if isActive && degraded}
+              <div class="hrow-lat warnc">probe failed</div>
+              <div class="hrow-state warnc">degraded</div>
+            {:else if isActive}
+              <div class="hrow-lat dim">—</div>
+              <div class="hrow-state acc">active</div>
+            {:else}
+              <div class="hrow-lat dim">—</div>
+              <div class="hrow-state dim">standby</div>
+            {/if}
+          </div>
+        </div>
+      {/each}
+      {#if !healthRows.length}<p class="msg">No nodes configured.</p>{/if}
+    </div>
+  </div>
 </div>
 
-<LatencyChart values={liveActive?.lat_history ?? []} stale={liveActive?.real_ok === false} />
+<!-- ===== connection diagram (kept from the original dashboard, restyled) ===== -->
+<ConnFlow
+    running={!!status?.running}
+    segmentUp={net?.status.segment_up ?? null}
+    {clients}
+    segmentIp={net?.segment.ip ?? null}
+    segmentIface={net?.segment.iface ?? null}
+    nodeName={activeName}
+    realOk={liveActive?.real_ok ?? null}
+    latencyMs={liveActive?.latency_ms ?? null}
+    egressIp={liveActive?.egress_ip ?? null}
+    egressCc={liveActive?.egress_cc ?? null}
+    uplink={net?.status.uplink ?? null}
+    uplink6={net?.status.uplink6 ?? null}
+    ipv6Enabled={!!net?.ipv6_enabled}
+    proxyDown={latest.down}
+    proxyUp={latest.up}
+    {directDown}
+    {directUp}
+  />
 
-<NetworkCard onnet={(n) => (net = n)} />
+<!-- ===== bottom row: routing | network | event log ===== -->
+<div class="bottom-row">
+  <div class="card">
+    <div class="card-top">
+      <span class="eyebrow">Routing</span>
+      <span class="muted-sm">{routing ? `${routing.rules.length} rules` : "—"}</span>
+    </div>
+    <div class="rules">
+      {#each ruleSummary as r (r.id)}
+        <div class="rule"><span class="rule-act {actClass(r.action)}">{r.action.toUpperCase()}</span><span class="rule-val">{r.type ? r.type + ":" : ""}{r.value}</span></div>
+      {/each}
+      {#if routing}
+        <div class="rule"><span class="rule-act {actClass(routing.default_action)}">{routing.default_action.toUpperCase()}</span><span class="rule-val">default → {activeName ?? "—"}</span></div>
+      {:else if !ruleSummary.length}
+        <p class="msg">No rules.</p>
+      {/if}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-top">
+      <span class="eyebrow">Network</span>
+      <span class="acc-sm">nftables · tproxy</span>
+    </div>
+    {#if net}
+      <div class="kv">
+        <div><span class="kv-k">segment</span><span class="kv-v">{net.segment.ip || "—"}{net.segment.iface ? ` · ${net.segment.iface}` : ""}</span></div>
+        <div><span class="kv-k">dhcp pool</span><span class="kv-v">{net.segment.dhcp_start || "—"} – {net.segment.dhcp_end || "—"}</span></div>
+        <div><span class="kv-k">client dns</span><span class="kv-v">{net.segment.client_dns || "—"}</span></div>
+        <div><span class="kv-k">ipv6</span><span class="kv-v">{net.ipv6_enabled ? (net.status.ipv6_prefix_source ?? "on") : "off"}</span></div>
+      </div>
+    {:else}
+      <p class="msg">Loading…</p>
+    {/if}
+  </div>
+
+  <div class="card">
+    <div class="card-top">
+      <span class="eyebrow">Event Log</span>
+      <span class="muted-sm">tail -f</span>
+    </div>
+    <div class="events">
+      {#each (net?.events ?? []).slice(0, 6) as e (e.ts + e.detail)}
+        <div class="ev"><span class="ev-t mono">{clockTime(e.ts)}</span><span class="ev-l {evLevel(e.kind)}">[{e.kind}]</span><span class="ev-d">{e.detail}</span></div>
+      {/each}
+      {#if !(net?.events ?? []).length}<p class="msg">No recent events.</p>{/if}
+    </div>
+  </div>
+</div>
 
 <Alert {msg} />
 
 <style>
-  /* status hero */
-  .hero {
-    position: relative; overflow: hidden;
-    display: flex; align-items: center; gap: 1.2rem; flex-wrap: wrap;
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
-    padding: 1.1rem 1.3rem 1.1rem 1.5rem;
+  /* ===== status strip — 5 cells joined by 1px hairlines ===== */
+  .strip {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px;
+    background: var(--bd); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden;
   }
-  .hero::before {
-    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
-    background: var(--border); transition: background 0.2s;
-  }
-  .hero.up::before { background: var(--success); }
-  .hero.down::before { background: var(--danger); }
-  .hero.warn::before { background: var(--warn); }
-  .status-dot { width: 0.85rem; height: 0.85rem; border-radius: 50%; flex: none; background: var(--muted); }
-  .status-dot.live { background: var(--success); animation: pulse-ring 2.4s ease-out infinite; }
-  .status-dot.bad { background: var(--danger); }
-  .status-dot.warn { background: var(--warn); }
-  .hero-state, .hero-node { display: grid; gap: 0.12rem; }
-  .hero-headline { font-size: 1.3rem; font-weight: 720; letter-spacing: -0.02em; line-height: 1.1; }
-  .hero-nodename { font-weight: 600; font-size: 0.95rem; }
-  .hero-spacer { margin-left: auto; }
+  .cell { background: var(--bg1); padding: 0.8rem 1rem; display: grid; gap: 0.45rem; min-width: 0; }
+  .cell-k { font-size: 0.66rem; letter-spacing: 0.14em; color: var(--tx3); }
+  .cell-v { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+  .big { font-size: 1.15rem; font-weight: 600; line-height: 1; }
+  .mid { font-size: 0.95rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cell-sub { font-size: 0.72rem; color: var(--tx3); font-weight: 400; }
+  .acc { color: var(--acc); } .err { color: var(--err); } .warnc { color: var(--warn); }
+  .flagchip { font-size: 0.85rem; line-height: 1; }
+  .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--tx3); }
+  .sdot.on { background: var(--acc); box-shadow: 0 0 8px var(--acc); }
+  .sdot.bad { background: var(--err); }
+  .sdot.warn { background: var(--warn); box-shadow: 0 0 7px var(--warn); animation: v2pulse 1.6s infinite; }
+  .sdot.idle { background: var(--acc); box-shadow: none; }
 
-  /* banners + chips (failover A / subscription warnings E) */
-  .banner {
-    display: flex; align-items: center; gap: 0.6rem;
-    padding: 0.65rem 0.9rem; border-radius: var(--radius);
-    border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--surface));
-    font-size: 0.86rem;
-  }
-  .banner span { margin-right: auto; }
-  .banner-x { background: none; border: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 0 0.2rem; }
-  .banner-x:hover { color: var(--text); }
-  .chips { display: flex; flex-wrap: wrap; gap: 0.45rem; }
-  .chip {
-    font-size: 0.74rem; font-weight: 600; padding: 0.22rem 0.6rem; border-radius: 999px;
-    border: 1px solid var(--border);
-  }
-  .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, transparent); }
-  .chip.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+  /* ===== layout rows ===== */
+  .main-row { display: grid; grid-template-columns: 2fr 1fr; gap: 0.9rem; }
+  .bottom-row { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 0.9rem; }
+  .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+  .row-tight { display: flex; align-items: center; gap: 0.6rem; }
+  .muted-sm { font-size: 0.72rem; color: var(--tx2); }
+  .acc-sm { font-size: 0.72rem; color: var(--acc); }
 
-  /* metric tiles — single surface split by 1px gap-dividers (no card overuse) */
-  .metrics {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border); border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm); overflow: hidden;
-  }
-  .metric { background: var(--surface); padding: 0.85rem 1.1rem; display: grid; gap: 0.25rem; min-width: 0; }
-  .metric-val {
-    font-size: 1.4rem; font-weight: 680; letter-spacing: -0.02em; line-height: 1.1;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .metric-val.sm { font-size: 1.02rem; }
-  .metric-val small { font-size: 0.7rem; font-weight: 500; color: var(--muted); margin-left: 0.15rem; }
-  .metric-val.rate-down { color: var(--accent); }
-  .metric-val.rate-up { color: var(--success); }
-  .metric-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .metric-v6 { font-size: 0.78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* pills */
+  .ws-pill, .pill { font-size: 0.64rem; color: var(--acc); border: 1px solid var(--acc); border-radius: 20px; padding: 0.05rem 0.5rem; white-space: nowrap; }
+  .ws-pill { animation: v2pulse 2.2s infinite; }
+  .ws-pill.off { color: var(--tx3); border-color: var(--bd2); animation: none; }
+  .pill { color: var(--tx3); border-color: var(--bd2); }
+  .pill.ok { color: var(--acc); border-color: var(--acc); }
 
-  /* traffic graph card */
-  .graph-card { gap: 0.7rem; }
-  .graph-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
-  .direct-note { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.72rem; color: var(--muted); }
+  /* ===== live traffic ===== */
+  .traffic { gap: 0.7rem; }
+  .readouts { display: flex; gap: 1.8rem; align-items: flex-end; flex-wrap: wrap; }
+  .ro-k { display: flex; align-items: center; gap: 0.4rem; font-size: 0.66rem; color: var(--tx3); letter-spacing: 0.04em; margin-bottom: 0.25rem; }
+  .swatch { width: 9px; height: 2px; border-radius: 2px; }
+  .swatch.up { background: var(--up); } .swatch.down { background: var(--down); }
+  .ro-v { font-size: 1.6rem; font-weight: 600; line-height: 1; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .ro-v.up { color: var(--up); } .ro-v.down { color: var(--down); }
+  .ro.session { margin-left: auto; text-align: right; }
+  .ro-sess { font-size: 0.82rem; color: var(--tx2); }
+  .direct-note { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.72rem; color: var(--tx2); }
   .direct-note.warn { color: var(--warn); font-weight: 600; }
 
-  @media (max-width: 820px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 460px) { .metrics { grid-template-columns: 1fr; } }
+  /* ===== upstream health ===== */
+  .health { gap: 0.6rem; }
+  .health-list { display: flex; flex-direction: column; gap: 0.5rem; }
+  .hrow { display: flex; align-items: center; gap: 0.65rem; background: var(--bg2); border: 1px solid var(--bd); border-radius: 8px; padding: 0.55rem 0.7rem; }
+  .hrow.active { border-color: var(--acc); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--acc) 18%, transparent); }
+  .hrow-main { flex: 1; min-width: 0; }
+  .hrow-name { font-size: 0.8rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hrow-sub { font-size: 0.66rem; color: var(--tx3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hrow-right { text-align: right; }
+  .hrow-lat { font-size: 0.82rem; font-weight: 600; font-family: var(--mono); color: var(--acc); }
+  .hrow-lat.dim { color: var(--tx2); } .hrow-lat.warnc { color: var(--warn); }
+  .hrow-state { font-size: 0.62rem; color: var(--acc); }
+  .hrow-state.dim { color: var(--tx3); } .hrow-state.warnc { color: var(--warn); }
+
+  /* ===== routing summary ===== */
+  .rules { display: flex; flex-direction: column; gap: 0.45rem; }
+  .rule { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem; }
+  .rule-act { width: 3rem; font-weight: 600; flex: none; }
+  .act-block { color: var(--err); } .act-direct { color: var(--acc); } .act-proxy { color: var(--down); }
+  .rule-val { color: var(--tx2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ===== network summary ===== */
+  .kv { display: flex; flex-direction: column; gap: 0.5rem; }
+  .kv > div { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.78rem; }
+  .kv-k { color: var(--tx3); } .kv-v { color: var(--tx2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ===== event log ===== */
+  .events { display: flex; flex-direction: column; gap: 0.4rem; }
+  .ev { display: flex; gap: 0.5rem; font-size: 0.72rem; line-height: 1.3; }
+  .ev-t { color: var(--tx3); flex: none; }
+  .ev-l { flex: none; }
+  .ev-l.ok { color: var(--acc); } .ev-l.warn { color: var(--warn); } .ev-l.err { color: var(--err); } .ev-l.info { color: var(--down); }
+  .ev-d { color: var(--tx2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* banners + chips (failover / subscription warnings) */
+  .banner { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.85rem; border-radius: var(--radius);
+    border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--bg1)); font-size: 0.82rem; }
+  .banner span { margin-right: auto; }
+  .banner-x { background: none; border: none; color: var(--tx2); cursor: pointer; font: inherit; padding: 0 0.2rem; }
+  .banner-x:hover { color: var(--tx); }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+  .chip { font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px; border: 1px solid var(--bd); }
+  .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--bd)); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .chip.bad { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--bd)); background: color-mix(in srgb, var(--err) 10%, transparent); }
+
+  @media (max-width: 1100px) {
+    .main-row { grid-template-columns: 1fr; }
+    .bottom-row { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 680px) {
+    .strip { grid-template-columns: repeat(2, 1fr); }
+  }
 </style>
