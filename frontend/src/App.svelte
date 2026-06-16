@@ -6,6 +6,7 @@
   import Subscriptions from "./lib/Subscriptions.svelte";
   import Tuning from "./lib/Tuning.svelte";
   import Routing from "./lib/Routing.svelte";
+  import Network from "./lib/Network.svelte";
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
   import ConfirmModal from "./lib/ConfirmModal.svelte";
@@ -14,7 +15,7 @@
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
-  type View = "dashboard" | "nodes" | "subs" | "tuning" | "routing" | "settings";
+  type View = "dashboard" | "nodes" | "subs" | "tuning" | "routing" | "network" | "settings";
   let authed = $state(false);
   let needsSetup = $state(false);
   let ready = $state(false);
@@ -57,13 +58,14 @@
     { id: "subs", label: "Subscriptions" },
     { id: "tuning", label: "Anti-DPI" },
     { id: "routing", label: "Routing" },
+    { id: "network", label: "Network" },
     { id: "settings", label: "Settings" },
   ];
   // NOC nav: grouped under dim section labels. Settings sits on its own below the groups
-  // (the spec's 8th screen). Health & Traffic / Network / Operations arrive with Phase 2.
+  // (the spec's 8th screen). Health & Traffic / Operations arrive with later Phase-2 screens.
   const navGroups: { label: string; ids: View[] }[] = [
     { label: "MONITOR", ids: ["dashboard"] },
-    { label: "CONFIGURE", ids: ["nodes", "subs", "tuning", "routing"] },
+    { label: "CONFIGURE", ids: ["nodes", "subs", "tuning", "routing", "network"] },
   ];
 
   // 24-viewBox icons (theme toggle) — thin line, currentColor
@@ -78,6 +80,7 @@
     subs: nsvg('<path d="M2.5 9a6 6 0 0 1 6 6M2.5 4.5a10.5 10.5 0 0 1 10.5 10.5"/><circle cx="3.2" cy="13.3" r="1.1" fill="currentColor" stroke="none"/>'),
     tuning: nsvg('<path d="M8 1.5l5 2v4c0 3.2-2.2 4.8-5 6-2.8-1.2-5-2.8-5-6v-4z"/>'),
     routing: nsvg('<circle cx="3.5" cy="8" r="2"/><circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/><path d="M5.5 8h3l2.5-4M8.5 8l2.5 4"/>'),
+    network: nsvg('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>'),
     settings: nsvg('<line x1="3" y1="4" x2="13" y2="4"/><circle cx="10" cy="4" r="1.6"/><line x1="3" y1="8" x2="13" y2="8"/><circle cx="6" cy="8" r="1.6"/><line x1="3" y1="12" x2="13" y2="12"/><circle cx="11" cy="12" r="1.6"/>'),
     moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
     sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>'),
@@ -163,6 +166,8 @@
           <Tuning />
         {:else if view === "routing"}
           <Routing />
+        {:else if view === "network"}
+          <Network />
         {:else}
           <Settings />
         {/if}
