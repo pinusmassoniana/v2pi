@@ -2,6 +2,7 @@
   import Setup from "./lib/Setup.svelte";
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
+  import Health from "./lib/Health.svelte";
   import Nodes from "./lib/Nodes.svelte";
   import Subscriptions from "./lib/Subscriptions.svelte";
   import Tuning from "./lib/Tuning.svelte";
@@ -15,7 +16,7 @@
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
-  type View = "dashboard" | "nodes" | "subs" | "tuning" | "routing" | "network" | "settings";
+  type View = "dashboard" | "health" | "nodes" | "subs" | "tuning" | "routing" | "network" | "settings";
   let authed = $state(false);
   let needsSetup = $state(false);
   let ready = $state(false);
@@ -54,6 +55,7 @@
 
   const tabs: { id: View; label: string }[] = [
     { id: "dashboard", label: "Overview" },
+    { id: "health", label: "Health & Traffic" },
     { id: "nodes", label: "Nodes" },
     { id: "subs", label: "Subscriptions" },
     { id: "tuning", label: "Anti-DPI" },
@@ -64,7 +66,7 @@
   // NOC nav: grouped under dim section labels. Settings sits on its own below the groups
   // (the spec's 8th screen). Health & Traffic / Operations arrive with later Phase-2 screens.
   const navGroups: { label: string; ids: View[] }[] = [
-    { label: "MONITOR", ids: ["dashboard"] },
+    { label: "MONITOR", ids: ["dashboard", "health"] },
     { label: "CONFIGURE", ids: ["nodes", "subs", "tuning", "routing", "network"] },
   ];
 
@@ -76,6 +78,7 @@
     `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const icons: Record<string, string> = {
     dashboard: nsvg('<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>'),
+    health: nsvg('<polyline points="1,9 4,9 6,3 9,13 11,7 15,7"/>'),
     nodes: nsvg('<rect x="2" y="2.5" width="12" height="4" rx="1"/><rect x="2" y="9.5" width="12" height="4" rx="1"/><circle cx="5" cy="4.5" r=".7" fill="currentColor" stroke="none"/><circle cx="5" cy="11.5" r=".7" fill="currentColor" stroke="none"/>'),
     subs: nsvg('<path d="M2.5 9a6 6 0 0 1 6 6M2.5 4.5a10.5 10.5 0 0 1 10.5 10.5"/><circle cx="3.2" cy="13.3" r="1.1" fill="currentColor" stroke="none"/>'),
     tuning: nsvg('<path d="M8 1.5l5 2v4c0 3.2-2.2 4.8-5 6-2.8-1.2-5-2.8-5-6v-4z"/>'),
@@ -158,6 +161,8 @@
       <main class="page" class:wide={view === "nodes"}>
         {#if view === "dashboard"}
           <Dashboard />
+        {:else if view === "health"}
+          <Health />
         {:else if view === "nodes"}
           <Nodes />
         {:else if view === "subs"}
