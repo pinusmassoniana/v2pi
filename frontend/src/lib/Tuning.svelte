@@ -89,8 +89,8 @@
 <Alert {msg} kind={msgKind} />
 
 <div class="card">
-  <h3>Tuning profiles</h3>
-  <p class="muted hint">Global anti-DPI profiles. Assign one per node from its <strong>Edit</strong> on the Nodes tab. The profile governing the live tunnel right now is marked <span class="badge active-b">● active</span>.</p>
+  <div class="card-top"><span class="eyebrow">Anti-DPI profiles</span><span class="muted-sm">{profiles.length} profiles · ⟳ live-apply</span></div>
+  <p class="muted hint">Evasion profiles. Assign one per node from its <strong>Edit</strong> on the Nodes tab. The profile governing the live tunnel right now is marked <span class="badge active-b">● active</span>.</p>
   <div class="table-wrap"><table class="table">
     <thead><tr><th>name</th><th>used by</th><th>fingerprint</th><th>frag</th><th>noise</th><th>mux</th><th>DoH</th><th>QUIC</th><th></th></tr></thead>
     <tbody>
@@ -127,7 +127,7 @@
 
 <form onsubmit={save} class="card editor">
   <div class="ed-head">
-    <h3>{editor.id === null ? "New profile" : `Edit profile #${editor.id}`}</h3>
+    <span class="eyebrow">{editor.id === null ? "New profile" : `Edit profile #${editor.id}`}</span>
     <select class="input auto" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") stagePreset(v); }}>
       <option value="__ph__" disabled selected>Preset…</option>
       {#each presets as p (p.name)}<option value={p.name}>{p.title}</option>{/each}
@@ -218,8 +218,10 @@
 
 <style>
   .editor { max-width: 34rem; }
+  .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+  .muted-sm { font-size: 0.72rem; color: var(--tx3); }
   .ed-head { display: flex; align-items: center; gap: 0.6rem; }
-  .ed-head h3 { margin-right: auto; }
+  .ed-head .eyebrow { margin-right: auto; }
   .ed-head .auto { width: auto; }
   .row-actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; align-items: center; white-space: nowrap; }
   .check { display: flex; gap: 0.6rem; align-items: center; }
