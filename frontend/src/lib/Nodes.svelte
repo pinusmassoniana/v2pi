@@ -132,7 +132,11 @@
   // --- CRUD / connect ---
   async function add(e: Event) {
     e.preventDefault();
-    try { await api.addNode({ ...form }); form = blankForm(); validateMsg = ""; addOpen = false; await refresh(); }
+    try {
+      await api.addNode({ ...form }); form = blankForm(); validateMsg = ""; addOpen = false;
+      tab = "servers";   // NN9: manual nodes land under Servers — switch there so the new one is visible
+      await refresh();
+    }
     catch (err) { setMsg(errText(err, "add failed"), "err"); }
   }
   function startEdit(n: Node) {
@@ -184,7 +188,7 @@
     const j = i + dir;
     if (j < 0 || j >= list.length) return;
     [list[i], list[j]] = [list[j], list[i]];
-    try { await api.reorderNodes(list); await refresh(); }
+    try { await api.reorderNodes(list); await refreshNodes(); }   // reorder only touches node order — lighter refresh
     catch (err) { setMsg(errText(err, "reorder failed"), "err"); }
   }
   // N4 import
@@ -344,13 +348,13 @@
           <td class="ck" data-label=""><input type="checkbox" checked={selected.has(n.id)} onchange={() => toggleSel(n.id)} aria-label={`select ${n.name}`} /></td>
           <td class="col-id" data-label="id">{n.id}</td>
           <td class="col-name" data-label="name">
-            <span class="nm">{n.name}</span>
+            <span class="nm" title={n.name}>{n.name}</span>
             {#if n.stale}<span class="badge stale-b" title="Vanished from its subscription; kept because it was active or for history">stale</span>{/if}
             {#if n.id === activeId}<span class="connected">● connected{#if status?.active_since} · {uptime(status.active_since)}{/if}</span>{/if}
             {#if n.id === activeId && (health[n.id]?.fail_count ?? 0) > 0}<span class="badge warn-b" title="Consecutive real-request failures (auto-failover counter)">fail {health[n.id]?.fail_count}</span>{/if}
             {#if n.note}<span class="note" title={n.note}>{@html I.note}{n.note}</span>{/if}
           </td>
-          <td data-label="address">{n.address}</td><td class="col-port" data-label="port">{n.port}</td><td class="col-transport" data-label="transport">{n.transport}{n.security === "tls" ? "·tls" : ""}</td>
+          <td class="col-address" data-label="address" title={n.address}>{n.address}</td><td class="col-port" data-label="port">{n.port}</td><td class="col-transport" data-label="transport">{n.transport}{n.security === "tls" ? "·tls" : ""}</td>
           {@render healthCells(health[n.id])}
           <td data-label="">
             <div class="actions">
@@ -496,6 +500,10 @@
 
   /* compact, single-row action cell (A2) — icon buttons keep the column narrow */
   .actions { white-space: nowrap; display: flex; gap: 0.25rem; flex-wrap: nowrap; align-items: center; }
+  /* below ~900px up to 8 controls no longer fit on one line — let them wrap instead of overflowing (A2b) */
+  @media (max-width: 900px) and (min-width: 601px) {
+    .actions { flex-wrap: wrap; white-space: normal; }
+  }
   .ord { color: var(--muted); }
   .t-btn { color: var(--accent); }
   .ck { width: 1.6rem; text-align: center; }
@@ -514,7 +522,9 @@
   tr.stale { opacity: 0.55; }
   tr.active td { background: var(--accent-soft); }
   tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-  .nm { font-weight: 500; }
+  .nm { font-weight: 500; display: inline-block; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  /* long hostnames stay on one line and ellipsis rather than stretching the column (A-addr) */
+  .col-address { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .badge { margin-left: 0.4rem; font-size: 0.62rem; font-weight: 700; padding: 0.02rem 0.35rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
   .stale-b { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
   .warn-b { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
@@ -530,7 +540,8 @@
   .hpill.bad .hp-dot { background: var(--danger); }
   .hp-none { color: var(--faint); }
   .egress { color: var(--muted); font-size: 0.78rem; }
-  .eg6 { display: block; color: var(--faint); font-size: 0.72rem; }
+  .col-egress { max-width: 13rem; }
+  .eg6 { display: block; color: var(--faint); font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .trend { color: var(--accent); }
   .small { font-size: 0.72rem; }
   .empty { text-align: center; padding: 1.2rem; }
@@ -564,6 +575,11 @@
   @media (max-width: 740px) and (min-width: 601px) {
     .nodes .col-egress { display: none; }
   }
+  /* the desktop 44rem table min-width (app.css) still forces ~704px on 601–704px viewports where
+     columns are already hidden — drop it here so the table fits the screen instead of overflowing (A1b). */
+  @media (max-width: 760px) and (min-width: 601px) {
+    .table-wrap > .nodes { min-width: 0; }
+  }
 
   /* phone card layout (N-A) — each node becomes a stacked card, all fields shown with labels */
   @media (max-width: 600px) {
@@ -588,8 +604,12 @@
     .nodes :global(td[data-label=""])::before { content: none; }
     .nodes .col-name { display: block; padding-top: 0.5rem; }
     .nodes .col-name::before { content: none; }            /* name is the card title, no label */
-    .nodes .col-name .nm { font-size: 0.95rem; font-weight: 600; }
+    .nodes .col-name .nm { font-size: 0.95rem; font-weight: 600; max-width: none; white-space: normal; }
     .nodes .col-name .note { max-width: none; white-space: normal; margin-left: 0; margin-top: 0.2rem; }
+    /* address + egress + IPv6 show in full inside the card rather than clamped/ellipsised */
+    .nodes .col-address { max-width: none; overflow: visible; white-space: normal; word-break: break-all; }
+    .nodes .col-egress { max-width: none; }
+    .nodes .eg6 { white-space: normal; overflow: visible; }
     .nodes .actions { justify-content: flex-start; flex-wrap: wrap; padding-top: 0.5rem; }
     .nodes .ck { justify-content: flex-start; }
     .nodes :global(.empty) { display: block; }

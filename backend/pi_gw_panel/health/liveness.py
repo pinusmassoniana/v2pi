@@ -76,6 +76,11 @@ class LivenessLoop:
         # connection undisturbed during the check (and tunneled_fetch no longer matters here).
         real_ok, real_ms, egress, egress6 = self._real_through(node, st.xray_bin, probe_url,
                                                                probe_url6=url6)
+        # a manual switch may have moved the active node while this (seconds-long) probe ran — don't
+        # attribute the result or advance fail_count on a node that is no longer active.
+        cur = store.get_setting("active_node_id")
+        if (int(cur) if cur else None) != aid:
+            return
         prev = store.get_health(aid)
         store.upsert_health(NodeHealth(
             node_id=aid,
@@ -106,7 +111,9 @@ class LivenessLoop:
                 events.record(self._state.store, "failover",
                               f"auto-failover to node {new_active}", now=self._now())
         except Exception:
-            log.debug("failover tick failed", exc_info=True)
+            # failover is safety-critical — a persistent bug here means the user THINKS they're
+            # protected while auto-failover never fires. Surface it (warning), not debug.
+            log.warning("failover tick failed", exc_info=True)
 
     # --- loop lifecycle (mirrors HealthMonitor) ---
     def start(self) -> None:
@@ -123,6 +130,10 @@ class LivenessLoop:
             self._task = None
 
     async def _loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        # tick immediately on start so the watchdog can revive a crashed xray right away instead of
+        # leaving it down for the first interval (_tick is already fully exception-guarded).
+        await loop.run_in_executor(None, self._tick)
         while True:
             await asyncio.sleep(self._interval)
-            await asyncio.get_running_loop().run_in_executor(None, self._tick)
+            await loop.run_in_executor(None, self._tick)

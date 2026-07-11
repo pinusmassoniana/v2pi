@@ -20,7 +20,7 @@ def test_reconcile_add_update_remove(settings):
               Node(id=None, name="C", address="3.3.3.3", port=443, uuid="uc")]
     counts = reconcile(s, sid, parsed, active_node_id=None)
     assert counts == {"added": 1, "updated": 1, "removed": 1,
-                      "active_changed": False, "active_replacement": None}
+                      "active_changed": False, "active_replacement": None, "skipped_deletes": 0}
     names = {n.address: n.name for n in s.list_nodes_for_sub(sid)}
     assert names == {"1.1.1.1": "A2", "3.3.3.3": "C"}  # B removed
     assert s.get_node(a).id == a  # A kept its id across the update
@@ -81,10 +81,12 @@ def test_reconcile_protects_active_node(settings):
     s = _store(settings)
     sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
     act = s.add_node(Node(id=None, name="A", address="1.1.1.1", port=443, uuid="ua", subscription_id=sid))
-    counts = reconcile(s, sid, [], active_node_id=act)  # active vanishes from feed
-    assert counts["removed"] == 0
+    counts = reconcile(s, sid, [], active_node_id=act)  # empty feed (likely transient) → don't trust it
+    # floor-guard: an empty/near-empty response no longer deletes OR marks-stale — it leaves the
+    # store untouched so one bad fetch can't disrupt the live connection.
+    assert counts["removed"] == 0 and counts["skipped_deletes"] == 1
     n = s.get_node(act)
-    assert n is not None and n.stale is True
+    assert n is not None and n.stale is False   # active left intact on an untrusted empty feed
 
 
 def test_refresh_end_to_end(monkeypatch, settings):

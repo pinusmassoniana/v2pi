@@ -1,6 +1,19 @@
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+_log = logging.getLogger(__name__)
+
+
+def safe_int(value, default: int, name: str = "value") -> int:
+    """int(value) but falling back to `default` (with a warning) on a bad/None value, so a typo
+    or stray newline in an env var — or a corrupt cosmetic DB setting — can't crash boot."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        _log.warning("invalid int for %s: %r — using default %d", name, value, default)
+        return default
 
 
 def _packaged_static() -> str:
@@ -85,7 +98,9 @@ class Settings:
             static_dir=env.get("PI_GW_STATIC_DIR", _packaged_static()),
             xray_bin=env.get("PI_GW_XRAY_BIN", "xray"),
             session_secret=env.get("PI_GW_SESSION_SECRET", ""),
-            login_lockout_sec=int(env.get("PI_GW_LOGIN_LOCKOUT_SEC", "60")),
+            # safe-int so a typo/stray newline in the env var can't crash boot (audit P2)
+            login_lockout_sec=safe_int(env.get("PI_GW_LOGIN_LOCKOUT_SEC", "60"), 60,
+                                       "PI_GW_LOGIN_LOCKOUT_SEC"),
             dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", os.path.join(data, "dnsmasq.leases")),
             client_dns6=env.get("PI_GW_CLIENT_DNS6", "2606:4700:4700::1111"),
             geoip_db=env.get("PI_GW_GEOIP_DB", "/usr/local/share/dbip-country-lite.mmdb"),

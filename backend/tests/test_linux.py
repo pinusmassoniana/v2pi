@@ -59,8 +59,9 @@ def test_apply_returns_error_when_nft_fails():
 
 
 def test_teardown_removes_table_rule_and_route_best_effort():
-    # even if every `ip` call errors (rule/route already absent), teardown still reports ok
-    fake = FakeRun(fail="ip")
+    # even if every `ip` call errors because the rule/route is already absent, teardown still
+    # reports ok (an "already absent" nft/ip error is not a real failure — stderr says "no such")
+    fake = FakeRun(fail="ip", stderr="Error: No such file or directory")
     res = LinuxBackend(Settings(), run=fake).teardown()
     assert res.ok is True
     cmds = fake.cmds()

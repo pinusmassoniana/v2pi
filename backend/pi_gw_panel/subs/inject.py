@@ -18,10 +18,17 @@ def _subst(value: str, tokens: dict) -> str:
     return out
 
 
+def _no_crlf(value: str) -> str:
+    """Strip CR/LF so an admin-editable injection value (or a {token} expansion) can't smuggle
+    extra headers into the urllib Request — HTTP header/CRLF injection (audit P3)."""
+    return value.replace("\r", "").replace("\n", "")
+
+
 def build_request(url: str, injection: dict, tokens: dict) -> BuiltRequest:
     """Compose the subscription GET: injected headers + query with {token} substitution.
     Pure — no network. Used by both the live preview and the fetcher."""
-    headers = {k: _subst(str(v), tokens) for k, v in (injection.get("headers") or {}).items()}
+    headers = {_no_crlf(str(k)): _no_crlf(_subst(str(v), tokens))
+               for k, v in (injection.get("headers") or {}).items()}
     query = {k: _subst(str(v), tokens) for k, v in (injection.get("query") or {}).items()}
     full = url
     if query:

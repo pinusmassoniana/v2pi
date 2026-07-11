@@ -3,6 +3,18 @@ from pi_gw_panel.models import Node
 from pi_gw_panel.subs.parsers import safe_port
 
 
+class _NoAliasLoader(yaml.SafeLoader):
+    """SafeLoader that refuses YAML aliases (P2). safe_load blocks arbitrary object
+    construction but NOT anchor/alias amplification ("billion laughs"): a small (<5MB) doc
+    can expand to gigabytes and OOM. Anchors (&a) are harmless alone; refusing to expand the
+    alias (*a) — where the blow-up actually happens — stops it without a threshold guess."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.events.AliasEvent):
+            raise yaml.YAMLError("YAML aliases are disabled (anchor/alias amplification guard)")
+        return super().compose_node(parent, index)
+
+
 def _opts_path_host(p: dict) -> tuple[str, str]:
     """Best-effort path + Host from clash transport opts (xhttp/ws/h2/http variants).
     Clash has no single canonical place for these, so probe the common keys."""
@@ -23,7 +35,7 @@ def _opts_path_host(p: dict) -> tuple[str, str]:
 
 
 def parse(body: str) -> list[Node]:
-    data = yaml.safe_load(body)
+    data = yaml.load(body, Loader=_NoAliasLoader)   # SafeLoader + no-alias amplification guard
     proxies = data.get("proxies", []) if isinstance(data, dict) else []
     nodes = []
     for p in proxies:

@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS
+from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS, safe_int
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
 from pi_gw_panel.db import connect, init_schema
@@ -40,7 +40,9 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         net = select_backend(settings)
     # Stats client → sampler for the live traffic graph. The channel is built lazily
     # on first query, so constructing this touches no network (safe in tests).
-    port = int(store.get_setting("stats_api_port") or SETTINGS_DEFAULTS["stats_api_port"])
+    # safe-int so a corrupt cosmetic setting (e.g. from a bad restore) can't block boot (audit P2)
+    port = safe_int(store.get_setting("stats_api_port"),
+                    int(SETTINGS_DEFAULTS["stats_api_port"]), "stats_api_port")
     stats_client = StatsClient(f"127.0.0.1:{port}")
     sampler = TrafficSampler(lambda: stats_client.query("outbound>>>"))
     # Always-on history: a SECOND sampler (independent prev-counters) feeds a 1h ring

@@ -3,14 +3,24 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# Upper bounds so one request can't ship a multi-MB string (memory/CPU DoS — hashing a huge
+# password burns scrypt CPU on unauthenticated /login; huge node fields bloat parse + DB + config).
+_MAX_USER = 128
+_MAX_PW = 256
+_MAX_HOST = 253      # DNS name / SNI / address max
+_MAX_FIELD = 512     # generic node string (note, path, alpn, keys)
+_MAX_URL = 2048
+_MAX_IMPORT = 512 * 1024   # a subscription/import blob
+
+
 class LoginIn(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=_MAX_USER)
+    password: str = Field(max_length=_MAX_PW)
 
 
 class SetupIn(BaseModel):
-    username: str = Field(min_length=1)
-    password: str = Field(min_length=8)   # SS1: minimum password length
+    username: str = Field(min_length=1, max_length=_MAX_USER)
+    password: str = Field(min_length=8, max_length=_MAX_PW)   # SS1: minimum password length
 
 
 class TokenCreateIn(BaseModel):
@@ -40,26 +50,26 @@ class AuditEntryOut(BaseModel):
 
 
 class PasswordChangeIn(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=8)
+    current_password: str = Field(max_length=_MAX_PW)
+    new_password: str = Field(min_length=8, max_length=_MAX_PW)
 
 
 class NodeIn(BaseModel):
-    name: str
-    address: str
+    name: str = Field(max_length=_MAX_FIELD)
+    address: str = Field(max_length=_MAX_HOST)
     port: int = Field(ge=1, le=65535)
-    uuid: str
-    transport: str = "vision"
-    security: str = "reality"   # reality | tls (normalize() downgrades reality→tls if no key)
-    sni: str = ""
-    public_key: str = ""
-    short_id: str = ""
-    fingerprint: str = "chrome"
-    path: str = ""              # xhttp path
-    host: str = ""             # xhttp Host header
-    mode: str = ""             # xhttp mode
-    alpn: str = ""             # tls ALPN (comma-separated)
-    note: str = ""             # free-text operator note / label
+    uuid: str = Field(max_length=_MAX_FIELD)
+    transport: str = Field(default="vision", max_length=64)
+    security: str = Field(default="reality", max_length=32)   # reality | tls (normalize() downgrades reality→tls if no key)
+    sni: str = Field(default="", max_length=_MAX_HOST)
+    public_key: str = Field(default="", max_length=_MAX_FIELD)
+    short_id: str = Field(default="", max_length=_MAX_FIELD)
+    fingerprint: str = Field(default="chrome", max_length=32)
+    path: str = Field(default="", max_length=_MAX_FIELD)              # xhttp path
+    host: str = Field(default="", max_length=_MAX_HOST)             # xhttp Host header
+    mode: str = Field(default="", max_length=64)               # xhttp mode
+    alpn: str = Field(default="", max_length=_MAX_FIELD)             # tls ALPN (comma-separated)
+    note: str = Field(default="", max_length=_MAX_FIELD)             # free-text operator note / label
 
 
 class NodeUpdate(BaseModel):
@@ -116,8 +126,8 @@ class StatusOut(BaseModel):
 
 
 class SubscriptionIn(BaseModel):
-    name: str
-    url: str
+    name: str = Field(max_length=_MAX_FIELD)
+    url: str = Field(max_length=_MAX_URL)
     interval_sec: int = 0
     injection: dict | None = None
     enabled: bool = True
@@ -125,8 +135,8 @@ class SubscriptionIn(BaseModel):
 
 
 class SubscriptionPatch(BaseModel):
-    name: str | None = None
-    url: str | None = None
+    name: str | None = Field(default=None, max_length=_MAX_FIELD)
+    url: str | None = Field(default=None, max_length=_MAX_URL)
     interval_sec: int | None = None
     injection: dict | None = None
     enabled: bool | None = None
@@ -153,7 +163,7 @@ class SubscriptionOut(BaseModel):
 
 
 class PreviewIn(BaseModel):
-    url: str
+    url: str = Field(max_length=_MAX_URL)
     injection: dict | None = None
 
 
@@ -183,7 +193,7 @@ class PreviewNodesOut(BaseModel):
 
 # N4: import nodes from pasted subscription text (base64 / clash / json) as manual servers.
 class ImportNodesIn(BaseModel):
-    text: str
+    text: str = Field(max_length=_MAX_IMPORT)
 
 
 class ImportNodesOut(BaseModel):

@@ -19,10 +19,11 @@
   let liveFrame = $derived(live && !("disabled" in live) && !("error" in live) ? live : null);
   let liveActive = $derived(liveFrame ? liveFrame.active : null);
   let activeNode = $derived(nodes.find((n) => n.id === status?.active_node_id) ?? null);
-  let series = $derived(graphWindow > 3600 ? longSamples : samples);
+  // keep showing the short-window series until the long-window fetch resolves (avoids empty-chart flicker)
+  let series = $derived(graphWindow > 3600 && longSamples.length ? longSamples : samples);
 
   // KPIs — all from real data; nothing faked
-  let peakDown = $derived(series.length ? Math.max(...series.map((s) => s.down)) : 0);
+  let peakDown = $derived(series.reduce((m, s) => (s.down > m ? s.down : m), 0));
   let activeLat = $derived(liveActive?.real_ok ? liveActive.latency_ms : null);
   let latHistory = $derived(liveActive?.lat_history ?? []);
   let avgLat = $derived(latHistory.length ? Math.round(latHistory.reduce((a, b) => a + b, 0) / latHistory.length) : null);
@@ -63,7 +64,7 @@
   }
   function onGraphWindow(sec: number) { graphWindow = sec; if (sec > 3600) loadLong(sec); }
 
-  $effect(() => { subscribeStatus(3000); });
+  $effect(() => subscribeStatus(3000));
   $effect(() => { api.listNodes().then((n) => (nodes = n)).catch(() => {}); });
   $effect(() => {
     const load = () => api.getNetwork().then((n) => (net = n)).catch(() => {});
@@ -79,23 +80,17 @@
     const t = setInterval(() => { if (document.visibilityState === "visible") loadLong(sec); }, 60000);
     return () => clearInterval(t);
   });
-  // live traffic WS (for the live chart + active-node latency)
+  // live traffic WS (for the live chart + active-node latency) — self-managing, backfills on reconnect
   $effect(() => {
-    let ws: WebSocket | null = null, timer: ReturnType<typeof setTimeout> | null = null, stop = false;
-    function open() {
-      ws = api.openTraffic((m) => {
-        if ("disabled" in m) { disabled = true; return; }
-        if ("error" in m) return;
-        disabled = false; live = m;
-        const p = m.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
-        samples.push({ ts: m.ts, up: p.up_bps, down: p.down_bps });
-        if (samples.length > 4000) samples.splice(0, samples.length - 4000);
-      });
-      ws.onclose = () => { if (!stop) { seedHistory(); timer = setTimeout(open, 2000); } };
-      ws.onerror = () => { try { ws?.close(); } catch {} };
-    }
-    open();
-    return () => { stop = true; if (timer) clearTimeout(timer); try { ws?.close(); } catch {} };
+    const conn = api.connectTraffic((m) => {
+      if ("disabled" in m) { disabled = true; return; }
+      if ("error" in m) return;
+      disabled = false; live = m;
+      const p = m.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
+      samples.push({ ts: m.ts, up: p.up_bps, down: p.down_bps });
+      if (samples.length > 4000) samples.splice(0, samples.length - 4000);
+    }, seedHistory);
+    return () => conn.close();
   });
 </script>
 
@@ -154,7 +149,7 @@
   <div class="card">
     <div class="card-top"><span class="eyebrow">Failover history</span></div>
     <div class="fh">
-      {#each failoverEvents.slice(0, 8) as e (e.ts + e.detail)}
+      {#each failoverEvents.slice(0, 8) as e, i (e.ts + e.detail + i)}
         <div class="fh-row"><span class="fh-t">{agoLabel(e.ts, serverNow() / 1000)}</span><span class="fh-d">{e.detail}</span></div>
       {/each}
       {#if status?.last_failover_at && !failoverEvents.length}
@@ -174,7 +169,8 @@
   .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.9rem; }
   .kpi { background: var(--bg1); border: 1px solid var(--bd); border-radius: 10px; padding: 0.8rem 1rem; display: grid; gap: 0.5rem; }
   .kpi-k { font-size: 0.64rem; letter-spacing: 0.13em; color: var(--tx3); }
-  .kpi-v { font-size: 1.6rem; font-weight: 600; line-height: 1; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .kpi-v { font-size: 1.6rem; font-weight: 600; line-height: 1.15; font-family: var(--mono); font-variant-numeric: tabular-nums;
+    display: flex; flex-wrap: wrap; align-items: baseline; }
   .kpi-v small { font-size: 0.7rem; color: var(--tx3); font-weight: 400; margin-left: 0.15rem; }
   .kpi-v.up { color: var(--up); } .kpi-v.acc { color: var(--acc); } .kpi-v.warnc { color: var(--warn); }
   .kpi-extra { font-size: 0.66rem; color: var(--tx3); font-weight: 400; margin-left: 0.5rem; font-family: var(--font); }
@@ -183,9 +179,9 @@
 
   /* probe bars */
   .bars { display: flex; flex-direction: column; gap: 0.75rem; }
-  .bar-top { display: flex; justify-content: space-between; font-size: 0.76rem; margin-bottom: 0.3rem; }
-  .bar-name { color: var(--tx2); }
-  .bar-ms { font-weight: 600; font-family: var(--mono); }
+  .bar-top { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.76rem; margin-bottom: 0.3rem; }
+  .bar-name { color: var(--tx2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-ms { font-weight: 600; font-family: var(--mono); flex: none; }
   .bar-ms.acc { color: var(--acc); } .bar-ms.dim { color: var(--tx3); }
   .bar-track { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
   .bar-fill { height: 100%; background: var(--tx3); border-radius: 3px; transition: width 0.3s; }
@@ -199,4 +195,5 @@
   .fh-d { color: var(--tx2); }
 
   @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, 1fr); } .row2 { grid-template-columns: 1fr; } }
+  @media (max-width: 420px) { .kpis { grid-template-columns: 1fr; } }
 </style>

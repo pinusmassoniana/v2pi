@@ -1,4 +1,5 @@
 import base64
+import binascii
 import urllib.parse
 from pi_gw_panel.models import Node
 from pi_gw_panel.subs.parsers import safe_port
@@ -7,7 +8,12 @@ from pi_gw_panel.subs.parsers import safe_port
 def _b64decode(text: str) -> str:
     text = "".join(text.split())
     pad = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode(text + pad).decode("utf-8", "replace")
+    try:
+        return base64.urlsafe_b64decode(text + pad).decode("utf-8", "replace")
+    except binascii.Error:
+        # P3: base64/vless is the catch-all sniff — a mis-sniffed HTML/captcha page isn't
+        # valid base64; degrade to zero nodes instead of throwing out of the whole refresh.
+        return ""
 
 
 def parse(body: str) -> list[Node]:

@@ -27,7 +27,7 @@ def test_setup_creates_credential_and_authenticates(settings, stub_xray):
 def test_login_with_created_credential(settings, stub_xray):
     c = _client(settings, stub_xray)
     c.post("/api/setup", json={"username": "admin", "password": "s3cret12"})
-    c.post("/api/logout")
+    c.post("/api/logout", headers={"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]})
     assert c.get("/api/csrf").status_code == 401
     assert c.post("/api/login", json={"username": "admin", "password": "wrongpw1"}).status_code == 401
     assert c.post("/api/login", json={"username": "nope", "password": "s3cret12"}).status_code == 401
@@ -47,7 +47,7 @@ def test_password_change(settings, stub_xray):
     # correct current rotates the hash
     assert c.post("/api/password", json={"current_password": "oldpass1", "new_password": "newpass1"},
                   headers=h).status_code == 200
-    c.post("/api/logout")
+    c.post("/api/logout", headers={"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]})
     assert c.post("/api/login", json={"username": "admin", "password": "oldpass1"}).status_code == 401
     assert c.post("/api/login", json={"username": "admin", "password": "newpass1"}).status_code == 200
 

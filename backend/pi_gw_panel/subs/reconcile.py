@@ -1,5 +1,9 @@
+import logging
 from pi_gw_panel.models import Node
 from pi_gw_panel.nodes.store import NodeStore
+from pi_gw_panel.subs.parsers import clamp_node_fields
+
+log = logging.getLogger("pi_gw_panel")
 
 # Fields that change the generated xray config — a change to any of these on the active
 # node means the live tunnel must be re-applied to pick the new value up.
@@ -38,40 +42,64 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
       has exactly one fresh node — that node's id, the single server to move the connection to.
     """
     existing = store.list_nodes_for_sub(sub_id)
+    # P2: bound untrusted feed string fields at this single choke point (every refreshed node
+    # flows through here) before they reach the store — see clamp_node_fields.
+    parsed = _dedupe([clamp_node_fields(p) for p in parsed])
+    # P1: a transient error page can parse to an empty/near-empty list; deleting every vanished
+    # node then wipes the sub on one bad response. Refuse the delete pass when the feed is empty
+    # or shrank by >50% vs the stored count — adds/updates still run; the (harmless, prunable)
+    # extras are cleaned up by the next healthy refresh.
+    skip_deletes = not parsed or (len(existing) > 0 and len(parsed) < len(existing) * 0.5)
     seen: set[tuple] = set()
-    added = updated = removed = 0
+    added = updated = removed = skipped_deletes = 0
     active_changed = active_vanished = False
-    for pos, p in enumerate(_dedupe(parsed)):
-        key = (p.address, p.port, p.uuid, p.path)
-        seen.add(key)
-        cur = store.get_node_by_identity(sub_id, *key)
-        p.subscription_id = sub_id
-        p.stale = False
-        p.position = pos
-        if cur is None:
-            p.id = None
-            p.tuning_profile_id = default_profile_id   # N5: inherit the sub's default profile
-            store.add_node(p)
-            added += 1
-        else:
-            p.id = cur.id
-            p.tuning_profile_id = cur.tuning_profile_id  # C2: keep the user's per-node choice
-            if cur.id == active_node_id and _config_differs(cur, p):
-                active_changed = True
-            store.update_node(p)
-            updated += 1
-    for n in existing:
-        if (n.address, n.port, n.uuid, n.path) not in seen:
-            if n.id == active_node_id:
-                store.mark_stale(n.id, True)  # protect the live connection
-                active_vanished = True
+    # reconcile is NOT a single transaction (each store op commits on its own — the store's
+    # mutators don't expose a shared boundary); run adds/updates before deletes so a store
+    # error mid-loop leaves extra nodes rather than a wiped sub (P2, least-harmful ordering).
+    try:
+        for pos, p in enumerate(parsed):
+            key = (p.address, p.port, p.uuid, p.path)
+            seen.add(key)
+            cur = store.get_node_by_identity(sub_id, *key)
+            p.subscription_id = sub_id
+            p.stale = False
+            p.position = pos
+            if cur is None:
+                p.id = None
+                p.tuning_profile_id = default_profile_id   # N5: inherit the sub's default profile
+                store.add_node(p)
+                added += 1
             else:
-                store.delete_node(n.id)
-                removed += 1
+                p.id = cur.id
+                p.tuning_profile_id = cur.tuning_profile_id  # C2: keep the user's per-node choice
+                if cur.id == active_node_id and _config_differs(cur, p):
+                    active_changed = True
+                store.update_node(p)
+                updated += 1
+        for n in existing:
+            if (n.address, n.port, n.uuid, n.path) not in seen:
+                if skip_deletes:
+                    skipped_deletes += 1        # P1: don't trust an empty/near-empty response
+                    continue
+                if n.id == active_node_id:
+                    store.mark_stale(n.id, True)  # protect the live connection
+                    active_vanished = True
+                else:
+                    store.delete_node(n.id)
+                    removed += 1
+    except Exception:
+        log.exception("reconcile: store error mid-reconcile for sub %s (partial state possible)",
+                      sub_id)
+        raise
+    if skipped_deletes:
+        log.warning("reconcile: sub %s returned %d node(s) vs %d stored — refused to delete %d "
+                    "(possible transient/empty feed)", sub_id, len(parsed), len(existing),
+                    skipped_deletes)
     active_replacement = None
     if active_vanished:
         fresh = [n for n in store.list_nodes_for_sub(sub_id) if not n.stale]
         if len(fresh) == 1:                       # single-server sub that rotated its identity
             active_replacement = fresh[0].id
     return {"added": added, "updated": updated, "removed": removed,
-            "active_changed": active_changed, "active_replacement": active_replacement}
+            "active_changed": active_changed, "active_replacement": active_replacement,
+            "skipped_deletes": skipped_deletes}

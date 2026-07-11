@@ -141,37 +141,31 @@
     return () => clearInterval(t);
   });
 
+  // Interval poller that pauses while the tab is hidden AND refetches immediately when it returns
+  // (so a backgrounded panel isn't stale for a whole interval after the operator comes back — FB).
+  function poll(load: () => void, ms: number): () => void {
+    load();
+    const tick = () => { if (document.visibilityState === "visible") load(); };
+    const t = setInterval(tick, ms);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", tick); };
+  }
+
   // shared status poller + a nodes refresh, both paused while the tab is hidden
   $effect(() => {
     const stop = subscribeStatus(3000);
-    refresh();
-    const t = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 3000);
-    return () => { clearInterval(t); stop(); };
+    const stopRefresh = poll(refresh, 3000);
+    return () => { stopRefresh(); stop(); };
   });
 
   // network poll — drives the status strip (kill-switch/clients), ConnFlow, network summary, event log
-  $effect(() => {
-    const load = () => api.getNetwork().then((n) => (net = n)).catch(() => {});
-    load();
-    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 4000);
-    return () => clearInterval(t);
-  });
+  $effect(() => poll(() => { api.getNetwork().then((n) => (net = n)).catch(() => {}); }, 4000));
 
   // routing summary — rules change rarely, poll slowly
-  $effect(() => {
-    const load = () => api.getRouting().then((r) => (routing = r)).catch(() => {});
-    load();
-    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
-    return () => clearInterval(t);
-  });
+  $effect(() => poll(() => { api.getRouting().then((r) => (routing = r)).catch(() => {}); }, 30000));
 
   // E: subscription expiry / data-cap warnings — subs change rarely, poll slowly
-  $effect(() => {
-    const load = () => api.listSubs().then((s) => (subs = s)).catch(() => {});
-    load();
-    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
-    return () => clearInterval(t);
-  });
+  $effect(() => poll(() => { api.listSubs().then((s) => (subs = s)).catch(() => {}); }, 30000));
 
   // 1s heartbeat for live uptime / freshness, paused while hidden
   $effect(() => {
@@ -182,28 +176,19 @@
   // seed the graph with recorded history so the full window shows immediately on open
   $effect(() => { seedHistory(); });
 
-  // live traffic WebSocket with reconnect/backoff; closes on unmount
+  // live traffic WebSocket — self-managing (backoff reconnect, pauses when tab hidden); the onGap
+  // callback backfills the missed window (D5). Closes on unmount.
   $effect(() => {
-    let ws: WebSocket | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let stop = false;
-    function open() {
-      ws = api.openTraffic((m) => {
-        if ("disabled" in m) { disabled = true; return; }
-        if ("error" in m) { return; }            // transient stats error → leave a gap
-        disabled = false;
-        live = m;
-        const p = m.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
-        samples.push({ ts: m.ts, up: p.up_bps, down: p.down_bps });   // mutate (no per-second 4000-copy)
-        if (samples.length > 4000) samples.splice(0, samples.length - 4000);
-      });
-      ws.onclose = () => {
-        if (!stop) { seedHistory(); timer = setTimeout(open, 2000); }   // D5: backfill the gap
-      };
-      ws.onerror = () => { try { ws?.close(); } catch {} };
-    }
-    open();
-    return () => { stop = true; if (timer) clearTimeout(timer); try { ws?.close(); } catch {} };
+    const conn = api.connectTraffic((m) => {
+      if ("disabled" in m) { disabled = true; return; }
+      if ("error" in m) { return; }            // transient stats error → leave a gap
+      disabled = false;
+      live = m;
+      const p = m.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
+      samples.push({ ts: m.ts, up: p.up_bps, down: p.down_bps });   // mutate (no per-second 4000-copy)
+      if (samples.length > 4000) samples.splice(0, samples.length - 4000);
+    }, seedHistory);
+    return () => conn.close();
   });
 
   // upstream-health rows: active node first (real probe), the rest as standby (no fake latencies)
@@ -302,7 +287,7 @@
     {#if disabled}
       <p class="msg">Traffic stats disabled — enable in Settings.</p>
     {:else}
-      <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} onwindow={onGraphWindow} />
+      <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} windowSec={graphWindow} onwindow={onGraphWindow} />
     {/if}
   </div>
 
@@ -420,7 +405,7 @@
 <style>
   /* ===== status strip — 5 cells joined by 1px hairlines ===== */
   .strip {
-    display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px;
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
     background: var(--bd); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden;
   }
   .cell { background: var(--bg1); padding: 0.8rem 1rem; display: grid; gap: 0.45rem; min-width: 0; }
@@ -438,8 +423,10 @@
   .sdot.idle { background: var(--acc); box-shadow: none; }
 
   /* ===== layout rows ===== */
-  .main-row { display: grid; grid-template-columns: 2fr 1fr; gap: 0.9rem; }
-  .bottom-row { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 0.9rem; }
+  /* minmax(0,·) lets tracks shrink below their content so wide readouts/strings don't blow the page
+     out horizontally at 375px (the .card min-width:0 in app.css then lets inner ellipsis engage). */
+  .main-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 0.9rem; }
+  .bottom-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 0.9rem; }
   .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
   .row-tight { display: flex; align-items: center; gap: 0.6rem; }
   .muted-sm { font-size: 0.72rem; color: var(--tx2); }
@@ -515,8 +502,13 @@
   @media (max-width: 1100px) {
     .main-row { grid-template-columns: 1fr; }
     .bottom-row { grid-template-columns: 1fr; }
+    /* mid breakpoint: 5 status cells → 3 so words like RECONNECTING aren't crushed on tablets */
+    .strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
   @media (max-width: 680px) {
-    .strip { grid-template-columns: repeat(2, 1fr); }
+    .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* on phones the untunneled-leak note rejoins the flow (was absolute) so it can't overlap the title */
+    .direct-note { position: static; margin-bottom: 0.2rem; }
+    .traffic .card-top { margin-top: 0; }
   }
 </style>

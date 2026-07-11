@@ -3,6 +3,7 @@
   import Modal from "./Modal.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { serverNow } from "./status.svelte";
   import { I } from "./icons";
 
   let subs = $state<Subscription[]>([]);
@@ -51,7 +52,7 @@
     if (!iso) return "—";
     const t = new Date(iso).getTime();
     if (isNaN(t)) return iso;
-    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    const s = Math.max(0, Math.round((serverNow() - t) / 1000));   // Pi-clock aligned, matching Nodes
     if (s < 60) return `${s}s ago`;
     if (s < 3600) return `${Math.round(s / 60)}m ago`;
     if (s < 86400) return `${Math.round(s / 3600)}h ago`;
@@ -159,25 +160,25 @@
 </div>
 
 <div class="card">
-  <div class="table-wrap"><table class="table">
+  <div class="table-wrap"><table class="table subs">
     <thead><tr><th>id</th><th>name</th><th>url</th><th>nodes</th><th>autoupdate</th><th>last</th><th>fetched</th><th></th></tr></thead>
     <tbody>
       {#each subs as s (s.id)}
         <tr class:paused={!s.enabled}>
-          <td>{s.id}</td>
-          <td>
+          <td data-label="id">{s.id}</td>
+          <td class="col-name" data-label="name">
             {s.name}
             {#if quotaText(s)}<div class="sub muted">{quotaText(s)}</div>{/if}
           </td>
-          <td class="url" title={s.url}>{s.url}</td>
-          <td>{s.node_count}</td>
-          <td>{s.interval_sec > 0 ? `every ${Math.round(s.interval_sec / 60)} min` : "off"}</td>
-          <td title={s.last_error ?? ""}>
+          <td class="url" data-label="url" title={s.url}>{s.url}</td>
+          <td data-label="nodes">{s.node_count}</td>
+          <td data-label="autoupdate">{s.interval_sec > 0 ? `every ${Math.round(s.interval_sec / 60)} min` : "off"}</td>
+          <td data-label="last" title={s.last_error ?? ""}>
             {s.last_status ?? "—"}{#if s.last_path} <small class="muted">({s.last_path})</small>{/if}
             {#if s.last_error}<span class="warn" title={s.last_error}>⚠</span>{/if}
           </td>
-          <td class="muted" title={s.last_fetched ?? ""}>{relTime(s.last_fetched)}</td>
-          <td>
+          <td class="muted" data-label="fetched" title={s.last_fetched ?? ""}>{relTime(s.last_fetched)}</td>
+          <td data-label="">
             <div class="actions">
             <button class="btn iconbtn" title="Refresh now" aria-label="Refresh subscription" onclick={() => refreshSub(s.id)} disabled={refreshing[s.id]}>{#if refreshing[s.id]}…{:else}{@html I.refresh}{/if}</button>
             <button class="btn iconbtn" title={s.enabled ? "Pause auto-update" : "Resume auto-update"} aria-label={s.enabled ? "Pause" : "Resume"} onclick={() => toggleEnabled(s)}>{@html s.enabled ? I.pause : I.play}</button>
@@ -243,7 +244,7 @@
       <div class="table-wrap"><table class="table">
         <thead><tr><th>name</th><th>address</th><th>port</th><th>transport</th><th>security</th></tr></thead>
         <tbody>
-          {#each previewNodes.nodes as n (n.address + n.port)}
+          {#each previewNodes.nodes as n, i (n.address + ':' + n.port + '#' + i)}
             <tr><td>{n.name}</td><td>{n.address}</td><td>{n.port}</td><td>{n.transport}</td><td>{n.security}</td></tr>
           {/each}
         </tbody>
@@ -309,7 +310,8 @@
   td .sub { font-size: 0.72rem; margin-top: 0.1rem; }
   tr.paused { opacity: 0.5; }
   .warn { color: var(--danger); cursor: help; margin-left: 0.2rem; }
-  .actions { display: flex; gap: 0.25rem; flex-wrap: nowrap; align-items: center; white-space: nowrap; }
+  /* wrap so the add-form action buttons (Preview / Dry-run parse / Add) don't overflow a narrow card */
+  .actions { display: flex; gap: 0.25rem; flex-wrap: wrap; align-items: center; white-space: nowrap; }
   .edit { display: grid; gap: 0.6rem; }
   .field { display: grid; gap: 0.2rem; }
   .check { display: flex; align-items: center; gap: 0.45rem; }
@@ -318,5 +320,32 @@
   .preview {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 0.6rem; white-space: pre-wrap; font-family: var(--mono); font-size: 0.8rem;
+  }
+
+  /* phone card layout — each subscription row becomes a stacked card with labels (mirrors Nodes N-A).
+     Scoped to .subs so the dry-run preview table keeps its horizontal-scroll treatment. */
+  @media (max-width: 600px) {
+    /* drop the desktop 44rem table min-width (app.css) so the card fits the phone instead of overflowing */
+    .table-wrap > .subs { min-width: 0; }
+    .subs, .subs :global(thead), .subs :global(tbody), .subs :global(tr), .subs :global(td) { display: block; }
+    .subs :global(thead) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .subs :global(tbody tr) {
+      border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 0.6rem;
+      padding: 0.3rem 0.2rem; background: var(--surface);
+    }
+    .subs :global(td) {
+      display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+      border: none; padding: 0.32rem 0.7rem;
+    }
+    .subs :global(td)::before {
+      content: attr(data-label); color: var(--faint); font-size: 0.66rem; font-weight: 650;
+      text-transform: uppercase; letter-spacing: 0.05em; flex: none;
+    }
+    .subs :global(td[data-label=""])::before { content: none; }
+    .subs .col-name { display: block; padding-top: 0.5rem; }
+    .subs .col-name::before { content: none; }              /* name is the card title, no label */
+    .subs .url { max-width: none; white-space: normal; word-break: break-all; }
+    .subs .actions { justify-content: flex-start; flex-wrap: wrap; padding-top: 0.5rem; }
+    .subs :global(.empty) { display: block; }
   }
 </style>

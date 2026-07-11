@@ -163,7 +163,7 @@ def test_parse_egress_ip_strict():
 
 def test_fetch_rejects_loopback():
     for url in ("http://127.0.0.1:9/sub", "http://localhost/sub", "http://[::1]:8080/sub"):
-        with pytest.raises(ValueError, match="loopback"):
+        with pytest.raises(ValueError, match="(?i)non-public|internal|loopback"):
             fetch(url, {}, {}, proxy=None)
 
 
@@ -182,7 +182,7 @@ def test_session_secret_never_dev(settings, stub_xray):
 def test_login_rate_limit_locks_after_five_fails(settings, stub_xray):
     c = _client(settings, stub_xray)
     c.post("/api/setup", json={"username": "admin", "password": "changeme123"})
-    c.post("/api/logout")
+    c.post("/api/logout", headers={"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]})
     for _ in range(4):
         assert c.post("/api/login", json={"username": "admin", "password": "no"}).status_code == 401
     # 5th failure trips the lockout; the next attempt is refused outright
@@ -195,7 +195,7 @@ def test_login_lockout_duration_configurable(settings, stub_xray):
     settings.login_lockout_sec = 0          # expires immediately
     c = _client(settings, stub_xray)
     c.post("/api/setup", json={"username": "admin", "password": "changeme123"})
-    c.post("/api/logout")
+    c.post("/api/logout", headers={"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]})
     for _ in range(5):
         c.post("/api/login", json={"username": "admin", "password": "no"})
     r = c.post("/api/login", json={"username": "admin", "password": "changeme123"})

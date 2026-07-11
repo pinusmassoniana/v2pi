@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
     <title>v2pi — Pi VPN gateway</title>
     <meta
@@ -11,8 +11,9 @@
     />
     <meta name="application-name" content="v2pi" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#eceff1" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0d0f" />
+    <!-- Single theme-color driven by the *resolved app theme* (localStorage), not the OS preference —
+         the anti-FOUC script and applyTheme() keep it in sync so the browser chrome matches the UI. -->
+    <meta name="theme-color" id="theme-color-meta" content="#0a0d0f" />
 
     <!-- Self-hosted IBM Plex Mono/Sans (no CDN — offline Pi + censorship context) -->
     <link rel="stylesheet" href="/fonts/plex.css" />
@@ -38,13 +39,14 @@
       // Anti-FOUC: set the theme before the bundle loads so there's no flash.
       // Dark is the primary theme — default to it unless the user explicitly chose light.
       (function () {
+        var t = "dark";
         try {
-          var t = localStorage.getItem("v2pi-theme");
-          if (t !== "light" && t !== "dark") t = "dark";
-          document.documentElement.dataset.theme = t;
-        } catch (e) {
-          document.documentElement.dataset.theme = "dark";
-        }
+          var s = localStorage.getItem("v2pi-theme");
+          if (s === "light" || s === "dark") t = s;
+        } catch (e) {}
+        document.documentElement.dataset.theme = t;
+        var m = document.getElementById("theme-color-meta");
+        if (m) m.setAttribute("content", t === "light" ? "#eceff1" : "#0a0d0f");
       })();
     </script>
   </head>

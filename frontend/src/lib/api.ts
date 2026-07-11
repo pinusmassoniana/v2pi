@@ -132,13 +132,35 @@ export interface AuditEntry { ts: number; actor: string; method: string; path: s
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
 
 let _csrf: string | null = null;
+let _csrfInflight: Promise<string> | null = null;   // dedup concurrent /csrf fetches
 // F1: session died mid-use (expiry / password change elsewhere) — the app shell registers a
 // handler that drops back to the Login screen instead of leaving dead panels around.
 let _onUnauthorized: (() => void) | null = null;
 export function setOnUnauthorized(fn: (() => void) | null) { _onUnauthorized = fn; }
 
+// Bound every request so a stalled TCP connection (radio switch, VPN reconnect on mobile) fails
+// fast instead of leaving the promise pending forever. Generous enough for a real-probe sweep.
+const REQUEST_TIMEOUT_MS = 20000;
+
 async function req(path: string, opts: RequestInit = {}): Promise<any> {
-  const res = await fetch(`/api${path}`, { credentials: "include", ...opts });
+  const ac = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, REQUEST_TIMEOUT_MS);
+  // honour a caller-supplied signal too (abort either way)
+  const ext = opts.signal;
+  if (ext) {
+    if (ext.aborted) ac.abort();
+    else ext.addEventListener("abort", () => ac.abort(), { once: true });
+  }
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, { credentials: "include", ...opts, signal: ac.signal });
+  } catch (e) {
+    if (timedOut) throw new ApiError(0, "request timed out");
+    throw new ApiError(0, "network error");
+  } finally {
+    clearTimeout(timer);
+  }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401) {
@@ -152,9 +174,13 @@ async function req(path: string, opts: RequestInit = {}): Promise<any> {
 
 async function ensureCsrf(): Promise<string> {
   if (_csrf) return _csrf;
-  const { csrf } = await req("/csrf");
-  _csrf = csrf;
-  return csrf;
+  // dedup: a burst of mutations with no token yet share one /csrf round-trip
+  if (!_csrfInflight) {
+    _csrfInflight = req("/csrf")
+      .then((r) => { _csrf = r.csrf; return r.csrf as string; })
+      .finally(() => { _csrfInflight = null; });
+  }
+  return _csrfInflight;
 }
 
 async function mutate(method: string, path: string, body?: unknown): Promise<any> {
@@ -168,13 +194,17 @@ function _postJson(path: string, body: unknown) {
 }
 
 export const api = {
-  _reset() { _csrf = null; },
+  _reset() { _csrf = null; _csrfInflight = null; },
   ensureCsrf,
   // first-run setup: creates the credential AND opens a session (no prior auth needed)
   getSetup(): Promise<{ needs_setup: boolean }> { return req("/setup"); },
   async setup(username: string, password: string) { _csrf = null; return _postJson("/setup", { username, password }); },
   async login(username: string, password: string) { _csrf = null; return _postJson("/login", { username, password }); },
-  async logout() { _csrf = null; return req("/logout", { method: "POST" }); },
+  async logout() {
+    // send the CSRF header (logout is now CSRF-protected) THEN clear the cached token
+    try { return await mutate("POST", "/logout"); }
+    finally { _csrf = null; _csrfInflight = null; }
+  },
   changePassword(current_password: string, new_password: string) { return mutate("POST", "/password", { current_password, new_password }); },
   getStatus(): Promise<Status> { return req("/status"); },
   getTrafficHistory(windowSec = 3600, maxPoints = 1200): Promise<TrafficHistoryResp> {
@@ -248,9 +278,56 @@ export const api = {
   // live traffic WebSocket (session cookie authenticates the handshake). Returns the
   // socket so the caller owns reconnect/close. onMessage gets each parsed frame.
   openTraffic(onMessage: (m: TrafficMessage) => void): WebSocket {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/api/ws/traffic`);
-    ws.onmessage = (e) => onMessage(JSON.parse(e.data));
-    return ws;
+    return _openTrafficSocket(onMessage);
+  },
+
+  // Preferred: a self-managing live-traffic connection. Reconnects with capped exponential
+  // backoff, pauses while the tab is hidden (mobile battery), and calls onGap() before each
+  // reconnect so callers can backfill the missed window. Returns a handle; call .close() to stop.
+  connectTraffic(onMessage: (m: TrafficMessage) => void, onGap?: () => void): TrafficHandle {
+    let ws: WebSocket | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stop = false;
+    let retry = 0;
+    const hidden = () => typeof document !== "undefined" && document.hidden;
+    const schedule = () => {
+      if (stop || timer || hidden()) return;   // paused when hidden; onVis resumes
+      const delay = Math.min(15000, 1000 * 2 ** retry) + Math.random() * 400;
+      retry++;
+      timer = setTimeout(() => { timer = null; open(); }, delay);
+    };
+    const open = () => {
+      if (stop) return;
+      ws = _openTrafficSocket(onMessage);
+      ws.onopen = () => { retry = 0; };
+      ws.onclose = () => { ws = null; if (!stop) { onGap?.(); schedule(); } };
+      ws.onerror = () => { try { ws?.close(); } catch {} };
+    };
+    const onVis = () => { if (!hidden() && !ws && !stop) { retry = 0; open(); } };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
+    open();
+    return {
+      close() {
+        stop = true;
+        if (timer) clearTimeout(timer);
+        if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
+        try { ws?.close(); } catch {}
+        ws = null;
+      },
+    };
   },
 };
+
+export interface TrafficHandle { close(): void; }
+
+function _openTrafficSocket(onMessage: (m: TrafficMessage) => void): WebSocket {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/ws/traffic`);
+  // a single malformed frame must not throw out of the handler and break the stream
+  ws.onmessage = (e) => {
+    let m: TrafficMessage;
+    try { m = JSON.parse(e.data); } catch { m = { error: "bad frame" }; }
+    onMessage(m);
+  };
+  return ws;
+}

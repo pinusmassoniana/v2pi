@@ -44,6 +44,22 @@ def validate_profile(p: TuningProfile) -> tuple[bool, str]:
     for n in (p.noises or []):
         if not isinstance(n, dict) or n.get("type") not in ("rand", "str", "base64", "hex"):
             return False, f"bad noise entry {n!r}"
+        # for 'rand' noise the packet/delay are numeric ranges fed straight into the fragment
+        # freedom outbound — validate them here rather than letting `xray -test` be the only guard.
+        if n.get("type") == "rand":
+            pkt = str(n.get("packet") or "")
+            if pkt and not _RANGE.fullmatch(pkt):
+                return False, f"bad noise packet {pkt!r} (use 'a-b')"
+        dly = str(n.get("delay") or "")
+        if dly and not _RANGE.fullmatch(dly):
+            return False, f"bad noise delay {dly!r} (use 'a-b')"
+    # numeric-ish tuning knobs flow verbatim into the config; reject non-numeric input here so the
+    # user gets feedback instead of the setting being silently dropped at build time.
+    for fld, val in (("xhttp_padding", p.xhttp_padding), ("xmux_max_concurrency", p.xmux_max_concurrency),
+                     ("xmux_max_connections", p.xmux_max_connections), ("mux_concurrency", p.mux_concurrency)):
+        v = str(val or "")
+        if v and not _RANGE.fullmatch(v):
+            return False, f"bad {fld} {v!r} (must be a number or 'a-b')"
     return True, ""
 
 

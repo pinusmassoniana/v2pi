@@ -14,6 +14,9 @@ export const confirmState = {
 };
 
 export function confirmDialog(message: string): Promise<boolean> {
+  // If a dialog is already open, settle it (false) before replacing it — otherwise the earlier
+  // promise's resolve is dropped and its awaiter hangs forever (double-click / racing async flows).
+  _req?.resolve(false);
   return new Promise<boolean>((resolve) => {
     _req = { message, resolve };
   });

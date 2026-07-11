@@ -1,5 +1,6 @@
 import http.cookiejar
 import ipaddress
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,13 +11,60 @@ ALLOW_LOOPBACK = False   # test seam: integration tests fetch from a local stub 
 MAX_BYTES = 5 * 1024 * 1024   # cap the in-memory body so a hostile/huge endpoint can't OOM the Pi
 
 
+def _ip_blocked(addr) -> bool:
+    return (addr.is_loopback or addr.is_private or addr.is_link_local
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
+
+
+def host_blocked(host: str) -> bool:
+    """SSRF guard: True if `host` IS or RESOLVES TO a loopback/private/link-local/reserved address
+    (169.254.169.254 cloud-metadata, 10/8, 192.168/16, ::1, fc00::/7, …). The panel runs as root
+    on the gateway between LAN and WAN, so a subscription URL must never reach an internal host.
+    Applied to the admin URL AND every redirect hop. Bypassed by ALLOW_LOOPBACK (tests)."""
+    if ALLOW_LOOPBACK:
+        return False
+    host = (host or "").strip("[]").lower()
+    if not host or host == "localhost":
+        return True
+    try:                                  # literal IP?
+        return _ip_blocked(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    try:                                  # DNS name → reject if ANY resolved address is internal
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return True                       # unresolvable → refuse rather than let urllib try
+    for ai in infos:
+        try:
+            if _ip_blocked(ipaddress.ip_address(ai[4][0])):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def assert_public_url(url: str) -> None:
+    """Raise ValueError unless `url` is an http(s) URL whose host is public (not internal). Shared
+    entry point so the API preview/refresh handlers get the same SSRF vetting as the fetcher."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        raise ValueError(f"unsupported URL scheme '{parts.scheme or '(none)'}': only http/https allowed")
+    if host_blocked(parts.hostname or ""):
+        raise ValueError("subscription URL resolves to a non-public (internal) address")
+
+
 class _SchemeGuardRedirect(urllib.request.HTTPRedirectHandler):
-    """Follow redirects (needed for the cookie-challenge gate) but refuse to leave http/https,
-    so a 302 → file:// (or other scheme) can't turn the fetcher into a local-file/SSRF read."""
+    """Follow redirects (needed for the cookie-challenge gate) but refuse to leave http/https OR
+    to hop to an internal host — so a 302 → file:// (scheme) or 302 → http://169.254.169.254/
+    (host) can't turn the fetcher into a local-file/SSRF read (the host check must repeat per hop,
+    not just on the admin-entered URL)."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if urllib.parse.urlsplit(newurl).scheme.lower() not in ALLOWED_SCHEMES:
+        parts = urllib.parse.urlsplit(newurl)
+        if parts.scheme.lower() not in ALLOWED_SCHEMES:
             raise urllib.error.HTTPError(newurl, code, "redirect to disallowed scheme", headers, fp)
+        if host_blocked(parts.hostname or ""):
+            raise urllib.error.HTTPError(newurl, code, "redirect to non-public host", headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -47,19 +95,9 @@ def fetch(url: str, injection: dict, tokens: dict, *, proxy: str | None) -> tupl
     (tunnel); else direct. Returns (body, path, headers) with path in {'tunnel', 'direct'}.
     Only http/https URLs are accepted — file://, ftp:// etc. are rejected before any I/O."""
     req = build_request(url, injection, tokens)
-    parts = urllib.parse.urlsplit(req.url)
-    if parts.scheme.lower() not in ALLOWED_SCHEMES:
-        raise ValueError(f"unsupported URL scheme '{parts.scheme or '(none)'}': only http/https allowed")
-    # Defense-in-depth (audit B6): a subscription points at a provider, never at this host —
-    # refuse loopback targets so the admin-entered URL can't be used to poke the panel's own
-    # local-only services (stats gRPC, local proxy). Literal-IP / 'localhost' check only.
-    host = (parts.hostname or "").strip("[]").lower()
-    try:
-        is_loopback = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        is_loopback = host == "localhost"
-    if is_loopback and not ALLOW_LOOPBACK:
-        raise ValueError("loopback subscription URLs are not allowed")
+    # Full SSRF vetting (scheme + host resolves-to-public): a subscription points at a provider,
+    # never at this host or the LAN/metadata endpoints (audit B6). Repeated per redirect hop below.
+    assert_public_url(req.url)
     path = "tunnel" if proxy else "direct"
     body, resp_headers = _http_get(req.url, req.headers, proxy, 20.0)
     return body, path, resp_headers

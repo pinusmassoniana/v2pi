@@ -5,18 +5,51 @@ import subprocess
 import tempfile
 from pi_gw_panel.config import Settings
 
+# xray -test can echo config content on error; these keys carry credentials/secrets that must
+# never reach logs or an API response (the VLESS uuid is effectively the exit-node password).
+_SECRET_KEYS = {
+    "uuid", "id", "password", "publickey", "privatekey", "shortid",
+    "public_key", "private_key", "short_id",
+}
+_VALIDATE_TIMEOUT = 15.0
+
+
+def _collect_secrets(obj, out: set[str]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str) and v and k.lower() in _SECRET_KEYS:
+                out.add(v)
+            else:
+                _collect_secrets(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_secrets(v, out)
+
+
+def _scrub(text: str, cfg: dict) -> str:
+    secrets: set[str] = set()
+    _collect_secrets(cfg, secrets)
+    for s in secrets:
+        text = text.replace(s, "***")
+    return text
+
 
 def validate_config(cfg: dict, xray_bin: str) -> tuple[bool, str]:
-    """Run `xray -test -config <tmp>`; return (ok, combined-output)."""
+    """Run `xray -test -config <tmp>`; return (ok, combined-output with secrets scrubbed)."""
     fd, tmp = tempfile.mkstemp(suffix=".json")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(cfg, f)
-        proc = subprocess.run(
-            [xray_bin, "-test", "-config", tmp],
-            capture_output=True, text=True,
-        )
-        return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+        try:
+            proc = subprocess.run(
+                [xray_bin, "-test", "-config", tmp],
+                capture_output=True, text=True, timeout=_VALIDATE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            # a hung -test would otherwise wedge the whole apply path (it runs synchronously
+            # before any write/restart); the child is already killed by run() on timeout.
+            return False, "validation timed out"
+        return proc.returncode == 0, _scrub((proc.stdout + proc.stderr).strip(), cfg)
     finally:
         os.unlink(tmp)
 

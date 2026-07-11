@@ -1,7 +1,10 @@
 import asyncio
 import datetime
+import logging
 import time
 from pi_gw_panel.subs import service
+
+log = logging.getLogger("pi_gw_panel")
 
 
 def _age_since(last_fetched: str | None) -> float | None:
@@ -69,5 +72,10 @@ class SubScheduler:
     async def _loop(self) -> None:
         while True:
             await asyncio.sleep(self._tick)
-            now = time.monotonic()
-            await asyncio.get_running_loop().run_in_executor(None, self.run_once, now)
+            try:
+                now = time.monotonic()
+                await asyncio.get_running_loop().run_in_executor(None, self.run_once, now)
+            except asyncio.CancelledError:   # stop() cancels the task — let it unwind
+                raise
+            except Exception:                # P1: one bad tick must not kill the loop forever
+                log.exception("SubScheduler: refresh tick failed; continuing")

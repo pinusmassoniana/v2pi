@@ -142,10 +142,18 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         if not ok:
             return ApplyResult(ok=False, error=out)
         try:
-            supervisor.reload()
+            # reload() now reports whether xray actually came up — a config can pass `-test` yet
+            # the live process still die at boot (port bound, cap drop, tproxy/nft state). Treat a
+            # non-ready reload as a failure so we roll back instead of blackholing all client traffic.
+            if not supervisor.reload():
+                raise RuntimeError("xray did not come up on the new config")
             apply_net(settings, net, store)   # honors editable net overrides + kill-switch
         except Exception as exc:
             mgr.rollback()
+            try:
+                supervisor.reload()   # bring xray back up on the rolled-back last-good config
+            except Exception:
+                pass
             try:
                 net.teardown()
             except Exception:

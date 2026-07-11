@@ -90,7 +90,10 @@ def _rule_to_field(r: RoutingRule) -> dict:
     elif r.type in ("geosite", "domain"):
         field["domain"] = _values_field(r)
     elif r.type == "port":
-        field["port"] = (r.value or "").strip()
+        # emit the same normalized tokens validation checked: a value like "80\n443" passes
+        # validate_rule (per-token) but must be emitted as "80,443", not with an embedded newline
+        # (which xray rejects), so a "valid" ruleset can't produce a config xray refuses.
+        field["port"] = ",".join(_split(r.value))
     else:
         raise ValueError(f"unknown routing rule type: {r.type!r}")
     return field

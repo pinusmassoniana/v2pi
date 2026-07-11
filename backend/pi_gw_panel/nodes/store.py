@@ -196,16 +196,18 @@ class NodeStore:
     def delete_node(self, node_id: int) -> None:
         # Drop the node's health row too (no FK/ON DELETE on node_health) so deletes —
         # including the churn from every sub refresh — don't leave orphans behind.
-        self._conn.execute("DELETE FROM node_health WHERE node_id = ?", (node_id,))
-        self._conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
-        self._conn.commit()
+        # One transaction so both deletes are atomic (audit P1).
+        with self._conn:
+            self._conn.execute("DELETE FROM node_health WHERE node_id = ?", (node_id,))
+            self._conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
 
     def reorder_nodes(self, node_ids: list[int]) -> None:
         """Set ``position`` = list index for the given node ids (manual-node reorder).
         Ids not in the list are left untouched."""
-        for i, nid in enumerate(node_ids):
-            self._conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (i, nid))
-        self._conn.commit()
+        # One transaction so all position updates land (or roll back) together (audit P1).
+        with self._conn:
+            for i, nid in enumerate(node_ids):
+                self._conn.execute("UPDATE nodes SET position = ? WHERE id = ?", (i, nid))
 
     def detach_nodes(self, node_ids: list[int]) -> None:
         """Detach nodes from their subscription (→ manual Servers); the rows survive so a
@@ -278,12 +280,13 @@ class NodeStore:
     def add_audit(self, ts: int, actor: str, method: str, path: str, status: int) -> None:
         """Append one mutation record, pruning everything older than the newest _AUDIT_CAP
         rows in the same commit (O(1) — id is monotonic)."""
-        cur = self._conn.execute(
-            "INSERT INTO audit_log(ts, actor, method, path, status) VALUES(?, ?, ?, ?, ?)",
-            (ts, actor, method, path, status))
-        self._conn.execute("DELETE FROM audit_log WHERE id <= ?",
-                           (int(cur.lastrowid) - self._AUDIT_CAP,))
-        self._conn.commit()
+        # One transaction so the insert + prune are atomic (audit P1).
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO audit_log(ts, actor, method, path, status) VALUES(?, ?, ?, ?, ?)",
+                (ts, actor, method, path, status))
+            self._conn.execute("DELETE FROM audit_log WHERE id <= ?",
+                               (int(cur.lastrowid) - self._AUDIT_CAP,))
 
     def list_audit(self, limit: int = 100) -> list[dict]:
         """Newest-first audit entries."""
@@ -298,14 +301,15 @@ class NodeStore:
     def add_traffic_minute(self, ts_min: int, up_bytes: int, down_bytes: int) -> None:
         """Upsert one minute of proxy bytes (additive on conflict — a recorder restart within
         the same minute must not lose the earlier slice). Prunes beyond the retention window."""
-        self._conn.execute(
-            "INSERT INTO traffic_minutes(ts_min, up_bytes, down_bytes) VALUES(?, ?, ?) "
-            "ON CONFLICT(ts_min) DO UPDATE SET up_bytes = up_bytes + excluded.up_bytes, "
-            "down_bytes = down_bytes + excluded.down_bytes",
-            (ts_min, up_bytes, down_bytes))
-        self._conn.execute("DELETE FROM traffic_minutes WHERE ts_min < ?",
-                           (ts_min - self._TRAFFIC_RETENTION_MIN,))
-        self._conn.commit()
+        # One transaction so the upsert + prune are atomic (audit P1).
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO traffic_minutes(ts_min, up_bytes, down_bytes) VALUES(?, ?, ?) "
+                "ON CONFLICT(ts_min) DO UPDATE SET up_bytes = up_bytes + excluded.up_bytes, "
+                "down_bytes = down_bytes + excluded.down_bytes",
+                (ts_min, up_bytes, down_bytes))
+            self._conn.execute("DELETE FROM traffic_minutes WHERE ts_min < ?",
+                               (ts_min - self._TRAFFIC_RETENTION_MIN,))
 
     def traffic_minutes(self, since_min: int) -> list[dict]:
         """Per-minute samples (ascending) since `since_min` (unix//60)."""
@@ -346,10 +350,11 @@ class NodeStore:
 
     def delete_subscription(self, sub_id: int) -> None:
         # Detach nodes (→ manual) so a live/active connection survives, then drop the sub.
-        self._conn.execute(
-            "UPDATE nodes SET subscription_id = NULL WHERE subscription_id = ?", (sub_id,))
-        self._conn.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
-        self._conn.commit()
+        # One transaction so the detach + delete are atomic (audit P1).
+        with self._conn:
+            self._conn.execute(
+                "UPDATE nodes SET subscription_id = NULL WHERE subscription_id = ?", (sub_id,))
+            self._conn.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
 
     # --- tuning profiles ---
     def add_profile(self, p: TuningProfile) -> int:
@@ -380,10 +385,11 @@ class NodeStore:
 
     def delete_profile(self, profile_id: int) -> None:
         # Detach referencing nodes (→ inherit the global default) before removing the profile.
-        self._conn.execute(
-            "UPDATE nodes SET tuning_profile_id = NULL WHERE tuning_profile_id = ?", (profile_id,))
-        self._conn.execute("DELETE FROM tuning_profiles WHERE id = ?", (profile_id,))
-        self._conn.commit()
+        # One transaction so the detach + delete are atomic (audit P1).
+        with self._conn:
+            self._conn.execute(
+                "UPDATE nodes SET tuning_profile_id = NULL WHERE tuning_profile_id = ?", (profile_id,))
+            self._conn.execute("DELETE FROM tuning_profiles WHERE id = ?", (profile_id,))
 
     def get_default_profile(self) -> TuningProfile | None:
         did = self.get_setting("default_profile_id")
@@ -407,14 +413,16 @@ class NodeStore:
 
     def replace_routing(self, rules: list[RoutingRule]) -> None:
         # Whole-list replace: positions are re-derived from list order (0..n-1).
-        self._conn.execute("DELETE FROM routing_rules")
-        for i, r in enumerate(rules):
-            self._conn.execute(
-                "INSERT INTO routing_rules(position, type, value, action, enabled, label) "
-                "VALUES(?, ?, ?, ?, ?, ?)",
-                (i, r.type, r.value, r.action, int(getattr(r, "enabled", True)),
-                 getattr(r, "label", "")))
-        self._conn.commit()
+        # One transaction so the DELETE + N INSERTs are atomic — a concurrent commit can't
+        # flush the empty-table state between them (audit P1).
+        with self._conn:
+            self._conn.execute("DELETE FROM routing_rules")
+            for i, r in enumerate(rules):
+                self._conn.execute(
+                    "INSERT INTO routing_rules(position, type, value, action, enabled, label) "
+                    "VALUES(?, ?, ?, ?, ?, ?)",
+                    (i, r.type, r.value, r.action, int(getattr(r, "enabled", True)),
+                     getattr(r, "label", "")))
 
     # --- node health ---
     def upsert_health(self, h: NodeHealth) -> None:
@@ -448,12 +456,13 @@ class NodeStore:
     def record_latency(self, node_id: int, ms: int, cap: int = 20) -> None:
         """Append one latency sample to the node's history ring (NN4). Kept as a separate
         column update so it survives the health upsert; capped at `cap` most-recent samples."""
-        row = self._conn.execute(
-            "SELECT lat_history FROM node_health WHERE node_id = ?", (node_id,)).fetchone()
-        if row is None:
-            return
-        hist = json.loads(row["lat_history"] or "[]")
-        hist.append(int(ms))
-        self._conn.execute("UPDATE node_health SET lat_history = ? WHERE node_id = ?",
-                           (json.dumps(hist[-cap:]), node_id))
-        self._conn.commit()
+        # Read-modify-write in one transaction so concurrent samples don't lose updates (audit P1).
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT lat_history FROM node_health WHERE node_id = ?", (node_id,)).fetchone()
+            if row is None:
+                return
+            hist = json.loads(row["lat_history"] or "[]")
+            hist.append(int(ms))
+            self._conn.execute("UPDATE node_health SET lat_history = ? WHERE node_id = ?",
+                               (json.dumps(hist[-cap:]), node_id))

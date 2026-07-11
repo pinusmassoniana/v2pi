@@ -7,6 +7,7 @@
   let s = $state<Settings | null>(null);
   let msg = $state("");
   let msgKind = $state<"ok" | "err">("ok");
+  let saving = $state(false);
 
   let logSource = $state("xray-error");
   let logLines = $state<string[]>([]);
@@ -35,10 +36,12 @@
   }
   async function save(e: Event) {
     e.preventDefault();
-    if (!s || invalid) { if (invalid) setMsg(invalid, "err"); return; }
+    if (saving || !s || invalid) { if (invalid) setMsg(invalid, "err"); return; }
     const { routing_default_action, ...patch } = s;   // routing-owned key set on the Routing screen
+    saving = true;
     try { s = await api.putSettings(patch); setMsg("saved", "ok"); }
     catch (err) { setMsg(errText(err, "save failed"), "err"); }
+    finally { saving = false; }
   }
 
   function exportSettings() {
@@ -52,6 +55,7 @@
   async function onImportSettings(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0]; if (!file) { return; }
+    if (!(await confirmDialog("Importing replaces all current settings. Continue?"))) { input.value = ""; return; }
     try {
       const doc = JSON.parse(await file.text());
       delete doc.routing_default_action;
@@ -146,7 +150,7 @@
         <input class="input" type="number" min="1"
                value={Math.max(1, Math.round((s.health_interval || 1800) / 60))}
                onchange={(e) => { if (s) s.health_interval = Math.max(60, Math.round(Number(e.currentTarget.value)) * 60); }} /></label>
-      <label class="field"><span>Probe URL</span><input class="input" bind:value={s.health_probe_url} /></label>
+      <label class="field"><span>Probe URL</span><input class="input" type="url" bind:value={s.health_probe_url} /></label>
     </fieldset>
 
     <fieldset>
@@ -164,7 +168,7 @@
 
     {#if invalid}<p class="msg err">{invalid}</p>{/if}
     <div class="actions">
-      <button class="btn btn-primary" disabled={!!invalid}>Save</button>
+      <button class="btn btn-primary" disabled={!!invalid || saving}>{saving ? "Saving…" : "Save"}</button>
       <button class="btn" type="button" onclick={exportSettings}>Export settings</button>
       <label class="file btn">Import settings…<input type="file" accept="application/json,.json" onchange={onImportSettings} /></label>
     </div>
@@ -245,8 +249,8 @@
       </select>
       <input class="input num" type="number" min="1" max="1000" bind:value={logCount} title="lines" />
       <button class="btn" type="button" onclick={loadLogs}>Load</button>
-      <input class="input" placeholder="filter…" bind:value={logQuery} />
-      <label class="check"><Toggle checked={logAuto} onchange={(v) => (logAuto = v)} label="auto" /> <span>auto-refresh</span></label>
+      <input class="input flt" placeholder="filter…" bind:value={logQuery} />
+      <div class="check"><Toggle checked={logAuto} onchange={(v) => (logAuto = v)} label="auto" /> <span>auto-refresh</span></div>
       {#if logLines.length}<button class="btn" type="button" onclick={downloadLogs}>Download</button>{/if}
     </div>
     {#if logLines.length}<pre class="logs">{shownLogs.join("\n")}</pre>{/if}
@@ -265,6 +269,7 @@
   .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .row .auto { width: auto; }
   .row .num { width: 5rem; }
+  .row .flt { flex: 1; min-width: 8rem; }
   .logs {
     background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
     padding: 0.6rem; border-radius: var(--radius-sm); max-height: 16rem; overflow: auto;

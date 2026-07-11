@@ -8,6 +8,11 @@ from pi_gw_panel.auth.auth import hash_password, verify_password_hash
 _USER = "auth_username"
 _HASH = "auth_password_hash"
 
+# A real-shaped scrypt hash used to burn equal KDF time when the credential (or username) is
+# absent/wrong, so a wrong username can't be told apart from a wrong password by response timing
+# (username enumeration). Computed once at import.
+_DUMMY_HASH = hash_password("\x00unused-dummy-credential\x00")
+
 
 def needs_setup(store) -> bool:
     """True when no credential has been created yet (first run)."""
@@ -24,17 +29,26 @@ def create_credential(store, username: str, password: str) -> None:
 
 
 def verify_login(store, username: str, password: str) -> bool:
-    """Constant-time check of a username+password against the stored credential."""
+    """Constant-time check of a username+password against the stored credential.
+
+    Both checks always run (no short-circuit) and the KDF runs even when there is no credential
+    (dummy hash) so a wrong username costs the same as a wrong password — no enumeration oracle.
+    Usernames are compared as bytes (compare_digest raises TypeError on non-ASCII str, which would
+    500 on a Cyrillic username and let an attacker crash /login)."""
     user = store.get_setting(_USER)
     pw_hash = store.get_setting(_HASH)
-    if not user or not pw_hash:
-        return False
-    return hmac.compare_digest(user, username) and verify_password_hash(pw_hash, password)
+    ok_user = bool(user) and hmac.compare_digest(
+        (user or "").encode("utf-8"), (username or "").encode("utf-8"))
+    ok_pw = verify_password_hash(pw_hash or _DUMMY_HASH, password)   # always spends the KDF
+    return ok_user and ok_pw
 
 
 def set_password(store, password: str) -> None:
-    """Rotate the password hash (username unchanged)."""
+    """Rotate the password hash (username unchanged) AND bump the session epoch so previously-issued
+    sessions are invalidated — keeps the invalidation guarantee at the credential layer, not only in
+    whichever caller happens to remember to bump."""
     store.set_setting(_HASH, hash_password(password))
+    bump_session_epoch(store)
 
 
 def session_epoch(store) -> int:

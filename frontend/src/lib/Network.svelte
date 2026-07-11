@@ -46,6 +46,21 @@
     if (s < 86400) return `${Math.floor(s / 3600)}h left`;
     return `${Math.floor(s / 86400)}d left`;
   }
+
+  // Stable numeric ordering so the lease list doesn't reshuffle on every 5s poll.
+  // Split on '.' (v4) or ':' (v6) and compare segment-by-segment as numbers.
+  function ipKey(ip: string): number[] {
+    const v6 = ip.includes(":");
+    return ip.split(v6 ? ":" : ".").map((p) => parseInt(p, v6 ? 16 : 10) || 0);
+  }
+  function ipCompare(a: { ip: string }, b: { ip: string }): number {
+    const ka = ipKey(a.ip), kb = ipKey(b.ip);
+    for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+      const d = (ka[i] ?? 0) - (kb[i] ?? 0);
+      if (d) return d;
+    }
+    return 0;
+  }
 </script>
 
 {#if net}
@@ -65,12 +80,12 @@
           <div class="warn-row"><span class="sdot bad"></span> Another router is advertising IPv6 on the client VLAN — clients will leak. Disable RA for this VLAN on your router.</div>
         {/if}
         <div class="form">
-          <label class="fld"><span>SEGMENT INTERFACE</span><input bind:value={net.segment.iface} oninput={() => (dirty = true)} /></label>
-          <label class="fld"><span>GATEWAY IP / CIDR</span><input class="mono" bind:value={net.segment.ip} oninput={() => (dirty = true)} /></label>
-          <label class="fld"><span>DHCP RANGE START</span><input class="mono" bind:value={net.segment.dhcp_start} oninput={() => (dirty = true)} /></label>
-          <label class="fld"><span>DHCP RANGE END</span><input class="mono" bind:value={net.segment.dhcp_end} oninput={() => (dirty = true)} /></label>
-          <label class="fld"><span>CLIENT DNS</span><input class="mono" bind:value={net.segment.client_dns} oninput={() => (dirty = true)} /></label>
-          <label class="fld"><span>DHCP LEASE</span><input class="mono" bind:value={net.segment.dhcp_lease} oninput={() => (dirty = true)} /></label>
+          <label class="fld"><span>SEGMENT INTERFACE</span><input bind:value={net.segment.iface} oninput={() => (dirty = true)} disabled={saving} /></label>
+          <label class="fld"><span>GATEWAY IP / CIDR</span><input class="mono" bind:value={net.segment.ip} oninput={() => (dirty = true)} disabled={saving} /></label>
+          <label class="fld"><span>DHCP RANGE START</span><input class="mono" bind:value={net.segment.dhcp_start} oninput={() => (dirty = true)} disabled={saving} /></label>
+          <label class="fld"><span>DHCP RANGE END</span><input class="mono" bind:value={net.segment.dhcp_end} oninput={() => (dirty = true)} disabled={saving} /></label>
+          <label class="fld"><span>CLIENT DNS</span><input class="mono" bind:value={net.segment.client_dns} oninput={() => (dirty = true)} disabled={saving} /></label>
+          <label class="fld"><span>DHCP LEASE</span><input class="mono" bind:value={net.segment.dhcp_lease} oninput={() => (dirty = true)} disabled={saving} /></label>
         </div>
         <div class="opts">
           <div class="opt">
@@ -83,9 +98,9 @@
           </div>
           {#if net.ipv6_enabled}
             <label class="fld wide"><span>SEGMENT IPv6 /64 <small>(static, <code>auto</code> for DHCPv6-PD, blank = ULA)</small></span>
-              <input class="mono" bind:value={net.segment.ip6} oninput={() => (dirty = true)} placeholder="2001:db8:0:2::/64 · auto · blank" /></label>
+              <input class="mono" bind:value={net.segment.ip6} oninput={() => (dirty = true)} disabled={saving} placeholder="2001:db8:0:2::/64 · auto · blank" /></label>
             <label class="fld wide"><span>CLIENT DNS (v6)</span>
-              <input class="mono" bind:value={net.segment.client_dns6} oninput={() => (dirty = true)} placeholder="2606:4700:4700::1111" /></label>
+              <input class="mono" bind:value={net.segment.client_dns6} oninput={() => (dirty = true)} disabled={saving} placeholder="2606:4700:4700::1111" /></label>
           {/if}
         </div>
         <div class="actions">
@@ -122,8 +137,8 @@
       <div class="card">
         <div class="card-top"><span class="eyebrow">DHCP leases</span><span class="muted-sm">{net.status.dhcp_clients} active</span></div>
         <div class="leases">
-          {#each net.status.clients ?? [] as c (c.mac + c.ip)}
-            <div class="lease"><span class="lease-ip mono">{c.ip}</span><span class="lease-host">{c.hostname || "—"} · {leaseAge(c.expiry)}</span></div>
+          {#each [...(net.status.clients ?? [])].sort(ipCompare) as c (c.mac + c.ip)}
+            <div class="lease"><span class="lease-ip mono" title={c.ip}>{c.ip}</span><span class="lease-host">{c.hostname || "—"} · {leaseAge(c.expiry)}</span></div>
           {/each}
           {#if !(net.status.clients ?? []).length}<p class="msg">No active leases.</p>{/if}
         </div>
@@ -177,7 +192,9 @@
 
   .leases { display: flex; flex-direction: column; gap: 0.5rem; }
   .lease { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.78rem; }
-  .lease-ip { color: var(--tx2); } .lease-host { color: var(--tx3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lease-ip { color: var(--tx2); min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lease-host { color: var(--tx3); min-width: 0; flex: 1 1 auto; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   @media (max-width: 1000px) { .net-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) { .form { grid-template-columns: 1fr; } }
 </style>

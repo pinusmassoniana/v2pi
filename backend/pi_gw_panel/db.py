@@ -16,6 +16,19 @@ def connect(db_path: str, check_same_thread: bool = True) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA temp_store = MEMORY")
+    # The DB (+ WAL/SHM sidecars) holds auth_password_hash, api-token hashes and subscription
+    # URLs with embedded creds — keep them off the world-readable default umask. Best-effort:
+    # some filesystems (e.g. certain mounts) don't support chmod (mirrors the session_secret 0600).
+    for p in (db_path, db_path + "-wal", db_path + "-shm"):
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
+    if parent:
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
     return conn
 
 
@@ -122,11 +135,13 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         return row["value"] if row else default
 
     # Seed a 'default' profile from the Wave-1 global toggle settings (so nothing changes).
+    # Guarded (WHERE NOT EXISTS) so re-applying a partially-run migration can't duplicate it.
     conn.execute(
         """INSERT INTO tuning_profiles
            (name, fingerprint, frag_enabled, frag_packets, frag_length, frag_interval,
             mux_enabled, doh_enabled, doh_url, quic)
-           VALUES ('default','chrome',?,?,?,?,?,?,?,'allow')""",
+           SELECT 'default','chrome',?,?,?,?,?,?,?,'allow'
+           WHERE NOT EXISTS (SELECT 1 FROM tuning_profiles WHERE name='default')""",
         (1 if g("frag_enabled", "0") == "1" else 0, g("frag_packets", "tlshello"),
          g("frag_length", "100-200"), g("frag_interval", "10-20"),
          1 if g("mux_enabled", "0") == "1" else 0, 1 if g("doh_enabled", "1") == "1" else 0,
@@ -301,6 +316,16 @@ def migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for v, fn in _MIGRATIONS:
         if version < v:
-            fn(conn)
-            conn.execute(f"PRAGMA user_version = {int(v)}")
-            conn.commit()
+            # Run each migration + its user_version bump in ONE explicit transaction (SQLite
+            # DDL is transactional) so a crash mid-migration rolls back cleanly and user_version
+            # only advances after fn() fully succeeds. Without the explicit BEGIN the sqlite3
+            # module auto-opens a tx only before DML, letting a leading CREATE/ALTER commit on
+            # its own and leave a half-applied schema with user_version unchanged.
+            conn.execute("BEGIN")
+            try:
+                fn(conn)
+                conn.execute(f"PRAGMA user_version = {int(v)}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise

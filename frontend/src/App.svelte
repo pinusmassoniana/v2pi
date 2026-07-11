@@ -13,7 +13,7 @@
   import Toggle from "./lib/Toggle.svelte";
   import ConfirmModal from "./lib/ConfirmModal.svelte";
   import { api, setOnUnauthorized } from "./lib/api";
-  import { statusStore, subscribeStatus, pollStatusOnce } from "./lib/status.svelte";
+  import { statusStore, subscribeStatus, pollStatusOnce, resetStatus } from "./lib/status.svelte";
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
@@ -21,6 +21,7 @@
   let authed = $state(false);
   let needsSetup = $state(false);
   let ready = $state(false);
+  let bootError = $state(false);   // server unreachable at boot (vs. genuinely unauthenticated)
   let view = $state<View>("dashboard");
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
   let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "dark");
@@ -28,10 +29,14 @@
 
   // F1: any 401 mid-session (idle timeout, password change elsewhere) drops the whole app
   // back to the Login screen instead of leaving panels showing dead-request errors.
-  setOnUnauthorized(() => { authed = false; });
+  setOnUnauthorized(() => { authed = false; resetStatus(); });
 
   // On load: if first-run (no credential) show Setup; else probe the session for auth.
-  $effect(() => {
+  // F3: a failed /setup probe means the server is unreachable — distinct from "not logged in".
+  // Show a retry/offline screen instead of dropping the operator onto a login form that can't work.
+  function boot() {
+    bootError = false;
+    ready = false;
     api.getSetup()
       .then(async (s) => {
         needsSetup = s.needs_setup;
@@ -39,9 +44,10 @@
           try { await api.getStatus(); authed = true; } catch { authed = false; }
         }
       })
-      .catch(() => { authed = false; })
+      .catch(() => { bootError = true; })
       .finally(() => { ready = true; });
-  });
+  }
+  $effect(() => { boot(); });
 
   // Shared status poller drives the sidebar xray box (and the Dashboard) — one timer, paused
   // when the tab is hidden.
@@ -99,16 +105,28 @@
   async function logout() {
     await api.logout();
     authed = false;
+    resetStatus();
     view = "dashboard";
   }
 
-  // a11y: move focus to the page heading when the view changes so SR users hear the new screen
+  // a11y: move focus to the page heading when the view *changes* so SR users hear the new screen.
+  // Skip the initial mount (guard) so we don't steal focus / scroll-to-top on first paint.
   let titleEl = $state<HTMLElement>();
-  $effect(() => { view; titleEl?.focus(); });
+  let mountedOnce = false;
+  $effect(() => {
+    view;
+    if (mountedOnce) titleEl?.focus();
+    else mountedOnce = true;
+  });
 </script>
 
 {#if !ready}
   <div class="boot"><span class="spinner" role="status" aria-label="Loading"></span></div>
+{:else if bootError}
+  <div class="boot boot-err">
+    <p class="msg err">Can't reach the panel server.</p>
+    <button class="btn" onclick={boot}>Retry</button>
+  </div>
 {:else if needsSetup}
   <Setup onDone={() => { needsSetup = false; authed = true; }} />
 {:else if authed}
@@ -190,6 +208,7 @@
 
 <style>
   .boot { min-height: 100dvh; display: grid; place-items: center; }
+  .boot-err { gap: 0.9rem; align-content: center; }
   .page-title:focus { outline: none; }   /* programmatic focus for SR, no visible ring */
   .shell { display: grid; grid-template-columns: 212px 1fr; min-height: 100dvh; }
   .sidebar {
@@ -278,7 +297,9 @@
     top: 0;
     z-index: 5;
   }
-  .topbar .page-title { margin-right: auto; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.01em; }
+  /* min-width:0 + ellipsis so a long title truncates instead of shoving the theme/logout/conn
+     controls off the narrow (60px-rail) mobile topbar. */
+  .topbar .page-title { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.01em; }
   .icon-btn { padding: 0.4rem; display: inline-grid; place-items: center; line-height: 0; border-radius: var(--radius-sm); }
   /* folded-in section divider (Subscriptions under Nodes) */
   .fold-head { border-top: 1px solid var(--bd); padding-top: 0.9rem; margin-top: 0.3rem; }
@@ -292,8 +313,11 @@
   @media (max-width: 760px) {
     .shell { grid-template-columns: 60px 1fr; }
     .nav-item span, .brand-text, .xray-label, .nav-group, .conn-label { display: none; }
-    .nav-item { justify-content: center; padding: 0.55rem; }
+    /* 44px min touch target for the collapsed rail icons (WCAG target size) */
+    .nav-item { justify-content: center; padding: 0.55rem; min-height: 44px; }
     .brand { justify-content: center; padding: 0.8rem 0; }
     .xray-box { flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.3rem; }
+    /* topbar controls: comfortable tap targets on touch */
+    .icon-btn, .topbar .btn-ghost { min-height: 44px; min-width: 44px; }
   }
 </style>

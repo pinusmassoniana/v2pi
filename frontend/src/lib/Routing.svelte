@@ -15,6 +15,7 @@
   let msgKind = $state<"ok" | "err">("ok");
   let validateMsg = $state("");
   let savedSnapshot = $state("");
+  let saving = $state(false);      // RR5: in-flight guard so save/validate/import can't double-fire
   let hasActive = $state(false);   // RR2: is a node connected (so a save applies live)?
   let importOpen = $state(false);
   let importText = $state("");
@@ -61,28 +62,46 @@
     rules = next;
   }
   async function save() {
+    if (saving) return;
     if (defaultAction === "block" && !(await confirmDialog("Default action is BLOCK — all non-matching traffic from the segment will be dropped. Continue?")))
       return;
+    saving = true;
     try {
-      const r = await api.putRouting({ rules: strip(nonEmpty), default_action: defaultAction, domain_strategy: domainStrategy });
+      // RR8: drop identical (type,value,action) rows before PUT — keep the ruleset clean, warn (don't block)
+      const seen = new Set<string>();
+      const deduped = nonEmpty.filter((r) => {
+        const k = JSON.stringify([r.type, r.value.trim(), r.action]);
+        if (seen.has(k)) return false;
+        seen.add(k); return true;
+      });
+      const dupCount = nonEmpty.length - deduped.length;
+      const r = await api.putRouting({ rules: strip(deduped), default_action: defaultAction, domain_strategy: domainStrategy });
       rules = toRows(r.rules); defaultAction = r.default_action; domainStrategy = r.domain_strategy;
       savedSnapshot = snapshot(); validateMsg = "";
-      setMsg(hasActive ? "saved & applied" : "saved — applies on next Connect", "ok");
+      setMsg((hasActive ? "saved & applied" : "saved — applies on next Connect") + (dupCount ? ` · ${dupCount} duplicate row(s) dropped` : ""), "ok");
     } catch (err) { setMsg(errText(err, "save failed"), "err"); }
+    finally { saving = false; }
   }
   async function importPreset(name: string) {
+    if (dirty && !(await confirmDialog("Discard staged rules?"))) return;
+    if (saving) return;
+    saving = true;
     try {
       const r = await api.routingPreset(name);
       rules = toRows(r.rules);                       // staged, not yet applied (RC1)
       setMsg(`preset “${name}” staged — review and Save`, "ok");
     } catch (err) { setMsg(errText(err, "preset failed"), "err"); }
+    finally { saving = false; }
   }
   async function validate() {
+    if (saving) return;
+    saving = true;
     validateMsg = "validating…";
     try {
       const r = await api.validateRouting({ rules: strip(nonEmpty), default_action: defaultAction, domain_strategy: domainStrategy });
       validateMsg = r.ok ? "✓ ruleset valid" : `✗ ${r.error}`;
     } catch (err) { validateMsg = errText(err, "validate failed"); }
+    finally { saving = false; }
   }
   async function resetRules() {
     if (!(await confirmDialog("Reset to the default ruleset (no rules, default = proxy)?"))) return;
@@ -92,15 +111,17 @@
     const doc = JSON.stringify({ rules: strip(nonEmpty), default_action: defaultAction, domain_strategy: domainStrategy }, null, 2);
     navigator.clipboard?.writeText(doc).then(() => setMsg("ruleset copied as JSON", "ok"), () => setMsg("copy failed", "err"));
   }
-  function doImportJSON() {
-    try {
-      const doc = JSON.parse(importText);
-      const rs = Array.isArray(doc) ? doc : doc.rules;
-      rules = toRows(rs);
-      if (doc.default_action) defaultAction = doc.default_action;
-      if (doc.domain_strategy) domainStrategy = doc.domain_strategy;
-      importText = ""; importOpen = false; setMsg("imported — review and Save", "ok");
-    } catch { setMsg("invalid JSON", "err"); }
+  async function doImportJSON() {
+    if (dirty && !(await confirmDialog("Discard staged rules?"))) return;   // RC2: don't clobber staged edits
+    let doc: any;
+    try { doc = JSON.parse(importText); }
+    catch { setMsg("invalid JSON", "err"); return; }
+    const rs = Array.isArray(doc) ? doc : doc?.rules;
+    if (!Array.isArray(rs)) { setMsg("no rules array / bad rule shape", "err"); return; }   // RC11: clearer than a rs.map throw
+    rules = toRows(rs);
+    if (doc.default_action) defaultAction = doc.default_action;
+    if (doc.domain_strategy) domainStrategy = doc.domain_strategy;
+    importText = ""; importOpen = false; setMsg("imported — review and Save", "ok");
   }
 
   // --- RN6 client-side destination tester (literal rule types only) ---
@@ -130,7 +151,7 @@
       if (!r.enabled || !r.value.trim()) continue;
       const vals = r.value.split(/[,\n]/).map((v) => v.trim()).filter(Boolean);
       let hit = false;
-      if (r.type === "domain") hit = vals.some((v) => host === v || host.endsWith("." + v.replace(/^\*\.?/, "")));
+      if (r.type === "domain") hit = vals.some((v) => { const base = v.replace(/^\*\.?/, ""); return host === base || host.endsWith("." + base); });
       else if (r.type === "ip") hit = isIp && vals.some((v) => inCidr(host, v));
       else if (r.type === "port") hit = !isNaN(port) && vals.some((v) => portMatches(v, port));
       else { skippedGeo = true; continue; }   // geoip/geosite — needs geo data, can't eval locally
@@ -138,6 +159,13 @@
     }
     testResult = `→ ${defaultAction}  (default${skippedGeo ? " · geo rules not evaluated locally" : ""})`;
   }
+
+  // RR7: warn before a reload/close silently drops staged (unsaved) rule edits
+  $effect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  });
 
   $effect(() => { load(); });
 </script>
@@ -149,7 +177,7 @@
     <span class="staged-chip">STAGED</span>
     <span class="staged-txt"><strong>{nonEmpty.length} rules</strong> edited — not yet applied to the live config.{#if msg} · {msg}{/if}</span>
     <button class="btn sm" type="button" onclick={load}>Discard</button>
-    <button class="btn btn-primary sm" type="button" onclick={save}>Apply staged</button>
+    <button class="btn btn-primary sm" type="button" onclick={save} disabled={saving}>Apply staged</button>
   </div>
 {/if}
 
@@ -202,7 +230,7 @@
 
   <div class="toolbar">
     <button class="btn" type="button" onclick={addRule}>+ Add rule</button>
-    <select class="input auto" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") importPreset(v); }}>
+    <select class="input auto" disabled={saving} onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") importPreset(v); }}>
       <option value="__ph__" disabled selected>Import preset…</option>
       {#each presets as p (p.name)}<option value={p.name}>{p.title}</option>{/each}
     </select>
@@ -220,8 +248,8 @@
     <button class="btn" type="button" onclick={exportJSON} title="Copy ruleset as JSON">Export</button>
     <button class="btn" type="button" onclick={() => (importOpen = true)}>Import JSON</button>
     <button class="btn" type="button" onclick={resetRules}>Reset</button>
-    <button class="btn" type="button" onclick={validate}>Validate</button>
-    <button class="btn btn-primary" type="button" onclick={save} disabled={!dirty}>Save</button>
+    <button class="btn" type="button" onclick={validate} disabled={saving}>Validate</button>
+    <button class="btn btn-primary" type="button" onclick={save} disabled={!dirty || saving}>Save</button>
   </div>
   {#if validateMsg}<p class="vmsg" class:bad={validateMsg.startsWith("✗")}>{validateMsg}</p>{/if}
 </div>
@@ -277,6 +305,10 @@
   .tester { margin-top: 0.8rem; }
   .trow { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .trow .input { max-width: 22rem; }
-  .tres { font-size: 0.82rem; }
+  .tres { font-size: 0.82rem; overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
   .ta { font-family: var(--mono); font-size: 0.8rem; width: 100%; resize: vertical; }
+  /* RR12: on narrow screens let the rule table fit the viewport instead of forcing the 44rem min-width */
+  @media (max-width: 600px) {
+    .table-wrap > .table { min-width: 0; }
+  }
 </style>

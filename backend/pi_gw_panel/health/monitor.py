@@ -1,9 +1,11 @@
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pi_gw_panel.models import NodeHealth
 from pi_gw_panel.health import probe
 
+log = logging.getLogger("pi_gw_panel")
 DEFAULT_PROBE_URL = "https://api.ipify.org?format=json"
 DEFAULT_INTERVAL = 1800.0   # 30 min — TCP + direct-HTTPS sweep of all nodes (configurable)
 
@@ -93,7 +95,15 @@ class HealthMonitor:
 
         for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:
             if tcp_ok or http_ok:
-                self._backoff.pop(node.id, None)              # alive → probe every sweep again
+                # decay rather than hard-reset: a chronically-flapping node (one success every N
+                # sweeps) still accrues some backoff instead of being probed every sweep forever.
+                bo = self._backoff.get(node.id)
+                if bo is not None:
+                    bo["streak"] = max(0, bo["streak"] - 1)
+                    if bo["streak"] == 0:
+                        self._backoff.pop(node.id, None)
+                    else:
+                        bo["skip"] = min(self.BACKOFF_MAX_SKIP, 2 ** min(bo["streak"], 3) - 1)
             elif node.id != active_id:
                 bo = self._backoff.setdefault(node.id, {"streak": 0, "skip": 0})
                 bo["streak"] += 1
@@ -144,7 +154,19 @@ class HealthMonitor:
                 pass
             self._task = None
 
+    def _safe_tick(self) -> None:
+        # one bad sweep (store error, malformed node row) must never kill the loop — log & continue,
+        # else the whole health sweep stops forever and failover runs on frozen data.
+        try:
+            self._tick()
+        except Exception:
+            log.exception("health monitor sweep failed")
+
     async def _loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        # run one sweep immediately so health engages right after start instead of serving the
+        # stale pre-restart snapshot for a full interval (up to 30 min).
+        await loop.run_in_executor(None, self._safe_tick)
         while True:
             await asyncio.sleep(self._interval())
-            await asyncio.get_running_loop().run_in_executor(None, self._tick)
+            await loop.run_in_executor(None, self._safe_tick)

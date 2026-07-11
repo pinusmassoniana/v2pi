@@ -96,11 +96,15 @@ a { color: var(--accent); text-underline-offset: 2px; }
 /* slim, themed scrollbars */
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 2px solid var(--bg); }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+/* transparent 2px inset via background-clip so the "gap" matches any surface (bg0/1/2), not a fixed --bg */
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
 
 /* layout */
-.page { display: grid; gap: 0.9rem; padding: 1.15rem 1.25rem 1.75rem; max-width: 1480px; }
+/* minmax(0,1fr) pins the single implicit grid track to the viewport so wide children (data tables,
+   long mono strings) scroll inside their own .table-wrap instead of blowing the page out horizontally.
+   Without it the track sizes to max-content and defeats every .table-wrap{overflow-x:auto}. */
+.page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.9rem; padding: 1.15rem 1.25rem 1.75rem; max-width: 1480px; }
 /* data-dense views (the Nodes servers table) drop the reading-width cap so the table's right
    edge tracks the window instead of pinning at 1140px. */
 .page.wide { max-width: none; }
@@ -122,12 +126,20 @@ a { color: var(--accent); text-underline-offset: 2px; }
   box-shadow: var(--shadow-sm);
   padding: 1rem 1.1rem;
   display: grid;
+  /* the card is itself a grid: without an explicit track its single implicit column is `auto`
+     (max-content), so a wide child (a data table, a long mono string) sizes the track past the
+     card's own clamped width and overflows. minmax(0,1fr) pins the track to the card so inner
+     .table-wrap{overflow-x:auto} and text-ellipsis actually engage. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.6rem;
+  min-width: 0;   /* let cards shrink inside grid/flex tracks so inner overflow/ellipsis engages */
 }
 .card > h2, .card > h3 { margin: 0 0 0.2rem; font-size: 0.92rem; font-weight: 650; letter-spacing: -0.01em; }
 /* fieldset legends read as premium eyebrow micro-labels, not headings */
 legend { padding: 0; margin: 0 0 0.15rem; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.08em; font-weight: 650; color: var(--faint); }
-fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 0.95rem; margin: 0; background: var(--surface-2); }
+/* min-width:0 overrides the browser default (min-content) so a fieldset can shrink inside a grid
+   card instead of forcing horizontal overflow from wide form rows on narrow screens. */
+fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 0.95rem; margin: 0; background: var(--surface-2); min-width: 0; }
 /* on/off cue for boolean cells */
 .onoff { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
 .onoff.on { color: var(--success); }
@@ -169,6 +181,9 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
   border-radius: var(--radius-sm);
   padding: 0.44rem 0.6rem;
   width: 100%;
+  /* let an input/select shrink below its content as a flex item — otherwise a <select> with a long
+     option (min-width:auto) can't shrink and overflows its bounded row on narrow screens. */
+  min-width: 0;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .input:focus, .input:focus-visible,
@@ -181,8 +196,11 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
 .label, .field > span { font-size: 0.8rem; color: var(--muted); }
 
 /* data */
-/* horizontal scroll for wide tables on narrow screens (instead of crushing columns) */
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* horizontal scroll for wide tables on narrow screens (instead of crushing columns).
+   min-width:0 is essential: as a grid/flex item the wrap defaults to min-width:auto and grows to
+   the table's content width, so overflow-x:auto never engages — it must be free to shrink to the
+   track and let the wide table scroll INSIDE it. */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; }
 .table-wrap > .table { min-width: 44rem; }
 table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .table th, .table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }

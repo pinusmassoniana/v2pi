@@ -4,6 +4,7 @@
 import { api, type Status } from "./api";
 
 let _status = $state<Status | null>(null);
+let _stale = $state(false);   // last poll failed (transient) — value is last-good, not fresh
 let _refs = 0;
 let _timer: ReturnType<typeof setInterval> | null = null;
 // D4: Date.now() − (server wall-clock). Lets time labels (freshness/uptime) render against the
@@ -13,6 +14,10 @@ let _skewMs = 0;
 export const statusStore = {
   get value(): Status | null {
     return _status;
+  },
+  /** true when the last poll failed — the value is the last-good snapshot, not current. */
+  get stale(): boolean {
+    return _stale;
   },
 };
 
@@ -24,8 +29,25 @@ export function serverNow(): number {
 export async function pollStatusOnce(): Promise<void> {
   try {
     _status = await api.getStatus();
-    if (_status?.server_now) _skewMs = Date.now() - _status.server_now * 1000;
-  } catch { _status = null; }
+    _stale = false;
+    // server_now===0 is a valid (epoch) value — test presence by type, not truthiness
+    if (_status && typeof _status.server_now === "number") _skewMs = Date.now() - _status.server_now * 1000;
+  } catch {
+    // transient blip (offline, timeout) must not blank the whole status UI — keep last-good, flag stale
+    _stale = true;
+  }
+}
+
+/** Hard reset used on logout / lost session so the login screen never sees a prior session's status. */
+export function resetStatus(): void {
+  if (_timer) clearInterval(_timer);
+  _timer = null;
+  _refs = 0;
+  _wanted.length = 0;
+  document.removeEventListener("visibilitychange", onVisible);
+  _status = null;
+  _skewMs = 0;
+  _stale = false;
 }
 
 function onVisible() {

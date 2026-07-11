@@ -1,6 +1,14 @@
 import ipaddress
+import os
 from dataclasses import dataclass
 from pi_gw_panel.config import Settings
+
+
+def _abs_leases(path: str, data_dir: str) -> str:
+    """Anchor a relative dnsmasq lease path on data_dir so the panel (netcheck reader) and the
+    dnsmasq child (spawned with an unknown cwd) always agree on the same file."""
+    path = path or "data/dnsmasq.leases"
+    return path if os.path.isabs(path) else os.path.join(data_dir, os.path.basename(path))
 
 
 def net24(ip: str) -> str:
@@ -47,11 +55,13 @@ class NetPlan:
 
     @classmethod
     def from_settings(cls, s: Settings) -> "NetPlan":
+        data_dir = getattr(s, "data_dir", ".")
         return cls(
             tproxy_port=s.tproxy_port, fwmark=s.fwmark, egress_mark=s.egress_mark,
             table=s.table, segment_iface=s.segment_iface, segment_ip=s.segment_ip,
             dhcp_start=s.dhcp_start, dhcp_end=s.dhcp_end, dhcp_lease=s.dhcp_lease,
-            client_dns=s.client_dns, client_dns6=s.client_dns6, dnsmasq_leases=s.dnsmasq_leases,
+            client_dns=s.client_dns, client_dns6=s.client_dns6,
+            dnsmasq_leases=_abs_leases(s.dnsmasq_leases, data_dir),
             segment_ip6=s.segment_ip6, tproxy_port6=s.tproxy_port6,
             lan_access=s.lan_access, mgmt_iface=s.mgmt_iface, mgmt_ip=s.mgmt_ip,
         )
@@ -61,9 +71,11 @@ class NetPlan:
         """Resolve each editable field as store-override-or-config; system knobs
         (tproxy ports / marks / table) stay config-only; kill-switch + ipv6 from k/v flags."""
         ov = {k: (store.get_setting(k) or getattr(s, k)) for k in _EDITABLE}
+        data_dir = getattr(s, "data_dir", ".")
         return cls(
             tproxy_port=s.tproxy_port, fwmark=s.fwmark, egress_mark=s.egress_mark,
-            table=s.table, tproxy_port6=s.tproxy_port6, dnsmasq_leases=s.dnsmasq_leases, **ov,
+            table=s.table, tproxy_port6=s.tproxy_port6,
+            dnsmasq_leases=_abs_leases(s.dnsmasq_leases, data_dir), **ov,
             kill_switch=(store.get_setting("kill_switch_enabled") or "0") == "1",
             ipv6_enabled=(store.get_setting("ipv6_enabled") or "0") == "1",
             lan_access=(store.get_setting("lan_access_enabled") or ("1" if s.lan_access else "0")) == "1",
@@ -76,3 +88,4 @@ class NetResult:
     ok: bool
     rendered: str = ""
     error: str = ""
+    warning: str = ""   # non-fatal issue surfaced to the operator (e.g. ip_forward write failed)

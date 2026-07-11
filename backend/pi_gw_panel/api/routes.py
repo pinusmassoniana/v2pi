@@ -1,7 +1,9 @@
 import ipaddress
 import os
+import re
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -160,6 +162,42 @@ def _settings_out(state) -> SettingsOut:
 _NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
                  "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns", "client_dns6")
 
+_IFACE_RE = re.compile(r"^[A-Za-z0-9._@:-]+$")     # iface / VLAN sub-iface names (e.g. eth0.2)
+_LEASE_RE = re.compile(r"^(infinite|\d+[smhd]?)$")  # dnsmasq lease: '3600', '12h', 'infinite'
+
+
+def _validate_net_fields(data: dict) -> None:
+    """Reject any segment/DHCP/DNS value that isn't well-formed BEFORE it reaches set_setting and,
+    from there, the nft/dnsmasq render (config-injection + broken-segment guard). Raises 422."""
+    def bad(field: str, why: str):
+        raise HTTPException(status_code=422, detail=f"{field}: {why}")
+
+    if "segment_iface" in data:
+        v = (data["segment_iface"] or "").strip()
+        if not v or not _IFACE_RE.match(v):
+            bad("segment_iface", "must be a plain interface name")
+        data["segment_iface"] = v
+    for f in ("segment_ip", "dhcp_start", "dhcp_end", "client_dns"):
+        if f in data and (data[f] or "").strip():
+            v = data[f].strip()
+            try:
+                ipaddress.IPv4Address(v)
+            except ValueError:
+                bad(f, "must be an IPv4 address")
+            data[f] = v
+    if "client_dns6" in data and (data["client_dns6"] or "").strip():
+        v = data["client_dns6"].strip()
+        try:
+            ipaddress.IPv6Address(v)
+        except ValueError:
+            bad("client_dns6", "must be an IPv6 address")
+        data["client_dns6"] = v
+    if "dhcp_lease" in data and (data["dhcp_lease"] or "").strip():
+        v = data["dhcp_lease"].strip()
+        if not _LEASE_RE.match(v):
+            bad("dhcp_lease", "must be a lease time like '12h', '3600', or 'infinite'")
+        data["dhcp_lease"] = v
+
 
 def _network_out(state) -> NetworkOut:
     store, settings = state.store, state.settings
@@ -226,31 +264,47 @@ def setup_create(body: SetupIn, request: Request) -> dict:
     return {"ok": True}
 
 
+_LOGIN_GUARD_MAX = 1000    # hard cap on tracked IP buckets (memory bound)
+_login_guard_lock = threading.Lock()   # sync handlers run in a threadpool → serialize guard R-M-W
+
+
 @router.post("/login")
 def login(body: LoginIn, request: Request) -> dict:
     state = get_state(request)
     guards = request.app.state.login_guard         # per-client-IP buckets (SS3 / audit B8)
     now = time.time()
     ip = request.client.host if request.client else "?"
-    if len(guards) > 1000:                          # bound memory: drop expired buckets
-        for k in [k for k, g in guards.items() if g["until"] <= now]:
-            del guards[k]
-    guard = guards.setdefault(ip, {"count": 0, "until": 0.0})
-    if guard["until"] > now:
+    # Serialize the whole read-modify-write: concurrent requests from one IP would otherwise race
+    # on guard["count"] (lost updates) and let an attacker exceed the 5-attempt lockout.
+    with _login_guard_lock:
+        if len(guards) >= _LOGIN_GUARD_MAX:         # only prune under memory pressure
+            # drop idle buckets (not mid-count, not currently locked) — never a counting bucket,
+            # or an attacker could reset their own count by flooding other IPs.
+            for k in [k for k, g in guards.items() if g["until"] <= now and g["count"] == 0]:
+                del guards[k]
+            while len(guards) >= _LOGIN_GUARD_MAX and ip not in guards:
+                guards.pop(next(iter(guards)))      # hard cap so rotating IPs can't grow it unbounded
+        guard = guards.setdefault(ip, {"count": 0, "until": 0.0})
+        locked = guard["until"] > now
+    if locked:
         raise HTTPException(status_code=429, detail="too many attempts — try again shortly")
     if not auth_service.verify_login(state.store, body.username, body.password):
-        guard["count"] += 1
-        if guard["count"] >= 5:                     # lock this client out after 5 fails
-            guard["until"] = now + state.settings.login_lockout_sec
-            guard["count"] = 0
+        with _login_guard_lock:
+            guard["count"] += 1
+            if guard["count"] >= 5:                 # lock this client out after 5 fails
+                guard["until"] = now + state.settings.login_lockout_sec
+                guard["count"] = 0
         raise HTTPException(status_code=401, detail="bad credentials")
-    guard["count"] = 0
+    with _login_guard_lock:
+        guard["count"] = 0
     _open_session(request)
     return {"ok": True}
 
 
 @router.post("/logout")
-def logout(request: Request) -> dict:
+def logout(request: Request, _: None = Depends(require_csrf)) -> dict:
+    # require_csrf so a cross-site POST can't force-log-out the operator (consistent with every
+    # other mutation); the frontend sends the CSRF header on logout.
     request.session.clear()
     return {"ok": True}
 
@@ -262,9 +316,9 @@ def change_password(body: PasswordChangeIn, request: Request,
     username = state.store.get_setting("auth_username") or ""
     if not auth_service.verify_login(state.store, username, body.current_password):
         raise HTTPException(status_code=403, detail="current password incorrect")
-    auth_service.set_password(state.store, body.new_password)
-    # invalidate other sessions, then keep the current one valid (SS3)
-    request.session[SESSION_EPOCH] = auth_service.bump_session_epoch(state.store)
+    auth_service.set_password(state.store, body.new_password)   # rotates hash AND bumps the epoch
+    # adopt the new epoch for THIS session so it stays valid while every other session is invalidated (SS3)
+    request.session[SESSION_EPOCH] = auth_service.session_epoch(state.store)
     return {"ok": True}
 
 
@@ -299,10 +353,14 @@ def traffic_history(request: Request, window_sec: int = 3600, max_points: int = 
     Windows beyond the in-memory hour (N4) are served from the durable per-minute table
     (avg bit/s per minute), with the in-memory ring appended for the most recent stretch."""
     state = get_state(request)
+    # clamp both ways: a huge window_sec would pull the entire per-minute history into memory, a
+    # huge max_points sizes the downsample loop — cap them so one GET can't amplify into a DoS.
+    window_sec = min(max(1, window_sec), 30 * 86400)     # <= 30 days
+    max_points = min(max(1, max_points), 5000)
     interval = int(state.store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"])
     hist = getattr(state, "history", None)
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    since_ms = now_ms - max(1, window_sec) * 1000
+    since_ms = now_ms - window_sec * 1000
     if window_sec <= 3600:
         if hist is None:
             return TrafficHistoryOut(samples=[], interval_ms=interval)
@@ -776,9 +834,13 @@ def get_backup(request: Request, _: None = Depends(require_auth)) -> dict:
 @router.post("/restore")
 def post_restore(body: dict, request: Request,
                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    # minimal structural contract before a full-state overwrite: a real backup is a dict carrying
+    # a schema_version marker. Rejects a mis-picked settings-export / truncated file up front.
+    if not isinstance(body, dict) or "schema_version" not in body:
+        raise HTTPException(status_code=400, detail="not a valid backup file")
     try:
         summary = backup_mod.import_state(get_state(request).store, body)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"invalid backup: {exc}")
     return {"ok": True, "restored": summary}
 
@@ -980,6 +1042,10 @@ def _validate_settings(state, data: dict) -> None:
             raise HTTPException(status_code=422, detail="stats_api_port must be 1..65535")
         if p in (state.settings.tproxy_port, state.settings.local_proxy_port):
             raise HTTPException(status_code=422, detail="stats_api_port collides with a system port")
+    # routing_default_action feeds straight into the built xray config; an out-of-set value would
+    # produce a config xray rejects on the next apply (a self-inflicted outage bypassing /routing).
+    if "routing_default_action" in data and data["routing_default_action"] not in ("direct", "proxy", "block"):
+        raise HTTPException(status_code=422, detail="routing_default_action must be direct/proxy/block")
 
 
 @router.put("/settings", response_model=SettingsOut)
@@ -1013,7 +1079,7 @@ def diagnostics(request: Request, _: None = Depends(require_auth)) -> Diagnostic
     from importlib.metadata import version, PackageNotFoundError
     try:
         app_v = version("pi-gw-panel") or "unknown"
-    except (PackageNotFoundError, Exception):
+    except PackageNotFoundError:
         app_v = "unknown"
     try:
         out = subprocess.run([state.xray_bin or state.settings.xray_bin, "-version"],
@@ -1048,6 +1114,10 @@ def put_network(body: NetworkIn, request: Request,
                 ipaddress.ip_network(v6, strict=False)
             except ValueError:
                 raise HTTPException(status_code=422, detail="segment_ip6 must be an IPv6 CIDR or 'auto'")
+    # These values are interpolated verbatim into the nft ruleset and dnsmasq.conf; a newline/quote
+    # would inject arbitrary nft rules or dnsmasq directives (DNS-leak `server=`, kill-switch removal),
+    # and a merely malformed value silently breaks the live segment. Validate strictly at the boundary.
+    _validate_net_fields(data)
     for k in _NET_EDITABLE:
         if k in data:
             state.store.set_setting(k, data[k])

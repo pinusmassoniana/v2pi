@@ -117,7 +117,7 @@
   /* fill the card width (start at the left edge, not centered) — scroll on phones rather than
      shrinking the text to nothing. */
   .diagram-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .diagram { width: 100%; min-width: 480px; height: auto; display: block; }
+  .diagram { width: 100%; min-width: 340px; height: auto; display: block; }
 
   .ln { stroke-width: 1.75; stroke-linecap: round; fill: none; }
   .ln.ok { stroke: var(--success); }

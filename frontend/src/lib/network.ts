@@ -23,16 +23,16 @@ export function networkView(net: Network): NetworkView {
   const up = net.status.segment_up;
   const ul = net.status.uplink ?? null;
   const ul6 = net.status.uplink6 ?? null;
-  const t = net.status.tunnel;
+  const t = net.status.tunnel ?? null;
   return {
     segment: { tone: boolTone(up), label: up === null ? "unknown" : up ? "up" : "down" },
     uplink: { tone: boolTone(ul), label: ul === null ? "unknown" : ul ? "up" : "down" },
     uplink6: { tone: boolTone(ul6), label: ul6 === null ? "unknown" : ul6 ? "up" : "down" },
     dhcp_clients: net.status.dhcp_clients,
     tunnel: {
-      tone: boolTone(t.real_ok),
-      egress: t.egress_ip ?? "—",
-      latency: t.latency_ms === null ? "—" : `${t.latency_ms} ms`,
+      tone: boolTone(t?.real_ok),
+      egress: t?.egress_ip ?? "—",
+      latency: t?.latency_ms != null ? `${t.latency_ms} ms` : "—",
     },
     wan_blocked: net.status.wan_blocked ?? false,
     foreign_ra: net.status.foreign_ra === true,

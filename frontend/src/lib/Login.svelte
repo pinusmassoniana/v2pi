@@ -6,13 +6,16 @@
   let password = $state("");
   let error = $state("");
   let busy = $state(false);
+  let showPw = $state(false);
 
   async function submit(e: Event) {
     e.preventDefault();
+    if (busy) return;
     busy = true; error = "";
     try {
       await api.login(username, password);
       await api.ensureCsrf();
+      password = "";                 // don't leave the plaintext credential in memory
       onLogin();
     } catch (err) {
       error = err instanceof ApiError ? err.message : "login failed";
@@ -29,8 +32,11 @@
       <span class="auth-mark">{BRAND.slice(0, 2)}</span>
       <span class="auth-word">{BRAND.slice(2)}</span>
     </div>
-    <input class="input" bind:value={username} placeholder="username" aria-label="username" autocomplete="username" />
-    <input class="input" type="password" bind:value={password} placeholder="password" aria-label="password" autocomplete="current-password" />
+    <input class="input" name="username" id="username" bind:value={username} placeholder="username" aria-label="username" autocomplete="username" />
+    <div class="pw">
+      <input class="input" name="password" id="password" type={showPw ? "text" : "password"} bind:value={password} placeholder="password" aria-label="password" autocomplete="current-password" />
+      <button type="button" class="pw-toggle" tabindex="-1" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide password" : "Show password"}>{showPw ? "Hide" : "Show"}</button>
+    </div>
     <button class="btn btn-primary block" disabled={busy || !username || !password}>{busy ? "…" : "Log in"}</button>
     {#if error}<p class="err">{error}</p>{/if}
   </form>
@@ -53,5 +59,9 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), var(--shadow-sm);
   }
   .auth-word { font-weight: 720; font-size: 1.25rem; letter-spacing: -0.02em; color: var(--text); }
+  .pw { position: relative; display: flex; }
+  .pw .input { flex: 1; padding-right: 3.4rem; }
+  .pw-toggle { position: absolute; right: 0.4rem; top: 50%; transform: translateY(-50%); background: none; border: 0; padding: 0.2rem 0.4rem; font-size: 0.7rem; color: var(--muted); cursor: pointer; }
+  .pw-toggle:hover { color: var(--text); }
   .err { color: var(--danger); font-size: 0.85rem; margin: 0; }
 </style>

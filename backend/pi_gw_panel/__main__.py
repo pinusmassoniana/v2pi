@@ -1,7 +1,7 @@
 import os
 import secrets
 import uvicorn
-from pi_gw_panel.config import Settings
+from pi_gw_panel.config import Settings, safe_int
 from pi_gw_panel.app import create_app
 
 
@@ -30,7 +30,8 @@ def main() -> None:
     # Zero-config: when no real secret is supplied via env, use the persisted/auto-generated one.
     if not settings.session_secret or settings.session_secret == "dev-insecure-secret":
         settings.session_secret = ensure_session_secret(settings.data_dir)
-    port = int(os.environ.get("PI_GW_PORT", "8080"))
+    # safe-int so a typo/stray newline in PI_GW_PORT can't crash boot (audit P2)
+    port = safe_int(os.environ.get("PI_GW_PORT", "8080"), 8080, "PI_GW_PORT")
     uvicorn.run(create_app(settings), host=settings.bind_host, port=port, log_level="info")
 
 

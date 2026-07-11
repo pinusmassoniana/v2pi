@@ -37,7 +37,10 @@ class TrafficHistory:
 
     def record(self, ts_ms: int, up_bps: float, down_bps: float) -> None:
         with self._lock:
-            self._buf.append((int(ts_ms), round(up_bps), round(down_bps)))
+            ts_ms = int(ts_ms)
+            if self._buf and ts_ms < self._buf[-1][0]:      # NTP step moved wall-clock back → clamp so the series stays monotonic
+                ts_ms = self._buf[-1][0]
+            self._buf.append((ts_ms, round(up_bps), round(down_bps)))
 
     def series(self, since_ms: int | None = None, max_points: int | None = None) -> list:
         with self._lock:
@@ -100,8 +103,10 @@ class TrafficRecorder:
         up, down = int(tot.get("up", 0)), int(tot.get("down", 0))
         if self._prev_abs is not None:
             du, dd = up - self._prev_abs["up"], down - self._prev_abs["down"]
-            if du < 0 or dd < 0:                    # counter reset (xray restart) → count from 0
-                du, dd = max(0, up), max(0, down)
+            # clamp each direction independently — a lone decreasing series must not overwrite
+            # the other direction's small correct delta with the full cumulative absolute (spike)
+            du = du if du >= 0 else max(0, up)
+            dd = dd if dd >= 0 else max(0, down)
             self._pending["up"] += du
             self._pending["down"] += dd
             self._accumulate_minute(du, dd)
@@ -159,6 +164,7 @@ class TrafficRecorder:
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
+        next_t = time.monotonic()                   # fixed-deadline cadence base (monotonic → NTP-immune)
         while True:
             interval = max(0.5, self._interval_ms() / 1000.0)
             try:
@@ -167,4 +173,9 @@ class TrafficRecorder:
                     self.record_sample(out)
             except Exception:
                 log.debug("traffic history sample failed", exc_info=True)
-            await asyncio.sleep(interval)
+            # sleep to the next deadline so sample latency doesn't stretch the real period
+            next_t += interval
+            now = time.monotonic()
+            if next_t < now:                        # fell behind (slow sample) → resync, don't burst-catch-up
+                next_t = now
+            await asyncio.sleep(next_t - now)

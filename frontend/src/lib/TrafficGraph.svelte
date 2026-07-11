@@ -3,8 +3,11 @@
   // measured pixel width so axis text stays crisp (no SVG stretching). Zero chart deps.
   // N4: windows beyond 1h are fed by the durable per-minute series — `onwindow` lets the
   // parent fetch the right data when the selection changes.
+  import { fmtRate as fmt } from "./format";
   type Pt = { ts: number; up: number; down: number };
-  let { series = [], onwindow }: { series?: Pt[]; onwindow?: (sec: number) => void } = $props();
+  // windowSec is owned by the parent (single source of truth — the parent picks which series to feed
+  // based on it); the buttons here just call onwindow(). Avoids the child/parent window desync.
+  let { series = [], windowSec = 600, onwindow }: { series?: Pt[]; windowSec?: number; onwindow?: (sec: number) => void } = $props();
 
   const WINDOWS = [
     { label: "1m", sec: 60 },
@@ -13,18 +16,14 @@
     { label: "24h", sec: 86400 },
     { label: "7d", sec: 604800 },
   ];
-  let windowSec = $state(600);
   let w = $state(640);
   let hover = $state<{ x: number; up: number; down: number; ts: number } | null>(null);
 
-  const H = 184, padL = 50, padR = 14, padT = 12, padB = 22;
+  const H = 184, padR = 14, padT = 12, padB = 22;
+  // narrow viewports: shrink the y-axis gutter so the series isn't crushed on a phone
+  let padL = $derived(w < 440 ? 34 : 50);
 
   const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
-  function fmt(bps: number): string {
-    if (bps >= 1e6) return (bps / 1e6).toFixed(1) + " Mbit/s";
-    if (bps >= 1e3) return (bps / 1e3).toFixed(0) + " kbit/s";
-    return Math.round(bps) + " bit/s";
-  }
   function niceMax(v: number): number {
     if (v <= 0) return 1;
     const p = Math.pow(10, Math.floor(Math.log10(v)));
@@ -117,7 +116,7 @@
     <div class="win" role="tablist" aria-label="Throughput window">
       {#each WINDOWS as wd (wd.sec)}
         <button class="win-btn" class:on={windowSec === wd.sec}
-                onclick={() => { windowSec = wd.sec; onwindow?.(wd.sec); }}
+                onclick={() => onwindow?.(wd.sec)}
                 role="tab" aria-selected={windowSec === wd.sec}>{wd.label}</button>
       {/each}
     </div>

@@ -20,10 +20,17 @@ def detect(body: str) -> str:
 
 def parse_subscription(body: str) -> list[Node]:
     """Sniff the subscription format and delegate. Order: JSON, clash-yaml, base64/vless."""
-    fmt = detect(body)
     text = body.strip()
-    if fmt == "json":
-        return json_nodes.parse(text)
-    if fmt == "clash":
+    # P3: parse JSON once here and hand the object straight to the parser, instead of
+    # detect()'s json.loads followed by a second json.loads inside json_nodes.parse (both on
+    # bodies up to 5MB). Mirrors detect()'s sniff order; detect() stays for the dry-run preview.
+    if text[:1] in ("[", "{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+        if data is not None:
+            return json_nodes.parse_obj(data)
+    if "proxies:" in text:
         return clash_yaml.parse(text)
     return base64_vless.parse(text)

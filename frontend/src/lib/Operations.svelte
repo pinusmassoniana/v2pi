@@ -7,6 +7,7 @@
   let restoreMsg = $state(""); let restoreKind = $state<"ok" | "err">("ok");
   let pw = $state({ current: "", next: "", confirm: "" });
   let pwMsg = $state(""); let pwKind = $state<"ok" | "err">("ok");
+  let pwBusy = $state(false); let showPw = $state(false);
   let dangerMsg = $state(""); let dangerKind = $state<"ok" | "err">("ok");
 
   function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
@@ -37,8 +38,14 @@
     if (!(await confirmDialog("Restore replaces all nodes, subscriptions, profiles, routing and settings. Continue?"))) {
       input.value = ""; return;
     }
+    let doc: any;
+    try { doc = JSON.parse(await file.text()); }
+    catch { restoreMsg = "not a valid backup file"; restoreKind = "err"; input.value = ""; return; }
+    if (!doc || typeof doc !== "object" || Array.isArray(doc) || !("schema_version" in doc) || !Array.isArray(doc.nodes)) {
+      restoreMsg = "not a valid backup file"; restoreKind = "err"; input.value = ""; return;
+    }
     try {
-      const r = await api.restore(JSON.parse(await file.text()));
+      const r = await api.restore(doc);
       restoreMsg = `restored ${r.restored.nodes} nodes, ${r.restored.profiles} profiles — reconnect to apply`;
       restoreKind = "ok";
     } catch (err) { restoreMsg = errText(err, "restore failed"); restoreKind = "err"; }
@@ -59,11 +66,14 @@
   const pwOk = $derived(pw.current && pw.next.length >= 8 && pw.next === pw.confirm);
   async function changePassword(e: Event) {
     e.preventDefault();
+    if (pwBusy || !pwOk) return;
+    pwBusy = true;
     try {
       await api.changePassword(pw.current, pw.next);
       pwMsg = "password changed — other sessions signed out"; pwKind = "ok";
       pw = { current: "", next: "", confirm: "" };
     } catch (err) { pwMsg = errText(err, "change failed"); pwKind = "err"; }
+    finally { pwBusy = false; }
   }
 
   async function resetDefaults() {
@@ -104,11 +114,14 @@
 
     <form class="card" onsubmit={changePassword}>
       <div class="card-top"><span class="eyebrow">Admin</span></div>
-      <input class="input" type="password" bind:value={pw.current} placeholder="current password" autocomplete="current-password" />
-      <input class="input" type="password" bind:value={pw.next} placeholder="new password (min 8)" autocomplete="new-password" />
-      <input class="input" type="password" bind:value={pw.confirm} placeholder="confirm new password" autocomplete="new-password" />
+      <div class="pw">
+        <input class="input" type={showPw ? "text" : "password"} bind:value={pw.current} placeholder="current password" autocomplete="current-password" />
+        <button type="button" class="pw-toggle" tabindex="-1" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide passwords" : "Show passwords"}>{showPw ? "Hide" : "Show"}</button>
+      </div>
+      <input class="input" type={showPw ? "text" : "password"} bind:value={pw.next} placeholder="new password (min 8)" autocomplete="new-password" />
+      <input class="input" type={showPw ? "text" : "password"} bind:value={pw.confirm} placeholder="confirm new password" autocomplete="new-password" />
       {#if pw.next}<p class="muted-sm">strength: {pwStrength}{#if pw.confirm && pw.next !== pw.confirm} · <span class="nomatch">does not match</span>{/if}</p>{/if}
-      <div><button class="btn btn-primary" disabled={!pwOk}>Change password</button></div>
+      <div><button class="btn btn-primary" disabled={!pwOk || pwBusy}>Change password</button></div>
       <Alert msg={pwMsg} kind={pwKind} />
     </form>
 
@@ -133,13 +146,21 @@
   .file { position: relative; overflow: hidden; cursor: pointer; }
   .file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   .nomatch { color: var(--err); }
+  .pw { position: relative; display: flex; }
+  .pw .input { flex: 1; padding-right: 3.4rem; }
+  .pw-toggle { position: absolute; right: 0.4rem; top: 50%; transform: translateY(-50%); background: none; border: 0; padding: 0.2rem 0.4rem; font-size: 0.7rem; color: var(--tx3); cursor: pointer; }
+  .pw-toggle:hover { color: var(--tx2); }
 
   .kv { display: flex; flex-direction: column; gap: 0.5rem; }
   .kv > div { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.8rem; }
   .kv-k { color: var(--tx3); } .kv-v { color: var(--tx2); }
 
   .danger { background: color-mix(in srgb, var(--err) 7%, var(--bg1)); border-color: color-mix(in srgb, var(--err) 40%, var(--bd)); }
-  .danger-row { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; }
+  .danger-row { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; flex-wrap: wrap; }
 
   @media (max-width: 900px) { .ops-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 480px) {
+    .danger-row { flex-direction: column; align-items: stretch; }
+    .danger-row .btn { width: 100%; }
+  }
 </style>

@@ -1,8 +1,29 @@
-from pi_gw_panel.controller import apply_node
+from pi_gw_panel.controller import apply_node, apply_lock
 from pi_gw_panel.health.selection import best_node
+from pi_gw_panel.net_control import events
 
 DEFAULT_HYSTERESIS = 3
 DEFAULT_COOLDOWN = 120.0
+
+
+def _maybe_report_all_down(store, health, nodes, active_id, hysteresis, cooldown, now, last_failover_at):
+    """Emit an 'all-nodes-down' event when the active node is past the failover threshold but there
+    is no alive node to move to — the one scenario the operator most needs to see, otherwise silent.
+    Rate-limited to once per cooldown so it doesn't flood the event log every tick."""
+    if active_id is None:
+        return
+    ah = health.get(active_id)
+    if ah is None or ah.fail_count < hysteresis:
+        return
+    if last_failover_at is not None and (now - last_failover_at) < cooldown:
+        return
+    if best_node(nodes, health, exclude_id=active_id, require_alive=True) is not None:
+        return   # a candidate exists → decide() would have returned it, not None
+    last_v = store.get_setting("last_all_down_at")
+    if last_v and (now - float(last_v)) < cooldown:
+        return
+    store.set_setting("last_all_down_at", str(now))
+    events.record(store, "all-nodes-down", "active node failing and no alive node to fail over to", now=now)
 
 
 def decide(health: dict, nodes: list, active_id, hysteresis: int, cooldown: float,
@@ -46,9 +67,18 @@ def run(state, now: float, apply_fn=apply_node):
 
     candidate = decide(health, nodes, active_id, hysteresis, cooldown, now, last_failover_at)
     if candidate is None:
+        _maybe_report_all_down(store, health, nodes, active_id, hysteresis, cooldown, now, last_failover_at)
         return None
-    node = store.get_node(candidate)
-    res = apply_fn(node, state.settings, state.supervisor, state.net, store=store)
+    # Serialize against a manual Connect: hold apply_lock and re-read the active node inside it, so
+    # if the operator switched nodes between our decision and here we abort instead of clobbering
+    # their choice (apply_node re-enters the same RLock).
+    with apply_lock:
+        cur_v = store.get_setting("active_node_id")
+        cur_id = int(cur_v) if cur_v else None
+        if cur_id != active_id:
+            return None
+        node = store.get_node(candidate)
+        res = apply_fn(node, state.settings, state.supervisor, state.net, store=store)
     if not res.ok:
         return None
     store.set_setting("last_failover_at", str(now))

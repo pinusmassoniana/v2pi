@@ -7,12 +7,16 @@ def health_score(h) -> tuple[int, int]:
     lower-latency tie-break. `h` is a NodeHealth or None."""
     if h is None:
         return (0, 0)
+    # explicit None check, not `or`: a genuine 0 ms reading (sub-ms int-truncated) is falsy and
+    # would otherwise collapse to the 10**9 worst-case penalty, ranking the fastest node last.
+    def lat(v):
+        return -(v if v is not None else 10**9)
     if h.last_real_ok:
-        return (3, -(h.last_real_ms or 10**9))
+        return (3, lat(h.last_real_ms))
     if h.last_http_ok:
-        return (2, -(h.last_http_ms or 10**9))
+        return (2, lat(h.last_http_ms))
     if h.last_tcp_ok:
-        return (1, -(h.last_tcp_ms or 10**9))
+        return (1, lat(h.last_tcp_ms))
     return (0, 0)
 
 

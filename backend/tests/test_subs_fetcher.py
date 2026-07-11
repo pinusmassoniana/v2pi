@@ -15,6 +15,7 @@ def test_fetch_direct_builds_request_and_no_proxy(monkeypatch):
         return "BODY", {}
 
     monkeypatch.setattr(fetcher, "_http_get", fake)
+    monkeypatch.setattr(fetcher, "assert_public_url", lambda url: None)   # this test exercises plumbing, not the SSRF guard
     body, path, headers = fetch("https://h/s", {"headers": {"x-h": "1"}}, {}, proxy=None)
     assert body == "BODY" and path == "direct" and headers == {}
     assert calls["proxy"] is None
@@ -30,6 +31,7 @@ def test_fetch_tunnel_passes_proxy(monkeypatch):
         return "B", {}
 
     monkeypatch.setattr(fetcher, "_http_get", fake)
+    monkeypatch.setattr(fetcher, "assert_public_url", lambda url: None)   # plumbing test, not SSRF
     body, path, _ = fetch("https://h/s", {}, {}, proxy="http://127.0.0.1:10808")
     assert path == "tunnel"
     assert calls["proxy"] == "http://127.0.0.1:10808"
@@ -67,7 +69,9 @@ class _CookieChallengeHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def test_http_get_follows_cookie_challenge_redirect():
+def test_http_get_follows_cookie_challenge_redirect(monkeypatch):
+    # loopback stub server: the SSRF redirect-host guard must be relaxed (the documented test seam)
+    monkeypatch.setattr(fetcher, "ALLOW_LOOPBACK", True)
     server = http.server.HTTPServer(("127.0.0.1", 0), _CookieChallengeHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)

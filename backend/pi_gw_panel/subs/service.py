@@ -1,4 +1,5 @@
 import datetime
+import logging
 import uuid as _uuid
 from pi_gw_panel.models import Subscription
 from pi_gw_panel.subs.inject import host_tokens
@@ -6,6 +7,8 @@ from pi_gw_panel.subs.fetcher import fetch
 from pi_gw_panel.subs.parsers.dispatch import parse_subscription
 from pi_gw_panel.subs.reconcile import reconcile
 from pi_gw_panel.controller import apply_node
+
+log = logging.getLogger("pi_gw_panel")
 
 MAX_NODES = 500   # S3: a single subscription can't balloon the DB / reconcile loop
 
@@ -36,8 +39,14 @@ def refresh(state, sub: Subscription) -> dict:
         sub.last_status = f"error: {_short(exc)}"
         sub.last_error = f"{type(exc).__name__}: {exc}"
         result = {"added": 0, "updated": 0, "removed": 0, "error": str(exc), "path": sub.last_path}
-    sub.last_fetched = _now_iso()
-    state.store.update_subscription(sub)
+    # P1: the persist itself must be guarded too — a store error here would propagate out of
+    # refresh → the scheduler loop (no guard upstream) and kill it, so no sub ever refreshes
+    # again. Keep the "never raises" contract: log and swallow instead.
+    try:
+        sub.last_fetched = _now_iso()
+        state.store.update_subscription(sub)
+    except Exception:
+        log.exception("subs.refresh: failed to persist subscription %s", sub.id)
     return result
 
 
@@ -45,6 +54,10 @@ def _short(exc: Exception, limit: int = 120) -> str:
     """A one-line status summary; the full text goes to sub.last_error (N6)."""
     s = " ".join(str(exc).split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+_MAX_BYTES = 1 << 60           # 1 EiB — beyond any real quota; reject absurd/overflow values
+_MAX_EPOCH = 4102444800        # ~year 2100 — reject nonsensical far-future expiries
 
 
 def _apply_userinfo(sub: Subscription, headers: dict) -> None:
@@ -60,10 +73,16 @@ def _apply_userinfo(sub: Subscription, headers: dict) -> None:
     vals: dict[str, int] = {}
     for part in raw.replace(",", ";").split(";"):
         key, _, val = part.strip().partition("=")
+        key = key.strip().lower()
         try:
-            vals[key.strip().lower()] = int(val.strip())
+            n = int(val.strip())
         except (ValueError, AttributeError):
             continue
+        # N7 hardening: the numbers are attacker-controlled — ignore negatives and absurd
+        # magnitudes rather than storing them unbounded (overflow / nonsense quota + expiry).
+        hi = _MAX_EPOCH if key == "expire" else _MAX_BYTES
+        if 0 <= n <= hi:
+            vals[key] = n
     sub.up_bytes = vals.get("upload", sub.up_bytes)
     sub.down_bytes = vals.get("download", sub.down_bytes)
     sub.total_bytes = vals.get("total", sub.total_bytes)
@@ -71,18 +90,25 @@ def _apply_userinfo(sub: Subscription, headers: dict) -> None:
 
 
 def _restart_active(state, active_id, counts) -> None:
-    """Re-apply the live tunnel when this refresh touched the active node — a rotated server
-    (new reality key/sni, same identity) or a single-server identity change — so it reconnects
-    on the refreshed node instead of running the stale config. apply_node never raises."""
+    """Re-apply the live tunnel after a refresh so it reconnects on the refreshed config:
+    - config rotated in place (same identity, new reality key/sni) → reconnect on the same node;
+    - the active identity vanished and exactly one fresh node remains (`active_replacement`) →
+      move the connection to it and drop the now-stale old node.
+    apply_node never raises.
+
+    DEFERRED HARDENING (audit BF S7): the replacement path trusts feed content — a hostile provider
+    could drop the real server and serve one attacker node to redirect live traffic. The proper fix
+    is a per-subscription 'auto-reconnect on identity rotation' opt-in (needs a Subscription schema
+    field + a UI toggle); until then this preserves the project's zero-touch recovery rather than
+    silently disabling it."""
     rep = counts.get("active_replacement")
-    if rep is not None:                                   # single server rotated its identity
+    if rep is not None:
         node = state.store.get_node(rep)
         if node is not None:
-            old = state.store.get_node(active_id) if active_id else None
             res = apply_node(node, state.settings, state.supervisor, state.net,
                              store=state.store, xray_bin=state.xray_bin)
-            if res.ok and old is not None and old.stale:
-                state.store.delete_node(old.id)           # drop the rotated-away stale node
+            if (res is None or getattr(res, "ok", True)) and active_id is not None:
+                state.store.delete_node(active_id)   # drop the stale old identity after the switch
     elif counts.get("active_changed") and active_id is not None:   # config rotated in place
         node = state.store.get_node(active_id)
         if node is not None:

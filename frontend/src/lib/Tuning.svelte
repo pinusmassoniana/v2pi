@@ -23,18 +23,18 @@
   let msgKind = $state<"ok" | "err">("ok");
   let validateMsg = $state("");
   let editor = $state(blank());
+  let editorSnap = $state(JSON.stringify(blank()));   // T1: baseline for unsaved-changes tracking
+  let busy = $state(false);                           // T6: in-flight guard for row/save actions
+  const dirty = $derived(JSON.stringify(editor) !== editorSnap);
 
   function setMsg(t: string, kind: "ok" | "err" = "ok") { msg = t; msgKind = kind; }
   function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
 
-  async function refresh() {
-    try {
-      const [ps, pr] = await Promise.all([api.listProfiles(), api.listProfilePresets()]);
-      profiles = ps; presets = pr;
-    } catch (err) { setMsg(errText(err, "load failed"), "err"); }
-  }
-  function edit(p: TuningProfile) {
-    editor = {
+  // T1: reset the editor to blank and re-baseline (a clean, non-dirty state — used after save/delete/New)
+  function resetEditor() { const b = blank(); editor = b; editorSnap = JSON.stringify(b); validateMsg = ""; }
+  // T1: load a profile into the editor and re-baseline (a freshly loaded profile is clean, not dirty)
+  function loadProfile(p: TuningProfile) {
+    const next = {
       id: p.id, name: p.name, fingerprint: p.fingerprint, frag_enabled: p.frag_enabled,
       frag_packets: p.frag_packets, frag_length: p.frag_length, frag_interval: p.frag_interval,
       mux_enabled: p.mux_enabled, doh_enabled: p.doh_enabled, doh_url: p.doh_url, quic: p.quic,
@@ -43,23 +43,41 @@
       xmux_max_connections: p.xmux_max_connections, mux_concurrency: p.mux_concurrency,
       xudp_proxy_udp443: p.xudp_proxy_udp443, alpn: p.alpn, tls_min: p.tls_min, tls_max: p.tls_max,
     };
-    validateMsg = "";
+    editor = next; editorSnap = JSON.stringify(next); validateMsg = "";
   }
-  function cloneOf(p: TuningProfile) { edit(p); editor.id = null; editor.name = p.name + " copy"; }
-  function stagePreset(name: string) {
+
+  async function refresh() {
+    try {
+      const [ps, pr] = await Promise.all([api.listProfiles(), api.listProfilePresets()]);
+      profiles = ps; presets = pr;
+    } catch (err) { setMsg(errText(err, "load failed"), "err"); }
+  }
+  async function edit(p: TuningProfile) {
+    if (dirty && !(await confirmDialog("Discard unsaved profile changes?"))) return;   // T1: guard in-progress edits
+    loadProfile(p);
+  }
+  async function cloneOf(p: TuningProfile) {
+    if (dirty && !(await confirmDialog("Discard unsaved profile changes?"))) return;
+    loadProfile(p); editor.id = null; editor.name = p.name + " copy";
+  }
+  async function stagePreset(name: string) {
     const p = presets.find((x) => x.name === name);
     if (!p) return;
+    if (dirty && !(await confirmDialog("Discard unsaved profile changes?"))) return;
     editor = { ...editor, ...p.fields, id: editor.id, name: editor.name || name };
     setMsg(`preset “${name}” staged into the editor — Create/Save to apply`, "ok");
   }
   async function save(e: Event) {
     e.preventDefault();
+    if (busy) return;
+    busy = true;
     const { id, ...body } = editor;
     try {
       const saved = id === null ? await api.addProfile(body) : await api.updateProfile(id, body);
-      editor = blank(); validateMsg = ""; await refresh();
+      resetEditor(); await refresh();
       setMsg(saved.is_active ? "saved & applied to the live tunnel" : "saved", "ok");
     } catch (err) { setMsg(errText(err, "save failed"), "err"); }
+    finally { busy = false; }
   }
   async function validate() {
     const { id, ...body } = editor;
@@ -68,17 +86,26 @@
     catch (err) { validateMsg = errText(err, "validate failed"); }
   }
   async function del(p: TuningProfile) {
+    if (busy) return;
     if (!(await confirmDialog(`Delete profile “${p.name}”?${p.node_count ? `\n${p.node_count} node(s) using it fall back to the default.` : ""}`))) return;
-    try { await api.deleteProfile(p.id); if (editor.id === p.id) editor = blank(); await refresh(); }
+    busy = true;
+    try { await api.deleteProfile(p.id); if (editor.id === p.id) resetEditor(); await refresh(); }
     catch (err) { setMsg(errText(err, "delete failed"), "err"); }
+    finally { busy = false; }
   }
   async function makeDefault(id: number) {
+    if (busy) return;
+    busy = true;
     try { await api.setDefaultProfile(id); await refresh(); setMsg("default updated", "ok"); }
     catch (err) { setMsg(errText(err, "set-default failed"), "err"); }
+    finally { busy = false; }
   }
   async function applyActive(id: number) {
+    if (busy) return;
+    busy = true;
     try { const r = await api.applyProfileActive(id); setMsg(`applied to active node ${r.node_id}`, "ok"); await refresh(); }
     catch (err) { setMsg(errText(err, "apply failed"), "err"); }
+    finally { busy = false; }
   }
   function addNoise() { editor.noises = [...editor.noises, { type: "rand", packet: "50-150", delay: "10-16" }]; }
   function rmNoise(i: number) { editor.noises = editor.noises.filter((_, idx) => idx !== i); }
@@ -110,12 +137,12 @@
           <td class="mono">{p.quic}</td>
           <td>
             <div class="row-actions">
-            <button class="btn iconbtn" title="Edit" aria-label="Edit profile" onclick={() => edit(p)}>{@html I.edit}</button>
-            <button class="btn iconbtn" title="Clone" aria-label="Clone profile" onclick={() => cloneOf(p)}>{@html I.clone}</button>
-            <button class="btn iconbtn" title="Apply to the active node and re-apply now" aria-label="Apply to active" onclick={() => applyActive(p.id)}>{@html I.zap}</button>
+            <button class="btn iconbtn" title="Edit" aria-label="Edit profile" onclick={() => edit(p)} disabled={busy}>{@html I.edit}</button>
+            <button class="btn iconbtn" title="Clone" aria-label="Clone profile" onclick={() => cloneOf(p)} disabled={busy}>{@html I.clone}</button>
+            <button class="btn iconbtn" title="Apply to the active node and re-apply now" aria-label="Apply to active" onclick={() => applyActive(p.id)} disabled={busy}>{@html I.zap}</button>
             {#if !p.is_default}
-              <button class="btn iconbtn" title="Make default" aria-label="Make default" onclick={() => makeDefault(p.id)}>{@html I.star}</button>
-              <button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete profile" onclick={() => del(p)}>{@html I.trash}</button>
+              <button class="btn iconbtn" title="Make default" aria-label="Make default" onclick={() => makeDefault(p.id)} disabled={busy}>{@html I.star}</button>
+              <button class="btn iconbtn btn-danger" title="Delete" aria-label="Delete profile" onclick={() => del(p)} disabled={busy}>{@html I.trash}</button>
             {/if}
             </div>
           </td>
@@ -148,8 +175,8 @@
       <label class="field"><span>packets</span>
         <input class="input" list="frag-packets" bind:value={editor.frag_packets} />
         <datalist id="frag-packets"><option value="tlshello"></option><option value="1-3"></option></datalist></label>
-      <label class="field"><span>length</span><input class="input" bind:value={editor.frag_length} placeholder="100-200" /></label>
-      <label class="field"><span>interval (ms)</span><input class="input" bind:value={editor.frag_interval} placeholder="10-20" /></label>
+      <label class="field"><span>length</span><input class="input" inputmode="numeric" bind:value={editor.frag_length} placeholder="100-200" /></label>
+      <label class="field"><span>interval (ms)</span><input class="input" inputmode="numeric" bind:value={editor.frag_interval} placeholder="10-20" /></label>
     {/if}
   </fieldset>
 
@@ -173,7 +200,7 @@
     <legend>Mux <small class="muted">xhttp nodes only — ignored on Vision</small></legend>
     <div class="check"><Toggle checked={editor.mux_enabled} onchange={(v) => (editor.mux_enabled = v)} label="mux" /> <span>enable</span></div>
     {#if editor.mux_enabled}
-      <label class="field"><span>concurrency</span><input class="input" bind:value={editor.mux_concurrency} placeholder="(default)" /></label>
+      <label class="field"><span>concurrency</span><input class="input" inputmode="numeric" bind:value={editor.mux_concurrency} placeholder="(default)" /></label>
       <label class="field"><span>xudpProxyUDP443</span>
         <select class="input" bind:value={editor.xudp_proxy_udp443}>
           <option value="">(default)</option><option value="reject">reject</option><option value="allow">allow</option><option value="skip">skip</option>
@@ -183,9 +210,9 @@
 
   <fieldset>
     <legend>XHTTP transport <small class="muted">xhttp nodes only</small></legend>
-    <label class="field"><span>padding bytes (xPaddingBytes)</span><input class="input" bind:value={editor.xhttp_padding} placeholder="100-1000" /></label>
-    <label class="field"><span>xmux maxConcurrency</span><input class="input" bind:value={editor.xmux_max_concurrency} placeholder="(off)" /></label>
-    <label class="field"><span>xmux maxConnections</span><input class="input" bind:value={editor.xmux_max_connections} placeholder="(off)" /></label>
+    <label class="field"><span>padding bytes (xPaddingBytes)</span><input class="input" inputmode="numeric" bind:value={editor.xhttp_padding} placeholder="100-1000" /></label>
+    <label class="field"><span>xmux maxConcurrency</span><input class="input" inputmode="numeric" bind:value={editor.xmux_max_concurrency} placeholder="(off)" /></label>
+    <label class="field"><span>xmux maxConnections</span><input class="input" inputmode="numeric" bind:value={editor.xmux_max_connections} placeholder="(off)" /></label>
   </fieldset>
 
   <fieldset>
@@ -210,9 +237,9 @@
 
   {#if validateMsg}<div class="vmsg" class:bad={validateMsg.startsWith("✗")}>{validateMsg}</div>{/if}
   <div class="actions">
-    <button class="btn btn-primary">{editor.id === null ? "Create" : "Save"}</button>
+    <button class="btn btn-primary" disabled={busy}>{editor.id === null ? "Create" : "Save"}</button>
     <button class="btn" type="button" onclick={validate}>Validate</button>
-    {#if editor.id !== null}<button class="btn" type="button" onclick={() => (editor = blank())}>New</button>{/if}
+    {#if editor.id !== null}<button class="btn" type="button" onclick={resetEditor}>New</button>{/if}
   </div>
 </form>
 
@@ -230,8 +257,8 @@
   fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.7rem 0.9rem; display: grid; gap: 0.5rem; background: var(--surface-2); margin: 0.5rem 0; }
   legend small { font-weight: 400; }
   .field { display: grid; gap: 0.2rem; }
-  .kv { display: flex; gap: 0.4rem; }
-  .kv .input { flex: 1; }
+  .kv { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .kv .input { flex: 1 1 8rem; min-width: 0; }
   tr.active td { background: var(--accent-soft); }
   .badge.active-b { background: var(--accent-soft); color: var(--accent); }
   .vmsg { font-family: var(--mono); font-size: 0.8rem; color: var(--success); white-space: pre-wrap; }
