@@ -38,9 +38,10 @@
     <p class="muted lead">First-time setup — create your admin account.</p>
     <input class="input" name="username" id="username" bind:value={username} placeholder="username" autocomplete="username" />
     <div class="pw">
-      <input class="input" name="new-password" id="new-password" type={showPw ? "text" : "password"} bind:value={password} placeholder="password (min 8)" autocomplete="new-password" />
+      <input class="input" name="new-password" id="new-password" type={showPw ? "text" : "password"} bind:value={password} placeholder="password" autocomplete="new-password" aria-describedby="pw-hint" />
       <button type="button" class="pw-toggle" tabindex="-1" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide password" : "Show password"}>{showPw ? "Hide" : "Show"}</button>
     </div>
+    <p id="pw-hint" class="muted hint">min 8 characters</p>
     <div class="pw">
       <input class="input" name="confirm-password" id="confirm-password" type={showPw ? "text" : "password"} bind:value={confirm} placeholder="confirm password" autocomplete="new-password" />
     </div>
@@ -50,6 +51,7 @@
 </div>
 
 <style>
+  .hint { font-size: 0.72rem; margin: -0.35rem 0 0.1rem; }
   .auth { position: relative; min-height: 100dvh; display: grid; place-items: center; padding: 1rem; overflow: hidden; }
   .auth-bg {
     position: absolute; inset: 0; pointer-events: none;
