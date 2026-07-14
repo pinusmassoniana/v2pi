@@ -15,18 +15,26 @@ def _config_differs(a: Node, b: Node) -> bool:
     return any(getattr(a, f) != getattr(b, f) for f in _CONFIG_FIELDS)
 
 
+def _identity(n: Node) -> tuple:
+    # sni/short_id are part of the key so a reality feed presenting many concurrent exit configs
+    # on one IP:port (same uuid, differing only by SNI/shortId) keeps each as a distinct node
+    # instead of collapsing 51 advertised locations down to the handful of shared endpoints.
+    return (n.address, n.port, n.uuid, n.path, n.sni, n.short_id)
+
+
 def _dedupe(parsed: list[Node]) -> list[Node]:
-    """Collapse duplicate (address, port, uuid, path) entries — last wins, first-seen order —
+    """Collapse entries with the same identity — last wins, first-seen order —
     so a feed that lists the same server twice yields one node (and honest counts)."""
     by_key: dict[tuple, Node] = {}
     for p in parsed:
-        by_key[(p.address, p.port, p.uuid, p.path)] = p
+        by_key[_identity(p)] = p
     return list(by_key.values())
 
 
 def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
               active_node_id: int | None, default_profile_id: int | None = None) -> dict:
-    """Merge parsed nodes into the store under sub_id, matching by (address, port, uuid, path):
+    """Merge parsed nodes into the store under sub_id, matching by node identity
+    (address, port, uuid, path, sni, short_id):
     update changed, add new, remove vanished — EXCEPT the active node is never removed
     (flagged stale instead) so a live connection survives.
 
@@ -58,7 +66,7 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
     # error mid-loop leaves extra nodes rather than a wiped sub (P2, least-harmful ordering).
     try:
         for pos, p in enumerate(parsed):
-            key = (p.address, p.port, p.uuid, p.path)
+            key = _identity(p)
             seen.add(key)
             cur = store.get_node_by_identity(sub_id, *key)
             p.subscription_id = sub_id
@@ -77,7 +85,7 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
                 store.update_node(p)
                 updated += 1
         for n in existing:
-            if (n.address, n.port, n.uuid, n.path) not in seen:
+            if _identity(n) not in seen:
                 if skip_deletes:
                     skipped_deletes += 1        # P1: don't trust an empty/near-empty response
                     continue

@@ -89,6 +89,20 @@ def test_reconcile_protects_active_node(settings):
     assert n is not None and n.stale is False   # active left intact on an untrusted empty feed
 
 
+def test_reconcile_keeps_reality_locations_sharing_one_endpoint(settings):
+    # A reality feed presents many concurrent exit configs on one IP:port+uuid, differing only
+    # by SNI/shortId (each a distinct city). Identity includes sni/short_id, so they must NOT
+    # collapse — the store keeps every advertised location, not just the shared endpoint.
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
+    parsed = [Node(id=None, name=f"city{i}", address="1.1.1.1", port=443, uuid="ua",
+                   security="reality", public_key="PBK", sni=f"cdn{i}.example.com",
+                   short_id=f"{i:016x}") for i in range(5)]
+    counts = reconcile(s, sid, parsed, active_node_id=None)
+    assert counts["added"] == 5
+    assert len(s.list_nodes_for_sub(sid)) == 5     # not collapsed to 1
+
+
 def test_refresh_end_to_end(monkeypatch, settings):
     s = _store(settings)
     sid = s.add_subscription(Subscription(id=None, name="s", url="https://h/s"))

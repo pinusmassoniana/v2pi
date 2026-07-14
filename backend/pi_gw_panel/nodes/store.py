@@ -159,14 +159,16 @@ class NodeStore:
         return _row_to_node(row) if row else None
 
     def get_node_by_identity(self, sub_id: int | None, address: str, port: int, uuid: str,
-                             path: str = "") -> Node | None:
+                             path: str = "", sni: str = "", short_id: str = "") -> Node | None:
         # Scoped to the owning subscription so two subscriptions with the same server each
         # keep their own copy instead of fighting over one row. `IS` matches NULL too, so a
         # sub-refresh scoped to a real sub_id can never steal a manual (NULL) or other-sub node.
+        # sni/short_id are part of the identity so a reality feed that presents many concurrent
+        # exit configs on one IP:port (differing only by SNI/shortId) keeps them as distinct nodes.
         row = self._conn.execute(
             "SELECT * FROM nodes WHERE subscription_id IS ? AND address = ? AND port = ? "
-            "AND uuid = ? AND path = ?",
-            (sub_id, address, port, uuid, path)).fetchone()
+            "AND uuid = ? AND path = ? AND sni = ? AND short_id = ?",
+            (sub_id, address, port, uuid, path, sni, short_id)).fetchone()
         return _row_to_node(row) if row else None
 
     def list_nodes(self) -> list[Node]:

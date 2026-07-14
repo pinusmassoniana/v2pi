@@ -988,7 +988,8 @@ def import_nodes(body: ImportNodesIn, request: Request,
         raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
     added = 0
     for p in parsed[:service.MAX_NODES]:
-        if state.store.get_node_by_identity(None, p.address, p.port, p.uuid, p.path) is not None:
+        if state.store.get_node_by_identity(
+            None, p.address, p.port, p.uuid, p.path, p.sni, p.short_id) is not None:
             continue
         p.id = None
         p.subscription_id = None
