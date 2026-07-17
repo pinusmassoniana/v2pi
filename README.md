@@ -25,22 +25,40 @@
 
 **English** · [Русский](README.ru.md)
 
-[Features](#features) · [Quickstart](#quickstart-docker) · [Router setup](#router-setup) · [Configuration](#configuration) · [Tested on](#tested-on) · [Development](#development)
+[Why](#why-v2pi) · [Features](#features) · [Quickstart](#quickstart-docker) · [Router setup](#router-setup) · [Configuration](#configuration) · [Tested on](#tested-on) · [Development](#development)
 
 </div>
 
-## Overview
+## Why v2pi?
 
-**v2pi** turns any **headless Linux box** — **amd64/x86-64** (Intel or AMD) **or arm64/aarch64** — into a
-managed VPN gateway. It supervises the Xray proxy engine, manages your nodes and subscriptions, tunes
-anti-DPI evasion per node, routes traffic by ordered rules, health-checks upstreams with automatic
-failover, and controls the device's own network (segment / DHCP / DNS plus a fail-closed kill-switch) —
-all from a light/dark web dashboard, driven entirely over your LAN.
+Commercial VPN apps protect **one device at a time** — you install a client on your laptop, another on
+your phone, and hope you remembered the rest. Your TV, console, e-reader, smart-home gadgets, a guest's
+phone? Most can't run a VPN client at all, so they quietly leak around it.
 
-It is **not** Pi-specific. Any x86-64 mini-PC, thin client, or VPS — or any arm64 single-board computer
-(Raspberry Pi, Orange Pi, Radxa Rock, NanoPi…) that runs Docker — will do. The image is built and
-published for **both architectures**; the Raspberry Pi 5 is just the [reference device](#tested-on)
-it's developed and tested on.
+**v2pi flips that around: you protect the _network_, not each device.** One small always-on box becomes
+the gateway for an entire LAN segment. Every device that joins it — wired or Wi-Fi, VPN-capable or not —
+is routed through your [Xray](https://github.com/XTLS/Xray-core) tunnel transparently. Nothing to
+install and nothing to configure per device: plug in, and the whole segment is covered.
+
+And it's **smart** about it — this isn't "shove everything through one proxy":
+
+- **Only what needs the tunnel takes it.** Ordered geoip/geosite rules keep local and in-country
+  traffic direct (fast, nothing breaks) and send the rest out through the proxy — with a one-click
+  **RU-direct** preset.
+- **Built to get through DPI.** VLESS Vision / XHTTP / REALITY plus per-node anti-DPI tuning — uTLS
+  fingerprints, TLS fragmentation, mux, DoH — applied **live** to slip past deep-packet inspection and
+  blocking.
+- **Fail-closed by default.** If the tunnel drops, the kill-switch stops the whole segment from leaking
+  around it — no device silently falls back to the naked connection.
+- **Stays up on its own.** Active health probes fail over to a working node automatically, and a reboot
+  self-heals straight back to a clean gateway.
+- **Yours, not a subscription.** It runs on hardware you own — an inexpensive Pi or any mini-PC — with
+  no third-party app and no per-seat client, behind a live NOC-style dashboard that shows traffic, node
+  health, and every client lease.
+
+It is **not** Pi-specific: any x86-64 mini-PC, thin client, or VPS — or any arm64 single-board computer
+(Raspberry Pi, Orange Pi, Radxa Rock, NanoPi…) that runs Docker — works. The image ships for
+[both architectures](#tested-on); the Raspberry Pi 5 is just the reference device.
 
 ## Features
 
