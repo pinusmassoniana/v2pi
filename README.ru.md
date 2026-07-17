@@ -1,10 +1,10 @@
 <div align="center">
 
-# v2pi
+<img src="assets/hero.png" alt="v2pi — self-hosted панель управления Xray VPN-шлюзом" width="100%">
 
-**Self-hosted панель управления, превращающая любую headless Linux-машину в управляемый [Xray](https://github.com/XTLS/Xray-core) VPN-шлюз.**
+<br/>
 
-Ноды · тюнинг anti-DPI · маршрутизация по правилам · failover по здоровью · полное управление сетью хоста — из одного веб-дашборда со светлой и тёмной темой. Без монитора и клавиатуры.
+**Превращает любую headless Linux-машину в управляемый [Xray](https://github.com/XTLS/Xray-core) VPN-шлюз** — ноды, тюнинг anti-DPI, маршрутизация по правилам, failover по здоровью и полное управление сетью хоста, из одного веб-дашборда со светлой и тёмной темой. Без монитора и клавиатуры.
 
 <br/>
 
@@ -196,8 +196,10 @@ root `scripts/migrate-host.sh`: он снимет снапшот, останов
 
 ## На чём протестировано
 
+Постоянно тестируется на **обеих публикуемых архитектурах** — на bare-metal arm64-плате и на amd64-ВМ:
+
 <details open>
-<summary>Разрабатывается и постоянно тестируется на <b>Raspberry Pi 5 Model B</b></summary>
+<summary><b>arm64</b> — Raspberry Pi 5 Model B <sub>(референсное устройство)</sub></summary>
 
 <br/>
 
@@ -208,12 +210,28 @@ root `scripts/migrate-host.sh`: он снимет снапшот, останов
 | ОЗУ | 16 ГБ |
 | ОС | Debian GNU/Linux 13 (trixie), ядро `6.12.75+rpt-rpi-2712` |
 | Движок контейнеров | Docker 26.1 |
-| Встроенный Xray-core | v26.3.27 (`linux/arm64` на этой плате; образ также собирается под `linux/amd64`) |
+| Встроенный Xray-core | v26.3.27 (`linux/arm64`) |
 
 </details>
 
-Pi 5 **не** обязателен — сама панель лёгкая; подойдёт любой хост amd64/x86-64 (Intel или AMD) или arm64,
-способный запустить Docker и Xray.
+<details>
+<summary><b>amd64</b> — виртуальная машина Proxmox VE</summary>
+
+<br/>
+
+| | |
+|---|---|
+| Платформа | Виртуальная машина Proxmox VE (KVM/QEMU) |
+| vCPU | 4 × AMD Ryzen 5 8645HS (x86-64) |
+| ОЗУ | 4 ГБ |
+| ОС | Ubuntu 24.04.4 LTS, ядро `6.8.0-134-generic` |
+| Движок контейнеров | Docker 29.5 |
+| Встроенный Xray-core | v26.3.27 (`linux/amd64`) |
+
+</details>
+
+Ни то, ни другое **не** обязательно — сама панель лёгкая; подойдёт любой хост amd64/x86-64 (Intel или
+AMD) или arm64, способный запустить Docker и Xray.
 
 ## Разработка
 

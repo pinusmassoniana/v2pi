@@ -1,10 +1,10 @@
 <div align="center">
 
-# v2pi
+<img src="assets/hero.png" alt="v2pi — self-hosted control panel for an Xray VPN gateway" width="100%">
 
-**Self-hosted control panel that turns any headless Linux box into a managed [Xray](https://github.com/XTLS/Xray-core) VPN gateway.**
+<br/>
 
-Nodes · anti-DPI tuning · rule-based routing · health failover · full host-network control — from one light/dark web dashboard. No monitor, no keyboard.
+**Turns any headless Linux box into a managed [Xray](https://github.com/XTLS/Xray-core) VPN gateway** — nodes, anti-DPI tuning, rule-based routing, health failover, and full host-network control, from one light/dark web dashboard. No monitor, no keyboard.
 
 <br/>
 
@@ -194,8 +194,10 @@ the container, and verifies (restoring on failure). Fresh installs don't need it
 
 ## Tested on
 
+Continuously tested on **both published architectures** — a bare-metal arm64 board and an amd64 VM:
+
 <details open>
-<summary>Developed and continuously tested on a <b>Raspberry Pi 5 Model B</b></summary>
+<summary><b>arm64</b> — Raspberry Pi 5 Model B <sub>(reference device)</sub></summary>
 
 <br/>
 
@@ -206,12 +208,28 @@ the container, and verifies (restoring on failure). Fresh installs don't need it
 | RAM | 16 GB |
 | OS | Debian GNU/Linux 13 (trixie), kernel `6.12.75+rpt-rpi-2712` |
 | Container engine | Docker 26.1 |
-| Bundled Xray-core | v26.3.27 (`linux/arm64` on this board; the image also ships `linux/amd64`) |
+| Bundled Xray-core | v26.3.27 (`linux/arm64`) |
 
 </details>
 
-A Pi 5 is **not** required — the panel itself is lightweight; any amd64/x86-64 (Intel or AMD) or arm64
-host that can run Docker and Xray will do.
+<details>
+<summary><b>amd64</b> — Proxmox VE virtual machine</summary>
+
+<br/>
+
+| | |
+|---|---|
+| Platform | Proxmox VE virtual machine (KVM/QEMU) |
+| vCPU | 4 × AMD Ryzen 5 8645HS (x86-64) |
+| RAM | 4 GB |
+| OS | Ubuntu 24.04.4 LTS, kernel `6.8.0-134-generic` |
+| Container engine | Docker 29.5 |
+| Bundled Xray-core | v26.3.27 (`linux/amd64`) |
+
+</details>
+
+Neither is required — the panel itself is lightweight; any amd64/x86-64 (Intel or AMD) or arm64 host
+that can run Docker and Xray will do.
 
 ## Development
 
