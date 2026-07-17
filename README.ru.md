@@ -1,0 +1,235 @@
+<div align="center">
+
+# v2pi
+
+**Self-hosted панель управления, превращающая любую headless Linux-машину в управляемый [Xray](https://github.com/XTLS/Xray-core) VPN-шлюз.**
+
+Ноды · тюнинг anti-DPI · маршрутизация по правилам · failover по здоровью · полное управление сетью хоста — из одного веб-дашборда со светлой и тёмной темой. Без монитора и клавиатуры.
+
+<br/>
+
+[![CI](https://github.com/pinusmassoniana/v2pi/actions/workflows/ci-release.yml/badge.svg)](https://github.com/pinusmassoniana/v2pi/actions/workflows/ci-release.yml)
+[![Release](https://img.shields.io/github/v/release/pinusmassoniana/v2pi?label=release&color=3fd17e)](https://github.com/pinusmassoniana/v2pi/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-3fd17e.svg)](LICENSE)
+[![GHCR image](https://img.shields.io/badge/ghcr.io-v2pi--x-2496ED?logo=docker&logoColor=white)](https://github.com/pinusmassoniana/v2pi/pkgs/container/v2pi-x)
+![Platform](https://img.shields.io/badge/platform-amd64%20%C2%B7%20arm64-30363d)
+
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)
+![Xray-core](https://img.shields.io/badge/Xray--core-26.3.27-000000)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)
+![nftables](https://img.shields.io/badge/nftables-tproxy-30363d)
+
+<br/>
+
+[English](README.md) · **Русский**
+
+[Возможности](#возможности) · [Быстрый старт](#быстрый-старт-docker) · [Настройка роутера](#настройка-роутера) · [Конфигурация](#конфигурация) · [На чём протестировано](#на-чём-протестировано) · [Разработка](#разработка)
+
+</div>
+
+## Обзор
+
+**v2pi** превращает **любую headless Linux-машину** — **amd64/x86-64** (Intel или AMD) **или
+arm64/aarch64** — в управляемый VPN-шлюз. Она супервизит прокси-движок Xray, управляет нодами и
+подписками, настраивает обход DPI индивидуально для каждой ноды, маршрутизирует трафик по упорядоченным
+правилам, проверяет доступность аплинков с автопереключением (failover) и управляет собственной сетью
+устройства (сегмент / DHCP / DNS плюс fail-closed kill-switch) — всё из веб-дашборда со светлой и тёмной
+темой, по локальной сети.
+
+Это **не** привязано к Pi. Подойдёт любой x86-64 мини-ПК, тонкий клиент или VPS, либо любой arm64
+одноплатник (Raspberry Pi, Orange Pi, Radxa Rock, NanoPi…), на котором запускается Docker. Образ
+собирается и публикуется для **обеих архитектур**; Raspberry Pi 5 — лишь
+[референсное устройство](#на-чём-протестировано), на котором проект разрабатывается и тестируется.
+
+## Возможности
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🔌 Ноды
+Управление нодами Xray — VLESS Vision / XHTTP, включая **XHTTP-over-TLS**. Подписки с инъекцией
+произвольных заголовков / query-параметров и упорядоченным импортом.
+
+</td>
+<td width="50%" valign="top">
+
+### 🛡️ Тюнинг anti-DPI
+Профили для каждой ноды: uTLS-fingerprint, фрагментация TLS, mux, DoH, QUIC и другие anti-DPI ручки —
+применяются **на лету**, без обрыва туннеля.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🧭 Маршрутизация
+Упорядоченные правила (`geoip` / `geosite` / domain / ip / port → direct / proxy / block) со стейджингом
+пресетов, валидацией каждого правила и готовым пресетом **«RU напрямую»**.
+
+</td>
+<td width="50%" valign="top">
+
+### 📈 Здоровье и трафик
+Активные пробы с **автопереключением** на живую ноду плюс график трафика вверх/вниз в реальном времени
+по статистике Xray через WebSocket.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🌐 Управление сетью
+Редактируемая сеть шлюза (интерфейс / IP сегмента, диапазон DHCP, DNS для клиентов) с **fail-closed
+kill-switch**, применяется к хосту как реальный nftables tproxy + policy-routing.
+
+</td>
+<td width="50%" valign="top">
+
+### 🧰 Эксплуатация
+Резервное копирование / восстановление, настройка администратора при первом запуске, светлая/тёмная
+тема и самовосстановление после перезагрузки — коробка поднимается чистой.
+
+</td>
+</tr>
+</table>
+
+## Быстрый старт (Docker)
+
+**Требования:** 64-битный **Linux**-хост (amd64/x86-64 или arm64/aarch64, headless — норма) с
+**Docker** + **Docker Compose**.
+
+**Деплой** — установка с нуля:
+
+```bash
+git clone https://github.com/pinusmassoniana/v2pi.git
+cd v2pi
+docker compose pull      # скачать готовый мультиарх-образ — Docker сам берёт нужную арку, без сборки на устройстве
+docker compose up -d
+```
+
+Откройте `http://<ip-устройства>:8080` и пройдите настройку администратора при первом запуске. Секрет
+сессии генерируется автоматически и сохраняется в data-томе; панель слушает `0.0.0.0` (доступна по
+локальной сети, защищена логином).
+
+**Обновление** до свежего опубликованного образа:
+
+```bash
+cd v2pi
+git pull                 # обновить docker-compose.yml, если менялся
+docker compose pull
+docker compose up -d
+```
+
+> [!WARNING]
+> Готовый Compose-файл запускает контейнер **`privileged`** с **`network_mode: host`**, чтобы он сам
+> владел всем шлюзом на хосте (sysctl, клиентский VLAN, адресация, DHCP, IPv6 RA). Это выделенная
+> коробка под одну задачу — таков размен.
+
+Опубликованный образ — `ghcr.io/pinusmassoniana/v2pi-x`: мультиарх-манифест (`linux/amd64` +
+`linux/arm64`), тег `:latest` плюс тег на каждую версию (например `:1.14`); `docker compose pull` сам
+подбирает архитектуру хоста. Контейнер полностью самодостаточен: внутри уже лежат зафиксированный
+**Xray-core** плюс `nftables` / `dnsmasq` / `isc-dhcp-client` / `iproute2`, и при `up` он сам
+разворачивает весь шлюз на хосте — так что хосту не нужно ничего, кроме Docker, а вам — только настроить
+роутер.
+
+<details>
+<summary><b>Сборка из исходников</b> (разработка / локальные правки)</summary>
+
+<br/>
+
+Замените две строки `compose` выше на локальную сборку (соберётся под арку самого хоста):
+
+```bash
+docker compose up -d --build
+```
+
+</details>
+
+## Настройка роутера
+
+Панель владеет шлюзом; роутер — **единственная коробка, которую она не трогает**. Настройте его один раз:
+
+- Создайте клиентский VLAN (по умолчанию **VLAN 2**) и протегируйте в него клиентский порт свитча.
+- **Отключите DHCP роутера** на этом VLAN — его раздаёт шлюз.
+- Домашнюю ногу шлюза (`eth0`) держите в обычной LAN с интернетом.
+
+> [!IMPORTANT]
+> Если используете IPv6 — **отключите IPv6 / Router Advertisement роутера** на этом VLAN: RA раздаёт сам
+> шлюз, а второй источник заставит клиентов течь мимо туннеля. Панель это детектит и показывает красный
+> баннер.
+
+Экран **Network** визуально проверяет каждый пункт и показывает точные шаги.
+
+<details>
+<summary><b>Миграция существующей ручной установки</b></summary>
+
+<br/>
+
+Если раньше вы вручную поднимали `pi-gw-dhcp.service` / `radvd` / VLAN — один раз запустите на хосте от
+root `scripts/migrate-host.sh`: он снимет снапшот, остановит легаси-сервисы хоста, передаст сегмент
+контейнеру и проверит результат (с откатом при ошибке). Чистым установкам это не нужно.
+
+</details>
+
+## Конфигурация
+
+> [!TIP]
+> Всё опционально — значения по умолчанию работают «из коробки». Переопределяется через `.env` (см.
+> [`.env.example`](.env.example)) или переменные окружения.
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `PI_GW_SESSION_SECRET` | генерируется, сохраняется | ключ подписи cookie сессии |
+| `PI_GW_BIND_HOST` | `0.0.0.0` | адрес прослушивания (доступ по LAN, под логином) |
+| `PI_GW_PORT` | `8080` | HTTP-порт |
+| `PI_GW_DATA_DIR` | `/data` (в образе) | SQLite + конфиг Xray + логи + секрет сессии |
+| `PI_GW_XRAY_BIN` | `xray` | путь к бинарю Xray |
+| `PI_GW_NET_BACKEND` | `linux` (Compose) / `dryrun` (dev) | `linux` применяет nft + routing + dnsmasq к хосту; иначе — только рендер |
+
+> [!NOTE]
+> Dev / CI по умолчанию используют **dry-run** сетевой бэкенд (`PI_GW_NET_BACKEND` не задан или
+> `dryrun`): он рендерит наборы правил nftables + dnsmasq, но не трогает хост — так панель можно
+> безопасно запускать на ноутбуке. Реально применяет изменения только `PI_GW_NET_BACKEND=linux`.
+
+## На чём протестировано
+
+<details open>
+<summary>Разрабатывается и постоянно тестируется на <b>Raspberry Pi 5 Model B</b></summary>
+
+<br/>
+
+| | |
+|---|---|
+| Плата | Raspberry Pi 5 Model B Rev 1.1 (BCM2712) |
+| CPU | 4 ядра Arm Cortex-A76 @ 2.4 ГГц (aarch64) |
+| ОЗУ | 16 ГБ |
+| ОС | Debian GNU/Linux 13 (trixie), ядро `6.12.75+rpt-rpi-2712` |
+| Движок контейнеров | Docker 26.1 |
+| Встроенный Xray-core | v26.3.27 (`linux/arm64` на этой плате; образ также собирается под `linux/amd64`) |
+
+</details>
+
+Pi 5 **не** обязателен — сама панель лёгкая; подойдёт любой хост amd64/x86-64 (Intel или AMD) или arm64,
+способный запустить Docker и Xray.
+
+## Разработка
+
+См. [CONTRIBUTING.md](CONTRIBUTING.md). Вкратце:
+
+```bash
+cd backend  && uv run pytest           # тесты бэкенда
+cd frontend && npm ci && npm test      # тесты фронтенда
+python -m pi_gw_panel                   # запуск приложения целиком локально (по умолчанию — безопасный dry-run бэкенд)
+```
+
+## Лицензия
+
+[MIT](LICENSE) © Pinus Massoniana
+
+**Атрибуция** — флаги стран у egress используют базу
+[DB-IP IP-to-Country Lite](https://db-ip.com/db/download/ip-to-country-lite) от DB-IP по лицензии
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (вшита в образ, обновляется при каждой
+пересборке).
