@@ -10,7 +10,7 @@
 
 [![CI](https://github.com/pinusmassoniana/v2pi/actions/workflows/ci-release.yml/badge.svg)](https://github.com/pinusmassoniana/v2pi/actions/workflows/ci-release.yml)
 [![Release](https://img.shields.io/github/v/release/pinusmassoniana/v2pi?label=release&color=3fd17e)](https://github.com/pinusmassoniana/v2pi/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-3fd17e.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-3fd17e.svg)](LICENSE)
 [![GHCR image](https://img.shields.io/badge/ghcr.io-v2pi--x-2496ED?logo=docker&logoColor=white)](https://github.com/pinusmassoniana/v2pi/pkgs/container/v2pi-x)
 ![Platform](https://img.shields.io/badge/platform-amd64%20%C2%B7%20arm64-30363d)
 
@@ -266,7 +266,7 @@ python -m pi_gw_panel                   # запуск приложения це
 
 ## Лицензия
 
-[MIT](LICENSE) © Pinus Massoniana
+[AGPL-3.0](LICENSE) © Pinus Massoniana
 
 **Атрибуция** — флаги стран у egress используют базу
 [DB-IP IP-to-Country Lite](https://db-ip.com/db/download/ip-to-country-lite) от DB-IP по лицензии
