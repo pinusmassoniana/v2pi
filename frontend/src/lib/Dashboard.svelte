@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Node, type TrafficMessage, type Network, type Subscription, type Routing } from "./api";
+  import { api, ApiError, createLatestRequest, type Node, type TrafficMessage, type Network, type Subscription, type Routing } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
   import ConnFlow from "./ConnFlow.svelte";
   import Alert from "./Alert.svelte";
@@ -23,11 +23,16 @@
   let tick = $state(0);                            // 1s heartbeat → live uptime / freshness labels
   // U3: remember the dismissed failover across reloads
   let failoverDismissed = $state<number | null>(Number(localStorage.getItem("failoverDismissed")) || null);
+  const seedRequest = createLatestRequest();
+  const longRequest = createLatestRequest();
 
   let activeName = $derived(nodes.find((n) => n.id === status?.active_node_id)?.name ?? null);
   let activeNode = $derived(nodes.find((n) => n.id === status?.active_node_id) ?? null);
   let liveFrame = $derived(live && !("disabled" in live) && !("error" in live) ? live : null);
   let liveActive = $derived(liveFrame ? liveFrame.active : null);
+  let liveActiveFresh = $derived(liveActive?.stale === false);
+  let tunnelOnline = $derived(!statusStore.stale && (status?.tunnel_online ?? (!!status?.running && status.active_node_id !== null && liveActiveFresh && liveActive?.real_ok === true)));
+  let failoverReady = $derived(tunnelOnline && liveActiveFresh && (status?.failover_ready ?? net?.status.failover_ready ?? false));
   let liveTotals = $derived(liveFrame ? liveFrame.totals : null);
   let dataUp = $derived(liveFrame?.lifetime?.up ?? liveTotals?.up ?? null);
   let dataDown = $derived(liveFrame?.lifetime?.down ?? liveTotals?.down ?? null);
@@ -39,7 +44,7 @@
   let directDown = $derived(liveDirect.down_bps);
   let directUp = $derived(liveDirect.up_bps);
   let xrayError = $derived(status?.xray_state === "error");
-  let killArmed = $derived(net?.kill_switch_enabled ?? null);
+  let killArmed = $derived(net?.kill_switch_enabled === false ? false : net?.status.enforcement_status === "ok" ? true : null);
   // A: surface an auto-failover from the last 24h until the operator dismisses it
   let failover = $derived(
     status?.last_failover_at && status.last_failover_at !== failoverDismissed
@@ -113,11 +118,15 @@
   // reconnect / long gap instead of only showing post-reconnect data (D5). Also the initial seed.
   async function seedHistory() {
     try {
-      const h = await api.getTrafficHistory(3600, 1200);
-      const map = new Map<number, { ts: number; up: number; down: number }>();
-      for (const [ts, up, down] of h.samples) map.set(ts, { ts, up, down });
-      for (const s of samples) map.set(s.ts, s);          // live samples win on a tie
-      samples = [...map.values()].sort((a, b) => a.ts - b.ts).slice(-4000);
+      await seedRequest.run(
+        (signal) => api.getTrafficHistory(3600, 1200, signal),
+        (h) => {
+          const map = new Map<number, { ts: number; up: number; down: number }>();
+          for (const [ts, up, down] of h.samples) map.set(ts, { ts, up, down });
+          for (const s of samples) map.set(s.ts, s);          // live samples win on a tie
+          samples = [...map.values()].sort((a, b) => a.ts - b.ts).slice(-4000);
+        },
+      );
     } catch {}
   }
 
@@ -126,8 +135,10 @@
   let longSamples = $state<{ ts: number; up: number; down: number }[]>([]);
   async function loadLong(sec: number) {
     try {
-      const h = await api.getTrafficHistory(sec, 1200);
-      longSamples = h.samples.map(([ts, up, down]) => ({ ts, up, down }));
+      await longRequest.run(
+        (signal) => api.getTrafficHistory(sec, 1200, signal),
+        (h) => { longSamples = h.samples.map(([ts, up, down]) => ({ ts, up, down })); },
+      );
     } catch {}
   }
   function onGraphWindow(sec: number) {
@@ -143,12 +154,29 @@
 
   // Interval poller that pauses while the tab is hidden AND refetches immediately when it returns
   // (so a backgrounded panel isn't stale for a whole interval after the operator comes back — FB).
-  function poll(load: () => void, ms: number): () => void {
-    load();
-    const tick = () => { if (document.visibilityState === "visible") load(); };
-    const t = setInterval(tick, ms);
-    document.addEventListener("visibilitychange", tick);
-    return () => { clearInterval(t); document.removeEventListener("visibilitychange", tick); };
+  function poll(load: () => void | Promise<void>, ms: number): () => void {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let running = false;
+    const run = async () => {
+      if (running || stopped) return;
+      running = true;
+      timer = null;
+      try { if (document.visibilityState === "visible") await load(); }
+      finally {
+        running = false;
+        if (!stopped) timer = setTimeout(run, ms);
+      }
+    };
+    const visible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (running) return;
+      if (timer) clearTimeout(timer);
+      void run();
+    };
+    void run();
+    document.addEventListener("visibilitychange", visible);
+    return () => { stopped = true; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
   }
 
   // shared status poller + a nodes refresh, both paused while the tab is hidden
@@ -159,13 +187,13 @@
   });
 
   // network poll — drives the status strip (kill-switch/clients), ConnFlow, network summary, event log
-  $effect(() => poll(() => { api.getNetwork().then((n) => (net = n)).catch(() => {}); }, 4000));
+  $effect(() => poll(async () => { try { net = await api.getNetwork(); } catch {} }, 4000));
 
   // routing summary — rules change rarely, poll slowly
-  $effect(() => poll(() => { api.getRouting().then((r) => (routing = r)).catch(() => {}); }, 30000));
+  $effect(() => poll(async () => { try { routing = await api.getRouting(); } catch {} }, 30000));
 
   // E: subscription expiry / data-cap warnings — subs change rarely, poll slowly
-  $effect(() => poll(() => { api.listSubs().then((s) => (subs = s)).catch(() => {}); }, 30000));
+  $effect(() => poll(async () => { try { subs = await api.listSubs(); } catch {} }, 30000));
 
   // 1s heartbeat for live uptime / freshness, paused while hidden
   $effect(() => {
@@ -190,6 +218,7 @@
     }, seedHistory);
     return () => conn.close();
   });
+  $effect(() => () => { seedRequest.cancel(); longRequest.cancel(); });
 
   // upstream-health rows: active node first (real probe), the rest as standby (no fake latencies)
   let healthRows = $derived.by(() => {
@@ -217,19 +246,26 @@
 <!-- ===== status strip ===== -->
 <div class="strip">
   <div class="cell">
-    <div class="cell-k">GATEWAY</div>
+    <div class="cell-k">XRAY PROCESS</div>
     <div class="cell-v">
       <span class="sdot" class:on={status?.running} class:warn={xrayError} class:bad={status?.running === false && !xrayError}></span>
       <span class="big" class:acc={status?.running} class:err={status?.running === false && !xrayError} class:warnc={xrayError}>
-        {status?.running ? "UP" : xrayError ? "RECONNECTING" : status?.running === false ? "DOWN" : "—"}
+        {status?.running ? "RUNNING" : xrayError ? "RECONNECTING" : status?.running === false ? "STOPPED" : "—"}
       </span>
+    </div>
+  </div>
+  <div class="cell">
+    <div class="cell-k">TUNNEL</div>
+    <div class="cell-v">
+      <span class="sdot" class:on={tunnelOnline} class:bad={status?.running === false}></span>
+      <span class="big" class:acc={tunnelOnline}>{tunnelOnline ? "ONLINE" : status?.active_node_id ? "UNKNOWN" : "OFFLINE"}</span>
     </div>
   </div>
   <div class="cell">
     <div class="cell-k">KILL-SWITCH</div>
     <div class="cell-v">
       <span class="sdot" class:on={killArmed} class:bad={killArmed === false}></span>
-      <span class="big" class:err={killArmed === false}>{killArmed == null ? "—" : killArmed ? "ARMED" : "OPEN"}</span>
+      <span class="big" class:err={killArmed === false} class:warnc={killArmed === null}>{killArmed == null ? "UNKNOWN" : killArmed ? "ARMED" : "OPEN"}</span>
     </div>
   </div>
   <div class="cell">
@@ -241,7 +277,7 @@
   </div>
   <div class="cell">
     <div class="cell-k">UPTIME</div>
-    <div class="cell-v"><span class="mid mono" aria-live="off">{status?.running ? uptimeStr : "—"}</span></div>
+    <div class="cell-v"><span class="mid mono" aria-live="off">{tunnelOnline ? uptimeStr : "—"}</span></div>
   </div>
   <div class="cell">
     <div class="cell-k">CLIENTS</div>
@@ -287,29 +323,33 @@
     {#if disabled}
       <p class="msg">Traffic stats disabled — enable in Settings.</p>
     {:else}
-      <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} windowSec={graphWindow} onwindow={onGraphWindow} />
+      <TrafficGraph series={graphWindow > 3600 ? longSamples : samples} windowSec={graphWindow} stale={!liveActiveFresh} onwindow={onGraphWindow} />
     {/if}
   </div>
 
   <div class="card health">
     <div class="card-top">
       <span class="eyebrow">Upstream Health</span>
-      <span class="pill" class:ok={status?.running}>{status?.running ? "FAILOVER READY" : "OFFLINE"}</span>
+      <span class="pill" class:ok={failoverReady}>{failoverReady ? "FAILOVER READY" : tunnelOnline ? "NO ELIGIBLE STANDBY" : "OFFLINE"}</span>
     </div>
     <div class="health-list">
       {#each healthRows as n (n.id)}
         {@const isActive = n.id === activeNode?.id}
-        {@const degraded = isActive && liveActive?.real_ok === false}
+        {@const degraded = isActive && liveActiveFresh && liveActive?.real_ok === false}
+        {@const stale = isActive && !liveActiveFresh}
         <div class="hrow" class:active={isActive}>
-          <span class="sdot" class:on={isActive && !degraded} class:warn={degraded} class:idle={!isActive}></span>
+          <span class="sdot" class:on={isActive && !degraded && !stale} class:warn={degraded} class:idle={!isActive || stale}></span>
           <div class="hrow-main">
             <div class="hrow-name">{n.name}</div>
             <div class="hrow-sub">{n.transport || n.network || "—"}{#if isActive && liveActive?.egress_cc} · {liveActive.egress_cc}{/if}</div>
           </div>
           <div class="hrow-right">
-            {#if isActive && liveActive?.latency_ms != null && liveActive.real_ok}
+            {#if isActive && liveActiveFresh && liveActive?.latency_ms != null && liveActive.real_ok}
               <div class="hrow-lat" class:warnc={degraded}>{liveActive.latency_ms}ms</div>
               <div class="hrow-state acc">active</div>
+            {:else if stale}
+              <div class="hrow-lat warnc">health stale</div>
+              <div class="hrow-state warnc">unknown</div>
             {:else if isActive && degraded}
               <div class="hrow-lat warnc">probe failed</div>
               <div class="hrow-state warnc">degraded</div>
@@ -330,7 +370,8 @@
 
 <!-- ===== connection diagram (kept from the original dashboard, restyled) ===== -->
 <ConnFlow
-    running={!!status?.running}
+    running={tunnelOnline}
+    stale={!liveActiveFresh}
     segmentUp={net?.status.segment_up ?? null}
     {clients}
     segmentIp={net?.segment.ip ?? null}
@@ -392,7 +433,7 @@
       <span class="muted-sm">tail -f</span>
     </div>
     <div class="events">
-      {#each (net?.events ?? []).slice(0, 6) as e (e.ts + e.detail)}
+      {#each (net?.events ?? []).slice(-6).reverse() as e (e.ts + e.detail)}
         <div class="ev"><span class="ev-t mono">{clockTime(e.ts)}</span><span class="ev-l {evLevel(e.kind)}">[{e.kind}]</span><span class="ev-d">{e.detail}</span></div>
       {/each}
       {#if !(net?.events ?? []).length}<p class="msg">No recent events.</p>{/if}
@@ -405,7 +446,7 @@
 <style>
   /* ===== status strip — 5 cells joined by 1px hairlines ===== */
   .strip {
-    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px;
     background: var(--bd); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden;
   }
   .cell { background: var(--bg1); padding: 0.8rem 1rem; display: grid; gap: 0.45rem; min-width: 0; }

@@ -1,13 +1,14 @@
 <script lang="ts">
   import { api, ApiError } from "./api";
   import { BRAND } from "./brand";
-  let { onDone }: { onDone: () => void } = $props();
+  let { onDone, bootstrapRequired = true }: { onDone: () => void; bootstrapRequired?: boolean } = $props();
   let username = $state("");
   let password = $state("");
   let confirm = $state("");
   let error = $state("");
   let busy = $state(false);
   let showPw = $state(false);
+  let bootstrapToken = $state("");
 
   async function submit(e: Event) {
     e.preventDefault();
@@ -16,9 +17,9 @@
     if (password !== confirm) { error = "passwords don't match"; return; }
     busy = true; error = "";
     try {
-      await api.setup(username, password);   // creates the credential AND opens a session
+      await api.setup(username, password, bootstrapToken.trim());   // creates the credential AND opens a session
       await api.ensureCsrf();
-      password = ""; confirm = "";           // don't leave the plaintext credential in memory
+      password = ""; confirm = ""; bootstrapToken = ""; // don't leave plaintext credentials in memory
       onDone();
     } catch (err) {
       error = err instanceof ApiError ? err.message : "setup failed";
@@ -36,17 +37,21 @@
       <span class="auth-word">{BRAND.slice(2)}</span>
     </div>
     <p class="muted lead">First-time setup — create your admin account.</p>
-    <input class="input" name="username" id="username" bind:value={username} placeholder="username" autocomplete="username" />
+    {#if bootstrapRequired}
+      <label class="field"><span>One-time bootstrap token</span>
+        <input class="input" name="bootstrap-token" bind:value={bootstrapToken} placeholder="token from the Pi console/file" autocomplete="off" required /></label>
+    {/if}
+    <input class="input" name="username" id="username" bind:value={username} placeholder="username" aria-label="username" autocomplete="username" />
     <div class="pw">
-      <input class="input" name="new-password" id="new-password" type={showPw ? "text" : "password"} bind:value={password} placeholder="password" autocomplete="new-password" aria-describedby="pw-hint" />
-      <button type="button" class="pw-toggle" tabindex="-1" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide password" : "Show password"}>{showPw ? "Hide" : "Show"}</button>
+      <input class="input" name="new-password" id="new-password" type={showPw ? "text" : "password"} bind:value={password} placeholder="password" aria-label="password" autocomplete="new-password" aria-describedby="pw-hint" />
+      <button type="button" class="pw-toggle" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide password" : "Show password"}>{showPw ? "Hide" : "Show"}</button>
     </div>
     <p id="pw-hint" class="muted hint">min 8 characters</p>
     <div class="pw">
-      <input class="input" name="confirm-password" id="confirm-password" type={showPw ? "text" : "password"} bind:value={confirm} placeholder="confirm password" autocomplete="new-password" />
+      <input class="input" name="confirm-password" id="confirm-password" type={showPw ? "text" : "password"} bind:value={confirm} placeholder="confirm password" aria-label="confirm password" autocomplete="new-password" />
     </div>
-    <button class="btn btn-primary block" disabled={busy || !username || !password || !confirm}>{busy ? "…" : "Create account"}</button>
-    {#if error}<p class="err">{error}</p>{/if}
+    <button class="btn btn-primary block" disabled={busy || !username || !password || !confirm || (bootstrapRequired && !bootstrapToken.trim())}>{busy ? "…" : "Create account"}</button>
+    {#if error}<p class="err" role="alert" aria-live="assertive">{error}</p>{/if}
   </form>
 </div>
 
@@ -67,6 +72,7 @@
   }
   .auth-word { font-weight: 720; font-size: 1.25rem; letter-spacing: -0.02em; color: var(--text); }
   .lead { margin: 0 0 0.2rem; text-align: center; font-size: 0.85rem; }
+  .field { display: grid; gap: 0.2rem; }
   .pw { position: relative; display: flex; }
   .pw .input { flex: 1; padding-right: 3.4rem; }
   .pw-toggle { position: absolute; right: 0.4rem; top: 50%; transform: translateY(-50%); background: none; border: 0; padding: 0.2rem 0.4rem; font-size: 0.7rem; color: var(--muted); cursor: pointer; }

@@ -14,14 +14,14 @@
     nodeName = null, realOk = null, latencyMs = null,
     egressIp = null, egressIp6 = null, egressCc = null,
     uplink = null, uplink6 = null, ipv6Enabled = false,
-    proxyDown = 0, proxyUp = 0, directDown = 0, directUp = 0,
+    proxyDown = 0, proxyUp = 0, directDown = 0, directUp = 0, stale = false,
   }: {
     running?: boolean; segmentUp?: boolean | null; clients?: number | null;
     segmentIp?: string | null; segmentIface?: string | null;
     nodeName?: string | null; realOk?: boolean | null; latencyMs?: number | null;
     egressIp?: string | null; egressIp6?: string | null; egressCc?: string | null;
     uplink?: boolean | null; uplink6?: boolean | null; ipv6Enabled?: boolean;
-    proxyDown?: number; proxyUp?: number; directDown?: number; directUp?: number;
+    proxyDown?: number; proxyUp?: number; directDown?: number; directUp?: number; stale?: boolean;
   } = $props();
 
   // inner lucide paths (stroked via the parent <g>); no <svg> wrapper so they embed in the diagram
@@ -34,12 +34,12 @@
   const tone = (v: boolean | null | undefined): Tone => (v == null ? "idle" : v ? "ok" : "bad");
   const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
   let leaking = $derived(directDown + directUp > 0);
-  let tunCls = $derived(!running ? "off" : realOk === false ? "bad" : realOk ? "ok" : "off");
+  let tunCls = $derived(!running || stale ? "off" : realOk === false ? "bad" : realOk ? "ok" : "off");
   let gwSub = $derived(
     segmentIp ? segmentIp + (segmentIface ? " · " + segmentIface : "")
     : segmentUp == null ? "segment —" : segmentUp ? "segment up" : "segment down");
   let tunnelRate = $derived(
-    !running ? "off" : realOk === false ? "no traffic" :
+    stale ? "health stale" : !running ? "off" : realOk === false ? "no traffic" :
     `↓ ${fmtRate(proxyDown)} · ↑ ${fmtRate(proxyUp)}` + (realOk && latencyMs != null ? ` · ${latencyMs}ms` : ""));
 
   // SVG <text> neither wraps nor auto-shrinks. The node name + egress IP sit centred in a fixed slot
@@ -97,7 +97,7 @@
     <circle class="cir" cx="470" cy="70" r="28" />
     {#if egressCc}<text class="flag" x="470" y="78">{flagEmoji(egressCc)}</text>
     {:else}<g class="ic" transform="translate(461,61) scale(0.75)">{@html P.exit}</g>{/if}
-    <circle class="sdot {running ? tone(realOk) : 'idle'}" cx="490" cy="51" r="4.5" />
+    <circle class="sdot {running && !stale ? tone(realOk) : 'idle'}" cx="490" cy="51" r="4.5" />
     <text bind:this={nodeTitleEl} class="ctitle" x="470" y="116">{trunc(nodeName ?? "—", 38)}</text>
     <text bind:this={nodeSubEl} class="csub mono" x="470" y="130">{egressIp ? trunc(egressIp, 42) : "no exit"}</text>
     {#if egressIp6}<text bind:this={nodeSub6El} class="csub6 mono" x="470" y="141">v6 {trunc(egressIp6, 44)}</text>{/if}

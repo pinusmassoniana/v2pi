@@ -2,6 +2,9 @@
   import { api, ApiError, type RoutingRuleIn, type PresetInfo } from "./api";
   import { confirmDialog } from "./confirm.svelte";
   import { I } from "./icons";
+  import { inIPv4Cidr, parseDestination } from "./routing";
+
+  let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
   type Row = RoutingRuleIn & { uid: number; enabled: boolean; label: string };
   let _uid = 0;
@@ -88,7 +91,9 @@
     saving = true;
     try {
       const r = await api.routingPreset(name);
-      rules = toRows(r.rules);                       // staged, not yet applied (RC1)
+      rules = toRows(r.rules);                       // all preset fields are staged, not yet applied
+      defaultAction = r.default_action;
+      domainStrategy = r.domain_strategy;
       setMsg(`preset “${name}” staged — review and Save`, "ok");
     } catch (err) { setMsg(errText(err, "preset failed"), "err"); }
     finally { saving = false; }
@@ -125,34 +130,24 @@
   }
 
   // --- RN6 client-side destination tester (literal rule types only) ---
-  function ipToInt(ip: string): number | null {
-    const p = ip.split("."); if (p.length !== 4) return null;
-    let n = 0; for (const x of p) { const v = +x; if (!Number.isInteger(v) || v < 0 || v > 255) return null; n = n * 256 + v; }
-    return n >>> 0;
-  }
-  function inCidr(ip: string, cidr: string): boolean {
-    const [base, bitsS] = cidr.split("/"); const bits = bitsS === undefined ? 32 : +bitsS;
-    const a = ipToInt(ip), b = ipToInt(base); if (a === null || b === null) return false;
-    if (bits <= 0) return true; const mask = (~((1 << (32 - bits)) - 1)) >>> 0;
-    return (a & mask) === (b & mask);
-  }
   function portMatches(spec: string, port: number): boolean {
     return spec.split(",").some((t) => { const [a, b] = t.trim().split("-").map(Number); return b === undefined ? port === a : port >= a && port <= b; });
   }
   const PRIV = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12", "127.0.0.0/8"];
   function runTest() {
     const raw = testDest.trim(); if (!raw) { testResult = ""; return; }
-    let host = raw, port = NaN;
-    const m = raw.match(/^(.*):(\d+)$/); if (m) { host = m[1]; port = +m[2]; }
-    const isIp = ipToInt(host) !== null;
-    if (isIp && PRIV.some((c) => inCidr(host, c))) { testResult = `→ direct (private IP, always matched first)`; return; }
+    const parsed = parseDestination(raw);
+    if (parsed.ipv6) { testResult = "IPv6 preview is not evaluated locally — Validate/Save uses Xray's matcher."; return; }
+    const { host } = parsed, port = parsed.port ?? NaN;
+    const isIp = inIPv4Cidr(host, `${host}/32`);
+    if (isIp && PRIV.some((c) => inIPv4Cidr(host, c))) { testResult = `→ direct (private IP, always matched first)`; return; }
     let skippedGeo = false;
     for (const r of rules) {
       if (!r.enabled || !r.value.trim()) continue;
       const vals = r.value.split(/[,\n]/).map((v) => v.trim()).filter(Boolean);
       let hit = false;
       if (r.type === "domain") hit = vals.some((v) => { const base = v.replace(/^\*\.?/, ""); return host === base || host.endsWith("." + base); });
-      else if (r.type === "ip") hit = isIp && vals.some((v) => inCidr(host, v));
+      else if (r.type === "ip") hit = isIp && vals.some((v) => inIPv4Cidr(host, v));
       else if (r.type === "port") hit = !isNaN(port) && vals.some((v) => portMatches(v, port));
       else { skippedGeo = true; continue; }   // geoip/geosite — needs geo data, can't eval locally
       if (hit) { testResult = `→ ${r.action}  (matched ${r.type} “${r.value}”${r.label ? ` · ${r.label}` : ""})`; return; }
@@ -160,12 +155,7 @@
     testResult = `→ ${defaultAction}  (default${skippedGeo ? " · geo rules not evaluated locally" : ""})`;
   }
 
-  // RR7: warn before a reload/close silently drops staged (unsaved) rule edits
-  $effect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  });
+  $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 
   $effect(() => { load(); });
 </script>
@@ -193,23 +183,23 @@
       {#each rules as rule, i (rule.uid)}
         <tr class:disabled={!rule.enabled}>
           <td>{i + 1}</td>
-          <td><input type="checkbox" bind:checked={rule.enabled} aria-label="enabled" /></td>
+          <td><input type="checkbox" bind:checked={rule.enabled} aria-label={`Rule ${i + 1} enabled`} /></td>
           <td>
-            <select class="input" bind:value={rule.type}>
+            <select class="input" bind:value={rule.type} aria-label={`Rule ${i + 1} type`}>
               <option value="geoip">geoip</option><option value="geosite">geosite</option>
               <option value="domain">domain</option><option value="ip">ip</option><option value="port">port</option>
             </select>
           </td>
           <td>
             <input class="input" list={rule.type === "geoip" || rule.type === "geosite" ? "geo-tokens" : undefined}
-                   bind:value={rule.value} placeholder={placeholderFor(rule.type)} />
+                   bind:value={rule.value} placeholder={placeholderFor(rule.type)} aria-label={`Rule ${i + 1} value`} />
           </td>
           <td>
-            <select class="input act act-{rule.action}" bind:value={rule.action}>
+            <select class="input act act-{rule.action}" bind:value={rule.action} aria-label={`Rule ${i + 1} action`}>
               <option value="direct">direct</option><option value="proxy">proxy</option><option value="block">block</option>
             </select>
           </td>
-          <td><input class="input label" bind:value={rule.label} placeholder="note (optional)" /></td>
+          <td><input class="input label" bind:value={rule.label} placeholder="note (optional)" aria-label={`Rule ${i + 1} label`} /></td>
           <td>
             <div class="row-actions">
             <button class="btn iconbtn" type="button" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">{@html I.up}</button>
@@ -230,7 +220,7 @@
 
   <div class="toolbar">
     <button class="btn" type="button" onclick={addRule}>+ Add rule</button>
-    <select class="input auto" disabled={saving} onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") importPreset(v); }}>
+    <select class="input auto" aria-label="Import routing preset" disabled={saving} onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") importPreset(v); }}>
       <option value="__ph__" disabled selected>Import preset…</option>
       {#each presets as p (p.name)}<option value={p.name}>{p.title}</option>{/each}
     </select>
@@ -257,7 +247,7 @@
 <div class="card tester">
   <h3>Test a destination <small class="muted">how would this host/port be routed? (literal rules only — geo not evaluated locally)</small></h3>
   <div class="trow">
-    <input class="input" bind:value={testDest} placeholder="example.com  |  1.2.3.4  |  1.2.3.4:443" onkeydown={(e) => e.key === "Enter" && runTest()} />
+    <input class="input" bind:value={testDest} aria-label="Destination to evaluate" placeholder="example.com  |  1.2.3.4  |  1.2.3.4:443" onkeydown={(e) => e.key === "Enter" && runTest()} />
     <button class="btn" type="button" onclick={runTest}>Evaluate</button>
     {#if testResult}<span class="tres mono">{testResult}</span>{/if}
   </div>
@@ -266,7 +256,7 @@
 {#if importOpen}
   <div class="card">
     <h3>Import ruleset JSON</h3>
-    <textarea class="input ta" bind:value={importText} rows="6" placeholder={'{"rules":[{"type":"domain","value":"x.com","action":"block"}],"default_action":"proxy"}'}></textarea>
+    <textarea class="input ta" bind:value={importText} rows="6" aria-label="Routing rules JSON" placeholder={'{"rules":[{"type":"domain","value":"x.com","action":"block"}],"default_action":"proxy"}'}></textarea>
     <div class="toolbar">
       <button class="btn btn-primary" type="button" onclick={doImportJSON} disabled={!importText.trim()}>Load</button>
       <button class="btn" type="button" onclick={() => (importOpen = false)}>Cancel</button>

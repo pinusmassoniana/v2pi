@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Node, type TrafficMessage, type Network } from "./api";
+  import { api, createLatestRequest, type Node, type TrafficMessage, type Network } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
   import LatencyChart from "./LatencyChart.svelte";
   import { statusStore, subscribeStatus, serverNow } from "./status.svelte";
@@ -15,20 +15,23 @@
   let graphWindow = $state(600);
   let longSamples = $state<{ ts: number; up: number; down: number }[]>([]);
   let tick = $state(0);
+  const seedRequest = createLatestRequest();
+  const longRequest = createLatestRequest();
 
   let liveFrame = $derived(live && !("disabled" in live) && !("error" in live) ? live : null);
   let liveActive = $derived(liveFrame ? liveFrame.active : null);
+  let activeFresh = $derived(liveActive?.stale === false);
   let activeNode = $derived(nodes.find((n) => n.id === status?.active_node_id) ?? null);
   // keep showing the short-window series until the long-window fetch resolves (avoids empty-chart flicker)
   let series = $derived(graphWindow > 3600 && longSamples.length ? longSamples : samples);
 
   // KPIs — all from real data; nothing faked
   let peakDown = $derived(series.reduce((m, s) => (s.down > m ? s.down : m), 0));
-  let activeLat = $derived(liveActive?.real_ok ? liveActive.latency_ms : null);
-  let latHistory = $derived(liveActive?.lat_history ?? []);
+  let activeLat = $derived(activeFresh && liveActive?.real_ok ? liveActive.latency_ms : null);
+  let latHistory = $derived(activeFresh ? (liveActive?.lat_history ?? []) : []);
   let avgLat = $derived(latHistory.length ? Math.round(latHistory.reduce((a, b) => a + b, 0) / latHistory.length) : null);
   let failoverEvents = $derived((net?.events ?? []).filter((e) => /failover|switch/i.test(e.kind)));
-  let failovers24h = $derived(failoverEvents.filter((e) => serverNow() / 1000 - e.ts < 86400).length);
+  let failovers24h = $derived(net?.status.failovers_24h ?? status?.failovers_24h ?? 0);
 
   function uptimeLabel(): string {
     tick;   // re-evaluate each second
@@ -45,32 +48,46 @@
     const rest = nodes.filter((n) => n.id !== act?.id);
     return [...(act ? [act] : []), ...rest].slice(0, 6).map((n) => ({
       node: n, active: n.id === act?.id,
-      ms: n.id === act?.id && liveActive?.real_ok ? liveActive.latency_ms : null,
+      ms: n.id === act?.id && activeFresh && liveActive?.real_ok ? liveActive.latency_ms : null,
     }));
   });
   const BAR_MAX = 250;   // ms full-scale for the bars
 
   async function seedHistory() {
     try {
-      const h = await api.getTrafficHistory(3600, 1200);
-      const map = new Map<number, { ts: number; up: number; down: number }>();
-      for (const [ts, up, down] of h.samples) map.set(ts, { ts, up, down });
-      for (const s of samples) map.set(s.ts, s);
-      samples = [...map.values()].sort((a, b) => a.ts - b.ts).slice(-4000);
+      await seedRequest.run(
+        (signal) => api.getTrafficHistory(3600, 1200, signal),
+        (h) => {
+          const map = new Map<number, { ts: number; up: number; down: number }>();
+          for (const [ts, up, down] of h.samples) map.set(ts, { ts, up, down });
+          for (const s of samples) map.set(s.ts, s);
+          samples = [...map.values()].sort((a, b) => a.ts - b.ts).slice(-4000);
+        },
+      );
     } catch {}
   }
   async function loadLong(sec: number) {
-    try { const h = await api.getTrafficHistory(sec, 1200); longSamples = h.samples.map(([ts, up, down]) => ({ ts, up, down })); } catch {}
+    try {
+      await longRequest.run(
+        (signal) => api.getTrafficHistory(sec, 1200, signal),
+        (h) => { longSamples = h.samples.map(([ts, up, down]) => ({ ts, up, down })); },
+      );
+    } catch {}
   }
   function onGraphWindow(sec: number) { graphWindow = sec; if (sec > 3600) loadLong(sec); }
 
   $effect(() => subscribeStatus(3000));
   $effect(() => { api.listNodes().then((n) => (nodes = n)).catch(() => {}); });
   $effect(() => {
-    const load = () => api.getNetwork().then((n) => (net = n)).catch(() => {});
-    load();
-    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 8000);
-    return () => clearInterval(t);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = async () => {
+      timer = null;
+      if (document.visibilityState === "visible") { try { net = await api.getNetwork(); } catch {} }
+      if (!stopped) timer = setTimeout(load, 8000);
+    };
+    void load();
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
   });
   $effect(() => { seedHistory(); });
   $effect(() => { const t = setInterval(() => { if (document.visibilityState === "visible") tick++; }, 1000); return () => clearInterval(t); });
@@ -92,6 +109,7 @@
     }, seedHistory);
     return () => conn.close();
   });
+  $effect(() => () => { seedRequest.cancel(); longRequest.cancel(); });
 </script>
 
 <!-- KPI row -->
@@ -103,6 +121,7 @@
   <div class="kpi">
     <div class="kpi-k">ACTIVE PROBE LATENCY</div>
     <div class="kpi-v">{activeLat != null ? activeLat : "—"}{#if activeLat != null}<small>ms</small>{/if}{#if avgLat != null}<span class="kpi-extra">avg {avgLat}ms</span>{/if}</div>
+    {#if !activeFresh}<span class="kpi-extra health-stale">{liveActive?.stale ? "stale" : "unknown"}{#if liveActive?.checked_at} · {agoLabel(Date.parse(liveActive.checked_at) / 1000, serverNow() / 1000)}{/if}</span>{/if}
   </div>
   <div class="kpi">
     <div class="kpi-k">FAILOVERS · 24H</div>
@@ -123,7 +142,7 @@
   {#if disabled}
     <p class="msg">Traffic stats disabled — enable in Settings.</p>
   {:else}
-    <TrafficGraph {series} onwindow={onGraphWindow} />
+    <TrafficGraph {series} windowSec={graphWindow} stale={!activeFresh} onwindow={onGraphWindow} />
   {/if}
 </div>
 
@@ -141,7 +160,7 @@
       {#if !probeRows.length}<p class="msg">No nodes configured.</p>{/if}
     </div>
     {#if latHistory.length}
-      <div class="spark"><div class="card-top"><span class="eyebrow">Active node · latency history</span></div><LatencyChart values={latHistory} stale={liveActive?.real_ok === false} /></div>
+      <div class="spark"><div class="card-top"><span class="eyebrow">Active node · latency history</span></div><LatencyChart values={latHistory} stale={!activeFresh || liveActive?.real_ok === false} /></div>
     {/if}
   </div>
 
@@ -149,7 +168,7 @@
   <div class="card">
     <div class="card-top"><span class="eyebrow">Failover history</span></div>
     <div class="fh">
-      {#each failoverEvents.slice(0, 8) as e, i (e.ts + e.detail + i)}
+      {#each failoverEvents.slice(-8).reverse() as e, i (e.ts + e.detail + i)}
         <div class="fh-row"><span class="fh-t">{agoLabel(e.ts, serverNow() / 1000)}</span><span class="fh-d">{e.detail}</span></div>
       {/each}
       {#if status?.last_failover_at && !failoverEvents.length}
@@ -174,6 +193,7 @@
   .kpi-v small { font-size: 0.7rem; color: var(--tx3); font-weight: 400; margin-left: 0.15rem; }
   .kpi-v.up { color: var(--up); } .kpi-v.acc { color: var(--acc); } .kpi-v.warnc { color: var(--warn); }
   .kpi-extra { font-size: 0.66rem; color: var(--tx3); font-weight: 400; margin-left: 0.5rem; font-family: var(--font); }
+  .health-stale { display: block; margin: 0; color: var(--warn); }
 
   .row2 { display: grid; grid-template-columns: 1.2fr 1fr; gap: 0.9rem; }
 

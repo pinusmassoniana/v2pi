@@ -1,4 +1,9 @@
-export interface Status { running: boolean; pid: number | null; active_node_id: number | null; xray_state: string; active_since: number | null; last_failover_at: number | null; prev_active_node_id: number | null; server_now: number; }
+export interface Status {
+  running: boolean; pid: number | null; active_node_id: number | null; xray_state: string;
+  active_since: number | null; last_failover_at: number | null; prev_active_node_id: number | null; server_now: number;
+  tunnel_online?: boolean | null; failover_ready?: boolean; eligible_standby_count?: number;
+  active_health_fresh?: boolean; health_enabled?: boolean; failover_enabled?: boolean; failovers_24h?: number;
+}
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string; transport: string;
   network: string; security: string;
@@ -13,6 +18,7 @@ export interface NodeIn {
 }
 // tuning_profile_id is patch-only (assign a profile, or null to inherit the global default)
 export type NodeUpdate = Partial<NodeIn> & { tuning_profile_id?: number | null };
+export type NodeValidateIn = NodeIn & { tuning_profile_id?: number | null };
 
 export interface Subscription {
   id: number; name: string; url: string; injection: Record<string, any>;
@@ -28,7 +34,9 @@ export interface SubscriptionIn {
 }
 export interface Preview { method: string; url: string; headers: Record<string, string>; query: Record<string, string>; }
 export interface PreviewNode { name: string; address: string; port: number; transport: string; network: string; security: string; }
-export interface PreviewNodes { format: string; count: number; nodes: PreviewNode[]; }
+export interface PreviewNodes { format: string; count: number; returned_count: number; truncated: boolean; nodes: PreviewNode[]; }
+export interface RefreshResult { id?: number; name?: string; ok?: boolean; status?: string; error?: string | null; }
+export interface RefreshAllResult { attempted: number; succeeded: number; failed: number; results: RefreshResult[] | Record<string, RefreshResult>; }
 export interface Settings {
   tunneled_fetch: boolean; routing_default_action: string;
   health_enabled: boolean; health_interval: number; health_hysteresis: number; health_probe_url: string;
@@ -49,11 +57,11 @@ export interface TrafficFrame {
   totals: { up: number; down: number };   // proxy outbound bytes since xray start (resets on restart)
   lifetime?: { up: number; down: number };  // durable data-used total, survives xray restart (F)
   session?: { up: number; down: number };   // data used since the last (re)connect (NF4)
-  active: { node_id: number; real_ok: boolean | null; latency_ms: number | null; egress_ip: string | null; egress_ip6: string | null; egress_cc: string | null; egress_cc6: string | null; checked_at: string | null; lat_history: number[] } | null;
+  active: { node_id: number; real_ok: boolean | null; stale: boolean; latency_ms: number | null; egress_ip: string | null; egress_ip6: string | null; egress_cc: string | null; egress_cc6: string | null; checked_at: string | null; lat_history: number[] } | null;
 }
 export type TrafficMessage = TrafficFrame | { disabled: true } | { error: string };
 // long-window history seed: each sample is [ts_ms, up_bps, down_bps]
-export interface TrafficHistoryResp { samples: number[][]; interval_ms: number; }
+export interface TrafficHistoryResp { samples: number[][]; interval_ms: number; effective_interval_ms?: number; }
 export type BackupDoc = Record<string, any>;
 
 // --- Wave 2: tuning profiles ---
@@ -104,10 +112,12 @@ export interface NetworkTunnel { real_ok: boolean | null; latency_ms: number | n
 export interface DhcpClient { ip: string; mac: string; hostname: string; expiry: number; }
 export interface NetworkStatus {
   segment_up: boolean | null; uplink: boolean | null; uplink6: boolean | null; dhcp_clients: number;
-  clients: DhcpClient[]; tunnel: NetworkTunnel; wan_blocked: boolean;
+  clients: DhcpClient[]; tunnel: NetworkTunnel; wan_blocked: boolean | null;
   ipv6_prefix: string | null;   // DHCPv6-PD 'auto': host-delegated segment v6 prefix
   foreign_ra: boolean | null;   // another router advertising v6 on the segment (leak)
   ipv6_prefix_source: string | null;   // "static" | "ula" | "pd"
+  enforcement_status?: "ok" | "unknown" | "error";
+  failovers_24h?: number; failover_ready?: boolean; eligible_standby_count?: number;
 }
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
@@ -123,13 +133,30 @@ export interface NetworkPatch {
 }
 
 // API tokens (programmatic REST access). `token` (the full secret) is returned ONLY by createToken.
-export interface ApiToken { id: number; name: string; scope: "read" | "readwrite"; prefix: string; created_at: number; last_used_at: number | null; }
+export type ApiTokenScope = "monitor" | "read" | "readwrite";
+export interface ApiToken { id: number; name: string; scope: ApiTokenScope; prefix: string; created_at: number; last_used_at: number | null; expires_at?: number | null; }
 export interface ApiTokenCreated extends ApiToken { token: string; }
 
 // audit log (N2): successful mutations — who/what/when
 export interface AuditEntry { ts: number; actor: string; method: string; path: string; status: number; }
 
-export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
+export function formatApiDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const lines = detail.map((item) => {
+      if (!item || typeof item !== "object") return String(item);
+      const row = item as { loc?: unknown; msg?: unknown };
+      const path = Array.isArray(row.loc) ? row.loc.map(String).join(".") : "request";
+      return `${path}: ${typeof row.msg === "string" ? row.msg : "invalid value"}`;
+    });
+    if (lines.length) return lines.join("\n");
+  }
+  return fallback;
+}
+
+export class ApiError extends Error {
+  constructor(public status: number, msg: string, public detail: unknown = msg) { super(msg); }
+}
 
 let _csrf: string | null = null;
 let _csrfInflight: Promise<string> | null = null;   // dedup concurrent /csrf fetches
@@ -141,11 +168,12 @@ export function setOnUnauthorized(fn: (() => void) | null) { _onUnauthorized = f
 // Bound every request so a stalled TCP connection (radio switch, VPN reconnect on mobile) fails
 // fast instead of leaving the promise pending forever. Generous enough for a real-probe sweep.
 const REQUEST_TIMEOUT_MS = 20000;
+const PROBE_SWEEP_TIMEOUT_MS = 210000;
 
-async function req(path: string, opts: RequestInit = {}): Promise<any> {
+async function req(path: string, opts: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<any> {
   const ac = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeoutMs);
   // honour a caller-supplied signal too (abort either way)
   const ext = opts.signal;
   if (ext) {
@@ -167,7 +195,8 @@ async function req(path: string, opts: RequestInit = {}): Promise<any> {
       _csrf = null;                              // the CSRF token died with the session
       if (path !== "/login") _onUnauthorized?.(); // a failed login is not a lost session
     }
-    throw new ApiError(res.status, body?.detail ?? `HTTP ${res.status}`);
+    const detail = body?.detail;
+    throw new ApiError(res.status, formatApiDetail(detail, `HTTP ${res.status}`), detail);
   }
   return body;
 }
@@ -183,22 +212,52 @@ async function ensureCsrf(): Promise<string> {
   return _csrfInflight;
 }
 
-async function mutate(method: string, path: string, body?: unknown): Promise<any> {
+async function mutate(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<any> {
   const headers: Record<string, string> = { "X-CSRF-Token": await ensureCsrf() };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  return req(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  return req(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }, timeoutMs);
 }
 
-function _postJson(path: string, body: unknown) {
-  return req(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+function _postJson(path: string, body: unknown, extraHeaders: Record<string, string> = {}) {
+  return req(path, { method: "POST", headers: { "Content-Type": "application/json", ...extraHeaders }, body: JSON.stringify(body) });
 }
+
+export interface LatestRequest {
+  run<T>(request: (signal: AbortSignal) => Promise<T>, apply: (value: T) => void): Promise<void>;
+  cancel(): void;
+}
+
+export function createLatestRequest(): LatestRequest {
+  let controller: AbortController | null = null;
+  let sequence = 0;
+  return {
+    async run<T>(request: (signal: AbortSignal) => Promise<T>, apply: (value: T) => void) {
+      controller?.abort();
+      const current = ++sequence;
+      const own = new AbortController();
+      controller = own;
+      try {
+        const value = await request(own.signal);
+        if (current === sequence) apply(value);
+      } finally {
+        if (current === sequence) controller = null;
+      }
+    },
+    cancel() { sequence++; controller?.abort(); controller = null; },
+  };
+}
+
+export const TRAFFIC_CAPABILITY_EVENT = "v2pi:traffic-capability-change";
 
 export const api = {
   _reset() { _csrf = null; _csrfInflight = null; },
   ensureCsrf,
   // first-run setup: creates the credential AND opens a session (no prior auth needed)
-  getSetup(): Promise<{ needs_setup: boolean }> { return req("/setup"); },
-  async setup(username: string, password: string) { _csrf = null; return _postJson("/setup", { username, password }); },
+  getSetup(): Promise<{ needs_setup: boolean; bootstrap_required?: boolean }> { return req("/setup"); },
+  async setup(username: string, password: string, bootstrapToken = "") {
+    _csrf = null;
+    return _postJson("/setup", { username, password }, bootstrapToken ? { "X-Bootstrap-Token": bootstrapToken } : {});
+  },
   async login(username: string, password: string) { _csrf = null; return _postJson("/login", { username, password }); },
   async logout() {
     // send the CSRF header (logout is now CSRF-protected) THEN clear the cached token
@@ -206,9 +265,9 @@ export const api = {
     finally { _csrf = null; _csrfInflight = null; }
   },
   changePassword(current_password: string, new_password: string) { return mutate("POST", "/password", { current_password, new_password }); },
-  getStatus(): Promise<Status> { return req("/status"); },
-  getTrafficHistory(windowSec = 3600, maxPoints = 1200): Promise<TrafficHistoryResp> {
-    return req(`/traffic/history?window_sec=${windowSec}&max_points=${maxPoints}`);
+  getStatus(signal?: AbortSignal): Promise<Status> { return req("/status", { signal }); },
+  getTrafficHistory(windowSec = 3600, maxPoints = 1200, signal?: AbortSignal): Promise<TrafficHistoryResp> {
+    return req(`/traffic/history?window_sec=${windowSec}&max_points=${maxPoints}`, { signal });
   },
 
   listNodes(): Promise<Node[]> { return req("/nodes"); },
@@ -226,7 +285,7 @@ export const api = {
   updateSub(id: number, patch: Partial<SubscriptionIn>): Promise<Subscription> { return mutate("PATCH", `/subs/${id}`, patch); },
   deleteSub(id: number) { return mutate("DELETE", `/subs/${id}`); },
   refreshSub(id: number): Promise<any> { return mutate("POST", `/subs/${id}/refresh`); },
-  refreshAllSubs(): Promise<{ refreshed: number }> { return mutate("POST", "/subs/refresh-all"); },
+  refreshAllSubs(): Promise<RefreshAllResult> { return mutate("POST", "/subs/refresh-all"); },
   previewSub(url: string, injection?: Record<string, any>): Promise<Preview> { return mutate("POST", "/subs/preview", { url, injection }); },
   previewSubNodes(url: string, injection?: Record<string, any>): Promise<PreviewNodes> { return mutate("POST", "/subs/preview-nodes", { url, injection }); },
   reorderNodes(ids: number[]) { return mutate("POST", "/nodes/reorder", { ids }); },
@@ -234,7 +293,11 @@ export const api = {
   importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },
 
   getSettings(): Promise<Settings> { return req("/settings"); },
-  putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch); },
+  async putSettings(patch: Partial<Settings>): Promise<Settings> {
+    const result = await mutate("PUT", "/settings", patch);
+    if (typeof document !== "undefined") document.dispatchEvent(new Event(TRAFFIC_CAPABILITY_EVENT));
+    return result;
+  },
   resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset"); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
 
@@ -254,17 +317,17 @@ export const api = {
   validateRouting(r: RoutingIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/routing/validate", r); },
 
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
-  probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
-  probeHttp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/http${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`); },
+  probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`, undefined, PROBE_SWEEP_TIMEOUT_MS); },
+  probeHttp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/http${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`, undefined, PROBE_SWEEP_TIMEOUT_MS); },
   probeNode(id: number): Promise<NodeHealth> { return mutate("POST", `/nodes/${id}/probe`); },
   detachNodes(ids: number[]) { return mutate("POST", "/nodes/detach", { ids }); },
-  validateNode(n: NodeIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/nodes/validate", n); },
+  validateNode(n: NodeValidateIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/nodes/validate", n); },
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
 
   listTokens(): Promise<ApiToken[]> { return req("/tokens"); },
-  createToken(name: string, scope: "read" | "readwrite"): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope }); },
+  createToken(name: string, scope: ApiTokenScope): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope }); },
   deleteToken(id: number) { return mutate("DELETE", `/tokens/${id}`); },
 
   listAudit(limit = 100): Promise<AuditEntry[]> { return req(`/audit?limit=${limit}`); },
@@ -288,6 +351,7 @@ export const api = {
     let ws: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let stop = false;
+    let terminal = false;
     let retry = 0;
     const hidden = () => typeof document !== "undefined" && document.hidden;
     const schedule = () => {
@@ -297,20 +361,45 @@ export const api = {
       timer = setTimeout(() => { timer = null; open(); }, delay);
     };
     const open = () => {
-      if (stop) return;
-      ws = _openTrafficSocket(onMessage);
-      ws.onopen = () => { retry = 0; };
-      ws.onclose = () => { ws = null; if (!stop) { onGap?.(); schedule(); } };
-      ws.onerror = () => { try { ws?.close(); } catch {} };
+      if (stop || terminal || hidden()) return;
+      const socket = _openTrafficSocket((message) => {
+        if ("disabled" in message) terminal = true;
+        onMessage(message);
+      });
+      ws = socket;
+      socket.onopen = () => { retry = 0; };
+      socket.onclose = () => {
+        if (ws === socket) ws = null;
+        else if (ws) return; // a hidden-tab close completed after its visible replacement opened
+        if (!stop && !terminal && !hidden()) { onGap?.(); schedule(); }
+      };
+      socket.onerror = () => { try { socket.close(); } catch {} };
     };
-    const onVis = () => { if (!hidden() && !ws && !stop) { retry = 0; open(); } };
+    const resume = () => {
+      if (stop) return;
+      terminal = false;
+      retry = 0;
+      if (!hidden() && !ws) { onGap?.(); open(); }
+    };
+    const onVis = () => {
+      if (hidden()) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        const socket = ws; ws = null;
+        try { socket?.close(); } catch {}
+      } else if (!terminal && !ws && !stop) {
+        retry = 0; onGap?.(); open();
+      }
+    };
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
+    if (typeof document !== "undefined") document.addEventListener(TRAFFIC_CAPABILITY_EVENT, resume);
     open();
     return {
+      resume,
       close() {
         stop = true;
         if (timer) clearTimeout(timer);
         if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
+        if (typeof document !== "undefined") document.removeEventListener(TRAFFIC_CAPABILITY_EVENT, resume);
         try { ws?.close(); } catch {}
         ws = null;
       },
@@ -318,7 +407,7 @@ export const api = {
   },
 };
 
-export interface TrafficHandle { close(): void; }
+export interface TrafficHandle { close(): void; resume(): void; }
 
 function _openTrafficSocket(onMessage: (m: TrafficMessage) => void): WebSocket {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";

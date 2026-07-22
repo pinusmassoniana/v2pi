@@ -7,6 +7,7 @@
   import { sparkPath } from "./dashboard";
   import { flagEmoji } from "./flag";
   import { I } from "./icons";
+  import { formatUriHost } from "./format";
 
   let nodes = $state<Node[]>([]);
   let health = $state<Record<number, NodeHealth>>({});
@@ -41,6 +42,11 @@
 
   function setMsg(t: string, kind: "ok" | "err" = "ok") { msg = t; msgKind = kind; }
   function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
+  function nodeMutationError(err: unknown, fb: string) {
+    return err instanceof ApiError && err.status === 409
+      ? "That node is active. Disconnect → Edit/Delete → Connect, then try again."
+      : errText(err, fb);
+  }
 
   const activeId = $derived(status?.active_node_id ?? null);
   const inScope = $derived(nodes.filter((n) =>
@@ -94,7 +100,7 @@
     if (flow) p.set("flow", flow);
     if (n.network === "xhttp") { if (n.path) p.set("path", n.path); if (n.host) p.set("host", n.host); if (n.mode) p.set("mode", n.mode); }
     if (n.alpn) p.set("alpn", n.alpn);
-    return `vless://${n.uuid}@${n.address}:${n.port}?${p.toString()}#${encodeURIComponent(n.name)}`;
+    return `vless://${n.uuid}@${formatUriHost(n.address)}:${n.port}?${p.toString()}#${encodeURIComponent(n.name)}`;
   }
   async function copy(text: string) {
     try { await navigator.clipboard.writeText(text); setMsg("copied", "ok"); }
@@ -150,7 +156,7 @@
     e.preventDefault();
     if (editId === null) return;
     try { await api.updateNode(editId, { ...edit }); editId = null; await refresh(); }
-    catch (err) { setMsg(errText(err, "save failed"), "err"); }
+    catch (err) { setMsg(nodeMutationError(err, "save failed"), "err"); }
   }
   function cloneNode(n: Node) {   // NN9
     form = { name: n.name + " copy", address: n.address, port: n.port, uuid: n.uuid,
@@ -162,7 +168,7 @@
   async function del(n: Node) {
     if (!(await confirmDialog(`Delete server “${n.name}” (${n.address})?`))) return;
     try { await api.deleteNode(n.id); await refresh(); }
-    catch (err) { setMsg(errText(err, "delete failed"), "err"); }
+    catch (err) { setMsg(nodeMutationError(err, "delete failed"), "err"); }
   }
   async function validateForm(f: typeof form | typeof edit) {   // NN10
     validateMsg = "validating…";
@@ -247,7 +253,7 @@
   async function bulkDelete() {
     if (!selIds.length || !(await confirmDialog(`Delete ${selIds.length} server(s)?`))) return;
     try { for (const id of selIds) await api.deleteNode(id); clearSel(); await refresh(); }
-    catch (err) { setMsg(errText(err, "bulk delete failed"), "err"); }
+    catch (err) { setMsg(nodeMutationError(err, "bulk delete failed"), "err"); }
   }
   async function bulkDetach() {
     if (!selIds.length) return;
@@ -287,7 +293,7 @@
 </div>
 
 <div class="ping-bar">
-  <input class="input search" bind:value={query} placeholder="search name / address / note…" />
+  <input class="input search" bind:value={query} placeholder="search name / address / note…" aria-label="Search nodes" />
   <button class="btn" onclick={() => pingAll("tcp")} disabled={pinging !== null}>{pinging === "tcp" ? "TCP…" : "TCP ping"}</button>
   <button class="btn" onclick={() => pingAll("http")} disabled={pinging !== null}>{pinging === "http" ? "HTTP…" : "HTTP ping"}</button>
   <button class="btn" onclick={testAllReal} disabled={testAllN > 0 || shown.length === 0} title="Real request through every node in this group (sequential)">{testAllN > 0 ? `Testing ${testAllN}…` : "Test all (real)"}</button>
@@ -298,7 +304,7 @@
 {#if selIds.length}
   <div class="bulk">
     <span>{selIds.length} selected</span>
-    <select class="input" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") bulkProfile(v === "__none__" ? "" : v); }}>
+    <select class="input" aria-label="Assign tuning profile to selected nodes" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") bulkProfile(v === "__none__" ? "" : v); }}>
       <option value="__ph__" disabled selected>assign profile…</option>
       <option value="__none__">(global default)</option>
       {#each profiles as p (p.id)}<option value={String(p.id)}>{p.name}</option>{/each}
@@ -390,25 +396,25 @@
 {#if addOpen}
   <Modal title="Add server" onClose={() => (addOpen = false)}>
     <form onsubmit={add} class="grid-form">
-      <input class="input" bind:value={form.name} placeholder="name" required />
-      <input class="input" bind:value={form.address} placeholder="address" required />
-      <input class="input" type="number" min="1" max="65535" bind:value={form.port} placeholder="port" required />
-      <input class="input" bind:value={form.uuid} placeholder="uuid" required />
-      <select class="input" bind:value={form.transport}><option value="vision">vision</option><option value="xhttp">xhttp</option></select>
-      <select class="input" bind:value={form.security}><option value="reality">reality</option><option value="tls">tls</option></select>
-      <input class="input" bind:value={form.sni} placeholder="sni" />
+      <input class="input" bind:value={form.name} placeholder="name" aria-label="Node name" required />
+      <input class="input" bind:value={form.address} placeholder="address" aria-label="Node address" required />
+      <input class="input" type="number" min="1" max="65535" bind:value={form.port} placeholder="port" aria-label="Node port" required />
+      <input class="input" bind:value={form.uuid} placeholder="uuid" aria-label="Node UUID" required />
+      <select class="input" bind:value={form.transport} aria-label="Node transport"><option value="vision">vision</option><option value="xhttp">xhttp</option></select>
+      <select class="input" bind:value={form.security} aria-label="Node security"><option value="reality">reality</option><option value="tls">tls</option></select>
+      <input class="input" bind:value={form.sni} placeholder="sni" aria-label="Node SNI" />
       {#if form.security === "reality"}
-        <input class="input" bind:value={form.public_key} placeholder="reality publicKey" />
-        <input class="input" bind:value={form.short_id} placeholder="shortId" />
+        <input class="input" bind:value={form.public_key} placeholder="reality publicKey" aria-label="Reality public key" />
+        <input class="input" bind:value={form.short_id} placeholder="shortId" aria-label="Reality short ID" />
       {:else}
-        <input class="input" bind:value={form.alpn} placeholder="alpn (e.g. h2,http/1.1)" />
+        <input class="input" bind:value={form.alpn} placeholder="alpn (e.g. h2,http/1.1)" aria-label="Node ALPN" />
       {/if}
       {#if form.transport === "xhttp"}
-        <input class="input" bind:value={form.path} placeholder="xhttp path" />
-        <input class="input" bind:value={form.host} placeholder="xhttp host" />
-        <input class="input" bind:value={form.mode} placeholder="xhttp mode (optional)" />
+        <input class="input" bind:value={form.path} placeholder="xhttp path" aria-label="XHTTP path" />
+        <input class="input" bind:value={form.host} placeholder="xhttp host" aria-label="XHTTP host" />
+        <input class="input" bind:value={form.mode} placeholder="xhttp mode (optional)" aria-label="XHTTP mode" />
       {/if}
-      <input class="input note-input" bind:value={form.note} placeholder="note / label (optional)" />
+      <input class="input note-input" bind:value={form.note} placeholder="note / label (optional)" aria-label="Node note" />
       {#if validateMsg}<div class="vmsg" class:bad={validateMsg.startsWith("✗")}>{validateMsg}</div>{/if}
       <div class="form-actions">
         <button class="btn btn-primary">Add server</button>
@@ -422,7 +428,7 @@
   <Modal title="Import servers" onClose={() => (importOpen = false)}>
     <div class="import">
       <p class="muted">Paste a subscription body — base64/vless, a clash <code>proxies:</code> YAML, or a JSON node list. Parsed nodes are added as manual servers; duplicates are skipped.</p>
-      <textarea class="input ta" bind:value={importText} rows="8" placeholder="vless://…  or  proxies:  or  [{'{'}…{'}'}]"></textarea>
+      <textarea class="input ta" bind:value={importText} rows="8" aria-label="Nodes to import" placeholder="vless://…  or  proxies:  or  [{'{'}…{'}'}]"></textarea>
       <div class="form-actions">
         <button class="btn btn-primary" onclick={doImport} disabled={importing || !importText.trim()}>{importing ? "Importing…" : "Import"}</button>
         <button class="btn" onclick={() => (importOpen = false)}>Cancel</button>

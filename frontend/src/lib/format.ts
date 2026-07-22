@@ -17,3 +17,9 @@ export function fmtBytes(b: number): string {
   if (b >= 1e3) return (b / 1e3).toFixed(0) + " KB";
   return Math.round(b) + " B";
 }
+
+/** Host syntax for URI authorities: literal IPv6 must be bracketed. */
+export function formatUriHost(host: string): string {
+  if (host.startsWith("[") && host.endsWith("]")) return host;
+  return host.includes(":") ? `[${host}]` : host;
+}

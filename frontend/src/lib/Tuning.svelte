@@ -5,6 +5,8 @@
   import { confirmDialog } from "./confirm.svelte";
   import { I } from "./icons";
 
+  let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
+
   // editor doubles as "add" (id=null) and "edit" (id set) — one form, no duplication.
   const blank = () => ({
     id: null as number | null, name: "", fingerprint: "chrome",
@@ -111,6 +113,7 @@
   function rmNoise(i: number) { editor.noises = editor.noises.filter((_, idx) => idx !== i); }
 
   $effect(() => { refresh(); });
+  $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 </script>
 
 <Alert {msg} kind={msgKind} />
@@ -155,7 +158,7 @@
 <form onsubmit={save} class="card editor">
   <div class="ed-head">
     <span class="eyebrow">{editor.id === null ? "New profile" : `Edit profile #${editor.id}`}</span>
-    <select class="input auto" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") stagePreset(v); }}>
+    <select class="input auto" aria-label="Stage anti-DPI preset" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = "__ph__"; if (v !== "__ph__") stagePreset(v); }}>
       <option value="__ph__" disabled selected>Preset…</option>
       {#each presets as p (p.name)}<option value={p.name}>{p.title}</option>{/each}
     </select>
@@ -186,9 +189,9 @@
     {#if editor.noise_enabled}
       {#each editor.noises as n, i (i)}
         <div class="kv">
-          <select class="input" bind:value={n.type}><option value="rand">rand</option><option value="str">str</option><option value="base64">base64</option><option value="hex">hex</option></select>
-          <input class="input" bind:value={n.packet} placeholder="packet (e.g. 50-150)" />
-          <input class="input" bind:value={n.delay} placeholder="delay ms (10-16)" />
+          <select class="input" bind:value={n.type} aria-label={`Noise packet ${i + 1} type`}><option value="rand">rand</option><option value="str">str</option><option value="base64">base64</option><option value="hex">hex</option></select>
+          <input class="input" bind:value={n.packet} placeholder="packet (e.g. 50-150)" aria-label={`Noise packet ${i + 1} content`} />
+          <input class="input" bind:value={n.delay} placeholder="delay ms (10-16)" aria-label={`Noise packet ${i + 1} delay`} />
           <button class="btn btn-ghost" type="button" onclick={() => rmNoise(i)} aria-label="remove">×</button>
         </div>
       {/each}

@@ -14,10 +14,7 @@
   let form = $state({ name: "", url: "", interval_min: 0 });
   // default injection mirrors the backend default_injection() (F6)
   let headers = $state<{ k: string; v: string }[]>([
-    { k: "x-hwid", v: "{machine_id}" },
     { k: "x-device-os", v: "{device_os}" },
-    { k: "x-device-ver", v: "{device_ver}" },
-    { k: "x-device-model", v: "{device_model}" },
     { k: "user-agent", v: "v2pi/1.0" },
   ]);
   let queries = $state<{ k: string; v: string }[]>([]);
@@ -110,7 +107,17 @@
   }
   async function refreshAll() {
     refreshingAll = true;
-    try { const r = await api.refreshAllSubs(); setMsg(`refreshed ${r.refreshed} subscription(s)`, "ok"); await refresh(); }
+    try {
+      const r = await api.refreshAllSubs();
+      const results = Array.isArray(r.results) ? r.results : Object.values(r.results ?? {});
+      const failures = results.filter((item) => item.error || item.ok === false);
+      const details = failures.slice(0, 3).map((item) => `${item.name ?? `#${item.id ?? "?"}`}: ${item.error ?? item.status ?? "failed"}`).join(" · ");
+      setMsg(
+        `${r.succeeded}/${r.attempted} refreshed${r.failed ? ` · ${r.failed} failed${details ? ` — ${details}` : ""}` : ""}`,
+        r.failed ? "err" : "ok",
+      );
+      await refresh();
+    }
     catch (err) { setMsg(errText(err, "refresh-all failed"), "err"); }
     finally { refreshingAll = false; }
   }
@@ -206,20 +213,21 @@
     <legend>Injected headers</legend>
     {#each headers as row, i (i)}
       <div class="kv">
-        <input class="input" bind:value={row.k} placeholder="header" />
-        <input class="input" bind:value={row.v} placeholder="value" />
+        <input class="input" bind:value={row.k} placeholder="header" aria-label={`Header ${i + 1} name`} />
+        <input class="input" bind:value={row.v} placeholder="value" aria-label={`Header ${i + 1} value`} />
         <button class="btn btn-ghost" type="button" onclick={() => headers.splice(i, 1)} aria-label="remove">×</button>
       </div>
     {/each}
     <div><button class="btn" type="button" onclick={() => headers.push({ k: "", v: "" })}>+ header</button></div>
+    <p class="muted privacy">Detailed device fingerprint placeholders are opt-in; the default sends only coarse OS data.</p>
   </fieldset>
 
   <fieldset>
     <legend>Query params</legend>
     {#each queries as row, i (i)}
       <div class="kv">
-        <input class="input" bind:value={row.k} placeholder="key" />
-        <input class="input" bind:value={row.v} placeholder="value" />
+        <input class="input" bind:value={row.k} placeholder="key" aria-label={`Query ${i + 1} name`} />
+        <input class="input" bind:value={row.v} placeholder="value" aria-label={`Query ${i + 1} value`} />
         <button class="btn btn-ghost" type="button" onclick={() => queries.splice(i, 1)} aria-label="remove">×</button>
       </div>
     {/each}
@@ -238,6 +246,7 @@
 {#if previewNodes}
   <div class="card pn">
     <h3>Dry-run: {previewNodes.count} node(s) · <span class="muted">{previewNodes.format}</span></h3>
+    {#if previewNodes.truncated}<p class="msg">Showing first {previewNodes.returned_count} of {previewNodes.count} nodes.</p>{/if}
     {#if previewNodes.count === 0}
       <p class="muted">No nodes parsed — check the URL, token, or format.</p>
     {:else}
@@ -272,8 +281,8 @@
         <legend>Injected headers</legend>
         {#each editHeaders as row, i (i)}
           <div class="kv">
-            <input class="input" bind:value={row.k} placeholder="header" />
-            <input class="input" bind:value={row.v} placeholder="value" />
+            <input class="input" bind:value={row.k} placeholder="header" aria-label={`Edit header ${i + 1} name`} />
+            <input class="input" bind:value={row.v} placeholder="value" aria-label={`Edit header ${i + 1} value`} />
             <button class="btn btn-ghost" type="button" onclick={() => editHeaders.splice(i, 1)} aria-label="remove">×</button>
           </div>
         {/each}
@@ -284,8 +293,8 @@
         <legend>Query params</legend>
         {#each editQueries as row, i (i)}
           <div class="kv">
-            <input class="input" bind:value={row.k} placeholder="key" />
-            <input class="input" bind:value={row.v} placeholder="value" />
+            <input class="input" bind:value={row.k} placeholder="key" aria-label={`Edit query ${i + 1} name`} />
+            <input class="input" bind:value={row.v} placeholder="value" aria-label={`Edit query ${i + 1} value`} />
             <button class="btn btn-ghost" type="button" onclick={() => editQueries.splice(i, 1)} aria-label="remove">×</button>
           </div>
         {/each}
@@ -321,6 +330,7 @@
     background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 0.6rem; white-space: pre-wrap; font-family: var(--mono); font-size: 0.8rem;
   }
+  .privacy { margin: 0; font-size: 0.72rem; }
 
   /* phone card layout — each subscription row becomes a stacked card with labels (mirrors Nodes N-A).
      Scoped to .subs so the dry-run preview table keeps its horizontal-scroll treatment. */

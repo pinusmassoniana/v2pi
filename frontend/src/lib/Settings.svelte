@@ -4,10 +4,14 @@
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
 
+  let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
+
   let s = $state<Settings | null>(null);
   let msg = $state("");
   let msgKind = $state<"ok" | "err">("ok");
   let saving = $state(false);
+  let savedSnapshot = $state("");
+  let dirty = $derived(!!s && JSON.stringify(s) !== savedSnapshot);
 
   let logSource = $state("xray-error");
   let logLines = $state<string[]>([]);
@@ -21,7 +25,7 @@
   // client-side validation mirrors the server floors (SC2/SF2)
   const invalid = $derived.by(() => {
     if (!s) return "";
-    if (s.traffic_sample_ms < 250) return "Sample interval must be ≥ 250 ms";
+    if (s.traffic_sample_ms < 500) return "Sample interval must be ≥ 500 ms";
     if (s.health_interval < 60) return "Probe interval must be ≥ 1 min";
     if (s.health_hysteresis < 1) return "Hysteresis must be ≥ 1";
     if (s.failover_cooldown < 0) return "Cooldown must be ≥ 0";
@@ -31,7 +35,7 @@
   });
 
   async function load() {
-    try { s = await api.getSettings(); }
+    try { s = await api.getSettings(); savedSnapshot = JSON.stringify(s); }
     catch (err) { setMsg(errText(err, "load failed"), "err"); }
   }
   async function save(e: Event) {
@@ -39,7 +43,7 @@
     if (saving || !s || invalid) { if (invalid) setMsg(invalid, "err"); return; }
     const { routing_default_action, ...patch } = s;   // routing-owned key set on the Routing screen
     saving = true;
-    try { s = await api.putSettings(patch); setMsg("saved", "ok"); }
+    try { s = await api.putSettings(patch); savedSnapshot = JSON.stringify(s); setMsg("saved", "ok"); }
     catch (err) { setMsg(errText(err, "save failed"), "err"); }
     finally { saving = false; }
   }
@@ -55,32 +59,37 @@
   async function onImportSettings(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0]; if (!file) { return; }
-    if (!(await confirmDialog("Importing replaces all current settings. Continue?"))) { input.value = ""; return; }
+    if (!(await confirmDialog("Update the supplied settings? Unknown fields are rejected; omitted fields stay unchanged."))) { input.value = ""; return; }
     try {
       const doc = JSON.parse(await file.text());
       delete doc.routing_default_action;
-      s = await api.putSettings(doc); setMsg("settings imported", "ok");
+      s = await api.putSettings(doc); savedSnapshot = JSON.stringify(s); setMsg("supplied settings updated", "ok");
     } catch (err) { setMsg(errText(err, "import failed"), "err"); }
     finally { input.value = ""; }
   }
 
   // API tokens
   let tokens = $state<ApiToken[]>([]);
-  let tokName = $state(""); let tokScope = $state<"read" | "readwrite">("read");
+  let tokName = $state(""); let tokScope = $state<"monitor" | "read" | "readwrite">("monitor");
   let newToken = $state<ApiTokenCreated | null>(null);   // shown once, right after creation
+  let leaveBlocked = $derived(dirty || !!newToken);
   let tokMsg = $state(""); let tokKind = $state<"ok" | "err">("ok");
   let copied = $state(false);
+  let tokBusy = $state(false);
   async function loadTokens() {
     try { tokens = await api.listTokens(); }
     catch (err) { tokMsg = errText(err, "load failed"); tokKind = "err"; }
   }
   async function createTok(e: Event) {
     e.preventDefault();
-    if (!tokName.trim()) return;
+    if (tokBusy || !tokName.trim()) return;
+    if (newToken) { tokMsg = "Finish copying the visible token first."; tokKind = "err"; return; }
+    tokBusy = true;
     try {
       newToken = await api.createToken(tokName.trim(), tokScope);
       tokName = ""; copied = false; tokMsg = ""; await loadTokens();
     } catch (err) { tokMsg = errText(err, "create failed"); tokKind = "err"; }
+    finally { tokBusy = false; }
   }
   async function revokeTok(t: ApiToken) {
     if (!(await confirmDialog(`Revoke token "${t.name}"? Anything using it stops working immediately.`))) return;
@@ -92,18 +101,17 @@
     try { await navigator.clipboard.writeText(newToken.token); copied = true; } catch { /* clipboard blocked */ }
   }
   function fmtDate(sec: number | null): string { return sec ? new Date(sec * 1000).toLocaleString() : "—"; }
-  // F3: don't leave the one-time secret on screen indefinitely — auto-hide after 60s
-  $effect(() => {
-    if (!newToken) return;
-    const t = setTimeout(() => (newToken = null), 60_000);
-    return () => clearTimeout(t);
-  });
-
   // audit log (N2)
   let audit = $state<AuditEntry[]>([]);
   let auditOpen = $state(false);
+  let auditLoading = $state(false);
+  let auditError = $state("");
   async function loadAudit() {
-    try { audit = await api.listAudit(100); } catch { audit = []; }
+    if (auditLoading) return;
+    auditLoading = true; auditError = "";
+    try { audit = await api.listAudit(100); }
+    catch (err) { auditError = errText(err, "audit load failed"); }
+    finally { auditLoading = false; }
   }
   function fmtTs(sec: number): string { return new Date(sec * 1000).toLocaleString(); }
 
@@ -121,6 +129,7 @@
   }
 
   $effect(() => { load(); loadTokens(); });
+  $effect(() => { onDirtyChange?.(leaveBlocked); return () => onDirtyChange?.(false); });
   $effect(() => {                       // SN4 auto-refresh
     if (!logAuto) return;
     const id = setInterval(loadLogs, 5000);
@@ -133,19 +142,19 @@
 {#if s}
   <form onsubmit={save} class="card settings">
     <h3>General</h3>
-    <div class="check"><Toggle checked={s.tunneled_fetch} onchange={(v) => { if (s) s.tunneled_fetch = v; }} label="tunneled fetch" /> <span>Fetch subscriptions through the tunnel <span class="live">applies live</span></span></div>
-    <div class="check"><Toggle checked={s.dns_intercept} onchange={(v) => { if (s) s.dns_intercept = v; }} label="gateway DNS" /> <span>Resolve segment DNS in the gateway over DoH <span class="live">applies live</span></span></div>
+    <div class="check"><Toggle checked={s.tunneled_fetch} disabled={saving} onchange={(v) => { if (s) s.tunneled_fetch = v; }} label="tunneled fetch" /> <span>Fetch subscriptions through the tunnel <span class="live">applies live</span></span></div>
+    <div class="check"><Toggle checked={s.dns_intercept} disabled={saving} onchange={(v) => { if (s) s.dns_intercept = v; }} label="gateway DNS" /> <span>Resolve segment DNS in the gateway over DoH <span class="live">applies live</span></span></div>
 
     <fieldset>
       <legend>Traffic stats</legend>
-      <div class="check"><Toggle checked={s.stats_enabled} onchange={(v) => { if (s) s.stats_enabled = v; }} label="stats" /> <span>Enabled (live Dashboard graph) <span class="live">applies live</span></span></div>
-      <label class="field"><span>Sample interval (ms, ≥250)</span><input class="input" type="number" min="250" bind:value={s.traffic_sample_ms} /></label>
+      <div class="check"><Toggle checked={s.stats_enabled} disabled={saving} onchange={(v) => { if (s) s.stats_enabled = v; }} label="stats" /> <span>Enabled (live Dashboard graph) <span class="live">applies live</span></span></div>
+      <label class="field"><span>Sample interval (ms, ≥500)</span><input class="input" type="number" min="500" bind:value={s.traffic_sample_ms} disabled={saving} /></label>
       <label class="field"><span>xray api port</span><input class="input" type="number" min="1" max="65535" bind:value={s.stats_api_port} /></label>
     </fieldset>
 
     <fieldset>
       <legend>Health monitoring</legend>
-      <div class="check"><Toggle checked={s.health_enabled} onchange={(v) => { if (s) s.health_enabled = v; }} label="health" /> <span>Enabled</span></div>
+      <div class="check"><Toggle checked={s.health_enabled} disabled={saving} onchange={(v) => { if (s) s.health_enabled = v; }} label="health" /> <span>Enabled</span></div>
       <label class="field"><span>Probe interval (minutes)</span>
         <input class="input" type="number" min="1"
                value={Math.max(1, Math.round((s.health_interval || 1800) / 60))}
@@ -155,7 +164,7 @@
 
     <fieldset>
       <legend>Auto-failover</legend>
-      <div class="check"><Toggle checked={s.failover_enabled} onchange={(v) => { if (s) s.failover_enabled = v; }} label="failover" /> <span>Enabled</span></div>
+      <div class="check"><Toggle checked={s.failover_enabled} disabled={saving} onchange={(v) => { if (s) s.failover_enabled = v; }} label="failover" /> <span>Enabled</span></div>
       <label class="field"><span>Hysteresis (consecutive real-request fails)</span><input class="input" type="number" min="1" bind:value={s.health_hysteresis} /></label>
       <label class="field"><span>Cooldown (s)</span><input class="input" type="number" min="0" bind:value={s.failover_cooldown} /></label>
     </fieldset>
@@ -163,7 +172,7 @@
     <fieldset>
       <legend>Session &amp; backup</legend>
       <label class="field"><span>Idle timeout (minutes, 0 = off)</span><input class="input" type="number" min="0" bind:value={s.session_timeout_min} /></label>
-      <div class="check"><Toggle checked={s.auto_backup_enabled} onchange={(v) => { if (s) s.auto_backup_enabled = v; }} label="auto-backup" /> <span>Daily auto-backup to the Pi (data/backups)</span></div>
+      <div class="check"><Toggle checked={s.auto_backup_enabled} disabled={saving} onchange={(v) => { if (s) s.auto_backup_enabled = v; }} label="auto-backup" /> <span>Daily auto-backup to the Pi (data/backups)</span></div>
     </fieldset>
 
     {#if invalid}<p class="msg err">{invalid}</p>{/if}
@@ -178,7 +187,7 @@
   <div class="card tokens">
     <h3>API tokens</h3>
     <p class="muted hint">Programmatic REST access via <code>Authorization: Bearer &lt;token&gt;</code>.
-      <strong>read</strong> = GET only · <strong>read/write</strong> = full access (same as a login).</p>
+      <strong>monitor</strong> = non-secret status/health telemetry · <strong>read</strong> = secret-bearing admin GETs · <strong>read/write</strong> = full access.</p>
 
     {#if newToken}
       <div class="reveal">
@@ -196,9 +205,9 @@
         {#each tokens as t (t.id)}
           <li>
             <span class="tname">{t.name}</span>
-            <span class="badge {t.scope === 'readwrite' ? 'active-b' : ''}">{t.scope === 'readwrite' ? 'read/write' : 'read'}</span>
+            <span class="badge {t.scope === 'readwrite' ? 'active-b' : ''}">{t.scope === 'readwrite' ? 'read/write' : t.scope}</span>
             <code class="mono prefix">{t.prefix}…</code>
-            <span class="muted when">created {fmtDate(t.created_at)} · last used {fmtDate(t.last_used_at)}</span>
+            <span class="muted when">created {fmtDate(t.created_at)} · last used {fmtDate(t.last_used_at)}{#if t.expires_at} · expires {fmtDate(t.expires_at)}{/if}</span>
             <button class="btn btn-danger" type="button" onclick={() => revokeTok(t)}>Revoke</button>
           </li>
         {/each}
@@ -206,25 +215,29 @@
     {:else}<p class="muted">No tokens yet.</p>{/if}
 
     <form onsubmit={createTok} class="row create">
-      <input class="input" bind:value={tokName} placeholder="token name (e.g. monitor)" maxlength="64" />
-      <select class="input auto" bind:value={tokScope}>
-        <option value="read">read</option>
+      <input class="input" bind:value={tokName} placeholder="token name (e.g. monitor)" maxlength="64" aria-label="Token name" disabled={tokBusy || !!newToken} />
+      <select class="input auto" bind:value={tokScope} aria-label="Token scope" disabled={tokBusy || !!newToken}>
+        <option value="monitor">monitor</option><option value="read">read (admin, secret-bearing)</option>
         <option value="readwrite">read/write</option>
       </select>
-      <button class="btn btn-primary" disabled={!tokName.trim()}>Create token</button>
+      <button class="btn btn-primary" disabled={!tokName.trim() || tokBusy || !!newToken}>{tokBusy ? "Creating…" : "Create token"}</button>
     </form>
     <Alert msg={tokMsg} kind={tokKind} />
   </div>
 
   <div class="card audit">
     <h3>Audit log</h3>
-    <p class="muted hint">Successful changes made through the panel or the API — who, what, when.</p>
+    <p class="muted hint">Mutation attempts made through the panel or API — actor, path and final status.</p>
     <div class="row">
-      <button class="btn" type="button" onclick={() => { auditOpen = true; loadAudit(); }}>
-        {auditOpen ? "Refresh" : "Show"}</button>
+      <button class="btn" type="button" disabled={auditLoading} onclick={() => { auditOpen = true; loadAudit(); }}>
+        {auditLoading ? "Loading…" : auditOpen ? "Retry / refresh" : "Show"}</button>
     </div>
     {#if auditOpen}
-      {#if audit.length}
+      {#if auditError}
+        <p class="msg err" role="alert">{auditError}</p>
+      {:else if auditLoading}
+        <p class="muted" role="status">Loading audit log…</p>
+      {:else if audit.length}
         <ul class="alist">
           {#each audit as e, i (i)}
             <li>
@@ -242,14 +255,14 @@
   <div class="card">
     <h3>Logs</h3>
     <div class="row">
-      <select class="input auto" bind:value={logSource}>
+      <select class="input auto" bind:value={logSource} aria-label="Log source">
         <option value="xray-error">xray error</option>
         <option value="xray-access">xray access</option>
         <option value="app">app</option>
       </select>
-      <input class="input num" type="number" min="1" max="1000" bind:value={logCount} title="lines" />
+      <input class="input num" type="number" min="1" max="1000" bind:value={logCount} title="lines" aria-label="Log line count" />
       <button class="btn" type="button" onclick={loadLogs}>Load</button>
-      <input class="input flt" placeholder="filter…" bind:value={logQuery} />
+      <input class="input flt" placeholder="filter…" bind:value={logQuery} aria-label="Filter logs" />
       <div class="check"><Toggle checked={logAuto} onchange={(v) => (logAuto = v)} label="auto" /> <span>auto-refresh</span></div>
       {#if logLines.length}<button class="btn" type="button" onclick={downloadLogs}>Download</button>{/if}
     </div>

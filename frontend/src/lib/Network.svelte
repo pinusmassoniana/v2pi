@@ -5,6 +5,8 @@
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
 
+  let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
+
   let net = $state<Network | null>(null);
   let msg = $state("");
   let dirty = $state(false);   // pause polling while the operator is editing
@@ -15,17 +17,19 @@
     catch (err) { msg = err instanceof ApiError ? err.message : "load failed"; }
   }
   async function save() {
-    if (!net) return;
+    if (!net || saving) return;
     saving = true;
     const s = net.segment;
+    // Capture one immutable candidate before the request; every editor control is disabled below.
+    const patch = {
+      segment_iface: s.iface, segment_ip: s.ip, segment_ip6: s.ip6,
+      dhcp_start: s.dhcp_start, dhcp_end: s.dhcp_end, dhcp_lease: s.dhcp_lease,
+      client_dns: s.client_dns, client_dns6: s.client_dns6,
+      kill_switch_enabled: net.kill_switch_enabled, lan_access_enabled: net.lan_access_enabled,
+      ipv6_enabled: net.ipv6_enabled,
+    };
     try {
-      net = await api.putNetwork({
-        segment_iface: s.iface, segment_ip: s.ip, segment_ip6: s.ip6,
-        dhcp_start: s.dhcp_start, dhcp_end: s.dhcp_end, dhcp_lease: s.dhcp_lease,
-        client_dns: s.client_dns, client_dns6: s.client_dns6,
-        kill_switch_enabled: net.kill_switch_enabled, lan_access_enabled: net.lan_access_enabled,
-        ipv6_enabled: net.ipv6_enabled,
-      });
+      net = await api.putNetwork(patch);
       dirty = false;
       msg = "saved · network + DHCP applied to host";
     } catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
@@ -38,6 +42,7 @@
     const t = setInterval(() => { if (!dirty && document.visibilityState === "visible") load(); }, 5000);
     return () => clearInterval(t);
   });
+  $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 
   function leaseAge(expiry: number): string {
     // dnsmasq lease expiry is in the future; show remaining time as a coarse label
@@ -76,12 +81,15 @@
         {#if v.wan_blocked}
           <div class="warn-row"><span class="sdot bad"></span> WAN blocked — kill-switch holding traffic (tunnel down). No leak.</div>
         {/if}
+        {#if net.status.enforcement_status && net.status.enforcement_status !== "ok"}
+          <div class="warn-row"><span class="sdot bad"></span> Host enforcement is {net.status.enforcement_status}; leak protection is not confirmed.</div>
+        {/if}
         {#if v.foreign_ra}
           <div class="warn-row"><span class="sdot bad"></span> Another router is advertising IPv6 on the client VLAN — clients will leak. Disable RA for this VLAN on your router.</div>
         {/if}
         <div class="form">
           <label class="fld"><span>SEGMENT INTERFACE</span><input bind:value={net.segment.iface} oninput={() => (dirty = true)} disabled={saving} /></label>
-          <label class="fld"><span>GATEWAY IP / CIDR</span><input class="mono" bind:value={net.segment.ip} oninput={() => (dirty = true)} disabled={saving} /></label>
+          <label class="fld"><span>GATEWAY IPv4 ADDRESS</span><input class="mono" bind:value={net.segment.ip} oninput={() => (dirty = true)} disabled={saving} placeholder="192.168.10.2" /></label>
           <label class="fld"><span>DHCP RANGE START</span><input class="mono" bind:value={net.segment.dhcp_start} oninput={() => (dirty = true)} disabled={saving} /></label>
           <label class="fld"><span>DHCP RANGE END</span><input class="mono" bind:value={net.segment.dhcp_end} oninput={() => (dirty = true)} disabled={saving} /></label>
           <label class="fld"><span>CLIENT DNS</span><input class="mono" bind:value={net.segment.client_dns} oninput={() => (dirty = true)} disabled={saving} /></label>
@@ -89,11 +97,11 @@
         </div>
         <div class="opts">
           <div class="opt">
-            <Toggle checked={net.lan_access_enabled} onchange={(val) => { if (net) { net.lan_access_enabled = val; dirty = true; } }} label="lan-access" />
+            <Toggle checked={net.lan_access_enabled} disabled={saving} onchange={(val) => { if (net) { net.lan_access_enabled = val; dirty = true; } }} label="lan-access" />
             <span>LAN access — let segment clients reach the home LAN directly (internet still tunnel-only).</span>
           </div>
           <div class="opt">
-            <Toggle checked={net.ipv6_enabled} onchange={(val) => { if (net) { net.ipv6_enabled = val; dirty = true; } }} label="ipv6" />
+            <Toggle checked={net.ipv6_enabled} disabled={saving} onchange={(val) => { if (net) { net.ipv6_enabled = val; dirty = true; } }} label="ipv6" />
             <span>IPv6 (tunnel) — carry segment client IPv6 through the tunnel. Off keeps v6 blocked.</span>
           </div>
           {#if net.ipv6_enabled}
@@ -124,10 +132,12 @@
       <div class="card">
         <div class="card-top"><span class="eyebrow">Fail-closed kill-switch</span></div>
         <div class="kill">
-          <Toggle checked={net.kill_switch_enabled} onchange={(val) => { if (net) { net.kill_switch_enabled = val; dirty = true; } }} label="kill-switch" />
+          <Toggle checked={net.kill_switch_enabled} disabled={saving} onchange={(val) => { if (net) { net.kill_switch_enabled = val; dirty = true; } }} label="kill-switch" />
           <div class="kill-state">
-            <div class="kill-lbl" class:armed={net.kill_switch_enabled} class:open={!net.kill_switch_enabled}>{net.kill_switch_enabled ? "ARMED" : "OPEN"}</div>
-            <div class="kill-sub">{net.kill_switch_enabled ? "fail-closed · traffic dropped if no healthy upstream" : "⚠ clients may leak around the tunnel"}</div>
+            <div class="kill-lbl" class:armed={net.kill_switch_enabled && net.status.enforcement_status === "ok"} class:open={!net.kill_switch_enabled}>
+              {!net.kill_switch_enabled ? "OPEN" : net.status.enforcement_status === "ok" ? "ARMED" : "UNVERIFIED"}
+            </div>
+            <div class="kill-sub">{!net.kill_switch_enabled ? "⚠ clients may leak around the tunnel" : net.status.enforcement_status === "ok" ? "fail-closed · traffic dropped if no healthy upstream" : "configured, but host enforcement is not confirmed"}</div>
           </div>
         </div>
         <p class="kill-note">When armed, any client traffic that can't reach a healthy upstream is dropped at nftables — no plaintext leak around the tunnel. {#if dirty}<strong>Apply to host to take effect.</strong>{/if}</p>
@@ -169,7 +179,7 @@
   .fld.wide { grid-column: 1 / -1; }
   .fld > span { font-size: 0.64rem; color: var(--tx3); letter-spacing: 0.08em; }
   .fld span small { text-transform: none; letter-spacing: 0; color: var(--tx3); }
-  .fld input { background: var(--bg2); border: 1px solid var(--bd); border-radius: 6px; padding: 0.45rem 0.6rem;
+  .fld input { background: var(--bg2); border: 1px solid var(--bd2); border-radius: 6px; padding: 0.45rem 0.6rem;
     color: var(--tx); font: 500 0.82rem var(--font); outline: none; width: 100%; transition: border-color 0.15s; }
   .fld input:focus { border-color: var(--acc); }
 

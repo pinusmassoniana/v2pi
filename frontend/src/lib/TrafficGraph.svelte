@@ -7,7 +7,7 @@
   type Pt = { ts: number; up: number; down: number };
   // windowSec is owned by the parent (single source of truth — the parent picks which series to feed
   // based on it); the buttons here just call onwindow(). Avoids the child/parent window desync.
-  let { series = [], windowSec = 600, onwindow }: { series?: Pt[]; windowSec?: number; onwindow?: (sec: number) => void } = $props();
+  let { series = [], windowSec = 600, stale = false, onwindow }: { series?: Pt[]; windowSec?: number; stale?: boolean; onwindow?: (sec: number) => void } = $props();
 
   const WINDOWS = [
     { label: "1m", sec: 60 },
@@ -128,7 +128,8 @@
     {/if}
   </div>
 
-  <div class="plot" bind:clientWidth={w} role="img" aria-label="throughput over time"
+  {#if stale}<p class="stale-note" role="status">Tunnel health is stale or unknown; rates are not proof of a healthy tunnel.</p>{/if}
+  <div class="plot" class:stale bind:clientWidth={w} role="img" aria-label={stale ? "throughput over time; tunnel health stale" : "throughput over time"}
        onpointermove={onMove} onpointerleave={() => (hover = null)}>
     {#if geom.rendered.length < 2}
       <div class="tg-empty">waiting for traffic…</div>
@@ -188,6 +189,8 @@
   .ro.up { color: var(--success); } .ro.up .ro-dot { background: var(--success); }
 
   .plot { position: relative; width: 100%; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .plot.stale { opacity: 0.55; }
+  .stale-note { margin: 0; color: var(--warn); font-size: 0.72rem; }
   svg { display: block; touch-action: none; }
   .grid { stroke: var(--border); stroke-width: 1; }
   .ylab { fill: var(--faint); font-size: 0.6rem; font-family: var(--mono); text-anchor: end; dominant-baseline: middle; }
