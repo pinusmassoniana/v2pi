@@ -1,12 +1,13 @@
 services:
   v2pi:
-    image: ghcr.io/pinusmassoniana/v2pi-x:latest   # published multi-arch image (amd64+arm64) — `docker compose pull` grabs the host arch
+    # Deployment must select an immutable manifest, for example
+    # ghcr.io/pinusmassoniana/v2pi-x@sha256:<64-hex-digest>. Tags are not accepted operationally.
+    image: ${V2PI_IMAGE:?Set V2PI_IMAGE to an immutable ghcr.io/pinusmassoniana/v2pi-x@sha256 digest}
     build: .                                        # `docker compose up --build` builds from source for the host arch instead (dev)
     network_mode: host          # tproxy / nft / dnsmasq live in the host netns (Pi)
-    privileged: true            # writable /proc/sys (forwarding/accept_ra) + full host net ownership
-                                # (audit I3: dropping to cap_add-only needs a live-gateway test —
-                                #  sysctl writes fail without privileged unless /proc/sys is remounted rw;
-                                #  try `privileged: false` + `cap_add` on a maintenance window, not blind)
+    privileged: true            # Pi acceptance dependency: writable /proc/sys plus host net ownership.
+                                # Removing this requires a native Pi cutover/rollback test; cap_add
+                                # alone cannot write the required forwarding/accept_ra sysctls.
     pid: host                   # manage host services during migration (stop legacy dhcp/radvd via nsenter)
     cap_add:
       - NET_ADMIN               # nftables (documented; redundant under privileged)
