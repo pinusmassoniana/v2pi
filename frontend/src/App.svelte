@@ -12,6 +12,7 @@
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
   import ConfirmModal from "./lib/ConfirmModal.svelte";
+  import { confirmDialog } from "./lib/confirm.svelte";
   import { api, setOnUnauthorized } from "./lib/api";
   import { statusStore, subscribeStatus, pollStatusOnce, resetStatus } from "./lib/status.svelte";
   import { BRAND } from "./lib/brand";
@@ -20,9 +21,12 @@
   type View = "dashboard" | "health" | "nodes" | "tuning" | "routing" | "network" | "operations" | "settings";
   let authed = $state(false);
   let needsSetup = $state(false);
+  let bootstrapRequired = $state(false);
   let ready = $state(false);
   let bootError = $state(false);   // server unreachable at boot (vs. genuinely unauthenticated)
   let view = $state<View>("dashboard");
+  let screenDirty = $state(false);
+  let navBusy = $state(false);
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
   let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "dark");
   const status = $derived(statusStore.value);   // shared, visibility-aware poller
@@ -40,6 +44,7 @@
     api.getSetup()
       .then(async (s) => {
         needsSetup = s.needs_setup;
+        bootstrapRequired = s.bootstrap_required ?? s.needs_setup;
         if (!needsSetup) {
           try { await api.getStatus(); authed = true; } catch { authed = false; }
         }
@@ -103,11 +108,33 @@
   }
 
   async function logout() {
+    if (screenDirty && !(await confirmDialog("Discard staged changes and log out?"))) return;
     await api.logout();
     authed = false;
     resetStatus();
     view = "dashboard";
+    screenDirty = false;
   }
+
+  async function navigate(next: View) {
+    if (next === view || navBusy) return;
+    navBusy = true;
+    try {
+      if (screenDirty && !(await confirmDialog("Discard staged changes and leave this screen?"))) return;
+      screenDirty = false;
+      view = next;
+    } finally { navBusy = false; }
+  }
+
+  function onDirtyChange(dirty: boolean) { screenDirty = dirty; }
+  function beforeUnload(e: BeforeUnloadEvent) {
+    if (!screenDirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+  }
+
+  let tunnelOnline = $derived(status?.tunnel_online === true && !statusStore.stale);
+  let connectionLabel = $derived(tunnelOnline ? "TUNNEL ONLINE" : status?.running ? "XRAY RUNNING" : "OFFLINE");
 
   // a11y: move focus to the page heading when the view *changes* so SR users hear the new screen.
   // Skip the initial mount (guard) so we don't steal focus / scroll-to-top on first paint.
@@ -120,6 +147,8 @@
   });
 </script>
 
+<svelte:window onbeforeunload={beforeUnload} />
+
 {#if !ready}
   <div class="boot"><span class="spinner" role="status" aria-label="Loading"></span></div>
 {:else if bootError}
@@ -128,7 +157,7 @@
     <button class="btn" onclick={boot}>Retry</button>
   </div>
 {:else if needsSetup}
-  <Setup onDone={() => { needsSetup = false; authed = true; }} />
+  <Setup {bootstrapRequired} onDone={() => { needsSetup = false; authed = true; }} />
 {:else if authed}
   <div class="shell">
     <aside class="sidebar">
@@ -144,14 +173,14 @@
           <div class="nav-group">{g.label}</div>
           {#each g.ids as id (id)}
             {@const t = tabs.find((x) => x.id === id)!}
-            <button class="nav-item" class:active={view === id} onclick={() => (view = id)}
+            <button class="nav-item" class:active={view === id} onclick={() => navigate(id)} disabled={navBusy}
                     aria-label={t.label} aria-current={view === id ? "page" : undefined}>
               {@html icons[id]}<span>{t.label}</span>
             </button>
           {/each}
         {/each}
         <div class="nav-spacer"></div>
-        <button class="nav-item" class:active={view === "settings"} onclick={() => (view = "settings")}
+        <button class="nav-item" class:active={view === "settings"} onclick={() => navigate("settings")} disabled={navBusy}
                 aria-label="Settings" aria-current={view === "settings" ? "page" : undefined}>
           {@html icons.settings}<span>Settings</span>
         </button>
@@ -172,9 +201,9 @@
         </button>
         <button class="btn-ghost" onclick={logout}>Log out</button>
         {#if status}
-          <div class="conn" class:up={status.xray_state === "working"} aria-live="polite">
+          <div class="conn" class:up={tunnelOnline} aria-live="polite">
             <span class="conn-dot"></span>
-            <span class="conn-label">{status.xray_state === "working" ? "ONLINE" : "OFFLINE"}</span>
+            <span class="conn-label">{connectionLabel}</span>
           </div>
         {/if}
       </header>
@@ -188,15 +217,15 @@
           <div class="fold-head"><span class="eyebrow">Subscriptions</span></div>
           <Subscriptions />
         {:else if view === "tuning"}
-          <Tuning />
+          <Tuning {onDirtyChange} />
         {:else if view === "routing"}
-          <Routing />
+          <Routing {onDirtyChange} />
         {:else if view === "network"}
-          <Network />
+          <Network {onDirtyChange} />
         {:else if view === "operations"}
           <Operations />
         {:else}
-          <Settings />
+          <Settings {onDirtyChange} />
         {/if}
       </main>
     </div>

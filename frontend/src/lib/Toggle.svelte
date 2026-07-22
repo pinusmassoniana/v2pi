@@ -15,7 +15,7 @@
     --w: 2.4rem; --h: 1.35rem;
     width: var(--w); height: var(--h); border-radius: 999px;
     border: none; padding: 0; cursor: pointer; position: relative; flex: none;
-    background: var(--border); transition: background 0.15s ease;
+    background: var(--border-strong); transition: background 0.15s ease;
   }
   .toggle.on { background: var(--accent); }
   .toggle:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -46,7 +46,7 @@
     }
     try {
       const r = await api.restore(doc);
-      restoreMsg = `restored ${r.restored.nodes} nodes, ${r.restored.profiles} profiles — reconnect to apply`;
+      restoreMsg = `restored ${r.restored.nodes} nodes, ${r.restored.profiles} profiles — gateway is disconnected; Connect a node when ready`;
       restoreKind = "ok";
     } catch (err) { restoreMsg = errText(err, "restore failed"); restoreKind = "err"; }
     finally { input.value = ""; }
@@ -115,11 +115,11 @@
     <form class="card" onsubmit={changePassword}>
       <div class="card-top"><span class="eyebrow">Admin</span></div>
       <div class="pw">
-        <input class="input" type={showPw ? "text" : "password"} bind:value={pw.current} placeholder="current password" autocomplete="current-password" />
-        <button type="button" class="pw-toggle" tabindex="-1" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide passwords" : "Show passwords"}>{showPw ? "Hide" : "Show"}</button>
+        <input class="input" type={showPw ? "text" : "password"} bind:value={pw.current} placeholder="current password" aria-label="Current password" autocomplete="current-password" />
+        <button type="button" class="pw-toggle" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide passwords" : "Show passwords"}>{showPw ? "Hide" : "Show"}</button>
       </div>
-      <input class="input" type={showPw ? "text" : "password"} bind:value={pw.next} placeholder="new password (min 8)" autocomplete="new-password" />
-      <input class="input" type={showPw ? "text" : "password"} bind:value={pw.confirm} placeholder="confirm new password" autocomplete="new-password" />
+      <input class="input" type={showPw ? "text" : "password"} bind:value={pw.next} placeholder="new password (min 8)" aria-label="New password" autocomplete="new-password" />
+      <input class="input" type={showPw ? "text" : "password"} bind:value={pw.confirm} placeholder="confirm new password" aria-label="Confirm new password" autocomplete="new-password" />
       {#if pw.next}<p class="muted-sm">strength: {pwStrength}{#if pw.confirm && pw.next !== pw.confirm} · <span class="nomatch">does not match</span>{/if}</p>{/if}
       <div><button class="btn btn-primary" disabled={!pwOk || pwBusy}>Change password</button></div>
       <Alert msg={pwMsg} kind={pwKind} />

@@ -35,10 +35,10 @@
     <input class="input" name="username" id="username" bind:value={username} placeholder="username" aria-label="username" autocomplete="username" />
     <div class="pw">
       <input class="input" name="password" id="password" type={showPw ? "text" : "password"} bind:value={password} placeholder="password" aria-label="password" autocomplete="current-password" />
-      <button type="button" class="pw-toggle" tabindex="-1" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide password" : "Show password"}>{showPw ? "Hide" : "Show"}</button>
+      <button type="button" class="pw-toggle" onclick={() => (showPw = !showPw)} aria-label={showPw ? "Hide password" : "Show password"}>{showPw ? "Hide" : "Show"}</button>
     </div>
     <button class="btn btn-primary block" disabled={busy || !username || !password}>{busy ? "…" : "Log in"}</button>
-    {#if error}<p class="err">{error}</p>{/if}
+    {#if error}<p class="err" role="alert" aria-live="assertive">{error}</p>{/if}
   </form>
 </div>
 

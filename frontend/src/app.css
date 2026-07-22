@@ -12,10 +12,10 @@
   --bg2: #161d23;  /* inner chips, inputs, raised rows */
   --bg3: #1e272e;  /* tracks, hover fills, toggle-off */
   --bd:  #212b32;  /* default hairline border */
-  --bd2: #2d3a43;  /* stronger border (hover/active) */
+  --bd2: #5b6c77;  /* control boundary: ≥3:1 against raised surfaces */
   --tx:  #e7eef2;  /* primary text */
   --tx2: #94a3ad;  /* secondary text */
-  --tx3: #5d6c76;  /* dim labels, captions */
+  --tx3: #9aa8b0;  /* dim labels, captions — still AA at small sizes */
   --acc:  #3fd17e; /* green signal accent — up/online/active/primary */
   --acc2: #5bf0a0; /* brighter green (glows) */
   --up:   #3fd17e; /* download series / "up" */
@@ -63,11 +63,11 @@
   --bg2: #ffffff;
   --bg3: #eaeef1;
   --bd:  #dce2e6;
-  --bd2: #cad2d8;
+  --bd2: #7f8b93;
   --tx:  #0f171c;
   --tx2: #475560;
-  --tx3: #7d8b94;
-  --acc:  #1f9d57;
+  --tx3: #52616b;
+  --acc:  #147c43;
   --acc2: #15833f;
   --up:   #1f9d57;
   --down: #2b7fb8;
@@ -149,7 +149,7 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
   font: inherit;
   font-weight: 500;
   cursor: pointer;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--text);
   padding: 0.46rem 0.85rem;
@@ -166,7 +166,7 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
 .btn-primary:hover { background: var(--accent-hover); border-color: transparent; }
 .btn-ghost { background: transparent; border-color: transparent; }
 .btn-ghost:hover { background: var(--surface-2); border-color: transparent; }
-.btn-danger { color: var(--danger); border-color: var(--border); background: var(--surface); }
+.btn-danger { color: var(--danger); border-color: var(--border-strong); background: var(--surface); }
 .btn-danger:hover { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn:disabled:active { transform: none; }
@@ -177,7 +177,7 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); paddin
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   padding: 0.44rem 0.6rem;
   width: 100%;

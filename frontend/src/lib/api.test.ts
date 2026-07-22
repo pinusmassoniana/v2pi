@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { api } from "./api";
+import { api, ApiError, createLatestRequest, TRAFFIC_CAPABILITY_EVENT } from "./api";
 
 function mockFetch() {
   const calls: any[] = [];
@@ -119,6 +119,38 @@ describe("api client", () => {
     await expect(api.login("admin", "x")).rejects.toThrow("bad password");
   });
 
+  it("formats FastAPI validation details and retains the raw payload", async () => {
+    const detail = [
+      { loc: ["body", "traffic_sample_ms"], msg: "Input should be greater than or equal to 500", type: "greater_than_equal" },
+      { loc: ["body", "unknown"], msg: "Extra inputs are not permitted", type: "extra_forbidden" },
+    ];
+    (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail }, 422));
+    const error = await api.putSettings({ traffic_sample_ms: 250 }).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toContain("body.traffic_sample_ms: Input should be greater than or equal to 500");
+    expect(error.detail).toEqual(detail);
+  });
+
+  it("latest request aborts the prior request and applies only the newest result", async () => {
+    const first: { signal?: AbortSignal; resolve?: (v: number) => void } = {};
+    const second: { signal?: AbortSignal; resolve?: (v: number) => void } = {};
+    const latest = createLatestRequest();
+    const applied: number[] = [];
+    const a = latest.run<number>((signal) => {
+      first.signal = signal;
+      return new Promise((resolve) => { first.resolve = resolve; });
+    }, (value) => applied.push(value));
+    const b = latest.run<number>((signal) => {
+      second.signal = signal;
+      return new Promise((resolve) => { second.resolve = resolve; });
+    }, (value) => applied.push(value));
+    expect(first.signal?.aborted).toBe(true);
+    second.resolve?.(2);
+    first.resolve?.(1);
+    await Promise.all([a, b]);
+    expect(applied).toEqual([2]);
+  });
+
   it("subs: list + add carry the contract and CSRF", async () => {
     const { calls } = mockFetch();
     await api.login("admin", "pw");
@@ -220,12 +252,13 @@ describe("api client", () => {
     expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
   });
 
-  it("setup: getSetup reads status, setup posts username+password", async () => {
+  it("setup: reads bootstrap policy and sends the one-time proof as a header", async () => {
     const { calls } = mockFetch();
     expect((await api.getSetup()).needs_setup).toBe(false);
-    await api.setup("admin", "s3cret");
+    await api.setup("admin", "s3cret", "proof-123");
     const post = calls.find((c) => c.url.endsWith("/api/setup") && c.opts.method === "POST");
     expect(JSON.parse(post.opts.body)).toEqual({ username: "admin", password: "s3cret" });
+    expect(post.opts.headers["X-Bootstrap-Token"]).toBe("proof-123");
   });
 
   it("changePassword posts current+new with CSRF", async () => {
@@ -266,5 +299,56 @@ describe("api client", () => {
     expect(ws.url.startsWith("ws://") && ws.url.endsWith("/api/ws/traffic")).toBe(true);
     inst.onmessage({ data: JSON.stringify({ ts: 1, outbounds: { proxy: { up_bps: 8, down_bps: 16 } }, active: null }) });
     expect(got[0].outbounds.proxy.up_bps).toBe(8);
+  });
+
+  it("closes a live socket while hidden and backfills before reopening", () => {
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onmessage: ((e: { data: string }) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn(() => this.onclose?.());
+      constructor(public url: string) { sockets.push(this); }
+    }
+    (globalThis as any).WebSocket = FakeSocket;
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    const gap = vi.fn();
+    const handle = api.connectTraffic(() => {}, gap);
+    expect(sockets).toHaveLength(1);
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(sockets[0].close).toHaveBeenCalledOnce();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(gap).toHaveBeenCalledOnce();
+    expect(sockets).toHaveLength(2);
+    handle.close();
+  });
+
+  it("keeps a disabled traffic stream idle until an explicit capability change", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onmessage: ((e: { data: string }) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn(() => this.onclose?.());
+      constructor(public url: string) { sockets.push(this); }
+    }
+    (globalThis as any).WebSocket = FakeSocket;
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    const got: any[] = [];
+    const handle = api.connectTraffic((m) => got.push(m));
+    sockets[0].onmessage?.({ data: JSON.stringify({ disabled: true }) });
+    sockets[0].onclose?.();
+    vi.advanceTimersByTime(60_000);
+    expect(got).toEqual([{ disabled: true }]);
+    expect(sockets).toHaveLength(1);
+    document.dispatchEvent(new Event(TRAFFIC_CAPABILITY_EVENT));
+    expect(sockets).toHaveLength(2);
+    handle.close();
+    vi.useRealTimers();
   });
 });

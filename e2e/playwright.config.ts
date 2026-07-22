@@ -18,7 +18,7 @@ export default defineConfig({
     command: "bash run-server.sh",
     url: `${BASE}/api/health`,
     timeout: 120_000,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     stdout: "pipe",
     stderr: "pipe",
   },

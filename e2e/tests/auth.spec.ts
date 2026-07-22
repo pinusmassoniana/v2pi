@@ -1,30 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
+import { ensureLoggedIn, PASS, USER } from "./auth-helper";
 
 // Negative-path auth coverage (audit I5): bad credentials, the per-IP login rate limit
 // (run-server.sh sets PI_GW_LOGIN_LOCKOUT_SEC=2 so the lockout clears between tests),
 // CSRF enforcement, and the mid-session 401 → Login drop (F1).
 // Runs before smoke.spec.ts (alphabetical), so it provisions the account itself if needed.
-const USER = "admin";
-const PASS = "e2e-pass-123456";
-
-async function ensureLoggedIn(page: Page) {
-  await page.goto("/");
-  const setupBtn = page.getByRole("button", { name: "Create account" });
-  const loginBtn = page.getByRole("button", { name: "Log in" });
-  const pageTitle = page.locator("h1.page-title");
-  await expect(setupBtn.or(loginBtn).or(pageTitle).first()).toBeVisible({ timeout: 20_000 });
-  if (await pageTitle.isVisible().catch(() => false)) return;
-  await page.getByPlaceholder("username", { exact: true }).fill(USER);
-  await page.getByPlaceholder("password", { exact: true }).fill(PASS);
-  if (await setupBtn.isVisible().catch(() => false)) {
-    await page.getByPlaceholder("confirm password").fill(PASS);
-    await setupBtn.click();
-  } else {
-    await loginBtn.click();
-  }
-  await expect(pageTitle).toBeVisible({ timeout: 20_000 });
-}
-
 async function logoutIfIn(page: Page) {
   const out = page.getByRole("button", { name: "Log out" });
   if (await out.isVisible().catch(() => false)) await out.click();
