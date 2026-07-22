@@ -46,6 +46,7 @@ class LinuxBackend:
         self.settings = settings
         self._run = run
         self._write_proc = write_proc or _write_proc
+        self._verify_proc_writes = write_proc is None
 
     def _nft_script(self, plan: NetPlan, tunnel_up: bool) -> str:
         """Atomic idempotent (re)load of both families. `add table` makes the following
@@ -211,14 +212,16 @@ class LinuxBackend:
 
     def _forward_on(self, path: str) -> bool:
         """Write '1' then read back to confirm it took (a swallowed write failure would otherwise
-        report success while the segment is dead). Read-back is the source of truth so an injected
-        write_proc (tests) that returns None still works."""
+        report success while the segment is dead). Production writes are read back; injected test
+        writers are trusted."""
         return self._proc_value(path, "1")
 
     def _proc_value(self, path: str, value: str) -> bool:
         wrote = self._write_proc(path, value)
         if wrote is False:
             return False
+        if not self._verify_proc_writes:
+            return True
         try:
             with open(path) as f:
                 return f.read().strip() == value

@@ -68,12 +68,16 @@ def test_render_nft6_carves_out_static_segment_prefix():
     assert "2001:db8" not in render_nft6(_plan(ipv6_enabled=True, segment_ip6="auto"), tunnel_up=True)
 
 
-def test_apply_v6_sets_accept_ra_on_uplink():
+def test_apply_v6_sets_accept_ra_on_uplink(tmp_path):
     writes = []
     be = LinuxBackend(Settings(), run=FakeRun(), write_proc=lambda p, v: writes.append((p, v)))
     be.apply_tproxy(_plan(ipv6_enabled=True))
     assert ("/proc/sys/net/ipv6/conf/all/forwarding", "1") in writes
     assert ("/proc/sys/net/ipv6/conf/eth0/accept_ra", "2") in writes   # D: keep RA on the Home leg
+    # an injected writer is trusted: the host's own file must not veto it (CI is Linux, dev macOS)
+    stale = tmp_path / "forwarding"
+    stale.write_text("0\n")
+    assert be._proc_value(str(stale), "1")
     # v4-only apply touches no v6 sysctls
     w4 = []
     LinuxBackend(Settings(), run=FakeRun(), write_proc=lambda p, v: w4.append((p, v))).apply_tproxy(
