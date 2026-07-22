@@ -18,6 +18,29 @@ def test_validate_profile_catches_bad_values():
     assert validate_profile(TuningProfile(id=1, name="p", frag_enabled=True))[0] is True
 
 
+def test_validate_profile_rejects_descending_unbounded_and_ranged_scalar_values():
+    invalid = [
+        TuningProfile(id=1, name="p", frag_enabled=True, frag_length="200-100"),
+        TuningProfile(id=1, name="p", frag_enabled=True, frag_interval="0-60001"),
+        TuningProfile(id=1, name="p", xhttp_padding="1000001"),
+        TuningProfile(id=1, name="p", mux_concurrency="1-2"),
+        TuningProfile(id=1, name="p", mux_concurrency="1025"),
+    ]
+    for profile in invalid:
+        assert validate_profile(profile)[0] is False, profile
+
+    valid = TuningProfile(
+        id=1,
+        name="p",
+        frag_enabled=True,
+        frag_length="1-65535",
+        frag_interval="0-60000",
+        xhttp_padding="0-1000000",
+        mux_concurrency="1024",
+    )
+    assert validate_profile(valid) == (True, "")
+
+
 def _client(settings, stub_xray):
     settings.xray_bin = stub_xray
     return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))

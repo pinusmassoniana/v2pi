@@ -38,3 +38,31 @@ def test_json_array():
     body = '[{"name":"j1","address":"9.9.9.9","port":443,"uuid":"u-3","sni":"s","public_key":"PK3"}]'
     nodes = parse_subscription(body)
     assert nodes[0].name == "j1" and nodes[0].public_key == "PK3"
+
+
+def test_base64_vless_accepts_bracketed_ipv6():
+    uri = "vless://u@[2001:db8::1]:8443?type=xhttp&sni=cdn.example#v6"
+    node = parse_subscription(uri)[0]
+    assert node.address == "2001:db8::1" and node.port == 8443 and node.name == "v6"
+
+
+def test_clash_skips_malformed_entries_individually():
+    body = (
+        "proxies:\n"
+        "  - broken\n"
+        "  - name: bad-opts\n    type: vless\n    server: 1.1.1.1\n    port: 443\n"
+        "    uuid: u1\n    reality-opts: broken\n"
+        "  - name: good\n    type: vless\n    server: 2.2.2.2\n    port: 443\n"
+        "    uuid: u2\n"
+    )
+    nodes = parse_subscription(body)
+    assert [node.name for node in nodes] == ["bad-opts", "good"]
+
+
+def test_parser_stops_constructing_at_limit():
+    body = "[" + ",".join(
+        f'{{"name":"n{i}","address":"1.1.1.{i}","port":443,"uuid":"u{i}"}}'
+        for i in range(1, 20)
+    ) + "]"
+    nodes = parse_subscription(body, limit=4)
+    assert len(nodes) == 4 and nodes[-1].name == "n4"

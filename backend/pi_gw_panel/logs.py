@@ -1,11 +1,7 @@
-"""Log file tail + app-logging setup (Wave 3a)."""
+"""Bounded log tail and explicitly owned application log handlers."""
 import logging
 import logging.handlers
 import os
-import threading
-
-_app_logging_configured = False
-_setup_lock = threading.Lock()          # guard first-call setup so concurrent callers can't double-attach handlers
 
 
 def tail(path: str, lines: int) -> list[str]:
@@ -31,18 +27,23 @@ def tail(path: str, lines: int) -> list[str]:
         return []
 
 
-def setup_app_logging(path: str) -> None:
-    """Attach a single root file handler so app logs land in `path`. Idempotent —
-    only the first call wires a handler (production runs it once at startup)."""
-    global _app_logging_configured
-    with _setup_lock:                   # double-checked under the lock so only one caller ever wires a handler
-        if _app_logging_configured:
-            return
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        # rotate at ~5 MB with a couple of backups so app.log can't grow unbounded and fill the SD card
-        handler = logging.handlers.RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-        root = logging.getLogger()
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
-        _app_logging_configured = True
+def setup_app_logging(path: str) -> logging.Handler:
+    """Attach and return the exact handler owned by one application lifespan."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=5_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    return handler
+
+
+def teardown_app_logging(handler: logging.Handler | None) -> None:
+    """Detach and close one lifespan-owned handler; safe after partial startup."""
+    if handler is None:
+        return
+    root = logging.getLogger()
+    if handler in root.handlers:
+        root.removeHandler(handler)
+    handler.close()

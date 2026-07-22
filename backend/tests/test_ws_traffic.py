@@ -18,6 +18,8 @@ def _auth(c):
 
 
 class _FakeSampler:
+    totals = {"proxy": {"up": 100, "down": 200}}
+
     def sample(self):
         return {"proxy": {"up_bps": 800.0, "down_bps": 1600.0}}
 
@@ -33,6 +35,8 @@ def test_ws_streams_frames(settings, stub_xray):
     c, state = _client_state(settings, stub_xray)
     _auth(c)
     state.sampler = _FakeSampler()
+    state.recorder._sampler = state.sampler
+    state.recorder.record_sample(state.sampler.sample())
     nid = state.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u"))
     state.store.set_setting("active_node_id", str(nid))
     state.store.upsert_health(NodeHealth(node_id=nid, last_real_ok=True, last_real_ms=34,
@@ -60,7 +64,19 @@ class _BoomSampler:
 def test_ws_sends_error_frame_on_sampler_failure(settings, stub_xray):
     c, state = _client_state(settings, stub_xray)
     _auth(c)
-    state.sampler = _BoomSampler()
+    state.recorder.record_error("stats unavailable")
     with c.websocket_connect("/api/ws/traffic") as ws:
         frame = ws.receive_json()
     assert "error" in frame and "stats unavailable" in frame["error"]
+
+
+def test_established_ws_is_revoked_after_password_epoch_bump(settings, stub_xray):
+    c, state = _client_state(settings, stub_xray)
+    _auth(c)
+    state.recorder.record_sample({"proxy": {"up_bps": 1.0, "down_bps": 2.0}})
+    with c.websocket_connect("/api/ws/traffic") as ws:
+        assert "outbounds" in ws.receive_json()
+        state.store.set_setting("session_epoch", "1")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4401

@@ -9,7 +9,7 @@ import hashlib
 import secrets
 
 PREFIX = "pgwp_"
-SCOPES = ("read", "readwrite")
+SCOPES = ("monitor", "read", "readwrite")
 
 
 def generate() -> tuple[str, str, str]:

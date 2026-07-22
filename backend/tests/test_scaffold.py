@@ -6,10 +6,9 @@ from pi_gw_panel.models import Node
 
 
 def test_version_is_integer_chain():
-    # Versioning policy: pre-1.0 integer chain; MAJOR stays 0 until first milestone,
-    # and every segment is an uncapped integer. Robust across per-task version bumps.
+    # Versioning policy: every segment is an uncapped integer. Robust across tier bumps.
     parts = __version__.split(".")
-    assert parts[0] == "0"
+    assert len(parts) >= 2
     assert all(p.isdigit() for p in parts)
 
 

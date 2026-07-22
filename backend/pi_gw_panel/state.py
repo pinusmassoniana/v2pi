@@ -1,4 +1,5 @@
 import os
+import logging
 from dataclasses import dataclass
 from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS, safe_int
 from pi_gw_panel.nodes.store import NodeStore
@@ -9,6 +10,9 @@ from pi_gw_panel.stats.sampler import TrafficSampler
 from pi_gw_panel.stats.history import TrafficHistory, TrafficRecorder
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class AppState:
     settings: Settings
@@ -16,11 +20,29 @@ class AppState:
     supervisor: XraySupervisor
     net: object              # NetBackend (duck-typed: apply_tproxy/teardown)
     xray_bin: str | None = None
-    sampler: object | None = None   # TrafficSampler for the live WS (stubbed in WS tests)
+    stats_client: object | None = None
+    sampler: object | None = None   # sole TrafficSampler, owned/driven by recorder
     history: object | None = None   # TrafficHistory ring buffer (long-window graph)
     recorder: object | None = None  # TrafficRecorder background task (started in lifespan)
     dnsmasq: object | None = None   # DnsmasqSupervisor (segment DHCP + IPv6 RA)
     pd_client: object | None = None # DHCPv6-PD client (odhcp6c) — auto-prefix mode
+    provision_result: object | None = None  # last host_provision NetResult; /api/ready fails closed
+
+    def close(self) -> None:
+        """Release non-task resources after all background owners have stopped."""
+        for name, resource in (
+                ("supervisor", self.supervisor),
+                ("stats client", self.stats_client),
+                ("store", self.store)):
+            close = getattr(resource, "close", None)
+            if close is None and name == "supervisor":
+                close = getattr(resource, "stop", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                logger.warning("failed to close %s", name, exc_info=True)
 
 
 def build_state(settings: Settings, net: object | None = None) -> AppState:
@@ -45,8 +67,8 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
                     int(SETTINGS_DEFAULTS["stats_api_port"]), "stats_api_port")
     stats_client = StatsClient(f"127.0.0.1:{port}")
     sampler = TrafficSampler(lambda: stats_client.query("outbound>>>"))
-    # Always-on history: a SECOND sampler (independent prev-counters) feeds a 1h ring
-    # buffer (3600 @ 1s) so the graph has a full window the moment the Dashboard opens.
+    # Always-on history + immutable live frame are produced by this one sampler. WebSockets
+    # only consume recorder snapshots, so clients cannot multiply gRPC calls.
     history = TrafficHistory(maxlen=3600)
 
     def _xray_listening() -> bool:
@@ -73,15 +95,19 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
 
     def _add_data_used(up_delta: int, down_delta: int) -> None:
         """Durably accumulate proxy bytes so "data used" survives an xray restart (audit F)."""
-        store.set_setting("data_used_up", str(int(store.get_setting("data_used_up") or "0") + up_delta))
-        store.set_setting("data_used_down", str(int(store.get_setting("data_used_down") or "0") + down_delta))
+        with store.transaction():
+            store.set_setting(
+                "data_used_up", str(int(store.get_setting("data_used_up") or "0") + up_delta))
+            store.set_setting(
+                "data_used_down", str(int(store.get_setting("data_used_down") or "0") + down_delta))
 
     recorder = TrafficRecorder(
-        sampler=TrafficSampler(lambda: stats_client.query("outbound>>>")),
+        sampler=sampler,
         history=history,
         stats_enabled=lambda: (store.get_setting("stats_enabled") or "1") == "1",
         running=lambda: supervisor.status()["running"],   # don't poke a dead stats port (F5)
-        interval_ms=lambda: int(store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"]),
+        interval_ms=lambda: store.get_setting("traffic_sample_ms")
+        or SETTINGS_DEFAULTS["traffic_sample_ms"],
         on_total=_add_data_used,
         on_minute=store.add_traffic_minute,   # N4: durable 1-min downsample for 24h/7d windows
     )
@@ -91,6 +117,7 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         supervisor=supervisor,
         net=net,
         xray_bin=settings.xray_bin,
+        stats_client=stats_client,
         sampler=sampler,
         history=history,
         recorder=recorder,

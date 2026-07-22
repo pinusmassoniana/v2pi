@@ -1,9 +1,10 @@
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
-from pi_gw_panel.models import NodeHealth
 from pi_gw_panel.health import probe
+from pi_gw_panel.controller import apply_lock
 
 log = logging.getLogger("pi_gw_panel")
 DEFAULT_PROBE_URL = "https://api.ipify.org?format=json"
@@ -25,6 +26,7 @@ class HealthMonitor:
     # (1 → 3 → 7, capped) so a dead pool doesn't burn a slow probe budget every tick;
     # one success resets it. The active node is never skipped.
     BACKOFF_MAX_SKIP = 7
+    SHUTDOWN_TIMEOUT = 2.0
 
     def __init__(self, state, tcp_ping=probe.tcp_ping, real_request=probe.real_request,
                  http_ping=probe.http_ping, now_iso=None, tick_sec: float | None = None,
@@ -37,6 +39,10 @@ class HealthMonitor:
         self._tick_override = tick_sec
         self._after_tick = after_tick
         self._task: asyncio.Task | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._future: Future | None = None
+        self._stop_event = threading.Event()
+        self._write_lock = threading.Lock()
         self._backoff: dict[int, dict] = {}   # node_id → {"streak": int, "skip": int}
 
     # --- config knobs (settings k/v, with defaults) ---
@@ -54,8 +60,8 @@ class HealthMonitor:
         return int(v) if v else None
 
     # --- one probe sweep ---
-    def run_once(self) -> None:
-        if not self._enabled():
+    def run_once(self, stop_event: threading.Event | None = None) -> None:
+        if (stop_event is not None and stop_event.is_set()) or not self._enabled():
             return
         store = self._state.store
         active_id = self._active_id()
@@ -93,6 +99,9 @@ class HealthMonitor:
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(due)))) as ex:
             swept = list(ex.map(direct, due))
 
+        if stop_event is not None and stop_event.is_set():
+            return
+
         for node, tcp_ok, tcp_ms, http_ok, http_ms in swept:
             if tcp_ok or http_ok:
                 # decay rather than hard-reset: a chronically-flapping node (one success every N
@@ -108,65 +117,93 @@ class HealthMonitor:
                 bo = self._backoff.setdefault(node.id, {"streak": 0, "skip": 0})
                 bo["streak"] += 1
                 bo["skip"] = min(self.BACKOFF_MAX_SKIP, 2 ** min(bo["streak"], 3) - 1)
-            prev = store.get_health(node.id)
+            with apply_lock:
+                with self._write_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    direct_checked_at = None if self._active_id() == node.id else ts
+                    store.update_health_direct(
+                        node.id, tcp_ok=tcp_ok, tcp_ms=tcp_ms,
+                        http_ok=http_ok, http_ms=http_ms, checked_at=direct_checked_at,
+                    )
             if node.id == active_id and tunneled_on:
                 # active node: the through-tunnel real request gives the true egress IP and
                 # drives the failover hysteresis counter — distinct from the direct HTTP probe.
-                real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
-                prev_fail = prev.fail_count if prev else 0
-                store.upsert_health(NodeHealth(
-                    node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
-                    last_http_ok=http_ok, last_http_ms=http_ms,
-                    last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress,
-                    egress_ip6=(prev.egress_ip6 if prev else None),   # fast loop owns v6 egress — don't wipe it
-                    checked_at=ts, fail_count=0 if real_ok else prev_fail + 1))
-            else:
-                # non-active (or active with no proxy port): direct probes only. Preserve any
-                # prior real/egress (NC2 — don't wipe a per-node "T" result) and keep
-                # fail_count at 0 since there's no real-request failure signal (NC1).
-                store.upsert_health(NodeHealth(
-                    node_id=node.id, last_tcp_ok=tcp_ok, last_tcp_ms=tcp_ms,
-                    last_http_ok=http_ok, last_http_ms=http_ms,
-                    last_real_ok=(prev.last_real_ok if prev else None),
-                    last_real_ms=(prev.last_real_ms if prev else None),
-                    egress_ip=(prev.egress_ip if prev else None),
-                    egress_ip6=(prev.egress_ip6 if prev else None),
-                    checked_at=ts, fail_count=0))
+                with apply_lock:
+                    still_active = self._active_id() == node.id
+                if still_active:
+                    real_ok, _status, real_ms, egress = self._real_request(proxy_url, probe_url)
+                    with apply_lock:
+                        with self._write_lock:
+                            current_active = self._active_id()
+                            if stop_event is not None and stop_event.is_set():
+                                return
+                            if current_active == node.id:
+                                prev = store.get_health(node.id)
+                                store.update_health_real(
+                                    node.id, real_ok=real_ok, real_ms=real_ms, egress_ip=egress,
+                                    egress_ip6=prev.egress_ip6 if prev else None, checked_at=ts,
+                                )
+                            else:
+                                store.update_health_direct(
+                                    node.id, tcp_ok=tcp_ok, tcp_ms=tcp_ms,
+                                    http_ok=http_ok, http_ms=http_ms, checked_at=ts,
+                                )
             if http_ok and http_ms is not None:
-                store.record_latency(node.id, http_ms)   # NN4: HTTPS-handshake latency trend
+                with self._write_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    store.record_latency(node.id, http_ms)   # NN4: HTTPS-handshake latency trend
 
-    def _tick(self) -> None:
-        self.run_once()
-        if self._after_tick is not None:
+    def _tick(self, stop_event: threading.Event | None = None) -> None:
+        self.run_once(stop_event)
+        if self._after_tick is not None and (stop_event is None or not stop_event.is_set()):
             self._after_tick()
 
     # --- loop lifecycle ---
     def start(self) -> None:
         if self._task is None or self._task.done():
+            self._stop_event = threading.Event()
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="health-monitor")
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
+        with self._write_lock:
+            self._stop_event.set()
+        task = self._task
+        if task is not None:
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+        future = self._future
+        if future is not None and not future.done():
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(future), self.SHUTDOWN_TIMEOUT)
+            except TimeoutError:
+                pass
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        self._task = None
+        self._future = None
+        self._executor = None
 
-    def _safe_tick(self) -> None:
+    def _safe_tick(self, stop_event: threading.Event | None = None) -> None:
         # one bad sweep (store error, malformed node row) must never kill the loop — log & continue,
         # else the whole health sweep stops forever and failover runs on frozen data.
         try:
-            self._tick()
+            self._tick(stop_event)
         except Exception:
             log.exception("health monitor sweep failed")
 
     async def _loop(self) -> None:
-        loop = asyncio.get_running_loop()
         # run one sweep immediately so health engages right after start instead of serving the
         # stale pre-restart snapshot for a full interval (up to 30 min).
-        await loop.run_in_executor(None, self._safe_tick)
+        assert self._executor is not None
+        self._future = self._executor.submit(self._safe_tick, self._stop_event)
+        await asyncio.wrap_future(self._future)
         while True:
             await asyncio.sleep(self._interval())
-            await loop.run_in_executor(None, self._safe_tick)
+            self._future = self._executor.submit(self._safe_tick, self._stop_event)
+            await asyncio.wrap_future(self._future)

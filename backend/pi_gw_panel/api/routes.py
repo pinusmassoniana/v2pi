@@ -7,12 +7,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException, Header
 from pi_gw_panel.api.schemas import (
     LoginIn, SetupIn, PasswordChangeIn, NodeIn, NodeOut, NodeUpdate, StatusOut,
-    SubscriptionIn, SubscriptionPatch, SubscriptionOut,
+    SubscriptionIn, SubscriptionPatch, SubscriptionOut, RefreshAllOut,
     PreviewIn, PreviewOut, PreviewNodesOut, PreviewNodeOut, ReorderIn, ConnectBestIn,
-    ImportNodesIn, ImportNodesOut, DetachIn, NodeValidateOut,
+    ImportNodesIn, ImportNodesOut, DetachIn, NodeValidateIn, NodeValidateOut,
     SettingsOut, SettingsIn, DiagnosticsOut,
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
     ProfileValidateOut, ProfilePresetInfo,
@@ -28,10 +28,14 @@ from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.auth import tokens
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 from pi_gw_panel.controller import (
-    apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net)
+    apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net,
+    restore_backup)
 from pi_gw_panel.net_control import netcheck, events as conn_events
+from pi_gw_panel.net_control.plan import NetPlan
+from pi_gw_panel.stats.history import bounded_interval_ms
 from pi_gw_panel.health import probe, geo
 from pi_gw_panel.health.selection import best_node
+from pi_gw_panel.health.snapshot import health_status
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.xray_config.routing import PRESETS, preset_rules, validate_routing
@@ -205,12 +209,15 @@ def _network_out(state) -> NetworkOut:
         return store.get_setting(key) or getattr(settings, key)
     # C1: only the real Pi backend probes the uplink (a live socket); dev/CI = unknown.
     uplink_check = netcheck.uplink_up if type(state.net).__name__ == "LinuxBackend" else (lambda: None)
-    kill_switch = (store.get_setting("kill_switch_enabled") or "0") == "1"
+    kill_switch = (store.get_setting("kill_switch_enabled") or "1") == "1"
     lan_access = (store.get_setting("lan_access_enabled") or ("1" if settings.lan_access else "0")) == "1"
     ipv6_enabled = (store.get_setting("ipv6_enabled") or "0") == "1"
-    running = state.supervisor.status().get("running", False)
     st = netcheck.network_status(store, settings, uplink_check=uplink_check)
-    st["wan_blocked"] = kill_switch and not running   # N1: leak-guard holding while tunnel down
+    # Host enforcement is transient fact, not intent. It remains unknown until a backend
+    # operation returns a verified result, and becomes nullable/error after a failed mutation.
+    st["wan_blocked"] = getattr(state.net, "wan_blocked", None)
+    st["enforcement_status"] = getattr(state.net, "enforcement_status", "unknown")
+    st["enforcement_error"] = getattr(state.net, "enforcement_error", "")
     if ipv6_enabled and type(state.net).__name__ == "LinuxBackend":
         # DHCPv6-PD 'auto': observe the host-delegated segment prefix (reads /proc/net/if_inet6).
         v6 = (ov("segment_ip6") or "").strip().lower()
@@ -229,8 +236,8 @@ def _network_out(state) -> NetworkOut:
         lan_access_enabled=lan_access,
         ipv6_enabled=ipv6_enabled,
         status=NetworkStatusOut(**st),
-        recommendations=[RouterRecOut(**r) for r in
-                         netcheck.router_recommendations(settings, ipv6_enabled, ov("segment_ip6"))],
+        recommendations=[RouterRecOut(**r) for r in netcheck.router_recommendations(
+            NetPlan.from_store(store, settings), ipv6_enabled, ov("segment_ip6"))],
         events=[ConnEventOut(**e) for e in conn_events.recent(store)])
 
 
@@ -249,23 +256,48 @@ def _open_session(request: Request) -> None:
 @router.get("/setup")
 def setup_status(request: Request) -> dict:
     """Open: whether first-run credential setup is still needed."""
-    return {"needs_setup": auth_service.needs_setup(get_state(request).store)}
+    state = get_state(request)
+    return {"needs_setup": auth_service.needs_setup(state.store),
+            "bootstrap_required": (not state.settings.loopback_bind
+                                   and os.path.isfile(state.settings.bootstrap_token_path))}
 
 
 @router.post("/setup")
-def setup_create(body: SetupIn, request: Request) -> dict:
+def setup_create(body: SetupIn, request: Request,
+                 x_bootstrap_token: str | None = Header(default=None)) -> dict:
     """Open by necessity (no credential exists yet) — creates the one-and-only
     credential and opens a session. 409 once configured (no re-setup via this route)."""
     state = get_state(request)
-    if not auth_service.needs_setup(state.store):
-        raise HTTPException(status_code=409, detail="already configured")
-    auth_service.create_credential(state.store, body.username, body.password)
+    token_path = state.settings.bootstrap_token_path
+    expected = ""
+    if not state.settings.loopback_bind:
+        try:
+            with open(token_path) as handle:
+                expected = handle.read().strip()
+        except OSError:
+            pass
+    if expected:
+        import hmac
+        if not x_bootstrap_token or not hmac.compare_digest(expected, x_bootstrap_token):
+            raise HTTPException(status_code=403, detail="bad bootstrap token")
+    elif not state.settings.loopback_bind:
+        raise HTTPException(status_code=503, detail="bootstrap token unavailable")
+    try:
+        auth_service.create_credential(state.store, body.username, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="already configured") from exc
+    if os.path.isfile(token_path):
+        try:
+            os.unlink(token_path)
+        except FileNotFoundError:
+            pass
     _open_session(request)
     return {"ok": True}
 
 
 _LOGIN_GUARD_MAX = 1000    # hard cap on tracked IP buckets (memory bound)
 _login_guard_lock = threading.Lock()   # sync handlers run in a threadpool → serialize guard R-M-W
+_login_kdf_slots = threading.BoundedSemaphore(2)
 
 
 @router.post("/login")
@@ -280,23 +312,37 @@ def login(body: LoginIn, request: Request) -> dict:
         if len(guards) >= _LOGIN_GUARD_MAX:         # only prune under memory pressure
             # drop idle buckets (not mid-count, not currently locked) — never a counting bucket,
             # or an attacker could reset their own count by flooding other IPs.
-            for k in [k for k, g in guards.items() if g["until"] <= now and g["count"] == 0]:
+            for k in [k for k, g in guards.items()
+                      if g["until"] <= now and g["count"] == 0 and g.get("in_flight", 0) == 0]:
                 del guards[k]
-            while len(guards) >= _LOGIN_GUARD_MAX and ip not in guards:
-                guards.pop(next(iter(guards)))      # hard cap so rotating IPs can't grow it unbounded
-        guard = guards.setdefault(ip, {"count": 0, "until": 0.0})
+            if len(guards) >= _LOGIN_GUARD_MAX and ip not in guards:
+                raise HTTPException(status_code=429, detail="too many clients — try again shortly")
+        guard = guards.setdefault(ip, {"count": 0, "until": 0.0, "in_flight": 0})
         locked = guard["until"] > now
-    if locked:
+        saturated = guard.get("in_flight", 0) >= 5
+        if not locked and not saturated:
+            guard["in_flight"] = guard.get("in_flight", 0) + 1
+    if locked or saturated:
         raise HTTPException(status_code=429, detail="too many attempts — try again shortly")
-    if not auth_service.verify_login(state.store, body.username, body.password):
+    if not _login_kdf_slots.acquire(blocking=False):
         with _login_guard_lock:
+            guard["in_flight"] -= 1
+        raise HTTPException(status_code=429, detail="login verifier busy")
+    try:
+        valid = auth_service.verify_login(state.store, body.username, body.password)
+    finally:
+        _login_kdf_slots.release()
+    with _login_guard_lock:
+        guard["in_flight"] -= 1
+        if valid:
+            guard["count"] = 0
+        else:
             guard["count"] += 1
-            if guard["count"] >= 5:                 # lock this client out after 5 fails
+            if guard["count"] >= 5:
                 guard["until"] = now + state.settings.login_lockout_sec
                 guard["count"] = 0
+    if not valid:
         raise HTTPException(status_code=401, detail="bad credentials")
-    with _login_guard_lock:
-        guard["count"] = 0
     _open_session(request)
     return {"ok": True}
 
@@ -335,13 +381,38 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     since = state.store.get_setting("active_since")
     last_fo = state.store.get_setting("last_failover_at")
     prev = state.store.get_setting("prev_active_node_id")
+    now = time.time()
+    health = health_status(state.store, now=now)
+    active_id = int(active) if active else None
+    active_row = state.store.get_health(active_id) if active_id is not None else None
+    health_enabled = (state.store.get_setting("health_enabled")
+                      or SETTINGS_DEFAULTS["health_enabled"]) == "1"
+    failover_enabled = (state.store.get_setting("failover_enabled")
+                        or SETTINGS_DEFAULTS["failover_enabled"]) == "1"
+    tunnel_online = bool(st["running"] and health["active_health_fresh"]
+                         and active_row is not None and active_row.last_real_ok is True)
+    failovers_24h = sum(
+        event.get("kind") == "failover"
+        and isinstance(event.get("ts"), (int, float))
+        and now - 86400 <= event["ts"] <= now
+        for event in conn_events.recent(state.store)
+        if isinstance(event, dict)
+    )
     return StatusOut(running=st["running"], pid=st["pid"],
-                     active_node_id=int(active) if active else None,  # "" (post-rollback) → None
+                     active_node_id=active_id,  # "" (post-rollback) → None
                      xray_state=state.supervisor.state(),
                      active_since=int(since) if since else None,
                      last_failover_at=float(last_fo) if last_fo else None,
                      prev_active_node_id=int(prev) if prev else None,  # U2: gate the Rollback button
-                     server_now=time.time())   # D4: client offsets freshness/uptime by this
+                     server_now=now,   # D4: client offsets freshness/uptime by this
+                     tunnel_online=tunnel_online,
+                     active_health_fresh=health["active_health_fresh"],
+                     failover_ready=(health_enabled and failover_enabled
+                                     and health["eligible_standby_count"] > 0),
+                     eligible_standby_count=health["eligible_standby_count"],
+                     health_enabled=health_enabled,
+                     failover_enabled=failover_enabled,
+                     failovers_24h=failovers_24h)
 
 
 @router.get("/traffic/history", response_model=TrafficHistoryOut)
@@ -357,7 +428,8 @@ def traffic_history(request: Request, window_sec: int = 3600, max_points: int = 
     # huge max_points sizes the downsample loop — cap them so one GET can't amplify into a DoS.
     window_sec = min(max(1, window_sec), 30 * 86400)     # <= 30 days
     max_points = min(max(1, max_points), 5000)
-    interval = int(state.store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"])
+    interval = bounded_interval_ms(
+        state.store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"])
     hist = getattr(state, "history", None)
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     since_ms = now_ms - window_sec * 1000
@@ -413,6 +485,9 @@ def update_node(node_id: int, body: NodeUpdate, request: Request,
     node = state.store.get_node(node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="node not found")
+    if state.store.get_setting("active_node_id") == str(node_id):
+        raise HTTPException(
+            status_code=409, detail="disconnect the active node before editing it")
     # exclude_unset (not exclude_none) so an explicit `tuning_profile_id: null` clears
     # the assignment (→ inherit the global default) rather than being dropped.
     for k, v in body.model_dump(exclude_unset=True).items():
@@ -427,6 +502,11 @@ def update_node(node_id: int, body: NodeUpdate, request: Request,
 def delete_node(node_id: int, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
     state = get_state(request)
+    if state.store.get_node(node_id) is None:
+        raise HTTPException(status_code=404, detail="node not found")
+    if state.store.get_setting("active_node_id") == str(node_id):
+        raise HTTPException(
+            status_code=409, detail="disconnect the active node before deleting it")
     state.store.delete_node(node_id)
     return {"ok": True}
 
@@ -455,11 +535,14 @@ def disconnect(node_id: int, request: Request,
     xray is left running — the sidebar toggle is the only thing that stops xray-core."""
     state = get_state(request)
     with apply_lock:   # don't race a concurrent apply / failover tick (NR1)
-        stop_net(state.settings, state.net, state.store)
-        prev = state.store.get_setting("active_node_id")
-        state.store.set_setting("prev_active_node_id", prev or "")
-        state.store.set_setting("active_node_id", "")
-        state.store.set_setting("active_since", "")        # clear uptime anchor (P3)
+        result = stop_net(state.settings, state.net, state.store)
+        if not result.ok:
+            raise HTTPException(status_code=502, detail=result.error or "network stop failed")
+        with state.store.transaction():
+            prev = state.store.get_setting("active_node_id")
+            state.store.set_setting("prev_active_node_id", prev or "")
+            state.store.set_setting("active_node_id", "")
+            state.store.set_setting("active_since", "")        # clear uptime anchor (P3)
     conn_events.record(state.store, "disconnect", "node disconnected")
     return {"ok": True}
 
@@ -489,7 +572,9 @@ def xray_stop(request: Request,
     state = get_state(request)
     with apply_lock:
         state.supervisor.stop()
-        stop_net(state.settings, state.net, state.store)
+        result = stop_net(state.settings, state.net, state.store)
+        if not result.ok:
+            raise HTTPException(status_code=502, detail=result.error or "network stop failed")
     conn_events.record(state.store, "xray-stop", "xray-core stopped")
     return {"ok": True}
 
@@ -501,11 +586,31 @@ def rollback(request: Request,
     with apply_lock:
         ok = ConfigManager(state.settings, xray_bin=state.xray_bin).rollback()
         if ok:
-            state.supervisor.reload()
             prev = state.store.get_setting("prev_active_node_id")
-            state.store.set_setting("active_node_id", prev if prev else "")  # revert to prior apply
-            state.store.set_setting(
-                "active_since", str(int(datetime.now(timezone.utc).timestamp())) if prev else "")
+            if prev:
+                if not state.supervisor.reload():
+                    state.supervisor.stop()
+                    guard = stop_net(state.settings, state.net, state.store)
+                    detail = "rolled-back Xray did not become ready"
+                    if not guard.ok:
+                        detail += f"; fail-closed recovery failed: {guard.error}"
+                    raise HTTPException(status_code=502, detail=detail)
+                net_result = apply_net(state.settings, state.net, state.store)
+            else:
+                state.supervisor.stop()
+                net_result = stop_net(state.settings, state.net, state.store)
+            if not net_result.ok:
+                # Ensure the least permissive available state even when restoring the previous
+                # tunnel fails. The attempted guard outcome is reflected in enforcement_status.
+                guard = stop_net(state.settings, state.net, state.store)
+                detail = net_result.error or "network rollback failed"
+                if not guard.ok:
+                    detail += f"; fail-closed recovery failed: {guard.error}"
+                raise HTTPException(status_code=502, detail=detail)
+            with state.store.transaction():
+                state.store.set_setting("active_node_id", prev if prev else "")
+                state.store.set_setting(
+                    "active_since", str(int(datetime.now(timezone.utc).timestamp())) if prev else "")
     return {"ok": ok}
 
 
@@ -575,10 +680,11 @@ def set_default_profile(body: DefaultProfileIn, request: Request,
     p = state.store.get_profile(body.id)
     if p is None:
         raise HTTPException(status_code=404, detail="profile not found")
-    before = _active_resolved_pid(state.store)
-    state.store.set_default_profile(body.id)
-    if _active_resolved_pid(state.store) != before:   # active node inherits the default → re-apply
-        _reapply_or_502(state)
+    with apply_lock, state.store.transaction():
+        before = _active_resolved_pid(state.store)
+        state.store.set_default_profile(body.id)
+        if _active_resolved_pid(state.store) != before:   # active node inherits default → re-apply
+            _reapply_or_502(state)
     return _profile_out(p, body.id, _active_resolved_pid(state.store))
 
 
@@ -594,9 +700,10 @@ def update_profile(profile_id: int, body: ProfileUpdate, request: Request,
     ok, err = validate_profile(p)
     if not ok:
         raise HTTPException(status_code=422, detail=err)
-    state.store.update_profile(p)
-    if _active_resolved_pid(state.store) == profile_id:   # edited the live profile → re-apply (TB1)
-        _reapply_or_502(state)
+    with apply_lock, state.store.transaction():
+        state.store.update_profile(p)
+        if _active_resolved_pid(state.store) == profile_id:  # edited live profile → re-apply
+            _reapply_or_502(state)
     d = state.store.get_default_profile()
     return _profile_out(state.store.get_profile(profile_id), d.id if d else None,
                         _active_resolved_pid(state.store))
@@ -613,9 +720,10 @@ def apply_profile_active(profile_id: int, request: Request,
     node = state.store.get_node(int(aid)) if aid else None
     if node is None:
         raise HTTPException(status_code=409, detail="no active node")
-    node.tuning_profile_id = profile_id
-    state.store.update_node(node)
-    _reapply_or_502(state)
+    with apply_lock, state.store.transaction():
+        node.tuning_profile_id = profile_id
+        state.store.update_node(node)
+        _reapply_or_502(state)
     return {"ok": True, "node_id": node.id}
 
 
@@ -627,10 +735,11 @@ def delete_profile(profile_id: int, request: Request,
     if d is not None and d.id == profile_id:
         # the global default must always exist (nodes inherit it); reassign default first
         raise HTTPException(status_code=409, detail="cannot delete the default profile")
-    was_live = _active_resolved_pid(state.store) == profile_id   # active node uses it?
-    state.store.delete_profile(profile_id)                       # referencing nodes → default
-    if was_live:
-        _reapply_or_502(state)
+    with apply_lock, state.store.transaction():
+        was_live = _active_resolved_pid(state.store) == profile_id   # active node uses it?
+        state.store.delete_profile(profile_id)                       # referencing nodes → default
+        if was_live:
+            _reapply_or_502(state)
     return {"ok": True}
 
 
@@ -664,15 +773,15 @@ def put_routing(body: RoutingIn, request: Request,
     ok, err = validate_routing(rules, body.default_action)   # RC2: clear per-rule error, not raw xray
     if not ok:
         raise HTTPException(status_code=422, detail=err)
-    state.store.replace_routing(rules)
-    state.store.set_setting("routing_default_action", body.default_action)
-    state.store.set_setting("routing_domain_strategy", body.domain_strategy)
-    # Apply now: rebuild the live config (which embeds routing) + reload xray, so the change
-    # takes effect immediately instead of silently waiting for the next Connect. No-op when
-    # no node is active; a rule xray rejects surfaces as 502 (live config stays last-good).
-    res = reapply_active_node(state)
-    if res is not None and not res.ok:
-        raise HTTPException(status_code=502, detail=res.error)
+    with apply_lock, state.store.transaction():
+        state.store.replace_routing(rules)
+        state.store.set_setting("routing_default_action", body.default_action)
+        state.store.set_setting("routing_domain_strategy", body.domain_strategy)
+        # DB intent and live config are one logical transaction. apply_node restores last-good
+        # runtime on error; escaping this context rolls the candidate rows back as well.
+        res = reapply_active_node(state)
+        if res is not None and not res.ok:
+            raise HTTPException(status_code=502, detail=res.error)
     return _routing_out(state)
 
 
@@ -738,7 +847,9 @@ def _scoped_nodes(store, scope: str | None) -> list:
     try:
         sid = int(scope)
     except ValueError:
-        return nodes
+        raise HTTPException(status_code=422, detail="scope must be all, servers, or a subscription id")
+    if store.get_subscription(sid) is None:
+        raise HTTPException(status_code=422, detail="subscription scope not found")
     return [n for n in nodes if n.subscription_id == sid]
 
 
@@ -839,10 +950,12 @@ def post_restore(body: dict, request: Request,
     if not isinstance(body, dict) or "schema_version" not in body:
         raise HTTPException(status_code=400, detail="not a valid backup file")
     try:
-        summary = backup_mod.import_state(get_state(request).store, body)
+        result = restore_backup(get_state(request), body)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"invalid backup: {exc}")
-    return {"ok": True, "restored": summary}
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=result.error)
+    return {"ok": True, "restored": result.summary, "runtime": "disconnected"}
 
 
 # --- subscriptions ---
@@ -902,8 +1015,11 @@ def refresh_sub(sub_id: int, request: Request,
 @router.post("/subs/preview", response_model=PreviewOut)
 def preview_sub(body: PreviewIn, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> PreviewOut:
+    state = get_state(request)
     injection = body.injection if body.injection is not None else default_injection()
-    req = build_request(body.url, injection, host_tokens(service.machine_id()))
+    tokens = host_tokens(service.machine_id(), app_secret=state.settings.session_secret,
+                         subscription_id=f"preview:{body.url}")
+    req = build_request(body.url, injection, tokens)
     return PreviewOut(method=req.method, url=req.url, headers=req.headers, query=req.query)
 
 
@@ -914,33 +1030,40 @@ def preview_sub_nodes(body: PreviewIn, request: Request,
     before adding/saving. Uses the tunnel when one is up, like a real refresh."""
     state = get_state(request)
     injection = body.injection if body.injection is not None else default_injection()
-    tokens = host_tokens(service.machine_id())
+    tokens = host_tokens(service.machine_id(), app_secret=state.settings.session_secret,
+                         subscription_id=f"preview:{body.url}")
     try:
         text, _path, _headers = fetch(body.url, injection, tokens, proxy=service.tunnel_proxy(state))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"fetch failed: {exc}")
     try:
         fmt = detect(text)
-        nodes = parse_subscription(text)
+        nodes = parse_subscription(text, limit=service.MAX_NODES + 1)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
     return PreviewNodesOut(
-        format=fmt, count=len(nodes),
+        format=fmt, count=min(len(nodes), service.MAX_NODES),
+        returned_count=min(len(nodes), service.MAX_NODES, 200),
+        truncated=min(len(nodes), service.MAX_NODES) > 200,
         nodes=[PreviewNodeOut(name=n.name, address=n.address, port=n.port,
                               transport=n.transport, network=n.network, security=n.security)
                for n in nodes[:200]])
 
 
-@router.post("/subs/refresh-all")
+@router.post("/subs/refresh-all", response_model=RefreshAllOut)
 def refresh_all_subs(request: Request,
-                     _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+                     _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RefreshAllOut:
     """N3: refresh every enabled subscription now. Disabled subs are skipped."""
     state = get_state(request)
-    results = {}
+    results = []
     for sub in state.store.list_subscriptions():
         if sub.enabled:
-            results[sub.id] = service.refresh(state, sub)
-    return {"refreshed": len(results), "results": results}
+            result = service.refresh(state, sub)
+            results.append({"id": sub.id, "name": sub.name, "ok": bool(result.get("ok")),
+                            "status": result.get("status"), "error": result.get("error")})
+    succeeded = sum(result["ok"] for result in results)
+    return {"attempted": len(results), "succeeded": succeeded,
+            "failed": len(results) - succeeded, "results": results}
 
 
 @router.post("/nodes/reorder")
@@ -960,7 +1083,7 @@ def detach_nodes(body: DetachIn, request: Request,
 
 
 @router.post("/nodes/validate", response_model=NodeValidateOut)
-def validate_node(body: NodeIn, request: Request,
+def validate_node(body: NodeValidateIn, request: Request,
                   _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NodeValidateOut:
     """NN10: pre-flight — build this node's config and run `xray -test` without connecting,
     so a bad reality/xhttp/tls combo is caught before Connect."""
@@ -969,7 +1092,9 @@ def validate_node(body: NodeIn, request: Request,
                 uuid=body.uuid, transport=body.transport, security=body.security,
                 sni=body.sni, public_key=body.public_key, short_id=body.short_id,
                 fingerprint=body.fingerprint, path=body.path, host=body.host,
-                mode=body.mode, alpn=body.alpn)
+                mode=body.mode, alpn=body.alpn, tuning_profile_id=body.tuning_profile_id)
+    if body.tuning_profile_id is not None and state.store.get_profile(body.tuning_profile_id) is None:
+        raise HTTPException(status_code=422, detail="tuning profile not found")
     cfg = build_node_config(node, state.settings, state.store)
     ok, out = validate_config(cfg, state.xray_bin or state.settings.xray_bin)
     return NodeValidateOut(ok=ok, error="" if ok else out)
@@ -983,7 +1108,7 @@ def import_nodes(body: ImportNodesIn, request: Request,
     state = get_state(request)
     try:
         fmt = detect(body.text)
-        parsed = parse_subscription(body.text)
+        parsed = parse_subscription(body.text, limit=service.MAX_NODES + 1)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
     added = 0
@@ -1032,7 +1157,7 @@ _SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled", "he
 
 def _validate_settings(state, data: dict) -> None:
     """SC2: reject out-of-range values that would break the runtime (busy loops, bad ports)."""
-    floors = {"health_interval": 60, "traffic_sample_ms": 250, "health_hysteresis": 1,
+    floors = {"health_interval": 60, "traffic_sample_ms": 500, "health_hysteresis": 1,
               "failover_cooldown": 0, "session_timeout_min": 0}
     for k, lo in floors.items():
         if isinstance(data.get(k), int) and data[k] < lo:
@@ -1043,6 +1168,8 @@ def _validate_settings(state, data: dict) -> None:
             raise HTTPException(status_code=422, detail="stats_api_port must be 1..65535")
         if p in (state.settings.tproxy_port, state.settings.local_proxy_port):
             raise HTTPException(status_code=422, detail="stats_api_port collides with a system port")
+    if "traffic_sample_ms" in data and data["traffic_sample_ms"] > 60_000:
+        raise HTTPException(status_code=422, detail="traffic_sample_ms must be <= 60000")
     # routing_default_action feeds straight into the built xray config; an out-of-set value would
     # produce a config xray rejects on the next apply (a self-inflicted outage bypassing /routing).
     if "routing_default_action" in data and data["routing_default_action"] not in ("direct", "proxy", "block"):
@@ -1055,10 +1182,13 @@ def put_settings(body: SettingsIn, request: Request,
     state = get_state(request)
     data = body.model_dump(exclude_none=True)
     _validate_settings(state, data)
-    for k, v in data.items():
-        state.store.set_setting(k, ("1" if v else "0") if isinstance(v, bool) else str(v))
-    if _SETTINGS_CONFIG_KEYS & data.keys():   # SR1: a config-affecting toggle → re-apply live
-        _reapply_or_502(state)
+    with apply_lock, state.store.transaction():
+        for k, v in data.items():
+            state.store.set_setting(k, ("1" if v else "0") if isinstance(v, bool) else str(v))
+        if _SETTINGS_CONFIG_KEYS & data.keys():   # config-affecting toggle → re-apply live
+            _reapply_or_502(state)
+    if "stats_api_port" in data and state.stats_client is not None:
+        state.stats_client.reconfigure(f"127.0.0.1:{data['stats_api_port']}")
     return _settings_out(state)
 
 
@@ -1067,9 +1197,13 @@ def reset_settings(request: Request,
                    _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> SettingsOut:
     """SN1: restore the Settings-screen knobs to their defaults (routing-owned keys untouched)."""
     state = get_state(request)
-    for k in _SETTINGS_RESET_KEYS:
-        state.store.set_setting(k, SETTINGS_DEFAULTS[k])
-    _reapply_or_502(state)
+    with apply_lock, state.store.transaction():
+        for k in _SETTINGS_RESET_KEYS:
+            state.store.set_setting(k, SETTINGS_DEFAULTS[k])
+        _reapply_or_502(state)
+    if state.stats_client is not None:
+        state.stats_client.reconfigure(
+            f"127.0.0.1:{int(SETTINGS_DEFAULTS['stats_api_port'])}")
     return _settings_out(state)
 
 
@@ -1077,11 +1211,7 @@ def reset_settings(request: Request,
 def diagnostics(request: Request, _: None = Depends(require_auth)) -> DiagnosticsOut:
     """SN8: at-a-glance support info — app/xray version, uptime, DB size, disk."""
     state = get_state(request)
-    from importlib.metadata import version, PackageNotFoundError
-    try:
-        app_v = version("pi-gw-panel") or "unknown"
-    except PackageNotFoundError:
-        app_v = "unknown"
+    from pi_gw_panel import __version__
     try:
         out = subprocess.run([state.xray_bin or state.settings.xray_bin, "-version"],
                              capture_output=True, text=True, timeout=5)
@@ -1092,9 +1222,13 @@ def diagnostics(request: Request, _: None = Depends(require_auth)) -> Diagnostic
     db = state.settings.db_path
     db_bytes = os.path.getsize(db) if os.path.exists(db) else 0
     du = shutil.disk_usage(state.settings.data_dir)
-    return DiagnosticsOut(app_version=app_v, xray_version=xray_v,
+    stats_status = state.stats_client.status() if state.stats_client is not None else {}
+    return DiagnosticsOut(app_version=__version__, xray_version=xray_v,
                           uptime_sec=int(time.time() - _START_TIME), db_path=db, db_bytes=db_bytes,
-                          disk_free_bytes=du.free, disk_total_bytes=du.total)
+                          disk_free_bytes=du.free, disk_total_bytes=du.total,
+                          stats_last_ok_at=stats_status.get("last_ok_at"),
+                          stats_error=stats_status.get("last_error", ""),
+                          stats_fail_count=stats_status.get("fail_count", 0))
 
 
 # --- network (editable Pi net config + kill-switch + live status + router guidance) ---
@@ -1112,49 +1246,89 @@ def put_network(body: NetworkIn, request: Request,
         v6 = (data["segment_ip6"] or "").strip()
         if v6 and v6.lower() != "auto":
             try:
-                ipaddress.ip_network(v6, strict=False)
-            except ValueError:
-                raise HTTPException(status_code=422, detail="segment_ip6 must be an IPv6 CIDR or 'auto'")
+                network = ipaddress.IPv6Network(v6, strict=False)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422, detail="segment_ip6 must be an IPv6 /64 or 'auto'") from exc
+            if network.prefixlen != 64:
+                raise HTTPException(status_code=422, detail="segment_ip6 must use a /64 prefix")
+            data["segment_ip6"] = str(network)
     # These values are interpolated verbatim into the nft ruleset and dnsmasq.conf; a newline/quote
     # would inject arbitrary nft rules or dnsmasq directives (DNS-leak `server=`, kill-switch removal),
     # and a merely malformed value silently breaks the live segment. Validate strictly at the boundary.
     _validate_net_fields(data)
-    for k in _NET_EDITABLE:
-        if k in data:
-            state.store.set_setting(k, data[k])
-    if "kill_switch_enabled" in data:
-        was = (state.store.get_setting("kill_switch_enabled") or "0") == "1"
-        now_on = bool(data["kill_switch_enabled"])
-        state.store.set_setting("kill_switch_enabled", "1" if now_on else "0")
-        if now_on != was:
-            conn_events.record(state.store, "kill-switch", "enabled" if now_on else "disabled")
-    if "lan_access_enabled" in data:
-        was_lan = (state.store.get_setting("lan_access_enabled")
-                   or ("1" if state.settings.lan_access else "0")) == "1"
-        lan_on = bool(data["lan_access_enabled"])
-        state.store.set_setting("lan_access_enabled", "1" if lan_on else "0")
-        if lan_on != was_lan:
-            conn_events.record(state.store, "lan-access", "enabled" if lan_on else "disabled")
-    ipv6_changed = False
-    if "ipv6_enabled" in data:
-        was6 = (state.store.get_setting("ipv6_enabled") or "0") == "1"
-        on6 = bool(data["ipv6_enabled"])
-        state.store.set_setting("ipv6_enabled", "1" if on6 else "0")
-        if on6 != was6:
-            ipv6_changed = True
-            conn_events.record(state.store, "ipv6", "enabled" if on6 else "disabled")
-    # Re-assert the host segment (addresses) + reload dnsmasq for the new config — idempotent,
-    # gated on the linux backend + manage_segment, best-effort (a no-op on dev/CI's DryRun).
     from pi_gw_panel.net_control.provision import host_provision
-    host_provision(state)
-    # Apply to match the CURRENT tunnel state. Toggling IPv6 changes the xray config (the
-    # tproxy-in6 inbound), so on a live tunnel do a full reapply (rebuild config + net); other
-    # edits only re-render the net rules (tproxy if up, else leak-guard/teardown — A1).
-    running_active = state.supervisor.status().get("running") and state.store.get_setting("active_node_id")
-    if ipv6_changed and running_active:
-        _reapply_or_502(state)
-    else:
-        sync_net(state)
+    ipv6_changed = False
+    running_active = False
+    with apply_lock:
+        try:
+            with state.store.transaction():
+                for k in _NET_EDITABLE:
+                    if k in data:
+                        state.store.set_setting(k, data[k])
+                if "kill_switch_enabled" in data:
+                    was = (state.store.get_setting("kill_switch_enabled") or "1") == "1"
+                    now_on = bool(data["kill_switch_enabled"])
+                    state.store.set_setting("kill_switch_enabled", "1" if now_on else "0")
+                    if now_on != was:
+                        conn_events.record(
+                            state.store, "kill-switch", "enabled" if now_on else "disabled")
+                if "lan_access_enabled" in data:
+                    was_lan = (state.store.get_setting("lan_access_enabled")
+                               or ("1" if state.settings.lan_access else "0")) == "1"
+                    lan_on = bool(data["lan_access_enabled"])
+                    state.store.set_setting("lan_access_enabled", "1" if lan_on else "0")
+                    if lan_on != was_lan:
+                        conn_events.record(
+                            state.store, "lan-access", "enabled" if lan_on else "disabled")
+                if "ipv6_enabled" in data:
+                    was6 = (state.store.get_setting("ipv6_enabled") or "0") == "1"
+                    on6 = bool(data["ipv6_enabled"])
+                    state.store.set_setting("ipv6_enabled", "1" if on6 else "0")
+                    if on6 != was6:
+                        ipv6_changed = True
+                        conn_events.record(
+                            state.store, "ipv6", "enabled" if on6 else "disabled")
+
+                provision_result = host_provision(state)
+                if getattr(provision_result, "ok", True) is False:
+                    raise RuntimeError(
+                        f"host provisioning failed: {provision_result.error or 'unknown error'}")
+                # Toggling IPv6 changes Xray itself; other fields only change host rules.
+                running_active = bool(
+                    state.supervisor.status().get("running")
+                    and state.store.get_setting("active_node_id"))
+                if ipv6_changed and running_active:
+                    _reapply_or_502(state)
+                else:
+                    net_result = sync_net(state)
+                    if not net_result.ok:
+                        raise RuntimeError(net_result.error or "network apply failed")
+        except Exception as exc:
+            # The DB transaction has rolled back here. Reconcile the host from that previous
+            # source of truth before reporting the candidate failure.
+            recovery: list[str] = []
+            try:
+                restored_host = host_provision(state)
+                if getattr(restored_host, "ok", True) is False:
+                    recovery.append(restored_host.error or "host provisioning restore failed")
+            except Exception as restore_exc:
+                recovery.append(f"host provisioning restore raised: {restore_exc}")
+            try:
+                if ipv6_changed and running_active:
+                    restored_runtime = reapply_active_node(state)
+                    if restored_runtime is not None and not restored_runtime.ok:
+                        recovery.append(restored_runtime.error)
+                else:
+                    restored_net = sync_net(state)
+                    if not restored_net.ok:
+                        recovery.append(restored_net.error or "network restore failed")
+            except Exception as restore_exc:
+                recovery.append(f"runtime restore raised: {restore_exc}")
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            if recovery:
+                detail = f"{detail}; recovery: {'; '.join(recovery)}"
+            raise HTTPException(status_code=502, detail=detail) from exc
     return _network_out(state)
 
 
@@ -1168,7 +1342,10 @@ def list_tokens(request: Request, _: None = Depends(require_auth)) -> list[Token
 def create_token(body: TokenCreateIn, request: Request,
                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> TokenCreatedOut:
     full, token_hash, prefix = tokens.generate()
-    row = get_state(request).store.create_token(body.name, body.scope, token_hash, prefix)
+    if body.expires_at is not None and body.expires_at <= int(time.time()):
+        raise HTTPException(status_code=422, detail="expires_at must be in the future")
+    row = get_state(request).store.create_token(
+        body.name, body.scope, token_hash, prefix, expires_at=body.expires_at)
     return TokenCreatedOut(**row, token=full)
 
 

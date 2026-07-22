@@ -1,5 +1,7 @@
 import http.server
+import socket
 import threading
+import time
 
 import pytest
 
@@ -83,3 +85,74 @@ def test_http_get_follows_cookie_challenge_redirect(monkeypatch):
         thread.join()
     assert body == "vless://node"
     assert isinstance(headers, dict)
+
+
+def test_resolve_public_returns_pinned_ip_and_rejects_mixed_answer(monkeypatch):
+    infos = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: infos)
+    assert fetcher._resolve_public("example.com", 443, time.monotonic() + 1) == "93.184.216.34"
+
+    infos.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)))
+    with pytest.raises(ValueError, match="non-public"):
+        fetcher._resolve_public("example.com", 443, time.monotonic() + 1)
+
+
+def test_http_get_repins_every_redirect_and_preserves_host(monkeypatch):
+    resolved = []
+    calls = []
+
+    def resolve(host, port, deadline):
+        resolved.append((host, port))
+        return {"one.example": "93.184.216.34", "two.example": "93.184.216.35"}[host]
+
+    def request(parts, pinned_ip, headers, proxy, deadline):
+        calls.append((parts.hostname, pinned_ip, headers.get("Host")))
+        if parts.hostname == "one.example":
+            return 302, {"Location": "https://two.example/final"}, b""
+        return 200, {"Content-Type": "text/plain; charset=utf-8"}, b"ok"
+
+    monkeypatch.setattr(fetcher, "_resolve_public", resolve)
+    monkeypatch.setattr(fetcher, "_request_once", request)
+    body, _headers = fetcher._http_get("https://one.example/start", {"x-test": "1"}, None, 1)
+    assert body == "ok"
+    assert resolved == [("one.example", 443), ("two.example", 443)]
+    assert calls == [
+        ("one.example", "93.184.216.34", "one.example"),
+        ("two.example", "93.184.216.35", "two.example"),
+    ]
+
+
+def test_remaining_uses_one_monotonic_deadline():
+    with pytest.raises(TimeoutError, match="deadline"):
+        fetcher._remaining(time.monotonic() - 0.01)
+
+
+def test_dns_resolution_obeys_fetch_deadline(monkeypatch):
+    def slow_resolve(*args, **kwargs):
+        time.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow_resolve)
+    with pytest.raises(TimeoutError, match="DNS deadline"):
+        fetcher._resolve_public("slow.example", 443, time.monotonic() + 0.005)
+
+
+def test_proxy_connect_targets_only_the_pinned_ip():
+    class FakeSocket:
+        sent = b""
+
+        def settimeout(self, _timeout):
+            pass
+
+        def sendall(self, value):
+            self.sent += value
+
+        def recv(self, _size):
+            return b"HTTP/1.1 200 Connection established\r\n\r\n"
+
+    sock = FakeSocket()
+    fetcher._proxy_connect(sock, "2001:4860:4860::8888", 443, time.monotonic() + 1)
+    assert sock.sent.startswith(b"CONNECT [2001:4860:4860::8888]:443 HTTP/1.1\r\n")
+    assert b"Host: [2001:4860:4860::8888]:443\r\n" in sock.sent

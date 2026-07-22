@@ -14,9 +14,10 @@ All blocking work runs in an executor; every step is best-effort and never raise
 """
 import asyncio
 import logging
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
-from pi_gw_panel.models import NodeHealth
 from pi_gw_panel.health import probe, failover
 from pi_gw_panel.health.monitor import DEFAULT_PROBE_URL
 from pi_gw_panel.controller import apply_lock
@@ -29,6 +30,8 @@ DEFAULT_PROBE_URL6 = "https://api6.ipify.org?format=json"
 
 
 class LivenessLoop:
+    SHUTDOWN_TIMEOUT = 2.0
+
     def __init__(self, state, interval_sec: float = DEFAULT_INTERVAL,
                  probe_interval: float = DEFAULT_PROBE_INTERVAL,
                  real_through=probe.real_through_node, failover_run=failover.run,
@@ -43,32 +46,42 @@ class LivenessLoop:
         self._now_iso = now_iso or (lambda: datetime.now(timezone.utc).isoformat())
         self._last_probe = 0.0
         self._task: asyncio.Task | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._future: Future | None = None
+        self._stop_event = threading.Event()
+        self._write_lock = threading.Lock()
 
     # --- B1: restart a crashed xray ---
-    def _watchdog(self) -> None:
+    def _watchdog(self, stop_event: threading.Event | None = None) -> None:
         st = self._state
+        if stop_event is not None and stop_event.is_set():
+            return
         if st.supervisor.state() != "error":      # 'error' = wanted-running but the proc died
             return
         with apply_lock:                           # serialize vs apply / a deliberate stop
-            if st.supervisor.state() != "error":   # re-check: a stop may have raced in
-                return
-            self._restart(st)
-            events.record(st.store, "xray-restart", "auto-restarted after crash", now=self._now())
-            log.warning("watchdog: xray was down — restarted")
+            with self._write_lock:
+                if ((stop_event is not None and stop_event.is_set()) or
+                        st.supervisor.state() != "error"):
+                    return
+                self._restart(st)
+                events.record(st.store, "xray-restart", "auto-restarted after crash", now=self._now())
+                log.warning("watchdog: xray was down — restarted")
 
     # --- B2: real-probe the active node so fail_count is responsive (SEPARATE xray) ---
-    def _probe_active(self) -> None:
+    def _probe_active(self, stop_event: threading.Event | None = None) -> None:
         st = self._state
         store = st.store
-        if (store.get_setting("health_enabled") or "1") != "1":
+        if ((stop_event is not None and stop_event.is_set()) or
+                (store.get_setting("health_enabled") or "1") != "1"):
             return
-        av = store.get_setting("active_node_id")
-        aid = int(av) if av else None
-        if aid is None or not st.supervisor.status().get("running"):
-            return
-        node = store.get_node(aid)
-        if node is None:
-            return
+        with apply_lock:
+            av = store.get_setting("active_node_id")
+            aid = int(av) if av else None
+            if aid is None or not st.supervisor.status().get("running"):
+                return
+            node = store.get_node(aid)
+            if node is None:
+                return
         probe_url = store.get_setting("health_probe_url") or DEFAULT_PROBE_URL
         url6 = (store.get_setting("health_probe_url6") or DEFAULT_PROBE_URL6
                 if (store.get_setting("ipv6_enabled") or "0") == "1" else None)
@@ -78,34 +91,41 @@ class LivenessLoop:
                                                                probe_url6=url6)
         # a manual switch may have moved the active node while this (seconds-long) probe ran — don't
         # attribute the result or advance fail_count on a node that is no longer active.
-        cur = store.get_setting("active_node_id")
-        if (int(cur) if cur else None) != aid:
-            return
-        prev = store.get_health(aid)
-        store.upsert_health(NodeHealth(
-            node_id=aid,
-            last_tcp_ok=prev.last_tcp_ok if prev else None,
-            last_tcp_ms=prev.last_tcp_ms if prev else None,
-            last_http_ok=prev.last_http_ok if prev else None,
-            last_http_ms=prev.last_http_ms if prev else None,
-            last_real_ok=real_ok, last_real_ms=real_ms, egress_ip=egress, egress_ip6=egress6,
-            checked_at=self._now_iso(),
-            fail_count=0 if real_ok else (prev.fail_count if prev else 0) + 1))
+        with apply_lock:
+            with self._write_lock:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                cur = store.get_setting("active_node_id")
+                if (int(cur) if cur else None) != aid:
+                    return
+                store.update_health_real(
+                    aid, real_ok=real_ok, real_ms=real_ms, egress_ip=egress,
+                    egress_ip6=egress6, checked_at=self._now_iso(),
+                )
         if real_ok and real_ms is not None:
-            store.record_latency(aid, real_ms)
+            with apply_lock:
+                with self._write_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    cur = store.get_setting("active_node_id")
+                    if (int(cur) if cur else None) == aid:
+                        store.record_latency(aid, real_ms)
 
-    def _tick(self) -> None:
+    def _tick(self, stop_event: threading.Event | None = None) -> None:
         try:
-            self._watchdog()
+            self._watchdog(stop_event)
         except Exception:
             log.debug("liveness watchdog failed", exc_info=True)
-        if self._now() - self._last_probe >= self._probe_interval:   # rate-limit the spawn
+        if ((stop_event is None or not stop_event.is_set()) and
+                self._now() - self._last_probe >= self._probe_interval):
             self._last_probe = self._now()
             try:
-                self._probe_active()
+                self._probe_active(stop_event)
             except Exception:
                 log.debug("liveness probe failed", exc_info=True)
         try:
+            if stop_event is not None and stop_event.is_set():
+                return
             new_active = self._failover_run(self._state, self._now())
             if new_active is not None:
                 events.record(self._state.store, "failover",
@@ -118,22 +138,39 @@ class LivenessLoop:
     # --- loop lifecycle (mirrors HealthMonitor) ---
     def start(self) -> None:
         if self._task is None or self._task.done():
+            self._stop_event = threading.Event()
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="health-liveness")
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
+        with self._write_lock:
+            self._stop_event.set()
+        task = self._task
+        if task is not None:
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+        future = self._future
+        if future is not None and not future.done():
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(future), self.SHUTDOWN_TIMEOUT)
+            except TimeoutError:
+                pass
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        self._task = None
+        self._future = None
+        self._executor = None
 
     async def _loop(self) -> None:
-        loop = asyncio.get_running_loop()
         # tick immediately on start so the watchdog can revive a crashed xray right away instead of
         # leaving it down for the first interval (_tick is already fully exception-guarded).
-        await loop.run_in_executor(None, self._tick)
+        assert self._executor is not None
+        self._future = self._executor.submit(self._tick, self._stop_event)
+        await asyncio.wrap_future(self._future)
         while True:
             await asyncio.sleep(self._interval)
-            await loop.run_in_executor(None, self._tick)
+            self._future = self._executor.submit(self._tick, self._stop_event)
+            await asyncio.wrap_future(self._future)

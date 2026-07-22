@@ -44,6 +44,17 @@ def test_validate_routing_catches_bad_values():
     assert validate_routing(good, "proxy") == (True, "")
 
 
+def test_port_rules_require_ordered_valid_tcp_ports():
+    for value in ("0", "65536", "200-100", "0-443", "443-65536"):
+        rule = RoutingRule(id=None, position=0, type="port", value=value, action="proxy")
+        ok, error = validate_routing([rule], "proxy")
+        assert ok is False, value
+        assert "port" in error
+
+    boundary = RoutingRule(id=None, position=0, type="port", value="1,65535,80-443", action="proxy")
+    assert validate_routing([boundary], "proxy") == (True, "")
+
+
 def test_split_helper():
     assert _split("a, b\nc ,, ") == ["a", "b", "c"]
 

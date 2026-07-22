@@ -3,15 +3,18 @@ from pi_gw_panel.net_control.plan import NetPlan, NetResult, net24
 from pi_gw_panel.net_control.render import render_nft, render_nft6
 
 NFT_TABLE = "pi_gw_panel"
+IPTABLES_CHAIN = "PI_GW_PANEL"
 
 
 def _lan_forward_rules(seg_if: str, lan_if: str, lan_cidr: str) -> list[list[str]]:
-    """The two DOCKER-USER forward bodies that let segment↔home-LAN traffic past Docker's
-    `filter FORWARD policy=drop` (the panel's own nft forward chain can't override another base
-    chain's drop). Shared by the apply (`-I`) and the remove (`-D`) so they always match."""
+    """Rules owned inside the panel's stable iptables chain.
+
+    Flushing one private chain removes stale interface/CIDR tuples after settings changes; direct
+    DOCKER-USER rules cannot be found reliably once their source settings have changed.
+    """
     return [
-        ["DOCKER-USER", "-i", seg_if, "-o", lan_if, "-d", lan_cidr, "-j", "ACCEPT"],
-        ["DOCKER-USER", "-i", lan_if, "-o", seg_if,
+        [IPTABLES_CHAIN, "-i", seg_if, "-o", lan_if, "-d", lan_cidr, "-j", "ACCEPT"],
+        [IPTABLES_CHAIN, "-i", lan_if, "-o", seg_if,
          "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
     ]
 
@@ -65,26 +68,31 @@ class LinuxBackend:
             self._run(["nft", "-f", "-"], input=nft_text)
             # Policy routing: deliver fwmark'd packets locally (table 100 → lo) so xray's
             # tproxy socket receives them. del-before-add keeps it to exactly one rule.
-            self._run_ok(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
+            self._delete_or_absent(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
             self._run(["ip", "rule", "add", "fwmark", fw, "lookup", tbl])
             self._run(["ip", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
             if plan.ipv6_enabled:           # mirror the policy routing for v6 tproxy
-                self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])
+                self._delete_or_absent(
+                    ["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])
                 self._run(["ip", "-6", "rule", "add", "fwmark", fw, "lookup", tbl])
                 self._run(["ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
             else:                            # E: drop any stale v6 routing left from a prior v6 on
-                self._remove_v6_policy_routing(plan.fwmark, plan.table)
-            warn = "; ".join(w for w in (
-                self._ensure_forward(ipv6=plan.ipv6_enabled),
-                self._apply_lan_access(plan),
-            ) if w)
-            return NetResult(ok=True, rendered=nft_text, warning=warn)
+                failures = self._remove_v6_policy_routing(plan.fwmark, plan.table)
+                if failures:
+                    raise RuntimeError("; ".join(failures))
+            forwarding_error = self._ensure_forward(ipv6=plan.ipv6_enabled)
+            if forwarding_error:
+                raise RuntimeError(forwarding_error)
+            lan_error = self._apply_lan_access(plan)
+            if lan_error:
+                raise RuntimeError(lan_error)
+            self._verify_tproxy(plan)
+            return NetResult(ok=True, rendered=nft_text)
         except (subprocess.CalledProcessError, OSError) as exc:
-            # partial apply leaves marked-but-unrouted packets → segment blackholes; roll the host
-            # back to a clean state before reporting failure so we never leave a half-applied mess.
-            self._safe_teardown()
             return NetResult(ok=False, rendered=nft_text,
                              error=(getattr(exc, "stderr", None) or str(exc)).strip())
+        except RuntimeError as exc:
+            return NetResult(ok=False, rendered=nft_text, error=str(exc))
 
     def apply_guard(self, plan: NetPlan) -> NetResult:
         """Fail-closed leak-guard (A1): install the kill-switch drop (v4 + v6) with NO
@@ -94,19 +102,21 @@ class LinuxBackend:
         nft_text = self._nft_script(plan, tunnel_up=False)
         try:
             self._run(["nft", "-f", "-"], input=nft_text)
-            self._remove_policy_routing(plan.fwmark, plan.table)   # no tproxy → drop the fwmark route
-            self._apply_lan_access(plan)            # LAN access is independent of tunnel state
+            failures = self._remove_policy_routing(plan.fwmark, plan.table)
+            if failures:
+                raise RuntimeError("; ".join(failures))
+            lan_error = self._apply_lan_access(plan)  # LAN access is independent of tunnel state
+            if lan_error:
+                raise RuntimeError(lan_error)
+            self._verify_table("ip")
+            if plan.kill_switch:
+                self._verify_table("ip6")
             return NetResult(ok=True, rendered=nft_text)
         except (subprocess.CalledProcessError, OSError) as exc:
             return NetResult(ok=False, rendered=nft_text,
                              error=(getattr(exc, "stderr", None) or str(exc)).strip())
-
-    def _safe_teardown(self) -> None:
-        """Best-effort teardown used on the apply-failure path; never raises."""
-        try:
-            self.teardown()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            return NetResult(ok=False, rendered=nft_text, error=str(exc))
 
     def teardown(self) -> NetResult:
         """Best-effort remove (ignore-if-absent) — the rollback + no-kill-switch stop path.
@@ -115,11 +125,8 @@ class LinuxBackend:
         failed: list[str] = []
         self._del_table(failed, "ip")
         self._del_table(failed, "ip6")
-        self._remove_policy_routing(self.settings.fwmark, self.settings.table)
-        lan = net24(self.settings.mgmt_ip)          # drop the segment→LAN forward accepts too
-        if lan:
-            for r in _lan_forward_rules(self.settings.segment_iface, self.settings.mgmt_iface, lan):
-                self._run_ok(["iptables", "-D", *r])
+        failed.extend(self._remove_policy_routing(self.settings.fwmark, self.settings.table))
+        self._remove_lan_chain(failed)
         if failed:
             return NetResult(ok=False, error="teardown incomplete: " + "; ".join(failed))
         return NetResult(ok=True)
@@ -135,16 +142,47 @@ class LinuxBackend:
         except OSError as exc:
             failed.append(f"{family} table: {exc}")
 
-    def _remove_policy_routing(self, fwmark: int, table: int) -> None:
-        fw, tbl = f"0x{fwmark:x}", str(table)
-        self._run_ok(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
-        self._run_ok(["ip", "route", "flush", "table", tbl])
-        self._remove_v6_policy_routing(fwmark, table)
+    @staticmethod
+    def _is_absent_error(exc: subprocess.CalledProcessError) -> bool:
+        err = ((exc.stderr or "") + " " + (exc.stdout or "")).lower()
+        return any(token in err for token in (
+            "no such", "does not exist", "not found", "cannot find", "bad rule",
+            "no chain/target/match"))
 
-    def _remove_v6_policy_routing(self, fwmark: int, table: int) -> None:
+    def _delete_or_absent(self, cmd: list[str]) -> None:
+        try:
+            self._run(cmd)
+        except subprocess.CalledProcessError as exc:
+            if not self._is_absent_error(exc):
+                raise
+
+    def _cleanup_command(self, cmd: list[str], failed: list[str], label: str) -> None:
+        try:
+            self._run(cmd)
+        except subprocess.CalledProcessError as exc:
+            if not self._is_absent_error(exc):
+                failed.append(f"{label}: {(exc.stderr or str(exc)).strip()}")
+        except OSError as exc:
+            failed.append(f"{label}: {exc}")
+
+    def _remove_policy_routing(self, fwmark: int, table: int) -> list[str]:
+        failed: list[str] = []
         fw, tbl = f"0x{fwmark:x}", str(table)
-        self._run_ok(["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])   # no-op if absent
-        self._run_ok(["ip", "-6", "route", "flush", "table", tbl])
+        self._cleanup_command(
+            ["ip", "rule", "del", "fwmark", fw, "lookup", tbl], failed, "IPv4 rule")
+        self._cleanup_command(["ip", "route", "flush", "table", tbl], failed, "IPv4 route")
+        failed.extend(self._remove_v6_policy_routing(fwmark, table))
+        return failed
+
+    def _remove_v6_policy_routing(self, fwmark: int, table: int) -> list[str]:
+        failed: list[str] = []
+        fw, tbl = f"0x{fwmark:x}", str(table)
+        self._cleanup_command(
+            ["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl], failed,
+            "IPv6 rule")
+        self._cleanup_command(
+            ["ip", "-6", "route", "flush", "table", tbl], failed, "IPv6 route")
+        return failed
 
     def _run_ok(self, cmd: list[str]) -> None:
         """Run ignoring a non-zero exit or a missing binary (the rule/table is already absent,
@@ -161,21 +199,29 @@ class LinuxBackend:
         if not self._forward_on("/proc/sys/net/ipv4/ip_forward"):
             return "ip_forward could not be enabled — forwarded client traffic will be dropped"
         if ipv6:
-            self._write_proc("/proc/sys/net/ipv6/conf/all/forwarding", "1")
+            if not self._proc_value("/proc/sys/net/ipv6/conf/all/forwarding", "1"):
+                return "IPv6 forwarding could not be enabled"
             # D: enabling v6 forwarding makes the kernel stop accepting RAs by default, so the
             # Pi's Home leg can lose its own v6 (address + default route → no v6 egress).
             # accept_ra=2 keeps accepting RA on the uplink even while forwarding.
-            self._write_proc(f"/proc/sys/net/ipv6/conf/{self.settings.mgmt_iface}/accept_ra", "2")
+            if not self._proc_value(
+                    f"/proc/sys/net/ipv6/conf/{self.settings.mgmt_iface}/accept_ra", "2"):
+                return "IPv6 uplink accept_ra=2 could not be enabled"
         return ""
 
     def _forward_on(self, path: str) -> bool:
         """Write '1' then read back to confirm it took (a swallowed write failure would otherwise
         report success while the segment is dead). Read-back is the source of truth so an injected
         write_proc (tests) that returns None still works."""
-        self._write_proc(path, "1")
+        return self._proc_value(path, "1")
+
+    def _proc_value(self, path: str, value: str) -> bool:
+        wrote = self._write_proc(path, value)
+        if wrote is False:
+            return False
         try:
             with open(path) as f:
-                return f.read().strip() == "1"
+                return f.read().strip() == value
         except OSError:
             return True   # can't read back (dev / injected write_proc) — trust the write
 
@@ -190,12 +236,45 @@ class LinuxBackend:
         if not lan or not plan.segment_iface or not plan.mgmt_iface:
             return ""
         rules = _lan_forward_rules(plan.segment_iface, plan.mgmt_iface, lan)
-        for r in rules:
-            self._run_ok(["iptables", "-D", *r])        # clear any stale copy (idempotent, best-effort)
-        if plan.lan_access:
-            for r in rules:
-                try:
-                    self._run(["iptables", "-I", *r])   # (re)insert at the top of DOCKER-USER
-                except (subprocess.CalledProcessError, OSError) as exc:
-                    return f"LAN access rule not applied: {(getattr(exc, 'stderr', None) or str(exc)).strip()}"
+        try:
+            # The chain may already exist. The following flush is authoritative and will still
+            # fail if creation was denied, so ignoring only this idempotent create is safe.
+            self._run_ok(["iptables", "-N", IPTABLES_CHAIN])
+            self._run_ok(["iptables", "-D", "DOCKER-USER", "-j", IPTABLES_CHAIN])
+            self._run(["iptables", "-I", "DOCKER-USER", "1", "-j", IPTABLES_CHAIN])
+            self._run(["iptables", "-F", IPTABLES_CHAIN])
+            if plan.lan_access:
+                for rule in rules:
+                    self._run(["iptables", "-A", *rule])
+        except (subprocess.CalledProcessError, OSError) as exc:
+            return f"LAN access chain not applied: {(getattr(exc, 'stderr', None) or str(exc)).strip()}"
         return ""
+
+    def _remove_lan_chain(self, failed: list[str]) -> None:
+        self._cleanup_command(
+            ["iptables", "-D", "DOCKER-USER", "-j", IPTABLES_CHAIN], failed,
+            "iptables jump")
+        self._cleanup_command(["iptables", "-F", IPTABLES_CHAIN], failed, "iptables flush")
+        self._cleanup_command(["iptables", "-X", IPTABLES_CHAIN], failed, "iptables chain")
+
+    def _verify_table(self, family: str) -> None:
+        self._run(["nft", "list", "table", family, NFT_TABLE])
+
+    def _verify_tproxy(self, plan: NetPlan) -> None:
+        """Bounded kernel read-back after a mutation; absence is a failed apply, not a warning."""
+        self._verify_table("ip")
+        self._verify_table("ip6")
+        fw, tbl = f"0x{plan.fwmark:x}", str(plan.table)
+        rules = self._run(["ip", "rule", "show"]).stdout or ""
+        routes = self._run(["ip", "route", "show", "table", tbl]).stdout or ""
+        if fw.lower() not in rules.lower() or tbl not in rules:
+            raise RuntimeError(f"post-apply verification missing IPv4 fwmark {fw} rule")
+        if "local" not in routes or "lo" not in routes:
+            raise RuntimeError(f"post-apply verification missing IPv4 local route table {tbl}")
+        if plan.ipv6_enabled:
+            rules6 = self._run(["ip", "-6", "rule", "show"]).stdout or ""
+            routes6 = self._run(["ip", "-6", "route", "show", "table", tbl]).stdout or ""
+            if fw.lower() not in rules6.lower() or tbl not in rules6:
+                raise RuntimeError(f"post-apply verification missing IPv6 fwmark {fw} rule")
+            if "local" not in routes6 or "lo" not in routes6:
+                raise RuntimeError(f"post-apply verification missing IPv6 local route table {tbl}")

@@ -53,3 +53,19 @@ def test_loop_starts_and_cancels(monkeypatch, settings):
 
     asyncio.run(drive())
     assert calls  # refreshed at least once before cancellation
+
+
+def test_failed_refresh_uses_early_backoff_without_advancing_normal_interval(monkeypatch, settings):
+    st = _state(settings)
+    sid = st.store.add_subscription(Subscription(id=None, name="s", url="u", interval_sec=3600))
+    monkeypatch.setattr(service, "refresh", lambda state, sub: {"ok": False, "error": "down"})
+    monkeypatch.setattr("pi_gw_panel.subs.scheduler.random.uniform", lambda a, b: 1.0)
+    sched = SubScheduler(st)
+    sched.run_once(now=100.0)
+    assert sid not in sched._last_run
+    assert sched.due_subs(now=129.0) == []
+    assert [sub.id for sub in sched.due_subs(now=130.0)] == [sid]
+
+    sched.run_once(now=130.0)
+    assert sched.due_subs(now=189.0) == []
+    assert [sub.id for sub in sched.due_subs(now=190.0)] == [sid]

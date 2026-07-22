@@ -34,14 +34,17 @@ def _opts_path_host(p: dict) -> tuple[str, str]:
     return "", ""
 
 
-def parse(body: str) -> list[Node]:
+def parse(body: str, *, limit: int | None = None) -> list[Node]:
     data = yaml.load(body, Loader=_NoAliasLoader)   # SafeLoader + no-alias amplification guard
     proxies = data.get("proxies", []) if isinstance(data, dict) else []
     nodes = []
     for p in proxies:
+        if not isinstance(p, dict):
+            continue
         if p.get("type") != "vless":
             continue
-        ro = p.get("reality-opts") or {}
+        ro = p.get("reality-opts")
+        ro = ro if isinstance(ro, dict) else {}
         is_xhttp = p.get("network") in ("xhttp", "splithttp")
         pbk = str(ro.get("public-key", ""))
         path, host = _opts_path_host(p)
@@ -63,4 +66,6 @@ def parse(body: str) -> list[Node]:
             flow=str(p.get("flow", "xtls-rprx-vision")),
             path=path, host=host, alpn=alpn,
         ))
+        if limit is not None and len(nodes) >= limit:
+            break
     return nodes

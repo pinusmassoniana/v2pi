@@ -121,7 +121,49 @@ def test_preview_nodes_dry_run(settings, stub_xray, monkeypatch):
     r = c.post("/api/subs/preview-nodes", json={"url": "https://h/x"}, headers=h)
     assert r.status_code == 200
     assert r.json()["format"] == "json" and r.json()["count"] == 1
+    assert r.json()["returned_count"] == 1 and r.json()["truncated"] is False
     assert r.json()["nodes"][0]["address"] == "9.9.9.9"
+
+
+def test_preview_nodes_discloses_partial_table(settings, stub_xray, monkeypatch):
+    import json
+    import pi_gw_panel.api.routes as routes
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    body = json.dumps([
+        {"name": f"n{i}", "address": f"1.1.{i // 250}.{i % 250 + 1}", "port": 443,
+         "uuid": f"u{i}"}
+        for i in range(250)
+    ])
+    monkeypatch.setattr(routes, "fetch", lambda *a, **k: (body, "direct", {}))
+    payload = c.post("/api/subs/preview-nodes", json={"url": "https://h/x"}, headers=h).json()
+    assert payload["count"] == 250
+    assert payload["returned_count"] == 200 and payload["truncated"] is True
+
+
+def test_refresh_all_reports_attempted_successes_and_failures(settings, stub_xray, monkeypatch):
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    first = c.post("/api/subs", json={"name": "good", "url": "https://h/good"}, headers=h).json()
+    second = c.post("/api/subs", json={"name": "bad", "url": "https://h/bad"}, headers=h).json()
+
+    def fake_refresh(_state, sub):
+        if sub.id == first["id"]:
+            return {"ok": True, "status": "ok: +1 ~0 -0", "error": None}
+        return {"ok": False, "status": "error: unavailable", "error": "unavailable"}
+
+    monkeypatch.setattr(service, "refresh", fake_refresh)
+    response = c.post("/api/subs/refresh-all", headers=h)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["attempted"] == 2 and payload["succeeded"] == 1 and payload["failed"] == 1
+    assert payload["results"] == [
+        {"id": first["id"], "name": "good", "ok": True,
+         "status": "ok: +1 ~0 -0", "error": None},
+        {"id": second["id"], "name": "bad", "ok": False,
+         "status": "error: unavailable", "error": "unavailable"},
+    ]
 
 
 def test_connect_best_404_when_empty(settings, stub_xray):

@@ -51,6 +51,9 @@ def validate_rule(r: RoutingRule) -> str | None:
         for v in vals:
             if not re.fullmatch(r"\d{1,5}(-\d{1,5})?", v):
                 return f"bad port {v!r}"
+            bounds = [int(part) for part in v.split("-")]
+            if not all(1 <= port <= 65535 for port in bounds) or bounds[0] > bounds[-1]:
+                return f"bad port {v!r}"
     elif r.type == "ip":
         for v in vals:
             try:

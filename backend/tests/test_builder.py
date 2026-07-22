@@ -1,5 +1,7 @@
+import pytest
+
 from pi_gw_panel.config import Settings
-from pi_gw_panel.models import Node
+from pi_gw_panel.models import Node, TuningProfile
 from pi_gw_panel.xray_config.builder import build_config
 
 
@@ -15,6 +17,7 @@ def test_dns_intercept_adds_dns_outbound_and_route():
     r0 = cfg["routing"]["rules"][0]                       # client :53 (tproxy-in) → dns-out
     assert r0 == {"type": "field", "inboundTag": ["tproxy-in"], "port": 53, "outboundTag": "dns-out"}
     assert any(isinstance(s, dict) and "1.1.1.1" in s["address"] for s in cfg["dns"]["servers"])
+    assert "localhost" not in cfg["dns"]["servers"]
 
 
 def test_dns_intercept_off_by_default_is_unchanged():
@@ -77,3 +80,19 @@ def test_egress_mark_on_inbound_and_outbounds():
     assert proxy["streamSettings"]["sockopt"]["mark"] == Settings().egress_mark
     direct = next(o for o in cfg["outbounds"] if o["tag"] == "direct")
     assert direct["streamSettings"]["sockopt"]["mark"] == Settings().egress_mark
+
+
+def test_builder_does_not_silently_discard_invalid_mux_concurrency():
+    node = _node()
+    node.flow = ""
+    profile = TuningProfile(id=1, name="bad", mux_enabled=True, mux_concurrency="1-2")
+
+    with pytest.raises(ValueError):
+        build_config(node, Settings(), profile=profile)
+
+
+def test_xray_access_log_is_disabled_and_errors_use_captured_stderr():
+    cfg = build_config(_node(), Settings())
+
+    assert cfg["log"]["access"] == "none"
+    assert "error" not in cfg["log"]

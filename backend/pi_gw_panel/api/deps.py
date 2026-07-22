@@ -10,7 +10,7 @@ def get_state(request: Request) -> AppState:
     return request.app.state.app_state
 
 
-def session_invalid_reason(session, store) -> str | None:
+def session_invalid_reason(session, store, *, touch: bool = True) -> str | None:
     """Shared session-validity check for REST (require_auth) and the traffic WebSocket.
 
     Returns None when the session is good, else a short reason. On a live, timeout-enabled
@@ -28,7 +28,8 @@ def session_invalid_reason(session, store) -> str | None:
         now = int(time.time())
         if now - session.get(SESSION_LASTSEEN, now) > timeout_min * 60:
             return "session idle timeout"
-        session[SESSION_LASTSEEN] = now
+        if touch:
+            session[SESSION_LASTSEEN] = now
     return None
 
 
@@ -47,15 +48,25 @@ def _token_principal(request: Request) -> dict | None:
             store = request.app.state.app_state.store
             row = store.get_token_by_hash(hash_token(secret))
             if row is not None:
-                store.touch_token(int(row["id"]))
-                p = {"scope": row["scope"], "id": int(row["id"]), "prefix": row.get("prefix", "")}
+                expires_at = row.get("expires_at")
+                if expires_at is None or int(expires_at) > int(time.time()):
+                    store.touch_token(int(row["id"]))
+                    p = {"scope": row["scope"], "id": int(row["id"]),
+                         "prefix": row.get("prefix", ""), "expires_at": expires_at}
     request.state._token_principal = p
     return p
 
 
 def require_auth(request: Request) -> None:
     # A valid API token (read or readwrite) authenticates — this gate covers reads.
-    if _token_principal(request) is not None:
+    token = _token_principal(request)
+    if token is not None:
+        if token["scope"] == "monitor":
+            allowed = request.method == "GET" and request.url.path in {
+                "/api/status", "/api/traffic/history", "/api/node-health", "/api/network",
+            }
+            if not allowed:
+                raise HTTPException(status_code=403, detail="monitor token cannot access secrets")
         return
     store = request.app.state.app_state.store
     reason = session_invalid_reason(request.session, store)

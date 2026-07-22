@@ -55,6 +55,8 @@ def test_backup_v1_back_compat_rederives_node(tmp_path):
     import_state(dst, v1)
     n = dst.get_node(1)
     assert n.network == "xhttp" and n.flow == "" and n.security == "tls"      # normalize() recovered it
+    default = dst.get_default_profile()
+    assert default is not None and default.name == "default"
 
 
 # --- API ---
@@ -85,10 +87,19 @@ def test_settings_new_fields_and_reset(settings, stub_xray):
     assert r.json()["auto_backup_enabled"] is False and r.json()["session_timeout_min"] == 0
 
 
-def test_diagnostics(settings, stub_xray):
+def test_diagnostics(settings, stub_xray, monkeypatch):
+    import importlib.metadata
+    from pi_gw_panel import __version__
+
     c = _client(settings, stub_xray); _login(c)
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda *_: (_ for _ in ()).throw(AssertionError("metadata lookup must not run")),
+    )
     d = c.get("/api/diagnostics").json()
-    assert "app_version" in d and d["uptime_sec"] >= 0 and d["disk_total_bytes"] > 0
+    assert d["app_version"] == __version__
+    assert d["uptime_sec"] >= 0 and d["disk_total_bytes"] > 0
 
 
 def test_password_change_invalidates_other_sessions(settings, stub_xray):

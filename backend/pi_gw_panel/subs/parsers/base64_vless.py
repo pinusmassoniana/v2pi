@@ -16,7 +16,7 @@ def _b64decode(text: str) -> str:
         return ""
 
 
-def parse(body: str) -> list[Node]:
+def parse(body: str, *, limit: int | None = None) -> list[Node]:
     text = body.strip()
     if "vless://" not in text:
         text = _b64decode(text)
@@ -27,21 +27,21 @@ def parse(body: str) -> list[Node]:
             n = _parse_vless(line)
             if n is not None:
                 nodes.append(n)
+                if limit is not None and len(nodes) >= limit:
+                    break
     return nodes
 
 
 def _parse_vless(uri: str) -> Node | None:
-    rest = uri[len("vless://"):]
-    frag = ""
-    if "#" in rest:
-        rest, frag = rest.split("#", 1)
-        frag = urllib.parse.unquote(frag)
-    userinfo, sep, hostport_q = rest.partition("@")
-    if not sep:
+    try:
+        parts = urllib.parse.urlsplit(uri)
+        addr = parts.hostname or ""
+        port_n = parts.port
+    except ValueError:
         return None
-    hostport, _, query = hostport_q.partition("?")
-    addr, _, port = hostport.partition(":")
-    q = urllib.parse.parse_qs(query)
+    if parts.scheme != "vless" or not parts.username or not addr or port_n is None:
+        return None
+    q = urllib.parse.parse_qs(parts.query)
 
     def g(k, d=""):
         return q.get(k, [d])[0]
@@ -50,11 +50,12 @@ def _parse_vless(uri: str) -> Node | None:
     transport = "xhttp" if network == "xhttp" else "vision"
     # explicit `security` wins; else reality iff a reality public key is present, else tls
     security = g("security") or ("reality" if g("pbk") else "tls")
-    port_n = safe_port(port)
+    port_n = safe_port(port_n)
     if port_n is None:
         return None
     return Node(
-        id=None, name=frag or addr, address=addr, port=port_n, uuid=userinfo,
+        id=None, name=urllib.parse.unquote(parts.fragment) or addr, address=addr, port=port_n,
+        uuid=urllib.parse.unquote(parts.username),
         transport=transport, network=network, security=security,
         sni=g("sni"), public_key=g("pbk"), short_id=g("sid"),
         fingerprint=g("fp", "chrome"), flow=g("flow", "xtls-rprx-vision"),

@@ -33,7 +33,7 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "traffic_minutes" in tables  # migration 13 — durable per-minute traffic history
     mcols = {r["name"] for r in conn.execute("PRAGMA table_info(traffic_minutes)").fetchall()}
     assert {"ts_min", "up_bytes", "down_bytes"} <= mcols
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 15
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]
@@ -49,6 +49,12 @@ def test_migration2_seeds_default_profile_from_wave1_toggles(tmp_path):
                  "public_key TEXT NOT NULL DEFAULT '', short_id TEXT NOT NULL DEFAULT '', "
                  "fingerprint TEXT NOT NULL DEFAULT 'chrome', flow TEXT NOT NULL DEFAULT 'xtls-rprx-vision')")
     conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("CREATE TABLE subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                 "name TEXT NOT NULL, url TEXT NOT NULL, injection_json TEXT NOT NULL DEFAULT '{}', "
+                 "interval_sec INTEGER NOT NULL DEFAULT 0, last_fetched TEXT, last_status TEXT, "
+                 "last_path TEXT)")
+    conn.execute("ALTER TABLE nodes ADD COLUMN subscription_id INTEGER REFERENCES subscriptions(id)")
+    conn.execute("ALTER TABLE nodes ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
     conn.execute("PRAGMA user_version = 1")  # pretend migration 1 already ran
     conn.execute("INSERT INTO settings(key,value) VALUES('frag_enabled','1'),('mux_enabled','1')")
     conn.commit()
