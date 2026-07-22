@@ -1,4 +1,6 @@
+import hashlib
 import logging
+
 from pi_gw_panel.models import Node
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.subs.parsers import clamp_node_fields
@@ -31,6 +33,11 @@ def _dedupe(parsed: list[Node]) -> list[Node]:
     return list(by_key.values())
 
 
+def _shrink_fingerprint(parsed: list[Node]) -> str:
+    identities = repr(sorted(_identity(node) for node in parsed)).encode("utf-8")
+    return hashlib.sha256(identities).hexdigest()
+
+
 def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
               active_node_id: int | None, default_profile_id: int | None = None) -> dict:
     """Merge parsed nodes into the store under sub_id, matching by node identity
@@ -49,59 +56,59 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
     - ``active_replacement``: the active node vanished (its identity rotated) and the sub now
       has exactly one fresh node — that node's id, the single server to move the connection to.
     """
-    existing = store.list_nodes_for_sub(sub_id)
-    # P2: bound untrusted feed string fields at this single choke point (every refreshed node
-    # flows through here) before they reach the store — see clamp_node_fields.
+    # Bound untrusted strings at the single reconcile choke point, then make the complete merge
+    # one SQLite transaction. Store mutator commit calls are transaction-aware no-ops.
     parsed = _dedupe([clamp_node_fields(p) for p in parsed])
-    # P1: a transient error page can parse to an empty/near-empty list; deleting every vanished
-    # node then wipes the sub on one bad response. Refuse the delete pass when the feed is empty
-    # or shrank by >50% vs the stored count — adds/updates still run; the (harmless, prunable)
-    # extras are cleaned up by the next healthy refresh.
-    skip_deletes = not parsed or (len(existing) > 0 and len(parsed) < len(existing) * 0.5)
-    seen: set[tuple] = set()
     added = updated = removed = skipped_deletes = 0
     active_changed = active_vanished = False
-    # reconcile is NOT a single transaction (each store op commits on its own — the store's
-    # mutators don't expose a shared boundary); run adds/updates before deletes so a store
-    # error mid-loop leaves extra nodes rather than a wiped sub (P2, least-harmful ordering).
     try:
-        for pos, p in enumerate(parsed):
-            key = _identity(p)
-            seen.add(key)
-            cur = store.get_node_by_identity(sub_id, *key)
-            p.subscription_id = sub_id
-            p.stale = False
-            p.position = pos
-            if cur is None:
-                p.id = None
-                p.tuning_profile_id = default_profile_id   # N5: inherit the sub's default profile
-                store.add_node(p)
-                added += 1
-            else:
-                p.id = cur.id
-                p.tuning_profile_id = cur.tuning_profile_id  # C2: keep the user's per-node choice
-                if cur.id == active_node_id and _config_differs(cur, p):
-                    active_changed = True
-                store.update_node(p)
-                updated += 1
-        for n in existing:
-            if _identity(n) not in seen:
-                if skip_deletes:
-                    skipped_deletes += 1        # P1: don't trust an empty/near-empty response
+        with store.transaction():
+            existing = store.list_nodes_for_sub(sub_id)
+            anomalous_shrink = bool(parsed) and len(existing) > 0 and len(parsed) < len(existing) * 0.5
+            shrink_key = f"subscription_shrink:{sub_id}"
+            fingerprint = _shrink_fingerprint(parsed) if anomalous_shrink else ""
+            shrink_confirmed = anomalous_shrink and store.get_setting(shrink_key) == fingerprint
+            store.set_setting(shrink_key, fingerprint)
+            seen: set[tuple] = set()
+            for pos, p in enumerate(parsed):
+                key = _identity(p)
+                seen.add(key)
+                cur = store.get_node_by_identity(sub_id, *key)
+                p.subscription_id = sub_id
+                p.stale = False
+                p.position = pos
+                if cur is None:
+                    p.id = None
+                    p.tuning_profile_id = default_profile_id
+                    store.add_node(p)
+                    added += 1
+                else:
+                    p.id = cur.id
+                    p.tuning_profile_id = cur.tuning_profile_id
+                    if cur.id == active_node_id and _config_differs(cur, p):
+                        active_changed = True
+                    store.update_node(p)  # also clears a prior first-shrink stale marker
+                    updated += 1
+            for n in existing:
+                if _identity(n) in seen:
                     continue
-                if n.id == active_node_id:
-                    store.mark_stale(n.id, True)  # protect the live connection
+                if not parsed:
+                    skipped_deletes += 1
+                elif anomalous_shrink and (not shrink_confirmed or not n.stale):
+                    store.mark_stale(n.id, True)
+                    skipped_deletes += 1
+                elif n.id == active_node_id:
+                    store.mark_stale(n.id, True)
                     active_vanished = True
                 else:
                     store.delete_node(n.id)
                     removed += 1
     except Exception:
-        log.exception("reconcile: store error mid-reconcile for sub %s (partial state possible)",
-                      sub_id)
+        log.exception("reconcile: atomic store merge failed for sub %s", sub_id)
         raise
     if skipped_deletes:
         log.warning("reconcile: sub %s returned %d node(s) vs %d stored — refused to delete %d "
-                    "(possible transient/empty feed)", sub_id, len(parsed), len(existing),
+                    "(awaiting one matching confirmation)", sub_id, len(parsed), len(existing),
                     skipped_deletes)
     active_replacement = None
     if active_vanished:

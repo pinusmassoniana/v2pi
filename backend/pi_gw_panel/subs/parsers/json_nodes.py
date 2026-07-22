@@ -3,11 +3,11 @@ from pi_gw_panel.models import Node
 from pi_gw_panel.subs.parsers import safe_port
 
 
-def parse(body: str) -> list[Node]:
-    return parse_obj(json.loads(body))
+def parse(body: str, *, limit: int | None = None) -> list[Node]:
+    return parse_obj(json.loads(body), limit=limit)
 
 
-def parse_obj(data) -> list[Node]:
+def parse_obj(data, *, limit: int | None = None) -> list[Node]:
     """Build nodes from an already-decoded JSON object — lets the dispatcher hand over the
     object it parsed to sniff the format, avoiding a second json.loads on a 5MB body (P3)."""
     items = data if isinstance(data, list) else data.get("nodes", []) if isinstance(data, dict) else []
@@ -40,6 +40,8 @@ def parse_obj(data) -> list[Node]:
                 path=str(it.get("path", "")), host=str(it.get("host", "")),
                 mode=str(it.get("mode", "")), alpn=str(it.get("alpn", "")),
             ))
+            if limit is not None and len(nodes) >= limit:
+                break
         except (KeyError, TypeError, ValueError):
             continue
     return nodes

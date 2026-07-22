@@ -1,6 +1,8 @@
+import pytest
+
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.models import Node, Subscription, NodeHealth
+from pi_gw_panel.models import Node, Subscription, NodeHealth, TuningProfile
 
 
 def test_node_roundtrip(settings):
@@ -72,6 +74,86 @@ def test_store_concurrent_access_is_serialized(settings):
     for t in threads:
         t.join()
     assert errors == [], errors[0]
+
+
+def test_store_transaction_isolation_and_rollback(settings):
+    import threading
+
+    conn = connect(settings.db_path, check_same_thread=False)
+    init_schema(conn)
+    store = NodeStore(conn)
+    first_write = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    errors: list[Exception] = []
+
+    def first_writer() -> None:
+        try:
+            with store.transaction():
+                store.set_setting("tx-first", "must-roll-back")
+                first_write.set()
+                assert release_first.wait(2)
+                raise RuntimeError("rollback")
+        except RuntimeError:
+            pass
+        except Exception as exc:  # pragma: no cover - diagnostic path
+            errors.append(exc)
+
+    def second_writer() -> None:
+        try:
+            assert first_write.wait(2)
+            store.set_setting("tx-second", "committed")
+            second_done.set()
+        except Exception as exc:  # pragma: no cover - diagnostic path
+            errors.append(exc)
+
+    first = threading.Thread(target=first_writer)
+    second = threading.Thread(target=second_writer)
+    first.start()
+    assert first_write.wait(2)
+    second.start()
+    assert not second_done.wait(0.1), "second writer escaped the first transaction lock"
+    release_first.set()
+    first.join(2)
+    second.join(2)
+
+    assert errors == []
+    assert store.get_setting("tx-first") is None
+    assert store.get_setting("tx-second") == "committed"
+
+
+def test_store_close_closes_connection(settings):
+    import sqlite3
+
+    conn = connect(settings.db_path)
+    init_schema(conn)
+    store = NodeStore(conn)
+    store.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        store.get_setting("anything")
+
+
+def test_corrupt_json_rows_are_contained(settings, caplog):
+    import logging
+
+    conn = connect(settings.db_path)
+    init_schema(conn)
+    store = NodeStore(conn)
+    sub_id = store.add_subscription(Subscription(
+        id=None, name="sub", url="https://example.test", injection={"ok": True}))
+    profile_id = store.add_profile(TuningProfile(id=None, name="profile", noises=[]))
+    node_id = store.add_node(Node(id=None, name="n", address="a", port=1, uuid="u"))
+    store.upsert_health(NodeHealth(node_id=node_id))
+    conn.execute("UPDATE subscriptions SET injection_json = '{bad' WHERE id = ?", (sub_id,))
+    conn.execute("UPDATE tuning_profiles SET noises_json = '{bad' WHERE id = ?", (profile_id,))
+    conn.execute("UPDATE node_health SET lat_history = '{bad' WHERE node_id = ?", (node_id,))
+
+    with caplog.at_level(logging.WARNING):
+        assert store.get_subscription(sub_id).injection == {}
+        assert store.get_profile(profile_id).noises == []
+        assert store.get_health(node_id).lat_history == []
+
+    assert "invalid JSON" in caplog.text
 
 
 def test_subscription_crud_and_delete_detaches_nodes(settings):

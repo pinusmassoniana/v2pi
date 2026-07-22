@@ -19,15 +19,28 @@ class FakeRun:
         self.calls.append((cmd, input))
         if self.fail is not None and self.fail in cmd:
             raise subprocess.CalledProcessError(1, cmd, stderr=self.stderr)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        stdout = ""
+        if cmd == ["ip", "rule", "show"]:
+            stdout = "100: from all fwmark 0x40 lookup 100\n"
+        elif cmd == ["ip", "route", "show", "table", "100"]:
+            stdout = "local default dev lo scope host\n"
+        elif cmd == ["ip", "-6", "rule", "show"]:
+            stdout = "100: from all fwmark 0x40 lookup 100\n"
+        elif cmd == ["ip", "-6", "route", "show", "table", "100"]:
+            stdout = "local default dev lo metric 1024\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     def cmds(self) -> list[list[str]]:
         return [c for c, _ in self.calls]
 
 
+def _backend(fake):
+    return LinuxBackend(Settings(), run=fake, write_proc=lambda path, value: True)
+
+
 def test_apply_loads_nft_ruleset_and_policy_routing():
     fake = FakeRun()
-    res = LinuxBackend(Settings(), run=fake).apply_tproxy(NetPlan.from_settings(Settings()))
+    res = _backend(fake).apply_tproxy(NetPlan.from_settings(Settings()))
     assert res.ok is True
     # nft -f loaded the rendered tproxy table over stdin
     nft = [(c, i) for c, i in fake.calls if c[:2] == ["nft", "-f"]]
@@ -43,7 +56,7 @@ def test_apply_loads_nft_ruleset_and_policy_routing():
 
 def test_apply_dedupes_ip_rule_before_adding():
     fake = FakeRun()
-    LinuxBackend(Settings(), run=fake).apply_tproxy(NetPlan.from_settings(Settings()))
+    _backend(fake).apply_tproxy(NetPlan.from_settings(Settings()))
     cmds = fake.cmds()
     # a best-effort `del` precedes the `add` so re-apply never stacks duplicate fwmark rules
     assert ["ip", "rule", "del", "fwmark", "0x40", "lookup", "100"] in cmds
@@ -53,7 +66,7 @@ def test_apply_dedupes_ip_rule_before_adding():
 
 def test_apply_returns_error_when_nft_fails():
     fake = FakeRun(fail="nft", stderr="nft: syntax error")
-    res = LinuxBackend(Settings(), run=fake).apply_tproxy(NetPlan.from_settings(Settings()))
+    res = _backend(fake).apply_tproxy(NetPlan.from_settings(Settings()))
     assert res.ok is False
     assert "syntax error" in res.error
 
@@ -62,7 +75,7 @@ def test_teardown_removes_table_rule_and_route_best_effort():
     # even if every `ip` call errors because the rule/route is already absent, teardown still
     # reports ok (an "already absent" nft/ip error is not a real failure — stderr says "no such")
     fake = FakeRun(fail="ip", stderr="Error: No such file or directory")
-    res = LinuxBackend(Settings(), run=fake).teardown()
+    res = _backend(fake).teardown()
     assert res.ok is True
     cmds = fake.cmds()
     assert ["nft", "delete", "table", "ip", "pi_gw_panel"] in cmds
@@ -70,43 +83,59 @@ def test_teardown_removes_table_rule_and_route_best_effort():
     assert any(c[:3] == ["ip", "route", "flush"] for c in cmds)
 
 
+def test_teardown_reports_policy_cleanup_permission_failure():
+    fake = FakeRun(fail="ip", stderr="RTNETLINK answers: Operation not permitted")
+    res = _backend(fake).teardown()
+    assert res.ok is False
+    assert "Operation not permitted" in res.error
+
+
+def test_failed_partial_apply_does_not_delete_enforcement_tables():
+    fake = FakeRun(fail="ip", stderr="RTNETLINK answers: Operation not permitted")
+    plan = NetPlan.from_settings(Settings())
+    plan.kill_switch = True
+    res = _backend(fake).apply_tproxy(plan)
+    assert res.ok is False
+    assert not any(c[:4] == ["nft", "delete", "table", "ip"] for c in fake.cmds())
+
+
 def test_factory_linux_returns_linuxbackend(monkeypatch):
     monkeypatch.setenv("PI_GW_NET_BACKEND", "linux")
     assert type(select_backend(Settings())).__name__ == "LinuxBackend"
 
 
-# --- LAN access: segment → home-LAN forward accepts in DOCKER-USER ---
-_FWD = ["DOCKER-USER", "-i", "eth0.2", "-o", "eth0", "-d", "192.168.1.0/24", "-j", "ACCEPT"]
-_RET = ["DOCKER-USER", "-i", "eth0", "-o", "eth0.2",
+# --- LAN access: segment → home-LAN rules in the panel-owned chain ---
+_FWD = ["PI_GW_PANEL", "-i", "eth0.2", "-o", "eth0", "-d", "192.168.1.0/24", "-j", "ACCEPT"]
+_RET = ["PI_GW_PANEL", "-i", "eth0", "-o", "eth0.2",
         "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]
 
 
 def test_apply_lan_access_on_inserts_docker_user_forward_rules():
     fake = FakeRun()
-    LinuxBackend(Settings(), run=fake).apply_tproxy(NetPlan.from_settings(Settings()))  # lan_access on
+    _backend(fake).apply_tproxy(NetPlan.from_settings(Settings()))  # lan_access on
     cmds = fake.cmds()
-    assert ["iptables", "-I", *_FWD] in cmds          # segment → LAN
-    assert ["iptables", "-I", *_RET] in cmds          # established return
-    # idempotent: a `-D` precedes each `-I` so re-apply never stacks duplicates
-    assert ["iptables", "-D", *_FWD] in cmds
-    assert cmds.index(["iptables", "-D", *_FWD]) < cmds.index(["iptables", "-I", *_FWD])
+    assert ["iptables", "-A", *_FWD] in cmds          # segment → LAN
+    assert ["iptables", "-A", *_RET] in cmds          # established return
+    assert ["iptables", "-F", "PI_GW_PANEL"] in cmds  # stale interface tuples are removed
+    assert ["iptables", "-I", "DOCKER-USER", "1", "-j", "PI_GW_PANEL"] in cmds
     # scoped to the LAN cidr — the rule never names a WAN/0.0.0.0 dest
-    assert all("0.0.0.0/0" not in c for c in cmds if c[:2] == ["iptables", "-I"])
+    assert all("0.0.0.0/0" not in c for c in cmds if c[:2] == ["iptables", "-A"])
 
 
 def test_apply_lan_access_off_removes_but_never_inserts():
     fake = FakeRun()
     plan = NetPlan.from_settings(Settings())
     plan.lan_access = False
-    LinuxBackend(Settings(), run=fake).apply_tproxy(plan)
+    _backend(fake).apply_tproxy(plan)
     cmds = fake.cmds()
-    assert not any(c[:3] == ["iptables", "-I", "DOCKER-USER"] for c in cmds)   # never opened
-    assert ["iptables", "-D", *_FWD] in cmds                                   # stale copy cleared
+    assert not any(c[:3] == ["iptables", "-A", "PI_GW_PANEL"] for c in cmds)
+    assert ["iptables", "-F", "PI_GW_PANEL"] in cmds                           # stale copy cleared
 
 
 def test_teardown_removes_lan_access_forward_rules():
     fake = FakeRun()
-    LinuxBackend(Settings(), run=fake).teardown()
+    _backend(fake).teardown()
     cmds = fake.cmds()
-    assert ["iptables", "-D", *_FWD] in cmds
-    assert ["iptables", "-D", *_RET] in cmds
+    assert ["iptables", "-D", "DOCKER-USER", "-j", "PI_GW_PANEL"] in cmds
+    assert ["iptables", "-F", "PI_GW_PANEL"] in cmds
+    assert ["iptables", "-X", "PI_GW_PANEL"] in cmds

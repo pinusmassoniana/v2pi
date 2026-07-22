@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from pi_gw_panel.config import Settings
@@ -26,7 +25,7 @@ def _collect_secrets(obj, out: set[str]) -> None:
             _collect_secrets(v, out)
 
 
-def _scrub(text: str, cfg: dict) -> str:
+def scrub_output(text: str, cfg: dict) -> str:
     secrets: set[str] = set()
     _collect_secrets(cfg, secrets)
     for s in secrets:
@@ -49,7 +48,11 @@ def validate_config(cfg: dict, xray_bin: str) -> tuple[bool, str]:
             # a hung -test would otherwise wedge the whole apply path (it runs synchronously
             # before any write/restart); the child is already killed by run() on timeout.
             return False, "validation timed out"
-        return proc.returncode == 0, _scrub((proc.stdout + proc.stderr).strip(), cfg)
+        except OSError as exc:
+            if isinstance(exc, FileNotFoundError):
+                return False, "xray executable not found"
+            return False, f"unable to run xray validation: {exc.strerror or type(exc).__name__}"
+        return proc.returncode == 0, scrub_output((proc.stdout + proc.stderr).strip(), cfg)
     finally:
         os.unlink(tmp)
 
@@ -68,7 +71,9 @@ class ConfigManager:
         # Snapshot the currently-live config as the rollback (undo) target, THEN write the
         # new one — so rollback() reverts to the *previous* apply, not the one just made.
         if os.path.exists(self.settings.config_path):
-            shutil.copyfile(self.settings.config_path, self.settings.lastgood_path)
+            with open(self.settings.config_path) as f:
+                previous = json.load(f)
+            self._write_atomic(self.settings.lastgood_path, previous)
         self._write_atomic(self.settings.config_path, cfg)
         return True, out
 
@@ -78,10 +83,10 @@ class ConfigManager:
             return False
         try:
             with open(path) as f:
-                json.load(f)  # refuse to promote a corrupt/partial snapshot
+                lastgood = json.load(f)  # refuse to promote a corrupt/partial snapshot
         except (OSError, json.JSONDecodeError):
             return False
-        shutil.copyfile(path, self.settings.config_path)
+        self._write_atomic(self.settings.config_path, lastgood)
         return True
 
     @staticmethod

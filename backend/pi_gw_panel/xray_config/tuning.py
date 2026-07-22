@@ -1,4 +1,3 @@
-import re
 from pi_gw_panel.models import Node, TuningProfile
 
 # Field-value presets the user can stage into the editor (non-persisting). "RU-hardened" is the
@@ -24,7 +23,16 @@ PROFILE_PRESETS: dict[str, dict] = {
 
 _FP = {"chrome", "firefox", "safari", "ios", "android", "edge", "random",
        "randomized", "randomizednoalpn", ""}
-_RANGE = re.compile(r"\d+(-\d+)?$")
+
+
+def _bounded_number(value: str, minimum: int, maximum: int, *, allow_range: bool = True) -> bool:
+    parts = value.split("-")
+    if len(parts) not in ((1, 2) if allow_range else (1,)):
+        return False
+    if not all(part.isascii() and part.isdigit() for part in parts):
+        return False
+    numbers = [int(part) for part in parts]
+    return all(minimum <= number <= maximum for number in numbers) and numbers[0] <= numbers[-1]
 
 
 def validate_profile(p: TuningProfile) -> tuple[bool, str]:
@@ -34,11 +42,13 @@ def validate_profile(p: TuningProfile) -> tuple[bool, str]:
     if p.fingerprint not in _FP:
         return False, f"unknown fingerprint {p.fingerprint!r}"
     if p.frag_enabled:
-        if not (p.frag_packets == "tlshello" or re.fullmatch(r"\d+-\d+", p.frag_packets or "")):
+        if not (p.frag_packets == "tlshello" or
+                _bounded_number(p.frag_packets or "", 1, 65535, allow_range=True)):
             return False, f"bad fragment packets {p.frag_packets!r} (use 'tlshello' or 'a-b')"
-        for fld, val in (("length", p.frag_length), ("interval", p.frag_interval)):
-            if not _RANGE.fullmatch(val or ""):
-                return False, f"bad fragment {fld} {val!r}"
+        if not _bounded_number(p.frag_length or "", 1, 65535):
+            return False, f"bad fragment length {p.frag_length!r}"
+        if not _bounded_number(p.frag_interval or "", 0, 60000):
+            return False, f"bad fragment interval {p.frag_interval!r}"
     if p.doh_enabled and p.doh_url and not p.doh_url.startswith(("http://", "https://")):
         return False, "DoH URL must start with http:// or https://"
     for n in (p.noises or []):
@@ -48,18 +58,23 @@ def validate_profile(p: TuningProfile) -> tuple[bool, str]:
         # freedom outbound — validate them here rather than letting `xray -test` be the only guard.
         if n.get("type") == "rand":
             pkt = str(n.get("packet") or "")
-            if pkt and not _RANGE.fullmatch(pkt):
+            if pkt and not _bounded_number(pkt, 1, 65535):
                 return False, f"bad noise packet {pkt!r} (use 'a-b')"
         dly = str(n.get("delay") or "")
-        if dly and not _RANGE.fullmatch(dly):
+        if dly and not _bounded_number(dly, 0, 60000):
             return False, f"bad noise delay {dly!r} (use 'a-b')"
     # numeric-ish tuning knobs flow verbatim into the config; reject non-numeric input here so the
     # user gets feedback instead of the setting being silently dropped at build time.
-    for fld, val in (("xhttp_padding", p.xhttp_padding), ("xmux_max_concurrency", p.xmux_max_concurrency),
-                     ("xmux_max_connections", p.xmux_max_connections), ("mux_concurrency", p.mux_concurrency)):
+    for fld, val, minimum, maximum, allow_range in (
+        ("xhttp_padding", p.xhttp_padding, 0, 1_000_000, True),
+        ("xmux_max_concurrency", p.xmux_max_concurrency, 0, 65535, True),
+        ("xmux_max_connections", p.xmux_max_connections, 0, 65535, True),
+        ("mux_concurrency", p.mux_concurrency, 1, 1024, False),
+    ):
         v = str(val or "")
-        if v and not _RANGE.fullmatch(v):
-            return False, f"bad {fld} {v!r} (must be a number or 'a-b')"
+        if v and not _bounded_number(v, minimum, maximum, allow_range=allow_range):
+            mode = "a number or 'a-b'" if allow_range else "a number"
+            return False, f"bad {fld} {v!r} (must be {mode}, {minimum}..{maximum})"
     return True, ""
 
 

@@ -2,25 +2,43 @@
 result, egress IP, and freshness (`checked_at`). Shared by the live traffic WS frame and
 the Network status panel so they never disagree (audit F3). Returns None when no node is
 active or the active node has no recorded health yet."""
-from datetime import datetime, timezone
 from pi_gw_panel.health import geo
+from pi_gw_panel.health.selection import (
+    DEFAULT_FRESHNESS_TTL, checked_at_age_seconds, health_age_seconds, ranked_nodes,
+)
 
 # The active node is real-probed ~every 60s; anything older than this means the monitor loop
 # died or we just restarted and are serving a pre-restart snapshot — flag it so the UI can say so
 # instead of showing an arbitrarily-old green "real_ok".
-_STALE_SEC = 180.0
+_STALE_SEC = DEFAULT_FRESHNESS_TTL
 
 
 def _is_stale(checked_at: str | None) -> bool:
-    if not checked_at:
-        return True
+    age = checked_at_age_seconds(checked_at)
+    return age is None or age > _STALE_SEC
+
+
+def health_status(store, *, now: float | None = None,
+                  freshness_ttl: float = _STALE_SEC) -> dict:
+    """Freshness and standby eligibility for truthful cross-layer status reporting."""
+    active_v = store.get_setting("active_node_id")
     try:
-        t = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - t).total_seconds() > _STALE_SEC
+        active_id = int(active_v) if active_v else None
+    except (TypeError, ValueError):
+        active_id = None
+    active = store.get_health(active_id) if active_id is not None else None
+    age = health_age_seconds(active, now)
+    health = {item.node_id: item for item in store.list_health()}
+    eligible = ranked_nodes(
+        store.list_nodes(), health, exclude_id=active_id, require_alive=True,
+        now=now, freshness_ttl=freshness_ttl,
+    ) if active_id is not None else []
+    return {
+        "active_health_fresh": age is not None and age <= freshness_ttl,
+        "active_health_age_sec": age,
+        "health_freshness_ttl_sec": freshness_ttl,
+        "eligible_standby_count": len(eligible),
+    }
 
 
 def active_health(store) -> dict | None:

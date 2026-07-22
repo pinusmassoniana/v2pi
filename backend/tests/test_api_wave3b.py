@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.net_control.dryrun import DryRunBackend
+from pi_gw_panel.net_control.plan import NetResult
 
 
 def _client(settings, stub_xray):
@@ -22,7 +23,7 @@ def test_get_network_shape(settings, stub_xray):
                                "dhcp_start": "192.168.10.30", "dhcp_end": "192.168.10.200",
                                "dhcp_lease": "12h", "client_dns": "1.1.1.1",
                                "client_dns6": "2606:4700:4700::1111"}
-    assert body["kill_switch_enabled"] is False
+    assert body["kill_switch_enabled"] is True
     assert body["ipv6_enabled"] is False
     assert body["status"]["segment_up"] is None             # dev: no Linux sysfs
     assert body["status"]["dhcp_clients"] == 0
@@ -51,9 +52,24 @@ def test_put_network_updates_field_and_flips_killswitch(settings, stub_xray):
     assert "tproxy ip to" not in applied
 
 
-def test_put_network_rejects_empty_and_ignores_unknown(settings, stub_xray):
+def test_put_network_rejects_empty_and_unknown(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = _auth(c)
     assert c.put("/api/network", json={"segment_iface": ""}, headers=h).status_code == 422
-    r = c.put("/api/network", json={"bogus": "x"}, headers=h)       # unknown keys ignored
-    assert r.status_code == 200 and r.json()["segment"]["iface"] == "eth0.2"
+    assert c.put("/api/network", json={"bogus": "x"}, headers=h).status_code == 422
+
+
+class _FailGuardNet(DryRunBackend):
+    def apply_guard(self, plan):
+        return NetResult(ok=False, error="nft denied")
+
+
+def test_put_network_rolls_back_intent_when_apply_fails(settings, stub_xray):
+    settings.xray_bin = stub_xray
+    state = build_state(settings, net=_FailGuardNet())
+    c = TestClient(create_app(settings, state=state))
+    h = _auth(c)
+    before = state.store.get_setting("dhcp_end")
+    r = c.put("/api/network", json={"dhcp_end": "192.168.10.250"}, headers=h)
+    assert r.status_code == 502
+    assert state.store.get_setting("dhcp_end") == before

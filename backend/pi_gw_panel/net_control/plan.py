@@ -76,7 +76,7 @@ class NetPlan:
             tproxy_port=s.tproxy_port, fwmark=s.fwmark, egress_mark=s.egress_mark,
             table=s.table, tproxy_port6=s.tproxy_port6,
             dnsmasq_leases=_abs_leases(s.dnsmasq_leases, data_dir), **ov,
-            kill_switch=(store.get_setting("kill_switch_enabled") or "0") == "1",
+            kill_switch=(store.get_setting("kill_switch_enabled") or "1") == "1",
             ipv6_enabled=(store.get_setting("ipv6_enabled") or "0") == "1",
             lan_access=(store.get_setting("lan_access_enabled") or ("1" if s.lan_access else "0")) == "1",
             mgmt_iface=s.mgmt_iface, mgmt_ip=s.mgmt_ip,

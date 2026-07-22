@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
@@ -37,6 +39,14 @@ def test_store_token_crud():
     assert s.delete_token(row["id"]) is True
     assert s.delete_token(row["id"]) is False                 # already gone → False
     assert s.list_tokens() == []
+
+
+def test_store_token_expiry_metadata():
+    s = _store()
+    _, token_hash, prefix = tokens.generate()
+    row = s.create_token("temporary", "monitor", token_hash, prefix, expires_at=12345)
+    assert row["expires_at"] == 12345
+    assert s.get_token_by_hash(token_hash)["expires_at"] == 12345
 
 
 def test_store_never_persists_the_plaintext_secret():
@@ -108,3 +118,42 @@ def test_token_lifecycle_and_scopes(settings, stub_xray):
                       headers={"X-CSRF-Token": csrf}).status_code == 422
     assert admin.post("/api/tokens", json={"name": "", "scope": "read"},
                       headers={"X-CSRF-Token": csrf}).status_code == 422
+
+
+def test_monitor_scope_is_redacted_and_expired_tokens_are_rejected(settings, stub_xray):
+    app = _app(settings, stub_xray)
+    admin = TestClient(app)
+    csrf = _login(admin)
+    created = admin.post(
+        "/api/tokens",
+        json={"name": "grafana", "scope": "monitor", "expires_at": int(time.time()) + 3600},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    monitor = {"Authorization": f"Bearer {created['token']}"}
+    bearer = TestClient(app)
+    assert bearer.get("/api/status", headers=monitor).status_code == 200
+    assert bearer.get("/api/traffic/history", headers=monitor).status_code == 200
+    assert bearer.get("/api/node-health", headers=monitor).status_code == 200
+    assert bearer.get("/api/network", headers=monitor).status_code == 200
+    for path in ("/api/backup", "/api/logs", "/api/nodes", "/api/subs", "/api/tokens", "/api/audit"):
+        assert bearer.get(path, headers=monitor).status_code == 403, path
+
+    expired, expired_hash, expired_prefix = tokens.generate()
+    app.state.app_state.store.create_token(
+        "expired", "monitor", expired_hash, expired_prefix, expires_at=int(time.time()) - 1)
+    assert bearer.get(
+        "/api/status", headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+    expired_row = next(t for t in app.state.app_state.store.list_tokens() if t["name"] == "expired")
+    assert expired_row["last_used_at"] is None
+
+
+def test_legacy_read_scope_remains_secret_bearing_admin_read(settings, stub_xray):
+    app = _app(settings, stub_xray)
+    admin = TestClient(app)
+    csrf = _login(admin)
+    secret = admin.post(
+        "/api/tokens", json={"name": "legacy", "scope": "read"},
+        headers={"X-CSRF-Token": csrf}).json()["token"]
+    bearer = TestClient(app)
+    assert bearer.get(
+        "/api/backup", headers={"Authorization": f"Bearer {secret}"}).status_code == 200

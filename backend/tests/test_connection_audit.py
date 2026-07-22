@@ -8,6 +8,9 @@ C1 — uplink reachability probe + injection.
 N1/N2 — wan_blocked flag + connection-event log surfaced on /network.
 sync_net/boot_guard — apply the right plan for the current tunnel state.
 """
+import asyncio
+import threading
+
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
@@ -80,6 +83,7 @@ def test_stop_net_keeps_leakguard_when_killswitch_on():
 
 def test_stop_net_full_teardown_when_killswitch_off():
     store, net = _store(), DryRunBackend()
+    store.set_setting("kill_switch_enabled", "0")
     net.apply_tproxy(NetPlan.from_settings(Settings()))     # seed an applied rule
     stop_net(Settings(), net, store)
     assert net.applied == []                                # teardown cleared everything
@@ -102,6 +106,7 @@ def test_sync_net_picks_tproxy_up_guard_down():
 def test_boot_guard_only_when_killswitch_on():
     settings = Settings()
     store, net = _store(), DryRunBackend()
+    store.set_setting("kill_switch_enabled", "0")
     boot_guard(_State(store, settings, _FakeSup("stopped"), net))
     assert net.applied == []                                # off → no guard
     store.set_setting("kill_switch_enabled", "1")
@@ -187,6 +192,37 @@ def test_liveness_tick_records_failover_event():
     assert any(e["kind"] == "failover" and "42" in e["detail"] for e in conn_events.recent(store))
 
 
+def test_liveness_stop_waits_for_probe_and_blocks_late_health_write():
+    conn = connect(":memory:", check_same_thread=False)
+    init_schema(conn)
+    store, settings = NodeStore(conn), Settings()
+    node_id = store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u"))
+    store.set_setting("active_node_id", str(node_id))
+    state = _State(store, settings, _FakeSup("working"))
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_real(*_args, **_kwargs):
+        started.set()
+        release.wait(timeout=1)
+        return False, None, None, None
+
+    async def drive():
+        loop = LivenessLoop(state, interval_sec=60, real_through=slow_real)
+        loop.start()
+        assert await asyncio.to_thread(started.wait, 1)
+        stopping = asyncio.create_task(loop.stop())
+        await asyncio.sleep(0.02)
+        returned_before_probe = stopping.done()
+        release.set()
+        await asyncio.wait_for(stopping, timeout=1)
+        await asyncio.sleep(0.02)
+        return returned_before_probe
+
+    assert asyncio.run(drive()) is False
+    assert store.get_health(node_id) is None
+
+
 # --- C1: uplink probe -------------------------------------------------------
 
 class _OkSock:
@@ -218,6 +254,7 @@ def _client(settings, stub_xray):
 
 def test_network_payload_has_wan_blocked_and_events(settings, stub_xray):
     c, h = _client(settings, stub_xray)
+    c.put("/api/network", json={"kill_switch_enabled": False}, headers=h)
     c.put("/api/network", json={"kill_switch_enabled": True}, headers=h)
     body = c.get("/api/network").json()
     assert body["status"]["wan_blocked"] is True            # kill-switch on + tunnel down (N1)

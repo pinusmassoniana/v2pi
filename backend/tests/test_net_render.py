@@ -98,10 +98,12 @@ def test_dnsmasq_v6_block_when_enabled():
 
 def test_from_store_override_beats_config_and_resolves_killswitch():
     store = _store()
-    # absent overrides ⇒ config defaults, kill-switch off
+    # A fresh database is fail-closed by default (migration 15).
     p0 = NetPlan.from_store(store, Settings())
     assert p0.segment_iface == "eth0.2"
-    assert p0.kill_switch is False
+    assert p0.kill_switch is True
+    store.set_setting("kill_switch_enabled", "0")
+    assert NetPlan.from_store(store, Settings()).kill_switch is False
     # DB overrides win; kill-switch flag resolved from settings k/v
     store.set_setting("segment_iface", "eth0.9")
     store.set_setting("dhcp_end", "192.168.10.250")

@@ -2,17 +2,26 @@
 sampler (TrafficRecorder) so the Dashboard graph shows a full window the instant it
 opens and survives navigation/reload.
 
-The recorder owns its OWN TrafficSampler instance, so it never contends with the
-live-WS sampler (each keeps independent prev-counters; the xray counters are
-cumulative, so two readers compute correct deltas independently). The buffer is a
-bounded deque → O(1) append, fixed memory."""
+The recorder is the sole TrafficSampler owner. WebSockets read its immutable latest
+snapshot, so extra tabs never multiply gRPC calls or disturb delta baselines. The
+buffer is a bounded deque → O(1) append, fixed memory."""
 import asyncio
+import copy
 import logging
 import threading
 import time
 from collections import deque
 
 log = logging.getLogger("pi_gw_panel")
+
+
+def bounded_interval_ms(value, default: int = 1000) -> int:
+    """One cadence contract for settings, recorder, REST metadata, and WebSockets."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    return min(60_000, max(500, parsed))
 
 
 def _downsample(items: list, n: int) -> list:
@@ -85,15 +94,46 @@ class TrafficRecorder:
         # same deltas (one DB write/min) — the durable series behind the 24h/7d windows.
         self._on_minute = on_minute
         self._minute: dict | None = None           # current minute bucket {min, up, down}
+        self._pending_minutes: deque = deque()     # completed buckets retained until callback succeeds
+        self._latest: dict | None = None
+        self._latest_error = ""
+        self._latest_lock = threading.Lock()
 
     def record_sample(self, out: dict) -> None:
         """Map one sampler output to a history point (proxy outbound, zeros if absent)."""
+        now = self._clock()
         p = (out or {}).get("proxy") or {}
-        self._history.record(int(self._clock() * 1000),
+        ts_ms = int(now * 1000)
+        self._history.record(ts_ms,
                              p.get("up_bps", 0.0), p.get("down_bps", 0.0))
-        self._accumulate_total()
+        with self._latest_lock:
+            self._latest = {
+                "ts": ts_ms,
+                "outbounds": copy.deepcopy(out or {}),
+                "totals": copy.deepcopy(getattr(self._sampler, "totals", {}) or {}),
+            }
+            self._latest_error = ""
+        self._accumulate_total(now)
 
-    def _accumulate_total(self) -> None:
+    def record_error(self, exc: Exception | str) -> None:
+        with self._latest_lock:
+            self._latest_error = str(exc) or type(exc).__name__
+
+    def snapshot(self) -> dict:
+        """Return a detached frame; consumers can never mutate the producer's snapshot."""
+        with self._latest_lock:
+            latest = copy.deepcopy(self._latest) if self._latest is not None else None
+            error = self._latest_error
+        if latest is None:
+            return {"error": error or "stats sample pending", "stale": True}
+        if error:
+            latest["error"] = error
+            latest["stale"] = True
+        else:
+            latest["stale"] = False
+        return latest
+
+    def _accumulate_total(self, now: float) -> None:
         """Add this tick's proxy-byte delta to the durable counter (reset-safe, batched)."""
         if self._on_total is None and self._on_minute is None:
             return
@@ -107,35 +147,53 @@ class TrafficRecorder:
             # the other direction's small correct delta with the full cumulative absolute (spike)
             du = du if du >= 0 else max(0, up)
             dd = dd if dd >= 0 else max(0, down)
-            self._pending["up"] += du
-            self._pending["down"] += dd
-            self._accumulate_minute(du, dd)
-        self._prev_abs = {"up": up, "down": down}
-        now = self._clock()
+            # Advance the absolute baseline before any fallible persistence callback. A failed
+            # flush can therefore be retried, but this sample's delta is never accepted twice.
+            self._prev_abs = {"up": up, "down": down}
+            if self._on_total is not None:
+                self._pending["up"] += du
+                self._pending["down"] += dd
+            self._accumulate_minute(du, dd, now)
+        else:
+            self._prev_abs = {"up": up, "down": down}
         if (self._pending["up"] or self._pending["down"]) and now - self._last_flush >= self._flush_interval:
-            self.flush_total()
+            try:
+                self.flush_total()
+            except Exception:
+                log.debug("data-used total flush failed; retained for retry", exc_info=True)
+        try:
+            self.flush_minute(include_current=False)
+        except Exception:
+            log.debug("traffic-minute flush failed; retained for retry", exc_info=True)
 
-    def _accumulate_minute(self, du: int, dd: int) -> None:
+    def _accumulate_minute(self, du: int, dd: int, now: float) -> None:
         """Bucket this tick's byte delta by wall-clock minute; persist a bucket when the
         minute rolls over (N4). Empty minutes write nothing (gaps stay gaps)."""
         if self._on_minute is None:
             return
-        cur = int(self._clock() // 60)
+        cur = int(now // 60)
         if self._minute is not None and self._minute["min"] != cur:
-            self.flush_minute()
+            if self._minute["up"] or self._minute["down"]:
+                self._pending_minutes.append(self._minute)
+            self._minute = None
         if du or dd:
             if self._minute is None:
                 self._minute = {"min": cur, "up": 0, "down": 0}
             self._minute["up"] += du
             self._minute["down"] += dd
 
-    def flush_minute(self) -> None:
-        """Persist and clear the current minute bucket (also called on shutdown). The store
-        upsert is additive, so a partial flush + restart within one minute never loses bytes."""
-        if self._on_minute is not None and self._minute is not None:
+    def flush_minute(self, *, include_current: bool = True) -> None:
+        """Persist completed buckets in order, removing each only after callback success."""
+        if self._on_minute is None:
+            return
+        if include_current and self._minute is not None:
             if self._minute["up"] or self._minute["down"]:
-                self._on_minute(self._minute["min"], self._minute["up"], self._minute["down"])
+                self._pending_minutes.append(self._minute)
             self._minute = None
+        while self._pending_minutes:
+            minute = self._pending_minutes[0]
+            self._on_minute(minute["min"], minute["up"], minute["down"])
+            self._pending_minutes.popleft()
 
     def flush_total(self) -> None:
         """Persist and clear the pending byte deltas (also called on shutdown)."""
@@ -158,7 +216,7 @@ class TrafficRecorder:
             self._task = None
         try:
             self.flush_total()        # don't lose the last batch of data-used on shutdown
-            self.flush_minute()
+            self.flush_minute(include_current=True)
         except Exception:
             log.debug("data-used flush on stop failed", exc_info=True)
 
@@ -166,12 +224,17 @@ class TrafficRecorder:
         loop = asyncio.get_running_loop()
         next_t = time.monotonic()                   # fixed-deadline cadence base (monotonic → NTP-immune)
         while True:
-            interval = max(0.5, self._interval_ms() / 1000.0)
+            interval = 1.0
             try:
-                if self._stats_enabled() and self._running():
-                    out = await loop.run_in_executor(None, self._sampler.sample)
-                    self.record_sample(out)
-            except Exception:
+                interval = bounded_interval_ms(self._interval_ms()) / 1000.0
+                if self._stats_enabled():
+                    if self._running():
+                        out = await loop.run_in_executor(None, self._sampler.sample)
+                        self.record_sample(out)
+                    else:
+                        self.record_error("xray is not running")
+            except Exception as exc:
+                self.record_error(exc)
                 log.debug("traffic history sample failed", exc_info=True)
             # sleep to the next deadline so sample latency doesn't stretch the real period
             next_t += interval

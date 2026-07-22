@@ -1,3 +1,7 @@
+import subprocess
+
+import pytest
+
 from pi_gw_panel.net_control.dnsmasq_supervisor import DnsmasqSupervisor
 
 
@@ -34,7 +38,9 @@ def _sup(tmp_path, procs):
         return p
 
     conf = str(tmp_path / "dnsmasq.conf")
-    return DnsmasqSupervisor("dnsmasq", conf, popen=popen), spawned, conf
+    run = lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, "", "")
+    return DnsmasqSupervisor(
+        "dnsmasq", conf, popen=popen, run=run, sleep=lambda _: None), spawned, conf
 
 
 def test_apply_writes_conf_and_starts(tmp_path):
@@ -74,3 +80,36 @@ def test_stop_terminates(tmp_path):
     sup.stop()
     assert sup.status()["running"] is False
     assert procs[0].terminated is True
+
+
+def test_invalid_candidate_keeps_previous_config_and_child(tmp_path):
+    procs = []
+    sup, spawned, conf = _sup(tmp_path, procs)
+    sup.apply("good\n")
+    previous = procs[0]
+
+    def reject(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd, stderr="bad range")
+
+    sup._run = reject
+    with pytest.raises(RuntimeError, match="bad range"):
+        sup.apply("bad\n")
+    assert open(conf).read() == "good\n"
+    assert previous.terminated is False
+    assert len(spawned) == 1
+
+
+def test_dead_candidate_restores_previous_config_and_process(tmp_path):
+    procs = []
+    sup, spawned, conf = _sup(tmp_path, procs)
+    sup.apply("good\n")
+
+    class DeadProc(FakeProc):
+        def poll(self):
+            return 1
+
+    sup._popen = lambda cmd: (spawned.append((cmd, DeadProc())), spawned[-1][1])[1]
+    with pytest.raises(RuntimeError, match="exited during readiness"):
+        sup.apply("candidate\n")
+    assert open(conf).read() == "good\n"
+    assert "good\n" == sup._last_text

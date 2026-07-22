@@ -311,7 +311,7 @@ def test_put_network_enable_ipv6_rebuilds_config_and_shows_hint(settings, stub_x
     assert c.post(f"/api/nodes/{nid}/apply", headers=h).status_code == 200   # live tunnel
     body = c.put("/api/network",
                  json={"ipv6_enabled": True, "segment_ip6": "2001:db8:0:2::1/64"}, headers=h).json()
-    assert body["ipv6_enabled"] is True and body["segment"]["ip6"] == "2001:db8:0:2::1/64"
+    assert body["ipv6_enabled"] is True and body["segment"]["ip6"] == "2001:db8:0:2::/64"
     assert any("/64" in r["title"] for r in body["recommendations"])   # the router hint (the ask)
     assert any(e["kind"] == "ipv6" for e in body["events"])
     # the rebuilt live xray config now carries the v6 tproxy inbound

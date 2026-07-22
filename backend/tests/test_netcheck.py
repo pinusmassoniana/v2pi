@@ -1,7 +1,7 @@
 from pi_gw_panel.config import Settings
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.models import NodeHealth
+from pi_gw_panel.models import Node, NodeHealth
 from pi_gw_panel.net_control import netcheck
 
 
@@ -58,6 +58,7 @@ def test_dhcp_clients_zero_when_file_missing(tmp_path):
 
 def test_network_status_shape_with_active_tunnel(tmp_path):
     store = _store()
+    store.add_node(Node(id=None, name="active", address="1.2.3.4", port=443, uuid="u"))
     store.set_setting("active_node_id", "1")
     store.upsert_health(NodeHealth(node_id=1, last_real_ok=True, last_real_ms=42,
                                    egress_ip="9.9.9.9", checked_at="2026-06-04T00:00:00+00:00"))

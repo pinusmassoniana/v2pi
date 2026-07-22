@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from pi_gw_panel.net_control.plan import NetPlan, NetResult
 # apply_node. Without it a manual Connect and the failover tick (separate threads) can
 # interleave supervisor stop/start and config writes (NR1).
 apply_lock = threading.RLock()
+logger = logging.getLogger(__name__)
 
 
 def _tunneled_fetch(store) -> bool:
@@ -52,16 +54,51 @@ class ApplyResult:
     error: str = ""
 
 
+@dataclass
+class RestoreResult:
+    ok: bool
+    summary: dict | None = None
+    error: str = ""
+
+
+def _record_enforcement(net, result: NetResult, *, wan_blocked: bool | None) -> NetResult:
+    """Keep the last *confirmed* host-enforcement outcome on the backend instance.
+
+    The API must not infer that a guard exists merely because the corresponding setting is on.
+    Backends are long-lived AppState resources, so this tiny status snapshot naturally survives
+    across requests without persisting host-specific/transient truth in SQLite.
+    """
+    net.enforcement_status = "ok" if result.ok else "error"
+    net.wan_blocked = wan_blocked if result.ok else None
+    net.enforcement_error = "" if result.ok else (result.error or "network operation failed")
+    return result
+
+
+def _call_net(net, method: str, *args, wan_blocked: bool | None) -> NetResult:
+    try:
+        result = getattr(net, method)(*args)
+    except Exception as exc:
+        result = NetResult(ok=False, error=f"{method} raised: {exc}")
+    if not isinstance(result, NetResult):
+        result = NetResult(ok=False, error=f"{method} returned no NetResult")
+    return _record_enforcement(net, result, wan_blocked=wan_blocked)
+
+
+def _require_net(result: NetResult, action: str) -> None:
+    if not result.ok:
+        raise RuntimeError(f"{action}: {result.error or 'network backend reported failure'}")
+
+
 def apply_net(settings: Settings, net, store=None) -> NetResult:
     """Render+apply the Pi net plan. With a store, editable fields (segment/DHCP/DNS)
     and the kill-switch come from the settings k/v (falling back to config); without
     one it's the pure-config plan. Reused by apply_node and PUT /api/network."""
     plan = NetPlan.from_store(store, settings) if store is not None else NetPlan.from_settings(settings)
-    return net.apply_tproxy(plan)
+    return _call_net(net, "apply_tproxy", plan, wan_blocked=False)
 
 
 def _kill_switch_on(store) -> bool:
-    return store is not None and (store.get_setting("kill_switch_enabled") or "0") == "1"
+    return store is not None and (store.get_setting("kill_switch_enabled") or "1") == "1"
 
 
 def stop_net(settings: Settings, net, store=None) -> NetResult:
@@ -72,9 +109,14 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
     instead of a full teardown — otherwise a "fail closed" kill-switch would *leak* the
     moment you stop (audit A1). Kill-switch OFF → full teardown (clients fall back direct).
     """
-    if _kill_switch_on(store) and hasattr(net, "apply_guard"):
-        return net.apply_guard(NetPlan.from_store(store, settings))
-    return net.teardown()
+    if _kill_switch_on(store):
+        if not hasattr(net, "apply_guard"):
+            return _record_enforcement(
+                net, NetResult(ok=False, error="network backend cannot install fail-closed guard"),
+                wan_blocked=None)
+        return _call_net(net, "apply_guard", NetPlan.from_store(store, settings),
+                         wan_blocked=True)
+    return _call_net(net, "teardown", wan_blocked=False)
 
 
 def sync_net(state) -> NetResult:
@@ -89,16 +131,13 @@ def sync_net(state) -> NetResult:
     return stop_net(state.settings, state.net, state.store)
 
 
-def boot_guard(state) -> None:
+def boot_guard(state) -> NetResult:
     """Close the boot leak window (A1): if the kill-switch is on, install the leak-guard
     BEFORE the tunnel is (re)applied, so a reboot never leaks client→WAN while xray starts.
     No-op when the kill-switch is off. Best-effort — never blocks boot."""
-    if not _kill_switch_on(state.store) or not hasattr(state.net, "apply_guard"):
-        return
-    try:
-        state.net.apply_guard(NetPlan.from_store(state.store, state.settings))
-    except Exception:
-        pass
+    if not _kill_switch_on(state.store):
+        return NetResult(ok=True)
+    return stop_net(state.settings, state.net, state.store)
 
 
 def build_node_config(node: Node, settings: Settings, store=None) -> dict:
@@ -136,9 +175,19 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
     half-applied state. On success, persist the active node id (if a store given).
     """
     with apply_lock:
+        previous_id_raw = store.get_setting("active_node_id") if store is not None else None
+        try:
+            previous_id = int(previous_id_raw) if previous_id_raw else None
+        except (TypeError, ValueError):
+            previous_id = None
+        previous_node = store.get_node(previous_id) if store is not None and previous_id else None
+
         cfg = build_node_config(node, settings, store)
         mgr = ConfigManager(settings, xray_bin=xray_bin)
-        ok, out = mgr.apply(cfg)
+        try:
+            ok, out = mgr.apply(cfg)
+        except Exception as exc:
+            return ApplyResult(ok=False, error=f"config apply failed: {exc}")
         if not ok:
             return ApplyResult(ok=False, error=out)
         try:
@@ -147,28 +196,60 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
             # non-ready reload as a failure so we roll back instead of blackholing all client traffic.
             if not supervisor.reload():
                 raise RuntimeError("xray did not come up on the new config")
-            apply_net(settings, net, store)   # honors editable net overrides + kill-switch
+            _require_net(apply_net(settings, net, store), "network apply failed")
         except Exception as exc:
-            mgr.rollback()
+            recovery: list[str] = []
+            restored = False
             try:
-                supervisor.reload()   # bring xray back up on the rolled-back last-good config
-            except Exception:
-                pass
-            try:
-                net.teardown()
-            except Exception:
-                pass
-            return ApplyResult(ok=False, error=f"apply failed after validation: {exc}")
+                rolled_back = mgr.rollback()
+            except Exception as rollback_exc:
+                rolled_back = False
+                recovery.append(f"config rollback raised: {rollback_exc}")
+            if not rolled_back:
+                recovery.append("config rollback unavailable")
+
+            # A valid prior active node means the rolled-back config describes a tunnel we can
+            # restore. Both the process readiness and host rules are authoritative contracts.
+            if previous_node is not None and rolled_back:
+                try:
+                    if not supervisor.reload():
+                        recovery.append("previous xray did not become ready")
+                    else:
+                        previous_net = apply_net(settings, net, store)
+                        if previous_net.ok:
+                            restored = True
+                        else:
+                            recovery.append(
+                                f"previous network restore failed: {previous_net.error or 'unknown error'}")
+                except Exception as restore_exc:
+                    recovery.append(f"previous runtime restore raised: {restore_exc}")
+
+            if not restored:
+                # No verified prior tunnel remains. Stop any uncertain candidate process, then
+                # install the kill-switch-aware guard. Never call raw teardown on this path.
+                try:
+                    supervisor.stop()
+                except Exception as stop_exc:
+                    recovery.append(f"xray stop raised: {stop_exc}")
+                guard = stop_net(settings, net, store)
+                if not guard.ok:
+                    recovery.append(f"fail-closed recovery failed: {guard.error or 'unknown error'}")
+
+            suffix = f"; recovery: {'; '.join(recovery)}" if recovery else ""
+            return ApplyResult(ok=False, error=f"apply failed after validation: {exc}{suffix}")
         if store is not None and node.id is not None:
-            # record the node that was active before this apply, so /rollback can revert to it
-            prev = store.get_setting("active_node_id")
-            store.set_setting("prev_active_node_id", prev if prev is not None else "")
-            store.set_setting("active_node_id", str(node.id))
-            store.set_setting("active_since", str(int(time.time())))   # uptime anchor (P3)
-            # NF4: snapshot the lifetime data-used baseline so the Dashboard can show "this
-            # session" (since (re)connect) = lifetime − baseline, beside the lifetime total.
-            store.set_setting("session_base_up", store.get_setting("data_used_up") or "0")
-            store.set_setting("session_base_down", store.get_setting("data_used_down") or "0")
+            with store.transaction():
+                # A same-node reapply (boot/profile/routing/settings) must preserve the actual
+                # rollback target rather than replacing it with the current node itself.
+                if previous_id != node.id:
+                    store.set_setting(
+                        "prev_active_node_id", previous_id_raw if previous_id_raw is not None else "")
+                store.set_setting("active_node_id", str(node.id))
+                store.set_setting("active_since", str(int(time.time())))   # uptime anchor (P3)
+                # NF4: snapshot the lifetime data-used baseline so the Dashboard can show "this
+                # session" (since (re)connect) = lifetime − baseline, beside the lifetime total.
+                store.set_setting("session_base_up", store.get_setting("data_used_up") or "0")
+                store.set_setting("session_base_down", store.get_setting("data_used_down") or "0")
         return ApplyResult(ok=True)
 
 
@@ -183,11 +264,81 @@ def reapply_active_node(state) -> ApplyResult | None:
     try:
         node = state.store.get_node(int(aid))
     except (TypeError, ValueError):
-        return None
+        node = None
     if node is None:
-        return None  # saved node vanished (e.g. a sub resync removed it) — skip
+        # Reconcile stale persisted intent immediately: otherwise status/sync_net continue to
+        # treat a non-existent node as active. Keep the gateway closed while recording why.
+        with apply_lock:
+            with state.store.transaction():
+                state.store.set_setting("active_node_id", "")
+                state.store.set_setting("active_since", "")
+                from pi_gw_panel.net_control import events as conn_events
+                conn_events.record(state.store, "stale-active", f"cleared missing active node {aid}")
+            guard = stop_net(state.settings, state.net, state.store)
+        if not guard.ok:
+            return ApplyResult(ok=False, error=f"stale active cleanup failed: {guard.error}")
+        return None
     try:
         return apply_node(node, state.settings, state.supervisor, state.net,
                           store=state.store, xray_bin=state.xray_bin)
     except Exception as exc:  # never let boot crash on a bad saved node/config
         return ApplyResult(ok=False, error=f"boot reapply failed: {exc}")
+
+
+def restore_backup(state, document) -> RestoreResult:
+    """Restore validated intent and leave runtime explicitly disconnected + enforced."""
+    from pi_gw_panel import backup as backup_mod
+    from pi_gw_panel.net_control.provision import host_provision
+
+    validated = backup_mod.validate_document(document)  # pure preflight before stopping anything
+    with apply_lock:
+        stats_client = getattr(state, "stats_client", None)
+        previous_stats_address = (
+            stats_client.status().get("address") if stats_client is not None else None)
+        state.supervisor.stop()
+        if state.supervisor.status().get("running"):
+            return RestoreResult(ok=False, error="xray did not stop before restore")
+        initial_guard = stop_net(state.settings, state.net, state.store)
+        if not initial_guard.ok:
+            return RestoreResult(
+                ok=False, error=f"could not enforce disconnected state: {initial_guard.error}")
+        try:
+            with state.store.transaction():
+                summary = backup_mod.import_state(state.store, validated)
+                state.store.set_setting("active_node_id", "")
+                state.store.set_setting("prev_active_node_id", "")
+                state.store.set_setting("active_since", "")
+                provisioned = host_provision(state)
+                if getattr(provisioned, "ok", True) is False:
+                    raise RuntimeError(provisioned.error or "restored host provisioning failed")
+                guard = stop_net(state.settings, state.net, state.store)
+                _require_net(guard, "restored fail-closed state failed")
+                if stats_client is not None:
+                    port = (state.store.get_setting("stats_api_port")
+                            or SETTINGS_DEFAULTS["stats_api_port"])
+                    stats_client.reconfigure(f"127.0.0.1:{int(port)}")
+        except Exception as exc:
+            # Candidate DB rows rolled back. The process remains stopped; reconcile that fact in
+            # persisted state and re-assert the previous host/guard intent before returning 502.
+            recovery: list[str] = []
+            with state.store.transaction():
+                state.store.set_setting("active_node_id", "")
+                state.store.set_setting("prev_active_node_id", "")
+                state.store.set_setting("active_since", "")
+            try:
+                previous_host = host_provision(state)
+                if getattr(previous_host, "ok", True) is False:
+                    recovery.append(previous_host.error or "previous host restore failed")
+            except Exception as recovery_exc:
+                recovery.append(f"previous host restore raised: {recovery_exc}")
+            previous_guard = stop_net(state.settings, state.net, state.store)
+            if not previous_guard.ok:
+                recovery.append(previous_guard.error or "previous guard restore failed")
+            if stats_client is not None and previous_stats_address:
+                try:
+                    stats_client.reconfigure(previous_stats_address)
+                except Exception as recovery_exc:
+                    recovery.append(f"stats client restore raised: {recovery_exc}")
+            suffix = f"; recovery: {'; '.join(recovery)}" if recovery else ""
+            return RestoreResult(ok=False, error=f"restore apply failed: {exc}{suffix}")
+        return RestoreResult(ok=True, summary=summary)

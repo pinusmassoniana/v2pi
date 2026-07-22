@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Upper bounds so one request can't ship a multi-MB string (memory/CPU DoS — hashing a huge
@@ -11,21 +11,45 @@ _MAX_HOST = 253      # DNS name / SNI / address max
 _MAX_FIELD = 512     # generic node string (note, path, alpn, keys)
 _MAX_URL = 2048
 _MAX_IMPORT = 512 * 1024   # a subscription/import blob
+_MAX_BULK_IDS = 500
+_MAX_RULES = 256
+_MAX_NOISES = 32
 
 
-class LoginIn(BaseModel):
+class StrictIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class NonNullPatch(StrictIn):
+    """Optional means omittable, not explicitly nullable, except named FK fields."""
+
+    nullable_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if isinstance(value, dict):
+            bad = [key for key, item in value.items()
+                   if item is None and key not in cls.nullable_fields]
+            if bad:
+                raise ValueError(f"fields may be omitted but not null: {', '.join(sorted(bad))}")
+        return value
+
+
+class LoginIn(StrictIn):
     username: str = Field(max_length=_MAX_USER)
     password: str = Field(max_length=_MAX_PW)
 
 
-class SetupIn(BaseModel):
+class SetupIn(StrictIn):
     username: str = Field(min_length=1, max_length=_MAX_USER)
     password: str = Field(min_length=8, max_length=_MAX_PW)   # SS1: minimum password length
 
 
-class TokenCreateIn(BaseModel):
+class TokenCreateIn(StrictIn):
     name: str = Field(min_length=1, max_length=64)
-    scope: Literal["read", "readwrite"]
+    scope: Literal["monitor", "read", "readwrite"]
+    expires_at: int | None = Field(default=None, ge=1)
 
 
 class TokenOut(BaseModel):
@@ -35,6 +59,7 @@ class TokenOut(BaseModel):
     prefix: str
     created_at: int
     last_used_at: int | None = None
+    expires_at: int | None = None
 
 
 class TokenCreatedOut(TokenOut):
@@ -49,12 +74,12 @@ class AuditEntryOut(BaseModel):
     status: int
 
 
-class PasswordChangeIn(BaseModel):
+class PasswordChangeIn(StrictIn):
     current_password: str = Field(max_length=_MAX_PW)
     new_password: str = Field(min_length=8, max_length=_MAX_PW)
 
 
-class NodeIn(BaseModel):
+class NodeIn(StrictIn):
     name: str = Field(max_length=_MAX_FIELD)
     address: str = Field(max_length=_MAX_HOST)
     port: int = Field(ge=1, le=65535)
@@ -72,22 +97,23 @@ class NodeIn(BaseModel):
     note: str = Field(default="", max_length=_MAX_FIELD)             # free-text operator note / label
 
 
-class NodeUpdate(BaseModel):
-    name: str | None = None
-    address: str | None = None
+class NodeUpdate(NonNullPatch):
+    nullable_fields = frozenset({"tuning_profile_id"})
+    name: str | None = Field(default=None, max_length=_MAX_FIELD)
+    address: str | None = Field(default=None, max_length=_MAX_HOST)
     port: int | None = Field(default=None, ge=1, le=65535)
-    uuid: str | None = None
-    transport: str | None = None
-    security: str | None = None
-    sni: str | None = None
-    public_key: str | None = None
-    short_id: str | None = None
-    fingerprint: str | None = None
-    path: str | None = None
-    host: str | None = None
-    mode: str | None = None
-    alpn: str | None = None
-    note: str | None = None
+    uuid: str | None = Field(default=None, max_length=_MAX_FIELD)
+    transport: str | None = Field(default=None, max_length=64)
+    security: str | None = Field(default=None, max_length=32)
+    sni: str | None = Field(default=None, max_length=_MAX_HOST)
+    public_key: str | None = Field(default=None, max_length=_MAX_FIELD)
+    short_id: str | None = Field(default=None, max_length=_MAX_FIELD)
+    fingerprint: str | None = Field(default=None, max_length=32)
+    path: str | None = Field(default=None, max_length=_MAX_FIELD)
+    host: str | None = Field(default=None, max_length=_MAX_HOST)
+    mode: str | None = Field(default=None, max_length=64)
+    alpn: str | None = Field(default=None, max_length=_MAX_FIELD)
+    note: str | None = Field(default=None, max_length=_MAX_FIELD)
     tuning_profile_id: int | None = None
 
 
@@ -123,22 +149,31 @@ class StatusOut(BaseModel):
     last_failover_at: float | None = None   # epoch of the last auto-failover (NN8)
     prev_active_node_id: int | None = None   # rollback target; None → Rollback button disabled (U2)
     server_now: float = 0.0   # Pi wall-clock at response time → client clock-skew correction (D4)
+    tunnel_online: bool
+    active_health_fresh: bool
+    failover_ready: bool
+    eligible_standby_count: int
+    health_enabled: bool
+    failover_enabled: bool
+    failovers_24h: int
 
 
-class SubscriptionIn(BaseModel):
+class SubscriptionIn(NonNullPatch):
+    nullable_fields = frozenset({"default_profile_id"})
     name: str = Field(max_length=_MAX_FIELD)
     url: str = Field(max_length=_MAX_URL)
     interval_sec: int = 0
-    injection: dict | None = None
+    injection: dict | None = Field(default=None, max_length=64)
     enabled: bool = True
     default_profile_id: int | None = None
 
 
-class SubscriptionPatch(BaseModel):
+class SubscriptionPatch(NonNullPatch):
+    nullable_fields = frozenset({"default_profile_id"})
     name: str | None = Field(default=None, max_length=_MAX_FIELD)
     url: str | None = Field(default=None, max_length=_MAX_URL)
     interval_sec: int | None = None
-    injection: dict | None = None
+    injection: dict | None = Field(default=None, max_length=64)
     enabled: bool | None = None
     default_profile_id: int | None = None
 
@@ -162,7 +197,22 @@ class SubscriptionOut(BaseModel):
     node_count: int
 
 
-class PreviewIn(BaseModel):
+class SubscriptionRefreshOut(BaseModel):
+    id: int
+    name: str
+    ok: bool
+    status: str | None
+    error: str | None
+
+
+class RefreshAllOut(BaseModel):
+    attempted: int
+    succeeded: int
+    failed: int
+    results: list[SubscriptionRefreshOut]
+
+
+class PreviewIn(StrictIn):
     url: str = Field(max_length=_MAX_URL)
     injection: dict | None = None
 
@@ -188,11 +238,13 @@ class PreviewNodeOut(BaseModel):
 class PreviewNodesOut(BaseModel):
     format: str
     count: int
+    returned_count: int = 0
+    truncated: bool = False
     nodes: list[PreviewNodeOut]
 
 
 # N4: import nodes from pasted subscription text (base64 / clash / json) as manual servers.
-class ImportNodesIn(BaseModel):
+class ImportNodesIn(StrictIn):
     text: str = Field(max_length=_MAX_IMPORT)
 
 
@@ -203,13 +255,17 @@ class ImportNodesOut(BaseModel):
 
 
 # N8: reorder manual nodes (Servers tab) — position = list index.
-class ReorderIn(BaseModel):
-    ids: list[int]
+class ReorderIn(StrictIn):
+    ids: list[int] = Field(max_length=_MAX_BULK_IDS)
 
 
 # NN3: bulk-detach nodes from their subscription (→ manual Servers).
-class DetachIn(BaseModel):
-    ids: list[int]
+class DetachIn(StrictIn):
+    ids: list[int] = Field(max_length=_MAX_BULK_IDS)
+
+
+class NodeValidateIn(NodeIn):
+    tuning_profile_id: int | None = None
 
 
 # NN10: pre-flight config validation for a node (xray -test) before connecting.
@@ -219,7 +275,7 @@ class NodeValidateOut(BaseModel):
 
 
 # N9: connect to the healthiest node in a scope (a subscription, or manual when null).
-class ConnectBestIn(BaseModel):
+class ConnectBestIn(StrictIn):
     subscription_id: int | None = None
 
 
@@ -242,13 +298,13 @@ class SettingsOut(BaseModel):
     auto_backup_enabled: bool
 
 
-class SettingsIn(BaseModel):
+class SettingsIn(NonNullPatch):
     tunneled_fetch: bool | None = None
     routing_default_action: str | None = None
     health_enabled: bool | None = None
     health_interval: int | None = None
     health_hysteresis: int | None = None
-    health_probe_url: str | None = None
+    health_probe_url: str | None = Field(default=None, max_length=_MAX_URL)
     failover_enabled: bool | None = None
     failover_cooldown: int | None = None
     stats_enabled: bool | None = None
@@ -267,59 +323,62 @@ class DiagnosticsOut(BaseModel):
     db_bytes: int
     disk_free_bytes: int
     disk_total_bytes: int
+    stats_last_ok_at: float | None = None
+    stats_error: str = ""
+    stats_fail_count: int = 0
 
 
 # --- Wave 2: tuning profiles ---
-class NoiseSpec(BaseModel):
-    type: str = "rand"          # rand | str | base64 | hex
-    packet: str = "50-150"
-    delay: str = "10-16"
+class NoiseSpec(StrictIn):
+    type: Literal["rand", "str", "base64", "hex"] = "rand"
+    packet: str = Field(default="50-150", max_length=256)
+    delay: str = Field(default="10-16", max_length=64)
 
 
-class ProfileIn(BaseModel):
-    name: str
-    fingerprint: str = "chrome"
+class ProfileIn(StrictIn):
+    name: str = Field(max_length=_MAX_FIELD)
+    fingerprint: str = Field(default="chrome", max_length=32)
     frag_enabled: bool = False
-    frag_packets: str = "tlshello"
-    frag_length: str = "100-200"
-    frag_interval: str = "10-20"
+    frag_packets: str = Field(default="tlshello", max_length=64)
+    frag_length: str = Field(default="100-200", max_length=64)
+    frag_interval: str = Field(default="10-20", max_length=64)
     mux_enabled: bool = False
     doh_enabled: bool = True
-    doh_url: str = ""
-    quic: str = "allow"
+    doh_url: str = Field(default="", max_length=_MAX_URL)
+    quic: Literal["allow", "drop", "proxy"] = "allow"
     noise_enabled: bool = False
-    noises: list[NoiseSpec] = []
-    xhttp_padding: str = ""
-    xmux_max_concurrency: str = ""
-    xmux_max_connections: str = ""
-    mux_concurrency: str = ""
-    xudp_proxy_udp443: str = ""
-    alpn: str = ""
-    tls_min: str = ""
-    tls_max: str = ""
+    noises: list[NoiseSpec] = Field(default_factory=list, max_length=_MAX_NOISES)
+    xhttp_padding: str = Field(default="", max_length=64)
+    xmux_max_concurrency: str = Field(default="", max_length=64)
+    xmux_max_connections: str = Field(default="", max_length=64)
+    mux_concurrency: str = Field(default="", max_length=64)
+    xudp_proxy_udp443: str = Field(default="", max_length=32)
+    alpn: str = Field(default="", max_length=128)
+    tls_min: str = Field(default="", max_length=16)
+    tls_max: str = Field(default="", max_length=16)
 
 
-class ProfileUpdate(BaseModel):
-    name: str | None = None
-    fingerprint: str | None = None
+class ProfileUpdate(NonNullPatch):
+    name: str | None = Field(default=None, max_length=_MAX_FIELD)
+    fingerprint: str | None = Field(default=None, max_length=32)
     frag_enabled: bool | None = None
-    frag_packets: str | None = None
-    frag_length: str | None = None
-    frag_interval: str | None = None
+    frag_packets: str | None = Field(default=None, max_length=64)
+    frag_length: str | None = Field(default=None, max_length=64)
+    frag_interval: str | None = Field(default=None, max_length=64)
     mux_enabled: bool | None = None
     doh_enabled: bool | None = None
-    doh_url: str | None = None
-    quic: str | None = None
+    doh_url: str | None = Field(default=None, max_length=_MAX_URL)
+    quic: Literal["allow", "drop", "proxy"] | None = None
     noise_enabled: bool | None = None
-    noises: list[NoiseSpec] | None = None
-    xhttp_padding: str | None = None
-    xmux_max_concurrency: str | None = None
-    xmux_max_connections: str | None = None
-    mux_concurrency: str | None = None
-    xudp_proxy_udp443: str | None = None
-    alpn: str | None = None
-    tls_min: str | None = None
-    tls_max: str | None = None
+    noises: list[NoiseSpec] | None = Field(default=None, max_length=_MAX_NOISES)
+    xhttp_padding: str | None = Field(default=None, max_length=64)
+    xmux_max_concurrency: str | None = Field(default=None, max_length=64)
+    xmux_max_connections: str | None = Field(default=None, max_length=64)
+    mux_concurrency: str | None = Field(default=None, max_length=64)
+    xudp_proxy_udp443: str | None = Field(default=None, max_length=32)
+    alpn: str | None = Field(default=None, max_length=128)
+    tls_min: str | None = Field(default=None, max_length=16)
+    tls_max: str | None = Field(default=None, max_length=16)
 
 
 class ProfileOut(BaseModel):
@@ -360,17 +419,17 @@ class ProfilePresetInfo(BaseModel):
     fields: dict
 
 
-class DefaultProfileIn(BaseModel):
+class DefaultProfileIn(StrictIn):
     id: int
 
 
 # --- Wave 2: routing ---
-class RoutingRuleIn(BaseModel):
-    type: str    # geoip | geosite | domain | ip | port
-    value: str
-    action: str  # direct | proxy | block
+class RoutingRuleIn(StrictIn):
+    type: Literal["geoip", "geosite", "domain", "ip", "port"]
+    value: str = Field(max_length=_MAX_FIELD)
+    action: Literal["direct", "proxy", "block"]
     enabled: bool = True
-    label: str = ""
+    label: str = Field(default="", max_length=_MAX_FIELD)
 
 
 class RoutingRuleOut(BaseModel):
@@ -383,10 +442,10 @@ class RoutingRuleOut(BaseModel):
     label: str = ""
 
 
-class RoutingIn(BaseModel):
-    rules: list[RoutingRuleIn]
-    default_action: str = "proxy"
-    domain_strategy: str = "IPIfNonMatch"
+class RoutingIn(StrictIn):
+    rules: list[RoutingRuleIn] = Field(max_length=_MAX_RULES)
+    default_action: Literal["direct", "proxy", "block"] = "proxy"
+    domain_strategy: Literal["AsIs", "IPIfNonMatch", "IPOnDemand"] = "IPIfNonMatch"
 
 
 class RoutingOut(BaseModel):
@@ -456,7 +515,9 @@ class NetworkStatusOut(BaseModel):
     dhcp_clients: int = 0
     clients: list[DhcpClientOut] = []
     tunnel: NetworkTunnelOut
-    wan_blocked: bool = False           # N1: kill-switch leak-guard is holding (tunnel down)
+    wan_blocked: bool | None = None     # confirmed guard state; None = not yet verified / failed
+    enforcement_status: Literal["ok", "unknown", "error"] = "unknown"
+    enforcement_error: str = ""
     ipv6_prefix: str | None = None      # DHCPv6-PD 'auto': the host-delegated segment v6 prefix
     foreign_ra: bool | None = None      # Phase C: another router advertising v6 on the segment (leak)
     ipv6_prefix_source: str | None = None   # "static" | "ula" | "pd" — where the segment /64 came from
@@ -484,16 +545,16 @@ class NetworkOut(BaseModel):
 
 
 # Partial, like SettingsIn: any provided editable field is set; empty strings are
-# rejected (min_length=1), unknown keys ignored (pydantic default). The system knobs
+# rejected (min_length=1), and unknown keys fail via NonNullPatch. The system knobs
 # (tproxy port / marks / table) are intentionally not editable here.
-class NetworkIn(BaseModel):
-    segment_iface: str | None = Field(default=None, min_length=1)
-    segment_ip: str | None = Field(default=None, min_length=1)
-    dhcp_start: str | None = Field(default=None, min_length=1)
-    dhcp_end: str | None = Field(default=None, min_length=1)
-    dhcp_lease: str | None = Field(default=None, min_length=1)
-    client_dns: str | None = Field(default=None, min_length=1)
-    client_dns6: str | None = Field(default=None, min_length=1)
+class NetworkIn(NonNullPatch):
+    segment_iface: str | None = Field(default=None, min_length=1, max_length=15)
+    segment_ip: str | None = Field(default=None, min_length=1, max_length=15)
+    dhcp_start: str | None = Field(default=None, min_length=1, max_length=15)
+    dhcp_end: str | None = Field(default=None, min_length=1, max_length=15)
+    dhcp_lease: str | None = Field(default=None, min_length=1, max_length=32)
+    client_dns: str | None = Field(default=None, min_length=1, max_length=45)
+    client_dns6: str | None = Field(default=None, min_length=1, max_length=45)
     segment_ip6: str | None = None          # empty allowed (clears the prefix / v6 off)
     kill_switch_enabled: bool | None = None
     lan_access_enabled: bool | None = None
@@ -505,3 +566,18 @@ class NetworkIn(BaseModel):
 class TrafficHistoryOut(BaseModel):
     samples: list[list[int]]
     interval_ms: int
+
+
+class ReadinessChecksOut(BaseModel):
+    provisioning: bool
+    segment_addresses: bool
+    dnsmasq: bool
+    enforcement: bool
+    active_node: bool
+    xray: bool
+    tunnel: bool
+
+
+class ReadinessOut(BaseModel):
+    status: Literal["ready", "not_ready"]
+    checks: ReadinessChecksOut

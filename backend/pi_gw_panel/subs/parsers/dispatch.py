@@ -18,7 +18,7 @@ def detect(body: str) -> str:
     return "base64/vless"
 
 
-def parse_subscription(body: str) -> list[Node]:
+def parse_subscription(body: str, *, limit: int | None = None) -> list[Node]:
     """Sniff the subscription format and delegate. Order: JSON, clash-yaml, base64/vless."""
     text = body.strip()
     # P3: parse JSON once here and hand the object straight to the parser, instead of
@@ -30,7 +30,7 @@ def parse_subscription(body: str) -> list[Node]:
         except ValueError:
             data = None
         if data is not None:
-            return json_nodes.parse_obj(data)
+            return json_nodes.parse_obj(data, limit=limit)
     if "proxies:" in text:
-        return clash_yaml.parse(text)
-    return base64_vless.parse(text)
+        return clash_yaml.parse(text, limit=limit)
+    return base64_vless.parse(text, limit=limit)

@@ -1,8 +1,12 @@
 import json
+import logging
 import sqlite3
 import threading
 import time
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
+
+
+logger = logging.getLogger(__name__)
 
 
 class _Result:
@@ -31,28 +35,78 @@ class _SafeConn:
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
         self._lock = threading.RLock()
+        self._transaction_depth = 0
+        self._rollback_only = False
+        self._closed = False
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
 
     def execute(self, sql: str, params=()) -> _Result:
         with self._lock:
+            self._ensure_open()
             cur = self._conn.execute(sql, params)
             return _Result(cur.lastrowid, cur.fetchall())
 
     def commit(self) -> None:
+        # The underlying connection uses autocommit. Keeping this compatibility method a no-op
+        # means legacy one-statement writers stay atomic while calls nested in transaction() can
+        # no longer commit the caller's multi-statement unit prematurely.
         with self._lock:
-            self._conn.commit()
+            self._ensure_open()
 
     # transaction context (`with conn:` — used by the backup restore): hold the lock for
     # the whole transaction so it's both atomic and serialized against other threads.
     def __enter__(self):
         self._lock.acquire()
-        self._conn.__enter__()
-        return self
+        try:
+            self._ensure_open()
+            if self._transaction_depth == 0:
+                self._conn.execute("BEGIN")
+                self._rollback_only = False
+            self._transaction_depth += 1
+            return self
+        except Exception:
+            self._lock.release()
+            raise
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            return self._conn.__exit__(exc_type, exc, tb)
+            if exc_type is not None:
+                self._rollback_only = True
+            self._transaction_depth -= 1
+            if self._transaction_depth == 0:
+                if self._rollback_only:
+                    self._conn.rollback()
+                else:
+                    self._conn.commit()
+                self._rollback_only = False
+            return False
         finally:
             self._lock.release()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._transaction_depth:
+                raise RuntimeError("cannot close database during a transaction")
+            self._conn.close()
+            self._closed = True
+
+
+def _safe_json(row: sqlite3.Row, field: str, fallback, expected_type):
+    raw = row[field]
+    try:
+        value = json.loads(raw) if raw else expected_type()
+        if not isinstance(value, expected_type):
+            raise ValueError(f"expected {expected_type.__name__}")
+        return value
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        row_id = row["id"] if "id" in row.keys() else row["node_id"]
+        logger.warning("invalid JSON in %s for row %s: %s", field, row_id, exc)
+        return fallback()
 
 _NODE_COLS = ("name", "address", "port", "uuid", "transport", "sni",
               "public_key", "short_id", "fingerprint", "flow",
@@ -92,7 +146,7 @@ def _row_to_node(row: sqlite3.Row) -> Node:
 def _row_to_sub(row: sqlite3.Row) -> Subscription:
     return Subscription(
         id=row["id"], name=row["name"], url=row["url"],
-        injection=json.loads(row["injection_json"] or "{}"),
+        injection=_safe_json(row, "injection_json", dict, dict),
         interval_sec=row["interval_sec"], enabled=bool(row["enabled"]),
         default_profile_id=row["default_profile_id"],
         last_fetched=row["last_fetched"], last_status=row["last_status"],
@@ -119,7 +173,7 @@ def _row_to_profile(row: sqlite3.Row) -> TuningProfile:
         mux_enabled=bool(row["mux_enabled"]), doh_enabled=bool(row["doh_enabled"]),
         doh_url=row["doh_url"], quic=row["quic"],
         noise_enabled=bool(g("noise_enabled", 0)),
-        noises=json.loads(g("noises_json", "[]") or "[]"),
+        noises=_safe_json(row, "noises_json", list, list),
         xhttp_padding=g("xhttp_padding"), xmux_max_concurrency=g("xmux_max_concurrency"),
         xmux_max_connections=g("xmux_max_connections"), mux_concurrency=g("mux_concurrency"),
         xudp_proxy_udp443=g("xudp_proxy_udp443"), alpn=g("alpn"),
@@ -131,7 +185,7 @@ def _row_to_health(row: sqlite3.Row) -> NodeHealth:
     def b(v):
         return None if v is None else bool(v)
     keys = row.keys()
-    lat = json.loads(row["lat_history"] or "[]") if "lat_history" in keys else []
+    lat = _safe_json(row, "lat_history", list, list) if "lat_history" in keys else []
     return NodeHealth(
         node_id=row["node_id"], last_tcp_ok=b(row["last_tcp_ok"]), last_tcp_ms=row["last_tcp_ms"],
         last_http_ok=b(row["last_http_ok"]), last_http_ms=row["last_http_ms"],
@@ -147,6 +201,13 @@ class NodeStore:
         # wrap in a lock-serialized proxy so concurrent threads can't corrupt the
         # single shared connection (sqlite "bad parameter or other API misuse")
         self._conn = _SafeConn(conn)
+
+    def transaction(self):
+        """Hold the store's single connection lock for one explicit DB transaction."""
+        return self._conn
+
+    def close(self) -> None:
+        self._conn.close()
 
     # --- nodes ---
     def add_node(self, node: Node) -> int:
@@ -239,26 +300,29 @@ class NodeStore:
         return {r["key"]: r["value"] for r in rows}
 
     # --- api tokens ---
-    def create_token(self, name: str, scope: str, token_hash: str, prefix: str) -> dict:
+    def create_token(self, name: str, scope: str, token_hash: str, prefix: str,
+                     expires_at: int | None = None) -> dict:
         """Insert a token (caller generates the secret + hash). Returns the metadata row only —
         the caller adds the one-time full secret to its response; the secret is never stored."""
         now = int(time.time())
         cur = self._conn.execute(
-            "INSERT INTO api_tokens(name, token_hash, scope, prefix, created_at) "
-            "VALUES(?, ?, ?, ?, ?)", (name, token_hash, scope, prefix, now))
+            "INSERT INTO api_tokens(name, token_hash, scope, prefix, created_at, expires_at) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (name, token_hash, scope, prefix, now, expires_at))
         self._conn.commit()
         return {"id": int(cur.lastrowid), "name": name, "scope": scope, "prefix": prefix,
-                "created_at": now, "last_used_at": None}
+                "created_at": now, "last_used_at": None, "expires_at": expires_at}
 
     def list_tokens(self) -> list[dict]:
         rows = self._conn.execute(
-            "SELECT id, name, scope, prefix, created_at, last_used_at FROM api_tokens "
+            "SELECT id, name, scope, prefix, created_at, last_used_at, expires_at FROM api_tokens "
             "ORDER BY id").fetchall()
         return [dict(r) for r in rows]
 
     def get_token_by_hash(self, token_hash: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, scope, prefix FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+            "SELECT id, scope, prefix, expires_at FROM api_tokens WHERE token_hash = ?",
+            (token_hash,)).fetchone()
         return dict(row) if row else None
 
     def touch_token(self, token_id: int) -> None:
@@ -350,6 +414,18 @@ class NodeStore:
              sub.expire_at, sub.id))
         self._conn.commit()
 
+    def update_subscription_refresh(self, sub: Subscription, *, success: bool) -> None:
+        """Persist only fetch-owned columns so a concurrent PATCH cannot be overwritten."""
+        assert sub.id is not None
+        self._conn.execute(
+            "UPDATE subscriptions SET "
+            "last_fetched=CASE WHEN ? THEN ? ELSE last_fetched END, "
+            "last_status=?, last_path=?, last_error=?, up_bytes=?, down_bytes=?, "
+            "total_bytes=?, expire_at=? WHERE id=?",
+            (int(success), sub.last_fetched, sub.last_status, sub.last_path, sub.last_error,
+             sub.up_bytes, sub.down_bytes, sub.total_bytes, sub.expire_at, sub.id))
+        self._conn.commit()
+
     def delete_subscription(self, sub_id: int) -> None:
         # Detach nodes (→ manual) so a live/active connection survives, then drop the sub.
         # One transaction so the detach + delete are atomic (audit P1).
@@ -357,6 +433,8 @@ class NodeStore:
             self._conn.execute(
                 "UPDATE nodes SET subscription_id = NULL WHERE subscription_id = ?", (sub_id,))
             self._conn.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
+            self._conn.execute("DELETE FROM settings WHERE key = ?",
+                               (f"subscription_shrink:{sub_id}",))
 
     # --- tuning profiles ---
     def add_profile(self, p: TuningProfile) -> int:
@@ -445,6 +523,58 @@ class NodeStore:
              None if h.last_real_ok is None else int(h.last_real_ok), h.last_real_ms,
              h.egress_ip, h.egress_ip6, h.checked_at, h.fail_count))
         self._conn.commit()
+
+    def update_health_direct(self, node_id: int, *, tcp_ok: bool, tcp_ms: int | None,
+                             http_ok: bool, http_ms: int | None,
+                             checked_at: str | None) -> None:
+        """Atomically update only fields owned by the direct TCP/HTTPS sweep."""
+        self._conn.execute(
+            """INSERT INTO node_health
+               (node_id, last_tcp_ok, last_tcp_ms, last_http_ok, last_http_ms, checked_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(node_id) DO UPDATE SET
+                 last_tcp_ok=excluded.last_tcp_ok, last_tcp_ms=excluded.last_tcp_ms,
+                 last_http_ok=excluded.last_http_ok, last_http_ms=excluded.last_http_ms,
+                 checked_at=CASE
+                   WHEN excluded.checked_at IS NULL THEN node_health.checked_at
+                   WHEN node_health.checked_at IS NULL OR excluded.checked_at >= node_health.checked_at
+                   THEN excluded.checked_at ELSE node_health.checked_at END""",
+            (node_id, int(tcp_ok), tcp_ms, int(http_ok), http_ms, checked_at),
+        )
+
+    def update_health_real(self, node_id: int, *, real_ok: bool, real_ms: int | None,
+                           egress_ip: str | None, egress_ip6: str | None,
+                           checked_at: str) -> None:
+        """Atomically update real-tunnel fields and its consecutive-failure counter."""
+        self._conn.execute(
+            """INSERT INTO node_health
+               (node_id, last_real_ok, last_real_ms, egress_ip, egress_ip6,
+                checked_at, fail_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(node_id) DO UPDATE SET
+                 last_real_ok=CASE
+                   WHEN node_health.checked_at IS NULL OR excluded.checked_at >= node_health.checked_at
+                   THEN excluded.last_real_ok ELSE node_health.last_real_ok END,
+                 last_real_ms=CASE
+                   WHEN node_health.checked_at IS NULL OR excluded.checked_at >= node_health.checked_at
+                   THEN excluded.last_real_ms ELSE node_health.last_real_ms END,
+                 egress_ip=CASE
+                   WHEN node_health.checked_at IS NULL OR excluded.checked_at >= node_health.checked_at
+                   THEN excluded.egress_ip ELSE node_health.egress_ip END,
+                 egress_ip6=CASE
+                   WHEN node_health.checked_at IS NULL OR excluded.checked_at >= node_health.checked_at
+                   THEN excluded.egress_ip6 ELSE node_health.egress_ip6 END,
+                 checked_at=CASE
+                   WHEN node_health.checked_at IS NULL OR excluded.checked_at >= node_health.checked_at
+                   THEN excluded.checked_at ELSE node_health.checked_at END,
+                 fail_count=CASE
+                   WHEN node_health.checked_at IS NOT NULL AND excluded.checked_at < node_health.checked_at
+                   THEN node_health.fail_count
+                   WHEN excluded.last_real_ok = 1 THEN 0
+                   ELSE node_health.fail_count + 1 END""",
+            (node_id, int(real_ok), real_ms, egress_ip, egress_ip6,
+             checked_at, 0 if real_ok else 1),
+        )
 
     def get_health(self, node_id: int) -> NodeHealth | None:
         row = self._conn.execute(

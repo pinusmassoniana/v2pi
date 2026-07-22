@@ -1,3 +1,6 @@
+import threading
+import time
+
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.models import Node, Subscription
 from pi_gw_panel.nodes.store import NodeStore
@@ -6,7 +9,7 @@ from pi_gw_panel.subs.service import refresh
 
 
 def _store(settings):
-    conn = connect(settings.db_path)
+    conn = connect(settings.db_path, check_same_thread=False)
     init_schema(conn)
     return NodeStore(conn)
 
@@ -129,8 +132,9 @@ def test_refresh_end_to_end(monkeypatch, settings):
 
 
 def _fake_state(s, settings):
+    supervisor = type("Sup", (), {"status": lambda self: {"running": False}})()
     return type("S", (), {"store": s, "settings": settings, "net": object(),
-                          "supervisor": object(), "xray_bin": None})()
+                          "supervisor": supervisor, "xray_bin": None})()
 
 
 def test_restart_active_reapplies_on_config_change(monkeypatch, settings):
@@ -164,3 +168,206 @@ def test_restart_active_switches_and_drops_stale_on_replacement(monkeypatch, set
                             {"active_changed": False, "active_replacement": new})
     assert calls == [new]                    # reconnected on the rotated server
     assert s.get_node(old) is None           # stale old node cleaned up after the switch
+
+
+def test_anomalous_shrink_is_stale_then_delete_on_confirmation(settings):
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
+    for i in range(10):
+        s.add_node(Node(id=None, name=f"n{i}", address=f"1.1.1.{i + 1}", port=443,
+                        uuid=f"u{i}", subscription_id=sid))
+    parsed = [Node(id=None, name=f"n{i}", address=f"1.1.1.{i + 1}", port=443,
+                   uuid=f"u{i}") for i in range(4)]
+
+    first = reconcile(s, sid, parsed, active_node_id=None)
+    assert first["removed"] == 0 and first["skipped_deletes"] == 6
+    assert sum(node.stale for node in s.list_nodes_for_sub(sid)) == 6
+
+    second = reconcile(s, sid, parsed, active_node_id=None)
+    assert second["removed"] == 6 and second["skipped_deletes"] == 0
+    assert len(s.list_nodes_for_sub(sid)) == 4
+
+
+def test_returning_node_clears_first_shrink_stale_marker(settings):
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
+    for i in range(4):
+        s.add_node(Node(id=None, name=f"n{i}", address=f"1.1.1.{i + 1}", port=443,
+                        uuid=f"u{i}", subscription_id=sid))
+    one = [Node(id=None, name="n0", address="1.1.1.1", port=443, uuid="u0")]
+    reconcile(s, sid, one, active_node_id=None)
+    assert sum(node.stale for node in s.list_nodes_for_sub(sid)) == 3
+
+    all_nodes = [Node(id=None, name=f"n{i}", address=f"1.1.1.{i + 1}", port=443,
+                      uuid=f"u{i}") for i in range(4)]
+    reconcile(s, sid, all_nodes, active_node_id=None)
+    assert not any(node.stale for node in s.list_nodes_for_sub(sid))
+
+
+def test_different_anomalous_shrink_does_not_confirm_deletes(settings):
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
+    for i in range(6):
+        s.add_node(Node(id=None, name=f"n{i}", address=f"1.1.1.{i + 1}", port=443,
+                        uuid=f"u{i}", subscription_id=sid))
+    first = [Node(id=None, name="n0", address="1.1.1.1", port=443, uuid="u0")]
+    different = [Node(id=None, name="n1", address="1.1.1.2", port=443, uuid="u1")]
+    reconcile(s, sid, first, active_node_id=None)
+    result = reconcile(s, sid, different, active_node_id=None)
+    assert result["removed"] == 0 and len(s.list_nodes_for_sub(sid)) == 6
+    assert reconcile(s, sid, different, active_node_id=None)["removed"] == 5
+
+
+def test_reconcile_rolls_back_all_rows_on_store_failure(monkeypatch, settings):
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
+    for i in range(4):
+        s.add_node(Node(id=None, name=f"old{i}", address=f"1.1.1.{i + 1}", port=443,
+                        uuid=f"u{i}", subscription_id=sid))
+    parsed = [Node(id=None, name="changed0", address="1.1.1.1", port=443, uuid="u0"),
+              Node(id=None, name="changed1", address="1.1.1.2", port=443, uuid="u1")]
+    original_delete = s.delete_node
+
+    def fail_after_delete(node_id):
+        original_delete(node_id)
+        raise RuntimeError("disk fault")
+
+    monkeypatch.setattr(s, "delete_node", fail_after_delete)
+    import pytest
+    with pytest.raises(RuntimeError, match="disk fault"):
+        reconcile(s, sid, parsed, active_node_id=None)
+    assert [node.name for node in s.list_nodes_for_sub(sid)] == [f"old{i}" for i in range(4)]
+
+
+def test_failed_active_reapply_restores_old_row_and_retries(monkeypatch, settings):
+    from pi_gw_panel.controller import ApplyResult
+    from pi_gw_panel.subs import service
+
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="https://h/sub"))
+    active = s.add_node(Node(id=None, name="n", address="1.1.1.1", port=443, uuid="u",
+                             public_key="OLD", subscription_id=sid))
+    s.set_setting("active_node_id", str(active))
+    monkeypatch.setattr(service, "fetch", lambda *a, **k: (
+        '[{"name":"n","address":"1.1.1.1","port":443,"uuid":"u","public_key":"NEW"}]',
+        "direct", {}))
+    calls = []
+    monkeypatch.setattr(service, "apply_node", lambda *a, **k:
+                        calls.append(1) or ApplyResult(ok=False, error="reload failed"))
+    state = _fake_state(s, settings)
+
+    first = refresh(state, s.get_subscription(sid))
+    second = refresh(state, s.get_subscription(sid))
+    assert first["ok"] is False and second["ok"] is False
+    assert len(calls) == 2
+    assert s.get_node(active).public_key == "OLD"
+
+
+def test_zero_valid_nodes_is_error_and_does_not_advance_last_fetched(monkeypatch, settings):
+    from pi_gw_panel.subs import service
+
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="https://h/sub"))
+    monkeypatch.setattr(service, "fetch", lambda *a, **k: ("<html>captcha</html>", "direct", {}))
+    result = refresh(_fake_state(s, settings), s.get_subscription(sid))
+    saved = s.get_subscription(sid)
+    assert result["ok"] is False and "zero valid nodes" in result["error"]
+    assert saved.last_fetched is None and saved.last_status.startswith("error:")
+
+
+def test_refresh_lifecycle_update_does_not_overwrite_concurrent_patch(monkeypatch, settings):
+    from pi_gw_panel.subs import service
+
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="old", url="https://h/sub"))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_fetch(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return ('[{"name":"n","address":"1.1.1.1","port":443,"uuid":"u"}]',
+                "direct", {})
+
+    monkeypatch.setattr(service, "fetch", blocked_fetch)
+    state = _fake_state(s, settings)
+    thread = threading.Thread(target=refresh, args=(state, s.get_subscription(sid)))
+    thread.start()
+    assert entered.wait(2)
+    edited = s.get_subscription(sid)
+    edited.name = "new"
+    edited.enabled = False
+    s.update_subscription(edited)
+    release.set()
+    thread.join(2)
+
+    saved = s.get_subscription(sid)
+    assert saved.name == "new" and saved.enabled is False
+    assert saved.last_status.startswith("ok:")
+
+
+def test_same_subscription_refreshes_are_serialized(monkeypatch, settings):
+    from pi_gw_panel.subs import service
+
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="https://h/sub"))
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def blocked_fetch(*args, **kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            if calls == 1:
+                entered.set()
+        if calls == 1:
+            assert release.wait(2)
+        return ('[{"name":"n","address":"1.1.1.1","port":443,"uuid":"u"}]',
+                "direct", {})
+
+    monkeypatch.setattr(service, "fetch", blocked_fetch)
+    state = _fake_state(s, settings)
+    threads = [threading.Thread(target=refresh, args=(state, s.get_subscription(sid)))
+               for _ in range(2)]
+    threads[0].start()
+    assert entered.wait(2)
+    threads[1].start()
+    time.sleep(0.05)
+    assert calls == 1
+    release.set()
+    for thread in threads:
+        thread.join(2)
+    assert calls == 2 and len(s.list_nodes_for_sub(sid)) == 1
+
+
+def test_url_changed_during_fetch_discards_old_feed(monkeypatch, settings):
+    from pi_gw_panel.subs import service
+
+    s = _store(settings)
+    sid = s.add_subscription(Subscription(id=None, name="x", url="https://old/sub"))
+    entered = threading.Event()
+    release = threading.Event()
+    result = {}
+
+    def blocked_fetch(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return ('[{"name":"old","address":"1.1.1.1","port":443,"uuid":"u"}]',
+                "direct", {})
+
+    monkeypatch.setattr(service, "fetch", blocked_fetch)
+    state = _fake_state(s, settings)
+    thread = threading.Thread(
+        target=lambda: result.update(refresh(state, s.get_subscription(sid))))
+    thread.start()
+    assert entered.wait(2)
+    edited = s.get_subscription(sid)
+    edited.url = "https://new/sub"
+    s.update_subscription(edited)
+    release.set()
+    thread.join(2)
+
+    assert result["ok"] is False and "changed during fetch" in result["error"]
+    assert s.list_nodes_for_sub(sid) == []

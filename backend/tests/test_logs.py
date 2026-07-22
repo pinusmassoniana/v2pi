@@ -1,4 +1,6 @@
-from pi_gw_panel.logs import tail
+import logging
+
+from pi_gw_panel.logs import setup_app_logging, teardown_app_logging, tail
 
 
 def test_tail_returns_last_n_lines(tmp_path):
@@ -10,3 +12,12 @@ def test_tail_returns_last_n_lines(tmp_path):
 
 def test_tail_missing_file_is_empty(tmp_path):
     assert tail(str(tmp_path / "nope.log"), 5) == []
+
+
+def test_app_logging_handler_has_explicit_lifecycle(tmp_path):
+    root = logging.getLogger()
+    before = list(root.handlers)
+    handler = setup_app_logging(str(tmp_path / "app.log"))
+    assert handler in root.handlers
+    teardown_app_logging(handler)
+    assert root.handlers == before

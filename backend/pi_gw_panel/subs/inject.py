@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import platform
 import urllib.parse
 from dataclasses import dataclass
@@ -38,23 +40,37 @@ def build_request(url: str, injection: dict, tokens: dict) -> BuiltRequest:
 
 
 def default_injection() -> dict:
-    """impl-design defaults for a fresh subscription."""
+    """Privacy-preserving defaults for a fresh subscription."""
     return {
         "headers": {
             "x-hwid": "{machine_id}",
             "x-device-os": "{device_os}",
-            "x-device-ver": "{device_ver}",
-            "x-device-model": "{device_model}",
             "user-agent": "v2pi/1.0",
         },
         "query": {},
     }
 
 
-def host_tokens(machine_id: str) -> dict:
+def host_tokens(machine_id: str, *, app_secret: str = "", subscription_id=None) -> dict:
+    """Coarse defaults plus explicit ``host_*`` escape hatches for custom provider contracts.
+
+    Existing ``{machine_id}`` templates become a per-subscription pseudonym. An operator must
+    deliberately use a ``{host_*}`` token to disclose an exact host fingerprint.
+    """
+    subject = str(subscription_id if subscription_id is not None else "preview")
+    # Production always supplies the persisted app secret. The local/test fallback still varies
+    # by host instead of producing one cross-install identifier from the public dev default.
+    key_source = app_secret if app_secret and app_secret != "dev-insecure-secret" else machine_id
+    key = key_source.encode("utf-8")
+    pseudonym = hmac.new(key, subject.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    release = platform.release()
+    machine = platform.machine()
     return {
-        "machine_id": machine_id,
+        "machine_id": pseudonym,
         "device_os": platform.system().lower(),
-        "device_ver": platform.release(),
-        "device_model": platform.machine(),
+        "device_ver": release.split(".", 1)[0],
+        "device_model": "arm" if machine.lower().startswith(("arm", "aarch")) else "other",
+        "host_machine_id": machine_id,
+        "host_device_ver": release,
+        "host_device_model": machine,
     }

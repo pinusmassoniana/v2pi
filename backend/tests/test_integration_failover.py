@@ -30,9 +30,13 @@ def test_stubbed_probe_failover_switches_active(settings, stub_xray):
         monitor = HealthMonitor(
             state,
             tcp_ping=lambda addr, port: (True, 5),
+            http_ping=lambda addr, port, sni: (True, 6),
             real_request=lambda proxy, url: (False, None, None, None),
             now_iso=lambda: "2026-06-03T00:00:00Z",
-            after_tick=lambda: failover.run(state, now=1000.0),
+            after_tick=lambda: failover.run(
+                state, now=1000.0,
+                real_through=lambda *_args, **_kwargs: (True, 8, "203.0.113.9", None),
+            ),
         )
 
         monitor._tick()                                       # fail_count(a)=1 < 2 → hold

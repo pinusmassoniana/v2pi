@@ -32,7 +32,10 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     doh_on = profile.doh_enabled if profile is not None else True
     doh_url = profile.doh_url if profile is not None and profile.doh_url else settings.doh_url
     # gateway DNS interception needs a tunnelled resolver present even if a profile disabled DoH
-    dns_servers = ([{"address": doh_url}] if (doh_on or dns_intercept) else []) + ["localhost"]
+    if dns_intercept:
+        dns_servers = [{"address": doh_url}]
+    else:
+        dns_servers = ([{"address": doh_url}] if doh_on else []) + ["localhost"]
 
     # proxy outbound: user + transport/security-aware streamSettings.
     #   tcp+reality+vision (legacy) ── realitySettings + user.flow
@@ -77,8 +80,9 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
         stream["xhttpSettings"] = xs
 
     cfg = {
-        "log": {"loglevel": "warning",
-                "error": settings.xray_error_log, "access": settings.xray_access_log},
+        # Keep access logging off by default. With no error path Xray writes diagnostics to
+        # stderr, which the supervisor retains as a bounded, redacted tail.
+        "log": {"loglevel": "warning", "access": "none"},
         "dns": {"servers": dns_servers},
         "inbounds": [
             {
@@ -135,10 +139,7 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
         if not node.flow:
             mux: dict = {"enabled": bool(profile.mux_enabled)}
             if profile.mux_enabled and profile.mux_concurrency.strip():
-                try:
-                    mux["concurrency"] = int(profile.mux_concurrency)
-                except ValueError:
-                    pass
+                mux["concurrency"] = int(profile.mux_concurrency)
             if profile.mux_enabled and profile.xudp_proxy_udp443:
                 mux["xudpProxyUDP443"] = profile.xudp_proxy_udp443
             proxy_out["mux"] = mux

@@ -1,4 +1,5 @@
 """Tests for the 2026-06-10 project audit fixes (B1-B9) and features N2/N4/N5."""
+import subprocess
 import time
 import pytest
 from fastapi.testclient import TestClient
@@ -85,7 +86,9 @@ def test_dnsmasq_apply_atomic(tmp_path):
 
         pid = 1
 
-    sup = DnsmasqSupervisor("dnsmasq", str(conf), popen=lambda cmd: (spawned.append(cmd), _P())[1])
+    sup = DnsmasqSupervisor(
+        "dnsmasq", str(conf), popen=lambda cmd: (spawned.append(cmd), _P())[1],
+        run=lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, "", ""))
     sup.apply("interface=eth0.2\n")
     assert conf.read_text() == "interface=eth0.2\n"
     assert not (tmp_path / "dnsmasq.conf.tmp").exists()   # temp renamed away
@@ -219,12 +222,14 @@ def test_audit_log_records_mutations(settings, stub_xray):
     assert all(e["method"] != "GET" for e in entries)
 
 
-def test_audit_log_failed_mutations_not_recorded(settings, stub_xray):
+def test_audit_log_records_failed_mutations(settings, stub_xray):
     c = _client(settings, stub_xray)
     tok = _login(c)
     bad = {"name": "n", "address": "1.2.3.4", "port": 0, "uuid": "u"}
     c.post("/api/nodes", json=bad, headers={"X-CSRF-Token": tok})     # 422
-    assert all(e["path"] != "/api/nodes" for e in c.get("/api/audit").json())
+    entry = next(e for e in c.get("/api/audit").json() if e["path"] == "/api/nodes")
+    assert entry["actor"] == "user:admin"
+    assert entry["status"] == 422
 
 
 def test_audit_log_capped(settings):

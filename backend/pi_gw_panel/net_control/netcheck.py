@@ -5,10 +5,107 @@ import subprocess
 import time
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
+from pi_gw_panel.net_control.plan import NetPlan
 
 
 def _run_text(cmd: list[str]) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+def iface_addresses(iface: str, run=_run_text) -> set[str]:
+    """Return normalized CIDRs currently assigned to one interface."""
+    try:
+        text = run(["ip", "-o", "addr", "show", "dev", iface])
+    except (subprocess.CalledProcessError, OSError):
+        return set()
+    found: set[str] = set()
+    for line in text.splitlines():
+        parts = line.split()
+        for family in ("inet", "inet6"):
+            if family not in parts:
+                continue
+            pos = parts.index(family)
+            if pos + 1 >= len(parts):
+                continue
+            try:
+                found.add(str(ipaddress.ip_interface(parts[pos + 1])))
+            except ValueError:
+                pass
+    return found
+
+
+def _normalized_address(addr: str) -> str | None:
+    try:
+        return str(ipaddress.ip_interface(addr))
+    except ValueError:
+        return None
+
+
+def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
+    """Truthful gateway readiness, stricter than process liveness.
+
+    A migration may commit only when every layer needed to carry client traffic through the
+    intended active tunnel is confirmed. Failures and unavailable host probes are fail-closed.
+    """
+    store = state.store
+    provision_result = getattr(state, "provision_result", None)
+    provisioning = bool(provision_result is not None and getattr(provision_result, "ok", False))
+
+    manage_segment = (store.get_setting("manage_segment") or "1") == "1"
+    iface = store.get_setting("managed_segment_iface") or ""
+    try:
+        actual = address_reader(iface) if manage_segment and iface else set()
+    except Exception:
+        actual = set()
+    actual = {normalized for value in actual if (normalized := _normalized_address(value))}
+    expected = [_normalized_address(store.get_setting("managed_segment_addr4") or "")]
+    if (store.get_setting("ipv6_enabled") or "0") == "1":
+        expected.append(_normalized_address(store.get_setting("managed_segment_addr6") or ""))
+    segment_addresses = bool(
+        manage_segment and expected and all(value is not None and value in actual for value in expected))
+
+    dns = getattr(state, "dnsmasq", None)
+    try:
+        dnsmasq = bool(
+            (store.get_setting("manage_dnsmasq") or "1") == "1"
+            and dns is not None and dns.status().get("running"))
+    except Exception:
+        dnsmasq = False
+
+    net = state.net
+    enforcement = bool(
+        getattr(net, "enforcement_status", "unknown") == "ok"
+        and getattr(net, "wan_blocked", None) is False)
+
+    active_value = store.get_setting("active_node_id")
+    try:
+        active_id = int(active_value) if active_value else None
+    except (TypeError, ValueError):
+        active_id = None
+    try:
+        active_node = active_id is not None and store.get_node(active_id) is not None
+    except Exception:
+        active_node = False
+
+    try:
+        xray = bool(state.supervisor.status().get("running"))
+    except Exception:
+        xray = False
+    try:
+        health = active_health(store)
+    except Exception:
+        health = None
+    tunnel = bool(
+        health is not None and health.get("real_ok") is True and health.get("stale") is False)
+    return {
+        "provisioning": provisioning,
+        "segment_addresses": segment_addresses,
+        "dnsmasq": dnsmasq,
+        "enforcement": enforcement,
+        "active_node": active_node,
+        "xray": xray,
+        "tunnel": tunnel,
+    }
 
 
 def _iface_mac(iface: str, sysfs: str = "/sys/class/net") -> str | None:
@@ -145,11 +242,12 @@ def network_status(store, settings: Settings, *, sysfs: str = "/sys/class/net",
     }
 
 
-def router_recommendations(settings: Settings, ipv6_enabled: bool = False,
+def router_recommendations(settings: Settings | NetPlan, ipv6_enabled: bool = False,
                            segment_ip6: str = "") -> list[dict]:
     """Static, config-derived guidance for the one box the panel never touches —
     the router. The live-status panel verifies the result visually. When the IPv6 tunnel is
     on, append the v6 prefix/RA guidance (the panel tunnels v6 but RA is host/router-managed)."""
+    # Accept the effective store-resolved NetPlan as well as immutable Settings for callers/tests.
     iface = settings.segment_iface
     vlan = iface.split(".")[-1] if "." in iface else "?"
     recs = [

@@ -1,7 +1,10 @@
 import asyncio
+import concurrent.futures
 import datetime
 import logging
+import random
 import time
+
 from pi_gw_panel.subs import service
 
 log = logging.getLogger("pi_gw_panel")
@@ -23,7 +26,7 @@ def _age_since(last_fetched: str | None) -> float | None:
 
 class SubScheduler:
     """Background asyncio loop that refreshes subscriptions whose interval has elapsed.
-    The blocking refresh (urllib) is offloaded to a thread so the event loop stays free.
+    The blocking refresh is offloaded to a bounded pool so the event loop stays free.
     `interval_sec <= 0` means manual-only (never auto-refreshed)."""
 
     def __init__(self, state, tick_sec: float = 30.0):
@@ -31,11 +34,19 @@ class SubScheduler:
         self._tick = tick_sec
         self._task: asyncio.Task | None = None
         self._last_run: dict[int, float] = {}
+        self._retry_at: dict[int, float] = {}
+        self._failures: dict[int, int] = {}
+        self._pool: concurrent.futures.ThreadPoolExecutor | None = None
 
     def due_subs(self, now: float) -> list:
         due = []
         for sub in self._state.store.list_subscriptions():
             if sub.interval_sec <= 0 or not sub.enabled:   # manual-only or paused (N2)
+                continue
+            retry_at = self._retry_at.get(sub.id)
+            if retry_at is not None:
+                if now >= retry_at:
+                    due.append(sub)
                 continue
             last = self._last_run.get(sub.id)
             if last is None:
@@ -52,12 +63,35 @@ class SubScheduler:
         return due
 
     def run_once(self, now: float) -> None:
-        for sub in self.due_subs(now):
-            service.refresh(self._state, sub)
-            self._last_run[sub.id] = now
+        due = self.due_subs(now)
+        if not due:
+            return
+        if self._pool is None:
+            self._pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="sub-refresh")
+        futures = {self._pool.submit(service.refresh, self._state, sub): sub for sub in due}
+        for future, sub in futures.items():
+            try:
+                result = future.result()
+                ok = result is None or result.get("ok", "error" not in result)
+            except Exception:
+                log.exception("SubScheduler: refresh failed for subscription %s", sub.id)
+                ok = False
+            if ok:
+                self._last_run[sub.id] = now
+                self._retry_at.pop(sub.id, None)
+                self._failures.pop(sub.id, None)
+            else:
+                failures = self._failures.get(sub.id, 0) + 1
+                self._failures[sub.id] = failures
+                delay = 30.0 * (2 ** min(failures - 1, 5)) * random.uniform(0.8, 1.2)
+                self._retry_at[sub.id] = now + min(900.0, delay)
 
     def start(self) -> None:
         if self._task is None or self._task.done():
+            if self._pool is None:
+                self._pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=4, thread_name_prefix="sub-refresh")
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -68,6 +102,12 @@ class SubScheduler:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._pool is not None:
+            pool = self._pool
+            self._pool = None
+            # At most four live fetches remain and each has a 20-second wall deadline. Wait for
+            # them before AppState closes the shared store; queued refreshes are cancelled.
+            await asyncio.to_thread(pool.shutdown, wait=True, cancel_futures=True)
 
     async def _loop(self) -> None:
         while True:

@@ -22,10 +22,12 @@ def needs_setup(store) -> bool:
 def create_credential(store, username: str, password: str) -> None:
     """Create the one-and-only credential. Refuses if one already exists (the
     open /api/setup route relies on this to be a one-time action)."""
-    if not needs_setup(store):
-        raise ValueError("credential already exists")
-    store.set_setting(_USER, username)
-    store.set_setting(_HASH, hash_password(password))
+    password_hash = hash_password(password)
+    with store.transaction():
+        if not needs_setup(store):
+            raise ValueError("credential already exists")
+        store.set_setting(_USER, username)
+        store.set_setting(_HASH, password_hash)
 
 
 def verify_login(store, username: str, password: str) -> bool:

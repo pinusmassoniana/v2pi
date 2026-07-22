@@ -1,9 +1,12 @@
 import logging
+import ipaddress
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 _log = logging.getLogger(__name__)
+_IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 
 
 def safe_int(value, default: int, name: str = "value") -> int:
@@ -64,6 +67,8 @@ class Settings:
     session_secret: str = "dev-insecure-secret"
     login_lockout_sec: int = 60   # per-IP lockout after 5 failed logins (e2e overrides it down)
     bind_host: str = "127.0.0.1"  # prod binds mgmt_ip (Home); dev = localhost
+    tls_cert: str = ""
+    tls_key: str = ""
     static_dir: str = ""
     local_proxy_port: int = 10808  # gated 127.0.0.1 http inbound for tunneled sub-fetch
     base_dir: str = ""
@@ -76,7 +81,11 @@ class Settings:
                     setattr(self, attr, os.path.join(self.base_dir, val))
 
     def ensure_dirs(self) -> None:
-        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.data_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self.data_dir, 0o700)
+        except OSError as exc:
+            _log.warning("could not secure data directory %s: %s", self.data_dir, exc)
         for p in (self.db_path, self.config_path, self.lastgood_path):
             parent = os.path.dirname(p)
             if parent:
@@ -89,22 +98,71 @@ class Settings:
         secret defaults empty (the entrypoint refuses to start without a real one)."""
         env = os.environ if env is None else env
         data = env.get("PI_GW_DATA_DIR", "data")
-        return cls(
+        secret = env.get("PI_GW_SESSION_SECRET", "")
+        if secret and len(secret.encode("utf-8")) < 32:
+            raise ValueError("PI_GW_SESSION_SECRET must be at least 32 bytes")
+        tls_cert = env.get("PI_GW_TLS_CERT", "")
+        tls_key = env.get("PI_GW_TLS_KEY", "")
+        if bool(tls_cert) != bool(tls_key):
+            raise ValueError("PI_GW_TLS_CERT and PI_GW_TLS_KEY must be configured together")
+        values = dict(
             data_dir=data,
             db_path=os.path.join(data, "pi_gw_panel.sqlite"),
             config_path=os.path.join(data, "xray.json"),
             lastgood_path=os.path.join(data, "xray.lastgood.json"),
             bind_host=env.get("PI_GW_BIND_HOST", "0.0.0.0"),   # reachable by default; auth-gated
+            tls_cert=tls_cert,
+            tls_key=tls_key,
             static_dir=env.get("PI_GW_STATIC_DIR", _packaged_static()),
             xray_bin=env.get("PI_GW_XRAY_BIN", "xray"),
-            session_secret=env.get("PI_GW_SESSION_SECRET", ""),
+            session_secret=secret,
             # safe-int so a typo/stray newline in the env var can't crash boot (audit P2)
             login_lockout_sec=safe_int(env.get("PI_GW_LOGIN_LOCKOUT_SEC", "60"), 60,
                                        "PI_GW_LOGIN_LOCKOUT_SEC"),
             dnsmasq_leases=env.get("PI_GW_DNSMASQ_LEASES", os.path.join(data, "dnsmasq.leases")),
             client_dns6=env.get("PI_GW_CLIENT_DNS6", "2606:4700:4700::1111"),
             geoip_db=env.get("PI_GW_GEOIP_DB", "/usr/local/share/dbip-country-lite.mmdb"),
+            mgmt_iface=env.get("PI_GW_MGMT_IFACE", "eth0"),
+            mgmt_ip=env.get("PI_GW_MGMT_IP", "192.168.1.120"),
+            segment_iface=env.get("PI_GW_SEGMENT_IFACE", "eth0.2"),
+            segment_ip=env.get("PI_GW_SEGMENT_IP", "192.168.10.2"),
+            dhcp_start=env.get("PI_GW_DHCP_START", "192.168.10.30"),
+            dhcp_end=env.get("PI_GW_DHCP_END", "192.168.10.200"),
+            dhcp_lease=env.get("PI_GW_DHCP_LEASE", "12h"),
+            client_dns=env.get("PI_GW_CLIENT_DNS", "1.1.1.1"),
         )
+        for key in ("mgmt_iface", "segment_iface"):
+            if not _IFACE_RE.fullmatch(values[key]):
+                raise ValueError(f"invalid interface name for {key}")
+        for key in ("mgmt_ip", "segment_ip", "dhcp_start", "dhcp_end"):
+            try:
+                ipaddress.IPv4Address(values[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be an IPv4 address") from exc
+        try:
+            ipaddress.ip_address(values["client_dns"])
+        except ValueError as exc:
+            raise ValueError("client_dns must be an IP address") from exc
+        if not re.fullmatch(r"[1-9][0-9]*[smhdw]", values["dhcp_lease"]):
+            raise ValueError("dhcp_lease must be a positive duration such as 12h")
+        return cls(**values)
+
+    @property
+    def bootstrap_token_path(self) -> str:
+        return os.path.join(self.data_dir, "bootstrap_token")
+
+    @property
+    def tls_enabled(self) -> bool:
+        return bool(self.tls_cert and self.tls_key)
+
+    @property
+    def loopback_bind(self) -> bool:
+        if self.bind_host.lower() == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(self.bind_host).is_loopback
+        except ValueError:
+            return False
 
     # Log file paths derive from data_dir (Wave 3a logs viewer) so they always track
     # the active data dir (incl. base_dir / test tmp dirs).

@@ -4,6 +4,7 @@ from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.models import Node, TuningProfile, RoutingRule
 from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
 from pi_gw_panel.net_control.dryrun import DryRunBackend
+from pi_gw_panel.net_control.plan import NetResult
 from pi_gw_panel.controller import apply_node, apply_net
 
 
@@ -136,5 +137,68 @@ def test_apply_node_rolls_back_when_reload_fails(settings, stub_xray):
                      store=store, xray_bin=stub_xray)
     assert res.ok is False
     assert "apply failed" in res.error.lower()
-    assert net.applied == []                            # net never applied / torn down
+    assert net.applied and "tproxy ip to" not in net.applied[-1]  # fail-closed guard installed
     assert store.get_setting("active_node_id") is None  # not persisted on failure
+
+
+class _FailingNet:
+    def __init__(self, *, guard_ok=True):
+        self.apply_calls = 0
+        self.guard_calls = 0
+        self.teardown_calls = 0
+        self.guard_ok = guard_ok
+
+    def apply_tproxy(self, plan):
+        self.apply_calls += 1
+        return NetResult(ok=False, error="nft apply denied")
+
+    def apply_guard(self, plan):
+        self.guard_calls += 1
+        return NetResult(ok=self.guard_ok, error="guard denied" if not self.guard_ok else "")
+
+    def teardown(self):
+        self.teardown_calls += 1
+        return NetResult(ok=True)
+
+
+def test_apply_node_rejects_failed_netresult_and_keeps_guard(settings, stub_xray):
+    store, nid, sup, _ = _wire(settings, stub_xray)
+    store.set_setting("kill_switch_enabled", "1")
+    net = _FailingNet()
+    res = apply_node(store.get_node(nid), settings, sup, net,
+                     store=store, xray_bin=stub_xray)
+    assert res.ok is False and "nft apply denied" in res.error
+    assert store.get_setting("active_node_id") is None
+    assert net.guard_calls == 1
+    assert net.teardown_calls == 0, "fail-closed recovery must never remove the guard"
+    assert getattr(net, "enforcement_status") == "ok"
+    assert getattr(net, "wan_blocked") is True
+
+
+def test_apply_node_reports_failed_guard_recovery(settings, stub_xray):
+    store, nid, sup, _ = _wire(settings, stub_xray)
+    store.set_setting("kill_switch_enabled", "1")
+    net = _FailingNet(guard_ok=False)
+    res = apply_node(store.get_node(nid), settings, sup, net,
+                     store=store, xray_bin=stub_xray)
+    assert res.ok is False
+    assert "guard denied" in res.error
+    assert getattr(net, "enforcement_status") == "error"
+    assert getattr(net, "wan_blocked") is None
+
+
+def test_same_node_reapply_preserves_real_rollback_target(settings, stub_xray):
+    store, first, sup, net = _wire(settings, stub_xray)
+    second = store.add_node(Node(id=None, name="n2", address="5.6.7.8", port=443,
+                                 uuid="u-2"))
+    try:
+        assert apply_node(store.get_node(first), settings, sup, net,
+                          store=store, xray_bin=stub_xray).ok
+        assert apply_node(store.get_node(second), settings, sup, net,
+                          store=store, xray_bin=stub_xray).ok
+        assert store.get_setting("prev_active_node_id") == str(first)
+        assert apply_node(store.get_node(second), settings, sup, net,
+                          store=store, xray_bin=stub_xray).ok
+        assert store.get_setting("prev_active_node_id") == str(first)
+    finally:
+        sup.stop()

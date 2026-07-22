@@ -1,7 +1,11 @@
+import time
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.net_control.dryrun import DryRunBackend
+from pi_gw_panel.net_control import events as conn_events
 
 
 def _state(settings, stub_xray):
@@ -48,7 +52,10 @@ def test_status_and_nodes(settings, stub_xray):
     assert {k: v for k, v in st.items() if k != "server_now"} == {
         "running": False, "pid": None, "active_node_id": None,
         "xray_state": "stopped", "active_since": None, "last_failover_at": None,
-        "prev_active_node_id": None}
+        "prev_active_node_id": None,
+        "tunnel_online": False, "active_health_fresh": False,
+        "failover_ready": False, "eligible_standby_count": 0,
+        "health_enabled": True, "failover_enabled": True, "failovers_24h": 0}
     # add a node (mutation -> needs csrf)
     body = {"name": "n1", "address": "1.2.3.4", "port": 47000, "uuid": "u-1",
             "sni": "www.microsoft.com", "public_key": "PK", "short_id": "ab12"}
@@ -60,6 +67,60 @@ def test_status_and_nodes(settings, stub_xray):
     nodes = c.get("/api/nodes").json()
     assert [n["id"] for n in nodes] == [nid]
     assert nodes[0]["name"] == "n1"
+
+
+def test_status_reports_tunnel_failover_readiness_and_recent_count(settings, stub_xray):
+    c = _client(settings, stub_xray)
+    tok = _login(c)
+    headers = {"X-CSRF-Token": tok}
+    active = c.post(
+        "/api/nodes",
+        json={"name": "active", "address": "1.2.3.4", "port": 443, "uuid": "u-1"},
+        headers=headers,
+    ).json()["id"]
+    standby = c.post(
+        "/api/nodes",
+        json={"name": "standby", "address": "2.3.4.5", "port": 443, "uuid": "u-2"},
+        headers=headers,
+    ).json()["id"]
+    try:
+        assert c.post(f"/api/nodes/{active}/apply", headers=headers).status_code == 200
+        store = c.app.state.app_state.store
+        now = time.time()
+        checked_at = datetime.fromtimestamp(now, timezone.utc).isoformat()
+        store.update_health_real(
+            active, real_ok=True, real_ms=17, egress_ip="203.0.113.8",
+            egress_ip6=None, checked_at=checked_at,
+        )
+        store.update_health_direct(
+            standby, tcp_ok=True, tcp_ms=11, http_ok=False, http_ms=None,
+            checked_at=checked_at,
+        )
+        conn_events.record(store, "failover", "recent", now=now - 60)
+        conn_events.record(store, "failover", "old", now=now - 90000)
+
+        status = c.get("/api/status").json()
+        assert {key: status[key] for key in (
+            "tunnel_online", "active_health_fresh", "failover_ready",
+            "eligible_standby_count", "health_enabled", "failover_enabled",
+            "failovers_24h",
+        )} == {
+            "tunnel_online": True,
+            "active_health_fresh": True,
+            "failover_ready": True,
+            "eligible_standby_count": 1,
+            "health_enabled": True,
+            "failover_enabled": True,
+            "failovers_24h": 1,
+        }
+
+        store.set_setting("failover_enabled", "0")
+        disabled = c.get("/api/status").json()
+        assert disabled["failover_enabled"] is False
+        assert disabled["failover_ready"] is False
+        assert disabled["eligible_standby_count"] == 1
+    finally:
+        c.app.state.app_state.supervisor.stop()
 
 
 def test_apply_and_rollback(settings, stub_xray):
@@ -127,3 +188,21 @@ def test_rollback_reverts_active_node(settings, stub_xray):
         assert c.get("/api/status").json()["active_node_id"] == a   # reverted to the prior apply
     finally:
         c.app.state.app_state.supervisor.stop()
+
+
+def test_rollback_reload_failure_installs_disconnected_guard(
+        settings, stub_xray, monkeypatch):
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    state = c.app.state.app_state
+    state.store.set_setting("prev_active_node_id", "1")
+    monkeypatch.setattr(
+        "pi_gw_panel.api.routes.ConfigManager.rollback", lambda _self: True)
+    monkeypatch.setattr(state.supervisor, "reload", lambda: False)
+
+    response = c.post("/api/rollback", headers=h)
+
+    assert response.status_code == 502
+    assert state.net.applied
+    assert "tproxy ip to" not in state.net.applied[-1]
+    assert " drop" in state.net.applied[-1]
