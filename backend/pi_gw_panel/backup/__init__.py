@@ -24,11 +24,20 @@ MAX_RULES = 256
 
 # Complete config intent stored in SQLite. Explicit tuple prevents a hostile restore from
 # smuggling auth/session/transient keys simply because runtime code adds a new setting later.
+#
+# The road-warrior keys are carried so a restore onto a fresh host brings remote access back
+# instead of silently dropping it. `rw_private_key` is deliberately ABSENT: a backup document is
+# downloaded into the browser and handed around, and the Reality private key is the one secret
+# that lets anything impersonate this gateway's inbound. It is re-entered by hand after a restore.
 _SETTINGS_KEYS = tuple(dict.fromkeys((*SETTINGS_DEFAULTS,
     "segment_iface", "segment_ip", "dhcp_start", "dhcp_end", "dhcp_lease",
     "client_dns", "kill_switch_enabled", "lan_access_enabled", "default_profile_id",
-    "ula_prefix6")))
+    "ula_prefix6",
+    "rw_enabled", "rw_port", "rw_dest", "rw_server_names", "rw_short_ids",
+    "rw_public_key", "rw_endpoint", "rw_clients", "rw_hosts", "rw_routed_nets")))
 _SETTINGS_SET = frozenset(_SETTINGS_KEYS)
+# Never leaves the gateway in a backup — asserted by a test, not just by omission above.
+_SETTINGS_NEVER_BACKED_UP = frozenset({"rw_private_key"})
 
 _NODE_DUMP = ("id",) + _NODE_COLS
 _PROFILE_DUMP = ("id",) + _PROFILE_COLS + ("noises",)

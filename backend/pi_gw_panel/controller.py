@@ -33,6 +33,18 @@ def _ipv6_enabled(store) -> bool:
     return (store.get_setting("ipv6_enabled") or "0") == "1"
 
 
+def _rw_inbound(store) -> dict | None:
+    """The road-warrior inbound (default OFF). Values are validated at the API boundary, so a
+    raise here means hand-edited/restored state — degrade to "feature off" instead of blocking
+    every apply: a malformed remote-access setting must not be able to keep the tunnel down."""
+    from pi_gw_panel import rw_inbound as rw
+    try:
+        return rw.resolve(store)
+    except ValueError as exc:
+        logger.warning("road-warrior inbound disabled — invalid stored settings: %s", exc)
+        return None
+
+
 def _resolve_routing(store) -> tuple:
     """Ordered routing rules + the configurable default action (default 'proxy').
     Empty rules + 'proxy' default reproduce the Wave-0 routing exactly."""
@@ -154,14 +166,17 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
         stats = _resolve_stats(store)
         dns_intercept = _dns_intercept(store)
         ipv6 = _ipv6_enabled(store)
+        rw = _rw_inbound(store)
         domain_strategy = store.get_setting("routing_domain_strategy") or "IPIfNonMatch"
     else:
         profile, routing, tunneled, stats, dns_intercept, ipv6 = None, None, False, None, False, False
         explicit = False
+        rw = None
         domain_strategy = "IPIfNonMatch"
     return build_config(node, settings, profile=profile, routing=routing,
                         tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept,
-                        domain_strategy=domain_strategy, ipv6_tproxy=ipv6, profile_explicit=explicit)
+                        domain_strategy=domain_strategy, ipv6_tproxy=ipv6, profile_explicit=explicit,
+                        rw_inbound=rw)
 
 
 def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,

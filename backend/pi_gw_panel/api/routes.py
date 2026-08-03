@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ from pi_gw_panel.api.schemas import (
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
+    RwOut, RwIn, RwClientIn, RwClientPatch, RwClientOut, RwLinkOut, RwConfigOut, RwShortIdOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import (
@@ -31,7 +33,8 @@ from pi_gw_panel.controller import (
     apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net,
     restore_backup)
 from pi_gw_panel.net_control import netcheck, events as conn_events
-from pi_gw_panel.net_control.plan import NetPlan
+from pi_gw_panel.net_control.plan import NetPlan, net24
+from pi_gw_panel import rw_inbound as rw_mod
 from pi_gw_panel.stats.history import bounded_interval_ms
 from pi_gw_panel.health import probe, geo
 from pi_gw_panel.health.selection import best_node
@@ -1362,3 +1365,202 @@ def audit_log(request: Request, limit: int = 100,
               _: None = Depends(require_auth)) -> list[AuditEntryOut]:
     """Newest-first log of successful mutations (recorded by the audit middleware)."""
     return [AuditEntryOut(**e) for e in get_state(request).store.list_audit(limit)]
+
+
+# --- road-warrior inbound (reach the gateway + its LAN from outside) ---
+def _rw_default_nets(state) -> list[str]:
+    """The subnets a remote client should route into the tunnel, DERIVED from the live net
+    plan rather than hardcoded — a hardcoded 192.168.1.0/24 would start lying the moment the
+    addressing changes. Same helper the nft renderer uses."""
+    plan = NetPlan.from_store(state.store, state.settings)
+    nets, seen = [], set()
+    for ip in (plan.mgmt_ip, plan.segment_ip):
+        net = net24(ip) if ip else ""
+        if net and net not in seen:
+            seen.add(net)
+            nets.append(net)
+    return nets
+
+
+def _rw_nets(state) -> list[str]:
+    override = rw_mod.parse_nets(state.store.get_setting("rw_routed_nets") or "")
+    return override or _rw_default_nets(state)
+
+
+def _rw_out(state, *, live: bool | None = None) -> RwOut:
+    store = state.store
+
+    def get(key: str) -> str:
+        value = store.get_setting(key)
+        return rw_mod.DEFAULTS.get(key, "") if value is None else value
+
+    # Read defensively: values are validated on write, so anything malformed here came from a
+    # hand-edited DB or a foreign backup. Returning 500 would make the screen unreachable — the
+    # one place the operator could fix it. Report the damage in-band instead.
+    state_error = ""
+    try:
+        port = rw_mod.validate_port(get("rw_port"))
+    except ValueError as exc:
+        port, state_error = int(rw_mod.DEFAULTS["rw_port"]), str(exc)
+    try:
+        hosts = rw_mod.get_hosts(store)
+    except ValueError as exc:
+        hosts, state_error = {}, f"{state_error}; {exc}".lstrip("; ")
+    return RwOut(
+        enabled=get("rw_enabled") == "1",
+        port=port,
+        state_error=state_error,
+        dest=get("rw_dest"),
+        server_names=get("rw_server_names"),
+        short_ids=get("rw_short_ids"),
+        public_key=get("rw_public_key"),
+        endpoint=get("rw_endpoint"),
+        has_private_key=bool((get("rw_private_key") or "").strip()),
+        hosts=hosts,
+        routed_nets=_rw_nets(state),
+        routed_nets_override=get("rw_routed_nets"),
+        clients=[RwClientOut(**c) for c in rw_mod.get_clients(store)],
+        live=bool(store.get_setting("active_node_id")) if live is None else live,
+    )
+
+
+def _rw_apply(state) -> bool:
+    """Rebuild+apply so a change reaches the live inbound. Returns whether it actually did.
+
+    With no active node there is nothing to build a config from, so the settings are stored
+    and picked up on the next connect — reported honestly as live=False rather than pretended.
+    The inbound itself does NOT need a reachable node to serve LAN access: `private → direct`
+    is independent of the proxy outbound, and disconnect leaves xray running.
+    """
+    res = reapply_active_node(state)
+    if res is None:
+        return False
+    if not res.ok:
+        raise HTTPException(status_code=502, detail=res.error)
+    return True
+
+
+@router.get("/rw", response_model=RwOut)
+def get_rw(request: Request, _: None = Depends(require_auth)) -> RwOut:
+    return _rw_out(get_state(request))
+
+
+@router.put("/rw", response_model=RwOut)
+def put_rw(body: RwIn, request: Request,
+           _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RwOut:
+    state = get_state(request)
+    try:
+        hosts = rw_mod.validate_hosts(body.hosts)
+        nets = rw_mod.validate_nets(rw_mod.parse_nets(body.routed_nets))
+        short_ids = rw_mod.validate_short_ids(rw_mod.parse_csv(body.short_ids))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if body.enabled:
+        # Everything the inbound and the client artifacts need, checked at the boundary. Without
+        # this you can arm an inbound that either never starts (empty shortIds) or starts with
+        # nothing issuable to a client — both discovered much later and much less clearly.
+        if not (body.private_key.strip() or
+                (state.store.get_setting("rw_private_key") or "").strip()):
+            raise HTTPException(status_code=422,
+                                detail="set the Reality private key before enabling the inbound "
+                                       "(generate one with `xray x25519`)")
+        for value, what in ((short_ids, "at least one short id"),
+                            (body.public_key.strip(), "the Reality public key"),
+                            (body.endpoint.strip(), "the external endpoint"),
+                            (rw_mod.parse_csv(body.server_names), "at least one server name")):
+            if not value:
+                raise HTTPException(status_code=422,
+                                    detail=f"set {what} before enabling the inbound")
+    with apply_lock, state.store.transaction():
+        s = state.store.set_setting
+        s("rw_enabled", "1" if body.enabled else "0")
+        s("rw_port", str(body.port))
+        s("rw_dest", body.dest.strip())
+        s("rw_server_names", ",".join(rw_mod.parse_csv(body.server_names)))
+        s("rw_short_ids", ",".join(short_ids))
+        s("rw_public_key", body.public_key.strip())
+        s("rw_endpoint", body.endpoint.strip())
+        s("rw_hosts", json.dumps(hosts))
+        s("rw_routed_nets", ",".join(nets))
+        # "" means keep — the UI never receives the key, so a plain round-trip must not blank it.
+        if body.private_key.strip():
+            s("rw_private_key", body.private_key.strip())
+        live = _rw_apply(state)
+    return _rw_out(state, live=live)
+
+
+@router.post("/rw/clients", response_model=RwOut, status_code=201)
+def add_rw_client(body: RwClientIn, request: Request,
+                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RwOut:
+    state = get_state(request)
+    with apply_lock, state.store.transaction():
+        try:
+            rw_mod.add_client(state.store, body.email)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        live = _rw_apply(state)
+    return _rw_out(state, live=live)
+
+
+@router.patch("/rw/clients/{client_id}", response_model=RwOut)
+def patch_rw_client(client_id: str, body: RwClientPatch, request: Request,
+                    _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RwOut:
+    """Suspend or resume one client. Suspending the last enabled one drops the whole inbound
+    (xray will not start on an empty client list) — that is the documented behaviour, not a bug."""
+    state = get_state(request)
+    with apply_lock, state.store.transaction():
+        if not rw_mod.set_client_enabled(state.store, client_id, body.enabled):
+            raise HTTPException(status_code=404, detail="client not found")
+        live = _rw_apply(state)
+    return _rw_out(state, live=live)
+
+
+@router.post("/rw/short-id", response_model=RwShortIdOut)
+def rw_new_short_id(request: Request,
+                    _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RwShortIdOut:
+    """A fresh Reality short id for the operator to paste. Not persisted here — it only lands
+    in the config once it is saved with the rest of the settings."""
+    return RwShortIdOut(short_id=rw_mod.gen_short_id())
+
+
+@router.delete("/rw/clients/{client_id}", response_model=RwOut)
+def delete_rw_client(client_id: str, request: Request,
+                     _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RwOut:
+    state = get_state(request)
+    with apply_lock, state.store.transaction():
+        if not rw_mod.delete_client(state.store, client_id):
+            raise HTTPException(status_code=404, detail="client not found")
+        live = _rw_apply(state)
+    return _rw_out(state, live=live)
+
+
+def _rw_client(state, client_id: str) -> dict:
+    for c in rw_mod.get_clients(state.store):
+        if c["id"] == client_id:
+            return c
+    raise HTTPException(status_code=404, detail="client not found")
+
+
+@router.get("/rw/clients/{client_id}/link", response_model=RwLinkOut)
+def rw_client_link(client_id: str, request: Request,
+                   _: None = Depends(require_auth)) -> RwLinkOut:
+    state = get_state(request)
+    try:
+        return RwLinkOut(link=rw_mod.link(state.store, _rw_client(state, client_id)))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/rw/clients/{client_id}/config", response_model=RwConfigOut)
+def rw_client_config(client_id: str, request: Request,
+                     _: None = Depends(require_auth)) -> RwConfigOut:
+    """Shadowrocket .conf for one client. Served under auth and downloaded from inside the
+    network on purpose — no public subscription URL, since exposing the panel to the internet
+    to serve one config file would be a far bigger hole than the inbound it configures."""
+    state = get_state(request)
+    client = _rw_client(state, client_id)
+    try:
+        conf = rw_mod.shadowrocket_conf(state.store, client, _rw_nets(state))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return RwConfigOut(filename=f"{client['email']}.conf", config=conf)

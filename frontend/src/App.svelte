@@ -8,6 +8,7 @@
   import Tuning from "./lib/Tuning.svelte";
   import Routing from "./lib/Routing.svelte";
   import Network from "./lib/Network.svelte";
+  import RoadWarrior from "./lib/RoadWarrior.svelte";
   import Operations from "./lib/Operations.svelte";
   import Settings from "./lib/Settings.svelte";
   import Toggle from "./lib/Toggle.svelte";
@@ -18,7 +19,7 @@
   import { BRAND } from "./lib/brand";
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
-  type View = "dashboard" | "health" | "nodes" | "tuning" | "routing" | "network" | "operations" | "settings";
+  type View = "dashboard" | "health" | "nodes" | "tuning" | "routing" | "network" | "roadwarrior" | "operations" | "settings";
   let authed = $state(false);
   let needsSetup = $state(false);
   let bootstrapRequired = $state(false);
@@ -72,6 +73,7 @@
     { id: "tuning", label: "Anti-DPI" },
     { id: "routing", label: "Routing" },
     { id: "network", label: "Network" },
+    { id: "roadwarrior", label: "Remote Access" },
     { id: "operations", label: "Operations" },
     { id: "settings", label: "Settings" },
   ];
@@ -79,7 +81,7 @@
   // (the spec's 8th screen). Health & Traffic / Operations arrive with later Phase-2 screens.
   const navGroups: { label: string; ids: View[] }[] = [
     { label: "MONITOR", ids: ["dashboard", "health"] },
-    { label: "CONFIGURE", ids: ["nodes", "tuning", "routing", "network", "operations"] },
+    { label: "CONFIGURE", ids: ["nodes", "tuning", "routing", "network", "roadwarrior", "operations"] },
   ];
 
   // 24-viewBox icons (theme toggle) — thin line, currentColor
@@ -96,6 +98,7 @@
     tuning: nsvg('<path d="M8 1.5l5 2v4c0 3.2-2.2 4.8-5 6-2.8-1.2-5-2.8-5-6v-4z"/>'),
     routing: nsvg('<circle cx="3.5" cy="8" r="2"/><circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/><path d="M5.5 8h3l2.5-4M8.5 8l2.5 4"/>'),
     network: nsvg('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>'),
+    roadwarrior: nsvg('<path d="M8 1.5 2.5 4v4.2c0 3 2.2 5.2 5.5 6.3 3.3-1.1 5.5-3.3 5.5-6.3V4z"/><path d="M5.6 8.2l1.7 1.7 3.1-3.4"/>'),
     operations: nsvg('<rect x="2" y="3" width="12" height="3.5" rx="1"/><path d="M3 6.5v6a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-6"/><path d="M6.5 9.5h3"/>'),
     settings: nsvg('<line x1="3" y1="4" x2="13" y2="4"/><circle cx="10" cy="4" r="1.6"/><line x1="3" y1="8" x2="13" y2="8"/><circle cx="6" cy="8" r="1.6"/><line x1="3" y1="12" x2="13" y2="12"/><circle cx="11" cy="12" r="1.6"/>'),
     moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
@@ -222,6 +225,8 @@
           <Routing {onDirtyChange} />
         {:else if view === "network"}
           <Network {onDirtyChange} />
+        {:else if view === "roadwarrior"}
+          <RoadWarrior {onDirtyChange} />
         {:else if view === "operations"}
           <Operations />
         {:else}

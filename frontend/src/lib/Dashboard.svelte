@@ -68,7 +68,10 @@
     const hms = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}`;
     return d > 0 ? `${d}d ${hms}` : hms;
   }
-  let uptimeStr = $derived((tick, fmtUptime(status?.active_since)));
+  let uptimeStr = $derived.by(() => {
+    void tick;                       // re-derive once a second; fmtUptime reads a non-reactive clock
+    return fmtUptime(status?.active_since);
+  });
 
   function freshness(iso: string | null | undefined): string {
     if (!iso) return "";

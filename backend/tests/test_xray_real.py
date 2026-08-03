@@ -59,3 +59,74 @@ def test_build_config_passes_real_xray_test():
     )
     ok, out = validate_config(build_config(node, Settings()), "xray")
     assert ok, out
+
+
+# A valid 32-byte x25519 key in base64url-without-padding — the shape REALITY demands. A
+# placeholder string of the wrong length is rejected by real xray, which is the whole point here.
+_RW_PRIV = "-Om9OloQidkL0MBAaet2TSDnHR2bMODRibIVZhKksj0"
+
+
+def _rw(**over):
+    rw = {"port": 8443, "dest": "www.microsoft.com:443",
+          "server_names": ["www.microsoft.com"], "private_key": _RW_PRIV,
+          "short_ids": ["ab12cd34"],
+          "clients": [{"id": "00000000-0000-0000-0000-000000000001",
+                       "email": "iphone", "enabled": True}],
+          "hosts": {}}
+    rw.update(over)
+    return rw
+
+
+@pytest.mark.skipif(shutil.which("xray") is None, reason="real xray binary not installed")
+def test_road_warrior_inbound_passes_real_xray_test():
+    """The stub xray always answers "Configuration OK", so nothing else in the suite proves real
+    xray accepts what we emit: `flow=xtls-rprx-vision` alongside our field set, `dest` (vs the
+    newer `target`), and `sniffing.routeOnly` on a vless inbound. Skips without a binary."""
+    node = Node(id=1, name="real", address="1.2.3.4", port=47000,
+                uuid="00000000-0000-0000-0000-000000000000", sni="www.microsoft.com",
+                public_key="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI_T4E7RoLJS0", short_id="0123abcd")
+    ok, out = validate_config(build_config(node, Settings(), rw_inbound=_rw()), "xray")
+    assert ok, out
+
+
+@pytest.mark.skipif(shutil.which("xray") is None, reason="real xray binary not installed")
+def test_road_warrior_lan_hosts_pass_real_xray_test():
+    """dns.hosts + the `direct-lan` freedom outbound with domainStrategy=UseIP + the domain rule."""
+    node = Node(id=1, name="real", address="1.2.3.4", port=47000,
+                uuid="00000000-0000-0000-0000-000000000000", sni="www.microsoft.com",
+                public_key="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI_T4E7RoLJS0", short_id="0123abcd")
+    cfg = build_config(node, Settings(), rw_inbound=_rw(hosts={"nas.v2pi": "192.168.1.88"}))
+    ok, out = validate_config(cfg, "xray")
+    assert ok, out
+
+
+@pytest.mark.skipif(shutil.which("xray") is None, reason="real xray binary not installed")
+def test_empty_short_ids_is_rejected_by_real_xray():
+    """Why PUT /api/rw refuses to arm without a short id — the guard is load-bearing, not tidy.
+
+    Answered against Xray 26.3.27 on the gateway: `Failed to build REALITY config. > empty
+    "shortIds"`. So without the API guard, arming remote access would emit a config xray will not
+    load; the apply would fail validation and roll back, and the operator would be left staring at
+    a REALITY build error with no hint that a missing short id caused it.
+    """
+    node = Node(id=1, name="real", address="1.2.3.4", port=47000,
+                uuid="00000000-0000-0000-0000-000000000000", sni="www.microsoft.com",
+                public_key="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI_T4E7RoLJS0", short_id="0123abcd")
+    ok, out = validate_config(build_config(node, Settings(), rw_inbound=_rw(short_ids=[])), "xray")
+    assert ok is False
+    assert "shortIds" in out
+
+
+@pytest.mark.skipif(shutil.which("xray") is None, reason="real xray binary not installed")
+def test_reality_dest_spelling_is_still_accepted():
+    """Newer Xray also spells this `target`. Verified on 26.3.27: BOTH are accepted, so the
+    `dest` we emit needs no version sniffing. This test is the tripwire if that ever changes."""
+    node = Node(id=1, name="real", address="1.2.3.4", port=47000,
+                uuid="00000000-0000-0000-0000-000000000000", sni="www.microsoft.com",
+                public_key="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI_T4E7RoLJS0", short_id="0123abcd")
+    cfg = build_config(node, Settings(), rw_inbound=_rw())
+    reality = next(i for i in cfg["inbounds"]
+                   if i["tag"] == "rw-in")["streamSettings"]["realitySettings"]
+    assert "dest" in reality
+    ok, out = validate_config(cfg, "xray")
+    assert ok, out

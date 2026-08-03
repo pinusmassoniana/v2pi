@@ -14,6 +14,8 @@ _MAX_IMPORT = 512 * 1024   # a subscription/import blob
 _MAX_BULK_IDS = 500
 _MAX_RULES = 256
 _MAX_NOISES = 32
+_MAX_RW_HOSTS = 32       # keeps the rendered dns.hosts (and the backup blob) bounded
+_MAX_RW_CLIENTS = 16     # one per device; far above any real road-warrior fleet
 
 
 class StrictIn(BaseModel):
@@ -581,3 +583,71 @@ class ReadinessChecksOut(BaseModel):
 class ReadinessOut(BaseModel):
     status: Literal["ready", "not_ready"]
     checks: ReadinessChecksOut
+
+
+# --- road-warrior inbound (reach the gateway from outside) ---
+class RwClientOut(BaseModel):
+    id: str
+    email: str
+    enabled: bool = True
+
+
+class RwOut(BaseModel):
+    enabled: bool
+    port: int
+    # Non-empty when the stored state is malformed (hand-edited DB / foreign backup). The screen
+    # stays reachable and shows what is wrong instead of 500ing and locking the operator out.
+    state_error: str = ""
+    dest: str
+    server_names: str
+    short_ids: str
+    public_key: str
+    endpoint: str
+    # The Reality private key is NEVER serialized — only whether one is set. Anything that
+    # leaks it hands out the ability to impersonate the gateway's inbound.
+    has_private_key: bool
+    hosts: dict[str, str]
+    routed_nets: list[str]      # effective list (derived from the net plan unless overridden)
+    routed_nets_override: str   # the raw csv override, "" when deriving
+    clients: list[RwClientOut]
+    # Whether the running xray config reflects these settings. False with no active node:
+    # the settings are stored but nothing rebuilt them into the live config yet.
+    live: bool
+
+
+class RwIn(StrictIn):
+    enabled: bool = False
+    port: int = Field(default=443, ge=1, le=65535)
+    dest: str = Field(default="", max_length=_MAX_HOST)
+    server_names: str = Field(default="", max_length=_MAX_FIELD)
+    short_ids: str = Field(default="", max_length=_MAX_FIELD)
+    public_key: str = Field(default="", max_length=_MAX_FIELD)
+    endpoint: str = Field(default="", max_length=_MAX_HOST)
+    # write-only; "" means "keep whatever is stored" so a round-trip through the UI (which
+    # never receives the key) can't blank it out.
+    private_key: str = Field(default="", max_length=_MAX_FIELD)
+    # Bounded like every other input here (see the note at the top of this file). The ceilings
+    # also keep `rw_hosts`/`rw_clients` under the 2048-char per-setting limit a backup enforces.
+    hosts: dict[str, str] = Field(default_factory=dict, max_length=_MAX_RW_HOSTS)
+    routed_nets: str = Field(default="", max_length=_MAX_FIELD)
+
+
+class RwClientIn(StrictIn):
+    email: str = Field(max_length=64)
+
+
+class RwClientPatch(StrictIn):
+    enabled: bool
+
+
+class RwShortIdOut(BaseModel):
+    short_id: str
+
+
+class RwLinkOut(BaseModel):
+    link: str
+
+
+class RwConfigOut(BaseModel):
+    filename: str
+    config: str
