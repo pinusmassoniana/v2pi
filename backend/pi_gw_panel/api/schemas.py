@@ -286,8 +286,10 @@ class ConnectBestIn(StrictIn):
 class SettingsOut(BaseModel):
     tunneled_fetch: bool
     routing_default_action: str
-    health_enabled: bool
-    health_interval: int
+    health_enabled: bool          # master: off stops both loops below
+    health_sweep_enabled: bool    # the all-nodes sweep, on its own
+    health_interval: int          # sweep cadence (s)
+    health_active_interval: int   # active-node real-check cadence (s)
     health_hysteresis: int
     health_probe_url: str
     failover_enabled: bool
@@ -304,7 +306,9 @@ class SettingsIn(NonNullPatch):
     tunneled_fetch: bool | None = None
     routing_default_action: str | None = None
     health_enabled: bool | None = None
+    health_sweep_enabled: bool | None = None
     health_interval: int | None = None
+    health_active_interval: int | None = None
     health_hysteresis: int | None = None
     health_probe_url: str | None = Field(default=None, max_length=_MAX_URL)
     failover_enabled: bool | None = None

@@ -33,12 +33,14 @@ class LivenessLoop:
     SHUTDOWN_TIMEOUT = 2.0
 
     def __init__(self, state, interval_sec: float = DEFAULT_INTERVAL,
-                 probe_interval: float = DEFAULT_PROBE_INTERVAL,
+                 probe_interval: float | None = None,
                  real_through=probe.real_through_node, failover_run=failover.run,
                  restart=None, now=None, now_iso=None):
         self._state = state
         self._interval = interval_sec
-        self._probe_interval = probe_interval
+        # None → read `health_active_interval` from the store each tick, so an operator can
+        # re-pace the active check without a restart. A number pins it (tests).
+        self._probe_interval_override = probe_interval
         self._real_through = real_through
         self._failover_run = failover_run
         self._restart = restart or (lambda st: st.supervisor.start())
@@ -52,6 +54,17 @@ class LivenessLoop:
         self._write_lock = threading.Lock()
 
     # --- B1: restart a crashed xray ---
+    def _probe_interval(self) -> float:
+        """Cadence of the active-node real check, from the settings k/v (a constructor value
+        wins, for tests). Read per tick rather than cached so a change applies without a restart."""
+        if self._probe_interval_override is not None:
+            return self._probe_interval_override
+        raw = self._state.store.get_setting("health_active_interval")
+        try:
+            return max(10.0, float(raw)) if raw else DEFAULT_PROBE_INTERVAL
+        except (TypeError, ValueError):
+            return DEFAULT_PROBE_INTERVAL
+
     def _watchdog(self, stop_event: threading.Event | None = None) -> None:
         st = self._state
         if stop_event is not None and stop_event.is_set():
@@ -117,7 +130,7 @@ class LivenessLoop:
         except Exception:
             log.debug("liveness watchdog failed", exc_info=True)
         if ((stop_event is None or not stop_event.is_set()) and
-                self._now() - self._last_probe >= self._probe_interval):
+                self._now() - self._last_probe >= self._probe_interval()):
             self._last_probe = self._now()
             try:
                 self._probe_active(stop_event)

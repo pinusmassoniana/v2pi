@@ -242,3 +242,46 @@ def test_stop_waits_for_current_sweep_and_blocks_late_health_writes(settings):
 
     assert asyncio.run(drive()) is False
     assert st.store.get_health(node_id) is None
+
+
+# --- the two health loops are separately controllable ---------------------------------
+
+def test_sweep_switch_stops_the_all_nodes_sweep_on_its_own(settings):
+    """The sweep is the expensive half — it touches every node in the pool. Turning it off must
+    not require turning off health monitoring wholesale, because the active-node check (which
+    failover reads) lives on the other loop."""
+    st = _state(settings)
+    a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
+    st.store.set_setting("active_node_id", str(a))
+    st.store.set_setting("health_sweep_enabled", "0")
+    probed = []
+    mon = _monitor(st, tcp_ping=lambda addr, port: (probed.append(addr), (True, 12))[1],
+                   http_ping=lambda addr, port, sni: (True, 50),
+                   real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
+    mon.run_once()
+    assert probed == [] and st.store.get_health(a) is None
+
+
+def test_master_switch_still_stops_the_sweep_even_with_the_sweep_switch_on(settings):
+    st = _state(settings)
+    a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
+    st.store.set_setting("health_enabled", "0")
+    st.store.set_setting("health_sweep_enabled", "1")
+    probed = []
+    mon = _monitor(st, tcp_ping=lambda addr, port: (probed.append(addr), (True, 12))[1],
+                   http_ping=lambda addr, port, sni: (True, 50),
+                   real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
+    mon.run_once()
+    assert probed == []
+
+
+def test_sweep_runs_by_default_so_an_upgrade_changes_nothing(settings):
+    """New key absent → sweep on, exactly as before it existed."""
+    st = _state(settings)
+    a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
+    assert st.store.get_setting("health_sweep_enabled") is None
+    mon = _monitor(st, tcp_ping=lambda addr, port: (True, 12),
+                   http_ping=lambda addr, port, sni: (True, 50),
+                   real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
+    mon.run_once()
+    assert st.store.get_health(a) is not None

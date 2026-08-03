@@ -47,7 +47,12 @@ class HealthMonitor:
 
     # --- config knobs (settings k/v, with defaults) ---
     def _enabled(self) -> bool:
-        return (self._state.store.get_setting("health_enabled") or "1") == "1"
+        """Master switch AND the sweep's own switch. The sweep is the expensive half — it probes
+        every node in the pool — so it can be turned off on its own while the active node keeps
+        being checked (and failover keeps working, since that reads the active check)."""
+        store = self._state.store
+        return ((store.get_setting("health_enabled") or "1") == "1"
+                and (store.get_setting("health_sweep_enabled") or "1") == "1")
 
     def _interval(self) -> float:
         if self._tick_override is not None:

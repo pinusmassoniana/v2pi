@@ -26,7 +26,8 @@
   const invalid = $derived.by(() => {
     if (!s) return "";
     if (s.traffic_sample_ms < 500) return "Sample interval must be ≥ 500 ms";
-    if (s.health_interval < 60) return "Probe interval must be ≥ 1 min";
+    if (s.health_interval < 60) return "Server sweep interval must be ≥ 1 min";
+    if (s.health_active_interval < 10) return "Active-server check interval must be ≥ 10 s";
     if (s.health_hysteresis < 1) return "Hysteresis must be ≥ 1";
     if (s.failover_cooldown < 0) return "Cooldown must be ≥ 0";
     if (s.session_timeout_min < 0) return "Session timeout must be ≥ 0";
@@ -154,11 +155,21 @@
 
     <fieldset>
       <legend>Health monitoring</legend>
-      <div class="check"><Toggle checked={s.health_enabled} disabled={saving} onchange={(v) => { if (s) s.health_enabled = v; }} label="health" /> <span>Enabled</span></div>
-      <label class="field"><span>Probe interval (minutes)</span>
-        <input class="input" type="number" min="1"
+      <div class="check"><Toggle checked={s.health_enabled} disabled={saving} onchange={(v) => { if (s) s.health_enabled = v; }} label="health" /> <span>Enabled <span class="hint">master switch — off stops both checks below</span></span></div>
+
+      <div class="check sub"><Toggle checked={s.health_sweep_enabled} disabled={saving || !s.health_enabled} onchange={(v) => { if (s) s.health_sweep_enabled = v; }} label="health sweep" /> <span>Probe every server <span class="hint">TCP + direct HTTPS across the whole pool</span></span></div>
+      <label class="field sub" class:off={!s.health_enabled || !s.health_sweep_enabled}><span>Sweep every (minutes)</span>
+        <input class="input" type="number" min="1" disabled={saving || !s.health_enabled || !s.health_sweep_enabled}
                value={Math.max(1, Math.round((s.health_interval || 1800) / 60))}
                onchange={(e) => { if (s) s.health_interval = Math.max(60, Math.round(Number(e.currentTarget.value)) * 60); }} /></label>
+
+      <label class="field sub" class:off={!s.health_enabled}><span>Check the active server every (seconds)</span>
+        <input class="input" type="number" min="10" disabled={saving || !s.health_enabled}
+               bind:value={s.health_active_interval} /></label>
+      <p class="hint indent">A real request through the connected server, via a throwaway xray so
+        your live connection is untouched. Auto-failover reads this check, not the sweep — so you
+        can turn the sweep off and keep failover working.</p>
+
       <label class="field"><span>Probe URL</span><input class="input" type="url" bind:value={s.health_probe_url} /></label>
     </fieldset>
 
@@ -271,6 +282,11 @@
 {/if}
 
 <style>
+  .check.sub, .field.sub { margin-left: 1.1rem; }
+  .field.off { opacity: 0.5; }
+  .hint { font-size: 0.68rem; color: var(--tx3); font-weight: 400; }
+  .hint.indent { margin: -0.15rem 0 0.25rem 1.1rem; line-height: 1.5; max-width: 52ch; }
+
   .settings { max-width: 34rem; }
   fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 0.95rem; display: grid; gap: 0.55rem; background: var(--surface-2); }
   .check { display: flex; gap: 0.55rem; align-items: center; }

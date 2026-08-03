@@ -186,8 +186,17 @@ class Settings:
 SETTINGS_DEFAULTS = {
     "tunneled_fetch": "1",
     "routing_default_action": "proxy",
+    # Master switch: off stops BOTH health loops (kept as-is so an install that turned health
+    # off stays off after upgrade).
     "health_enabled": "1",
+    # The two loops it covers are separately controllable, because they cost very different
+    # things: the sweep touches every node in the pool, while the active check touches one.
+    #   sweep  — TCP + direct-HTTPS across ALL nodes, every `health_interval`
+    #   active — a real request through the ACTIVE node, every `health_active_interval`
+    # Failover reads the active check's fail_count, so turning the sweep off leaves failover intact.
+    "health_sweep_enabled": "1",
     "health_interval": "1800",
+    "health_active_interval": "60",
     "health_hysteresis": "3",
     "health_probe_url": "https://api.ipify.org?format=json",
     # v6-only echo (AAAA-only host → forces v6 egress) for the per-node IPv6 egress readout
