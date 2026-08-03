@@ -5,10 +5,11 @@ import App from "../App.svelte";
 import Health from "./Health.svelte";
 import Login from "./Login.svelte";
 import NetworkScreen from "./Network.svelte";
+import RoadWarrior from "./RoadWarrior.svelte";
 import Routing from "./Routing.svelte";
 import SettingsScreen from "./Settings.svelte";
 import Setup from "./Setup.svelte";
-import { api, ApiError, type Network, type Settings, type Status } from "./api";
+import { api, ApiError, type Network, type Rw, type Settings, type Status } from "./api";
 import { resetStatus } from "./status.svelte";
 
 const mounted: object[] = [];
@@ -34,6 +35,15 @@ function network(): Network {
   };
 }
 
+function rw(over: Partial<Rw> = {}): Rw {
+  return {
+    enabled: false, port: 443, dest: "www.microsoft.com:443", server_names: "www.microsoft.com",
+    short_ids: "ab12cd34", public_key: "PUB", endpoint: "home.example.org",
+    has_private_key: false, state_error: "", hosts: {}, routed_nets: ["192.168.10.0/24"],
+    routed_nets_override: "", clients: [], live: false, ...over,
+  };
+}
+
 function settings(): Settings {
   return {
     tunneled_fetch: true, routing_default_action: "proxy", health_enabled: true,
@@ -54,6 +64,7 @@ function setupApi() {
   vi.spyOn(api, "listRoutingPresets").mockResolvedValue([]);
   vi.spyOn(api, "listSubs").mockResolvedValue([]);
   vi.spyOn(api, "getNetwork").mockImplementation(async () => network());
+  vi.spyOn(api, "getRw").mockImplementation(async () => rw());
   vi.spyOn(api, "getSettings").mockImplementation(async () => settings());
   vi.spyOn(api, "getRouting").mockResolvedValue({ rules: [], default_action: "proxy", domain_strategy: "IPIfNonMatch" });
   vi.spyOn(api, "getTrafficHistory").mockResolvedValue({ samples: [], interval_ms: 1000 });
@@ -140,6 +151,89 @@ describe("mounted frontend regressions", () => {
       expect(control.disabled).toBe(true);
     }
     resolve(network());
+  });
+
+  it("cannot arm the remote-access inbound before a private key is stored", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () => rw({ has_private_key: false }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    // Arming without a key would produce a config xray rejects — the control stays locked
+    // rather than letting the operator find out via a failed apply.
+    expect(document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="rw-enabled"]')!.disabled).toBe(true);
+  });
+
+  it("says out loud that an enabled-but-clientless inbound is not listening", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true, clients: [] }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    // No inbound is emitted at all in this state (xray won't start on an empty client list),
+    // so "enabled" must not read as "listening".
+    expect(document.body.textContent).toContain("nothing is listening");
+  });
+
+  it("warns that stored remote-access settings are not live without an active node", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true, live: false,
+           clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("not in the running config yet");
+  });
+
+  it("refuses to save a half-filled host row instead of dropping it silently", async () => {
+    const put = vi.spyOn(api, "putRw");
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ has_private_key: true, hosts: { "nas.v2pi": "192.168.1.88" } }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    // clear the IP of the existing row, leaving a name with no address
+    const ipInput = [...document.querySelectorAll<HTMLInputElement>(".host-row input")][1];
+    ipInput.value = "";
+    ipInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    document.querySelector<HTMLButtonElement>("button.btn-primary")!.click();
+    await flush();
+    expect(put).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("needs both a name and an IP");
+  });
+
+  it("warns when the Reality server name does not match dest", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ has_private_key: true, dest: "www.microsoft.com:443", server_names: "example.org" }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("does not match");
+  });
+
+  it("does not warn when the server name matches dest", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ has_private_key: true, dest: "www.microsoft.com:443", server_names: "www.microsoft.com" }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).not.toContain("does not match");
+  });
+
+  it("surfaces malformed stored settings instead of rendering them as truth", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ state_error: "rw_port must be an integer, got 'not-a-number'" }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("malformed and were ignored");
+  });
+
+  it("suspends a client without removing it", async () => {
+    const patch = vi.spyOn(api, "setRwClientEnabled").mockImplementation(async () =>
+      rw({ has_private_key: true, clients: [{ id: "cid", email: "iphone", enabled: false }] }));
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ has_private_key: true, clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>(".client-acts button")]
+      .find((b) => b.textContent === "Suspend")!.click();
+    await flush();
+    expect(patch).toHaveBeenCalledWith("cid", false);
+    expect(document.body.textContent).toContain("suspended");
   });
 
   it("keeps API-token creation single-flight", async () => {

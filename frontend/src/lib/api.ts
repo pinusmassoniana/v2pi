@@ -121,6 +121,29 @@ export interface NetworkStatus {
 }
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
+// --- road-warrior inbound (reach the gateway + its LAN from outside) ---
+export interface RwClient { id: string; email: string; enabled: boolean; }
+export interface Rw {
+  enabled: boolean; port: number; dest: string; server_names: string; short_ids: string;
+  public_key: string; endpoint: string;
+  // The Reality private key is never sent to the browser — only whether one is stored.
+  has_private_key: boolean;
+  hosts: Record<string, string>;
+  // Non-empty when the STORED state is malformed (hand-edited DB / foreign backup). The screen
+  // stays usable and shows what is wrong rather than failing to load.
+  state_error: string;
+  routed_nets: string[];         // effective list (derived from the net plan unless overridden)
+  routed_nets_override: string;  // raw csv override, "" when deriving
+  clients: RwClient[];
+  live: boolean;                 // the running xray config reflects these settings
+}
+export interface RwPatch {
+  enabled?: boolean; port?: number; dest?: string; server_names?: string; short_ids?: string;
+  public_key?: string; endpoint?: string; private_key?: string;
+  hosts?: Record<string, string>; routed_nets?: string;
+}
+export interface RwClientConfig { filename: string; config: string; }
+
 export interface Network {
   segment: NetworkSegment; kill_switch_enabled: boolean; lan_access_enabled: boolean; ipv6_enabled: boolean;
   status: NetworkStatus; recommendations: RouterRec[]; events: ConnEvent[];
@@ -325,6 +348,15 @@ export const api = {
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
+
+  getRw(): Promise<Rw> { return req("/rw"); },
+  putRw(patch: RwPatch): Promise<Rw> { return mutate("PUT", "/rw", patch); },
+  addRwClient(email: string): Promise<Rw> { return mutate("POST", "/rw/clients", { email }); },
+  setRwClientEnabled(id: string, enabled: boolean): Promise<Rw> { return mutate("PATCH", `/rw/clients/${encodeURIComponent(id)}`, { enabled }); },
+  newRwShortId(): Promise<{ short_id: string }> { return mutate("POST", "/rw/short-id"); },
+  deleteRwClient(id: string): Promise<Rw> { return mutate("DELETE", `/rw/clients/${encodeURIComponent(id)}`); },
+  rwClientLink(id: string): Promise<{ link: string }> { return req(`/rw/clients/${encodeURIComponent(id)}/link`); },
+  rwClientConfig(id: string): Promise<RwClientConfig> { return req(`/rw/clients/${encodeURIComponent(id)}/config`); },
 
   listTokens(): Promise<ApiToken[]> { return req("/tokens"); },
   createToken(name: string, scope: ApiTokenScope): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope }); },

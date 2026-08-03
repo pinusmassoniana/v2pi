@@ -6,7 +6,8 @@ from pi_gw_panel.xray_config.routing import rules_to_xray
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
                  dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch",
-                 ipv6_tproxy: bool = False, profile_explicit: bool = False) -> dict:
+                 ipv6_tproxy: bool = False, profile_explicit: bool = False,
+                 rw_inbound: dict | None = None) -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -23,6 +24,10 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     - ``stats`` (``{"api_port": int}``) enables xray's StatsService: per-outbound
       traffic counters + an api dokodemo inbound on ``127.0.0.1`` + a first routing
       rule dispatching that inbound to the api (Wave 3a traffic graph).
+    - ``rw_inbound`` (see :mod:`pi_gw_panel.rw_inbound`) adds the road-warrior
+      VLESS+Vision+Reality inbound, plus the optional resolve-LAN-names-on-the-gateway
+      path. It needs NO routing changes: ``geoip:private → direct`` already carries a
+      remote client into the LAN, and the catch-all already carries it out the tunnel.
     """
     # The node's own fingerprint is server-specific (it comes from the subscription, and some
     # reality servers reject other uTLS fingerprints — e.g. one that fails on `chrome`). The
@@ -207,5 +212,62 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
             "port": settings.local_proxy_port,
             "settings": {},
         })
+
+    # Road-warrior inbound, appended LAST so no existing inbound's index shifts. `flow` is
+    # only valid on tcp+reality, and mux is never set on an inbound — don't mirror the
+    # outbound's mux logic above. rw_inbound is None whenever the client list is empty:
+    # xray refuses to start on a vless inbound with no clients, and taking the whole tunnel
+    # down because a remote-access client was deleted would be a self-inflicted outage.
+    if rw_inbound is not None:
+        cfg["inbounds"].append({
+            "tag": "rw-in",
+            "listen": "0.0.0.0",
+            "port": rw_inbound["port"],
+            "protocol": "vless",
+            "settings": {
+                "clients": [{"id": c["id"], "flow": "xtls-rprx-vision", "email": c["email"]}
+                            for c in rw_inbound["clients"]],
+                "decryption": "none",
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": False,
+                    "dest": rw_inbound["dest"],
+                    "xver": 0,
+                    "serverNames": rw_inbound["server_names"],
+                    "privateKey": rw_inbound["private_key"],
+                    "shortIds": rw_inbound["short_ids"],
+                },
+            },
+            # routeOnly: route on the sniffed domain but keep dialing the address the client
+            # chose. Without it xray discards the client's own target.
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"],
+                         "routeOnly": True},
+        })
+
+        # Reach LAN hosts by name instead of by address. A remote client that routes
+        # `192.168.1.0/24` into the tunnel collides with every cafe running the same prefix;
+        # a name cannot collide. The gateway owns the mapping, so the client forwards the
+        # name and never has to resolve it.
+        hosts = rw_inbound.get("hosts") or {}
+        if hosts:
+            cfg["dns"]["hosts"] = dict(hosts)
+            # A SECOND freedom outbound: only `UseIP` resolves through xray's own DNS (where
+            # dns.hosts lives). The global `direct` stays AsIs on purpose — flipping it would
+            # push every RU domain through DoH and wreck RU CDN geolocation.
+            cfg["outbounds"].append({
+                "tag": "direct-lan", "protocol": "freedom",
+                "settings": {"domainStrategy": "UseIP"},
+                "streamSettings": {"sockopt": {"mark": settings.egress_mark}},
+            })
+            suffixes = sorted({name.rsplit(".", 1)[-1] for name in hosts})
+            rlist = cfg["routing"]["rules"]
+            rlist.insert(len(rlist) - 1, {
+                "type": "field",
+                "domain": [f"domain:{s}" for s in suffixes],
+                "outboundTag": "direct-lan",
+            })
 
     return cfg

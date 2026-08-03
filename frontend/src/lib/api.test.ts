@@ -27,6 +27,14 @@ function mockFetch() {
     if (url.endsWith("/api/node-health")) return jsonRes([nodeHealthFixture()]);
     if (url.endsWith("/api/network") && opts.method === "PUT") return jsonRes(networkFixture(true));
     if (url.endsWith("/api/network")) return jsonRes(networkFixture(false));
+    if (url.match(/\/api\/rw\/clients\/[^/]+\/link$/)) return jsonRes({ link: "vless://cid@home.example.org:443?security=reality#iphone" });
+    if (url.match(/\/api\/rw\/clients\/[^/]+\/config$/)) return jsonRes({ filename: "iphone.conf", config: "[Proxy]\niphone = vless, home.example.org, 443\n" });
+    if (url.match(/\/api\/rw\/clients\/[^/]+$/) && opts.method === "DELETE") return jsonRes(rwFixture([]));
+    if (url.match(/\/api\/rw\/clients\/[^/]+$/) && opts.method === "PATCH") return jsonRes(rwFixture([{ id: "cid", email: "iphone", enabled: false }]));
+    if (url.endsWith("/api/rw/short-id")) return jsonRes({ short_id: "0011223344556677" });
+    if (url.endsWith("/api/rw/clients") && opts.method === "POST") return jsonRes(rwFixture([{ id: "cid", email: "iphone", enabled: true }]));
+    if (url.endsWith("/api/rw") && opts.method === "PUT") return jsonRes(rwFixture([], { enabled: true, has_private_key: true }));
+    if (url.endsWith("/api/rw")) return jsonRes(rwFixture([]));
     if (url.match(/\/api\/tokens\/\d+$/) && opts.method === "DELETE") return jsonRes({}, 204);
     if (url.endsWith("/api/tokens") && opts.method === "POST") return jsonRes(tokenCreatedFixture());
     if (url.endsWith("/api/tokens")) return jsonRes([tokenFixture()]);
@@ -67,6 +75,16 @@ function nodeHealthFixture() {
   return { node_id: 5, last_tcp_ok: true, last_tcp_ms: 10, last_real_ok: true, last_real_ms: 20,
            egress_ip: "9.9.9.9", checked_at: "t", fail_count: 0 };
 }
+function rwFixture(clients: any[], over: Record<string, any> = {}) {
+  return {
+    enabled: false, port: 443, dest: "www.microsoft.com:443", server_names: "www.microsoft.com",
+    short_ids: "ab12cd34", public_key: "PUB", endpoint: "home.example.org",
+    has_private_key: false, state_error: "", hosts: { "nas.v2pi": "192.168.1.88" },
+    routed_nets: ["192.168.1.0/24", "192.168.10.0/24"], routed_nets_override: "",
+    clients, live: false, ...over,
+  };
+}
+
 function networkFixture(changed: boolean) {
   return {
     segment: { iface: "eth0.2", ip: "192.168.10.2", dhcp_start: "192.168.10.30",
@@ -232,6 +250,55 @@ describe("api client", () => {
     const put = calls.find((c) => c.url.endsWith("/api/network") && c.opts.method === "PUT");
     expect(put.opts.headers["X-CSRF-Token"]).toBe("tok-123");
     expect(JSON.parse(put.opts.body)).toEqual({ dhcp_end: "192.168.10.250", kill_switch_enabled: true });
+  });
+
+  it("road-warrior: reads state, sends CSRF on mutations, and never carries a private key back", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const rw = await api.getRw();
+    expect(rw.enabled).toBe(false);
+    // the browser only learns WHETHER a key is stored — never the key itself
+    expect(rw.has_private_key).toBe(false);
+    expect(Object.keys(rw)).not.toContain("private_key");
+    expect(rw.routed_nets).toEqual(["192.168.1.0/24", "192.168.10.0/24"]);
+    expect(rw.hosts["nas.v2pi"]).toBe("192.168.1.88");
+
+    const saved = await api.putRw({ enabled: true, private_key: "PRIV", port: 443 });
+    expect(saved.enabled).toBe(true);
+    expect(saved.has_private_key).toBe(true);
+    const put = calls.find((c) => c.url.endsWith("/api/rw") && c.opts.method === "PUT");
+    expect(put.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    expect(JSON.parse(put.opts.body)).toEqual({ enabled: true, private_key: "PRIV", port: 443 });
+  });
+
+  it("road-warrior clients: add, delete, link and .conf all hit the right endpoints", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const added = await api.addRwClient("iphone");
+    expect(added.clients.map((c) => c.email)).toEqual(["iphone"]);
+    const post = calls.find((c) => c.url.endsWith("/api/rw/clients") && c.opts.method === "POST");
+    expect(JSON.parse(post.opts.body)).toEqual({ email: "iphone" });
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+
+    expect((await api.rwClientLink("cid")).link).toContain("security=reality");
+    const conf = await api.rwClientConfig("cid");
+    expect(conf.filename).toBe("iphone.conf");
+    expect(conf.config).toContain("[Proxy]");
+
+    const suspended = await api.setRwClientEnabled("cid", false);
+    expect(suspended.clients[0].enabled).toBe(false);
+    expect(suspended.clients[0].id).toBe("cid");          // suspend keeps the uuid, unlike delete
+    const patch = calls.find((c) => c.url.endsWith("/api/rw/clients/cid") && c.opts.method === "PATCH");
+    expect(JSON.parse(patch.opts.body)).toEqual({ enabled: false });
+    expect(patch.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+
+    expect((await api.newRwShortId()).short_id).toBe("0011223344556677");
+
+    expect((await api.deleteRwClient("cid")).clients).toEqual([]);
+    const del = calls.find((c) => c.url.endsWith("/api/rw/clients/cid") && c.opts.method === "DELETE");
+    expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
   });
 
   it("api tokens: list (no secret), create reveals secret once, delete sends DELETE", async () => {
