@@ -153,7 +153,9 @@ def _settings_out(state) -> SettingsOut:
         tunneled_fetch=val("tunneled_fetch") == "1",
         routing_default_action=val("routing_default_action"),
         health_enabled=val("health_enabled") == "1",
+        health_sweep_enabled=val("health_sweep_enabled") == "1",
         health_interval=int(val("health_interval")),
+        health_active_interval=int(val("health_active_interval")),
         health_hysteresis=int(val("health_hysteresis")),
         health_probe_url=val("health_probe_url"),
         failover_enabled=val("failover_enabled") == "1",
@@ -1152,7 +1154,8 @@ def get_settings(request: Request, _: None = Depends(require_auth)) -> SettingsO
 # Settings that are baked into the xray config → changing them needs a live re-apply.
 _SETTINGS_CONFIG_KEYS = {"tunneled_fetch", "dns_intercept", "stats_enabled", "stats_api_port"}
 # Settings the Settings screen owns (reset target — excludes routing-owned keys).
-_SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled", "health_interval",
+_SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled",
+                        "health_sweep_enabled", "health_interval", "health_active_interval",
                         "health_hysteresis", "health_probe_url", "failover_enabled",
                         "failover_cooldown", "stats_enabled", "stats_api_port",
                         "traffic_sample_ms", "session_timeout_min", "auto_backup_enabled")
@@ -1160,8 +1163,10 @@ _SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled", "he
 
 def _validate_settings(state, data: dict) -> None:
     """SC2: reject out-of-range values that would break the runtime (busy loops, bad ports)."""
-    floors = {"health_interval": 60, "traffic_sample_ms": 500, "health_hysteresis": 1,
-              "failover_cooldown": 0, "session_timeout_min": 0}
+    # health_active_interval spins up a throwaway xray each time, so its floor is well above
+    # zero — a few seconds would mean a permanent probe process.
+    floors = {"health_interval": 60, "health_active_interval": 10, "traffic_sample_ms": 500,
+              "health_hysteresis": 1, "failover_cooldown": 0, "session_timeout_min": 0}
     for k, lo in floors.items():
         if isinstance(data.get(k), int) and data[k] < lo:
             raise HTTPException(status_code=422, detail=f"{k} must be >= {lo}")

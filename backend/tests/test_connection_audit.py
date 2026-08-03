@@ -260,3 +260,21 @@ def test_network_payload_has_wan_blocked_and_events(settings, stub_xray):
     assert body["status"]["wan_blocked"] is True            # kill-switch on + tunnel down (N1)
     assert body["status"]["uplink"] is None                 # DryRun → uplink unknown
     assert any(e["kind"] == "kill-switch" for e in body["events"])   # event recorded (N2)
+
+
+# --- active-node check cadence is a setting, not a constant ---------------------------
+
+def test_active_probe_interval_comes_from_settings():
+    """Was hardcoded at 60 s with no way to change it. Read per tick so a change applies
+    without restarting the process."""
+    from pi_gw_panel.health.liveness import LivenessLoop, DEFAULT_PROBE_INTERVAL
+    state = _State(_store(), Settings(), _FakeSup("stopped"))
+    loop = LivenessLoop(state)
+    assert loop._probe_interval() == DEFAULT_PROBE_INTERVAL      # absent → the old default
+    state.store.set_setting("health_active_interval", "300")
+    assert loop._probe_interval() == 300.0                        # picked up live, no restart
+    state.store.set_setting("health_active_interval", "0")
+    assert loop._probe_interval() == 10.0                         # floored: each probe spawns xray
+    state.store.set_setting("health_active_interval", "nonsense")
+    assert loop._probe_interval() == DEFAULT_PROBE_INTERVAL       # garbage → default, never crash
+    assert LivenessLoop(state, probe_interval=5)._probe_interval() == 5.0   # explicit pin wins

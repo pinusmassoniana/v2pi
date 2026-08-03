@@ -39,7 +39,11 @@ export interface RefreshResult { id?: number; name?: string; ok?: boolean; statu
 export interface RefreshAllResult { attempted: number; succeeded: number; failed: number; results: RefreshResult[] | Record<string, RefreshResult>; }
 export interface Settings {
   tunneled_fetch: boolean; routing_default_action: string;
-  health_enabled: boolean; health_interval: number; health_hysteresis: number; health_probe_url: string;
+  // health_enabled is the master switch; the two loops below it are separately controllable.
+  health_enabled: boolean; health_sweep_enabled: boolean;
+  health_interval: number;          // all-nodes sweep cadence (s)
+  health_active_interval: number;   // active-node real-check cadence (s)
+  health_hysteresis: number; health_probe_url: string;
   failover_enabled: boolean; failover_cooldown: number;
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
   dns_intercept: boolean; session_timeout_min: number; auto_backup_enabled: boolean;

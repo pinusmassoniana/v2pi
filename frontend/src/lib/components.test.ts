@@ -47,6 +47,7 @@ function rw(over: Partial<Rw> = {}): Rw {
 function settings(): Settings {
   return {
     tunneled_fetch: true, routing_default_action: "proxy", health_enabled: true,
+    health_sweep_enabled: true, health_active_interval: 60,
     health_interval: 1800, health_hysteresis: 3, health_probe_url: "https://example.com",
     failover_enabled: true, failover_cooldown: 120, stats_enabled: true,
     stats_api_port: 10085, traffic_sample_ms: 1000, dns_intercept: true,
@@ -234,6 +235,39 @@ describe("mounted frontend regressions", () => {
     await flush();
     expect(patch).toHaveBeenCalledWith("cid", false);
     expect(document.body.textContent).toContain("suspended");
+  });
+
+  it("lets the all-server sweep be turned off while the active-server check stays on", async () => {
+    const put = vi.spyOn(api, "putSettings").mockImplementation(async () => settings());
+    mounted.push(mount(SettingsScreen, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="health sweep"]')!.click();
+    await tick();
+    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await flush();
+    const sent = put.mock.calls[0][0] as any;
+    expect(sent.health_sweep_enabled).toBe(false);
+    expect(sent.health_enabled).toBe(true);      // failover keeps its input
+  });
+
+  it("disables both cadence fields when the health master switch is off", async () => {
+    vi.spyOn(api, "getSettings").mockImplementation(async () => ({ ...settings(), health_enabled: false }));
+    mounted.push(mount(SettingsScreen, { target: document.body }));
+    await flush();
+    const nums = [...document.querySelectorAll<HTMLInputElement>(".field.sub input")];
+    expect(nums.length).toBe(2);
+    expect(nums.every((i) => i.disabled)).toBe(true);
+  });
+
+  it("rejects an active-check cadence below the server floor before sending it", async () => {
+    const put = vi.spyOn(api, "putSettings");
+    vi.spyOn(api, "getSettings").mockImplementation(async () => ({ ...settings(), health_active_interval: 5 }));
+    mounted.push(mount(SettingsScreen, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await flush();
+    expect(put).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("≥ 10 s");
   });
 
   it("keeps API-token creation single-flight", async () => {
