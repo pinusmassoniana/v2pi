@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { api, ApiError, type Settings, type ApiToken, type ApiTokenCreated, type AuditEntry } from "./api";
+  import { api, errText, type Settings, type ApiToken, type ApiTokenCreated, type AuditEntry } from "./api";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { createMsg } from "./msg.svelte";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
   let s = $state<Settings | null>(null);
-  let msg = $state("");
-  let msgKind = $state<"ok" | "err">("ok");
+  const msg = createMsg();
   let saving = $state(false);
   let savedSnapshot = $state("");
   let dirty = $derived(!!s && JSON.stringify(s) !== savedSnapshot);
@@ -18,9 +18,6 @@
   let logQuery = $state("");
   let logCount = $state(200);
   let logAuto = $state(false);
-
-  function setMsg(t: string, k: "ok" | "err" = "ok") { msg = t; msgKind = k; }
-  function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
 
   // client-side validation mirrors the server floors (SC2/SF2)
   const invalid = $derived.by(() => {
@@ -37,15 +34,15 @@
 
   async function load() {
     try { s = await api.getSettings(); savedSnapshot = JSON.stringify(s); }
-    catch (err) { setMsg(errText(err, "load failed"), "err"); }
+    catch (err) { msg.set(errText(err, "load failed"), "err"); }
   }
   async function save(e: Event) {
     e.preventDefault();
-    if (saving || !s || invalid) { if (invalid) setMsg(invalid, "err"); return; }
+    if (saving || !s || invalid) { if (invalid) msg.set(invalid, "err"); return; }
     const { routing_default_action, ...patch } = s;   // routing-owned key set on the Routing screen
     saving = true;
-    try { s = await api.putSettings(patch); savedSnapshot = JSON.stringify(s); setMsg("saved", "ok"); }
-    catch (err) { setMsg(errText(err, "save failed"), "err"); }
+    try { s = await api.putSettings(patch); savedSnapshot = JSON.stringify(s); msg.set("saved", "ok"); }
+    catch (err) { msg.set(errText(err, "save failed"), "err"); }
     finally { saving = false; }
   }
 
@@ -64,8 +61,8 @@
     try {
       const doc = JSON.parse(await file.text());
       delete doc.routing_default_action;
-      s = await api.putSettings(doc); savedSnapshot = JSON.stringify(s); setMsg("supplied settings updated", "ok");
-    } catch (err) { setMsg(errText(err, "import failed"), "err"); }
+      s = await api.putSettings(doc); savedSnapshot = JSON.stringify(s); msg.set("supplied settings updated", "ok");
+    } catch (err) { msg.set(errText(err, "import failed"), "err"); }
     finally { input.value = ""; }
   }
 
@@ -138,12 +135,13 @@
   });
 </script>
 
-<Alert {msg} kind={msgKind} />
+<Alert msg={msg.text} kind={msg.kind} />
 
 {#if s}
   <form onsubmit={save} class="card settings">
     <h3>General</h3>
     <div class="check"><Toggle checked={s.tunneled_fetch} disabled={saving} onchange={(v) => { if (s) s.tunneled_fetch = v; }} label="tunneled fetch" /> <span>Fetch subscriptions through the tunnel <span class="live">applies live</span></span></div>
+    <div class="check"><Toggle checked={s.subs_auto_switch} disabled={saving} onchange={(v) => { if (s) s.subs_auto_switch = v; }} label="subscription auto-switch" /> <span>Let a scheduled subscription refresh replace the active node on its own, with no operator action, when the one you're on drops out of the feed <span class="hint">never switches to weaker security; off keeps switching manual</span></span></div>
     <div class="check"><Toggle checked={s.dns_intercept} disabled={saving} onchange={(v) => { if (s) s.dns_intercept = v; }} label="gateway DNS" /> <span>Resolve segment DNS in the gateway over DoH <span class="live">applies live</span></span></div>
 
     <fieldset>

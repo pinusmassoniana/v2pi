@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { api, ApiError, createLatestRequest, TRAFFIC_CAPABILITY_EVENT } from "./api";
+import { api, ApiError, createLatestRequest, setOnUnauthorized, TRAFFIC_CAPABILITY_EVENT } from "./api";
 
 function mockFetch() {
   const calls: any[] = [];
@@ -391,6 +391,49 @@ describe("api client", () => {
     expect(gap).toHaveBeenCalledOnce();
     expect(sockets).toHaveLength(2);
     handle.close();
+  });
+
+  it("wraps a raw fetch rejection as a network-error ApiError, not an uncaught throw (F13-5)", async () => {
+    (globalThis as any).fetch = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const err = await api.getStatus().catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(0);
+    expect(err.message).toBe("network error");
+  });
+
+  it("wraps an aborted-by-timeout request as a request-timed-out ApiError (F13-5)", async () => {
+    vi.useFakeTimers();
+    (globalThis as any).fetch = vi.fn((_url: string, opts: any) => new Promise((_resolve, reject) => {
+      opts.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    const pending = api.getStatus().catch((e) => e);
+    await vi.advanceTimersByTimeAsync(20000);   // REQUEST_TIMEOUT_MS
+    const err = await pending;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(0);
+    expect(err.message).toBe("request timed out");
+    vi.useRealTimers();
+  });
+
+  it("fires the registered onUnauthorized callback on a mid-session 401 outside /login (F13-6)", async () => {
+    mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail: "session expired" }, 401));
+    const onUnauthorized = vi.fn();
+    setOnUnauthorized(onUnauthorized);
+    try {
+      await expect(api.getStatus()).rejects.toThrow("session expired");
+      expect(onUnauthorized).toHaveBeenCalledTimes(1);
+      // a failed /login itself must NOT be treated as a lost session (existing behaviour, e2e-covered
+      // at auth.spec.ts:55-61) — assert the unit-level branch doesn't regress that distinction either.
+      onUnauthorized.mockClear();
+      (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail: "bad password" }, 401));
+      await expect(api.login("admin", "wrong")).rejects.toThrow("bad password");
+      expect(onUnauthorized).not.toHaveBeenCalled();
+    } finally {
+      setOnUnauthorized(null);
+    }
   });
 
   it("keeps a disabled traffic stream idle until an explicit capability change", () => {

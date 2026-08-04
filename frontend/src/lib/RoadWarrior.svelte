@@ -50,14 +50,22 @@
       if (name && ip) hosts[name] = ip;
     }
     try {
-      adopt(await api.putRw({
+      const r = await api.putRw({
         enabled: rw.enabled, port: rw.port, dest: rw.dest, server_names: rw.server_names,
         short_ids: rw.short_ids, public_key: rw.public_key, endpoint: rw.endpoint,
         private_key: privKey.trim(), hosts, routed_nets: rw.routed_nets_override,
-      }));
+      });
+      adopt(r);
       dirty = false;
-      ok(rw.live ? "saved · inbound rebuilt into the live config"
-                 : "saved · no active node, so it applies on the next connect");   // response-truth, not the poller
+      // `r.live` alone doesn't say what THIS save did — a save with no active node can still come
+      // back live: true off a config an earlier connect already built. The honest signals are
+      // r.revocation (set when this save narrowed access and had to push that into the running
+      // xray) and, otherwise, whether there is an active node right now to actually rebuild from.
+      if (r.revocation === "stopped") fail(null, `saved · ${saveRevocationNote(r.revocation)}`);
+      else if (r.revocation) ok(`saved · ${saveRevocationNote(r.revocation)}`);
+      else ok(statusStore.value?.active_node_id != null
+        ? "saved · rebuilt into the live config"
+        : "saved · no active node right now, so it applies on the next connect");
     } catch (err) { fail(err, "save failed"); }
     finally { saving = false; }
   }
@@ -71,10 +79,41 @@
     finally { saving = false; }
   }
 
+  // How a revocation actually reached the running xray — surfaced next to the delete/suspend
+  // outcome so "stopped" (remote access is down for everyone, not just this client) or "not-live"
+  // (nothing was serving the inbound, so nothing was actually cut) aren't invisible to the operator.
+  function revocationNote(revocation: string): string {
+    switch (revocation) {
+      case "reapplied": return "live tunnel rebuilt without it";
+      case "rebuilt": return "previous config rebuilt and reloaded";
+      case "stopped": return "xray stopped — remote access is down for everyone until you reconnect";
+      case "not-live": return "nothing was serving the inbound — no live access to cut";
+      default: return "";
+    }
+  }
+
+  // Same HOW-values as revocationNote, phrased for a save that narrowed access rather than a
+  // single revoked client — "without it" has no antecedent when nothing specific was removed.
+  function saveRevocationNote(revocation: string): string {
+    switch (revocation) {
+      case "reapplied": return "live tunnel rebuilt with the narrowed settings";
+      case "rebuilt": return "previous config rebuilt and reloaded with the narrowed settings";
+      case "stopped": return "xray stopped — remote access is down for everyone until you reconnect";
+      case "not-live": return "nothing was serving the inbound — nothing live to narrow";
+      default: return "";
+    }
+  }
+
   async function removeClient(id: string, email: string) {
     if (!await confirmDialog(`Remove ${email}? Its link and config stop working immediately.`)) return;
     busy = id;
-    try { adopt(await api.deleteRwClient(id)); ok(`removed ${email}`); }
+    try {
+      const r = await api.deleteRwClient(id);
+      adopt(r);
+      const note = revocationNote(r.revocation);
+      if (r.revocation === "stopped") fail(null, `removed ${email} — ${note}`);
+      else ok(`removed ${email}${note ? ` — ${note}` : ""}`);
+    }
     catch (err) { fail(err, "remove failed"); }
     finally { busy = ""; }
   }
@@ -82,8 +121,13 @@
   async function toggleClient(id: string, enabled: boolean) {
     busy = id;
     try {
-      adopt(await api.setRwClientEnabled(id, enabled));
-      ok(enabled ? "client resumed" : "client suspended — its uuid is kept");
+      const r = await api.setRwClientEnabled(id, enabled);
+      adopt(r);
+      if (enabled) { ok("client resumed"); return; }
+      const note = revocationNote(r.revocation);
+      const base = "client suspended — its uuid is kept";
+      if (r.revocation === "stopped") fail(null, `${base} — ${note}`);
+      else ok(note ? `${base} — ${note}` : base);
     } catch (err) { fail(err, "update failed"); }
     finally { busy = ""; }
   }
@@ -134,10 +178,24 @@
   // Say so out loud — otherwise "enabled" reads as "listening" when nothing is.
   let clientless = $derived(!!rw?.enabled && rw.clients.filter((c) => c.enabled).length === 0);
   let noKey = $derived(!!rw && !rw.has_private_key && !privKey.trim());
-  // Read liveness from the shared status poller rather than the value frozen into the last
-  // /api/rw response — connect a node on another screen and this banner must clear itself.
-  // Falls back to the response value until the first status arrives.
-  let live = $derived(statusStore.value ? statusStore.value.active_node_id !== null : !!rw?.live);
+  // Trust the server's own view of the inbound (`rw.live`) rather than re-deriving it from
+  // active_node_id — disconnect clears active_node_id while the road-warrior inbound can keep
+  // running, so that proxy can say "down" while remote access is actually live.
+  let live = $derived(!!rw?.live);
+  // The shared status poller still tells us when a node connects/disconnects, or when xray
+  // itself stops/restarts, elsewhere in the UI, before this screen's own /api/rw would reflect
+  // it — use both as a cue to refetch, never as the liveness value itself (that stays rw.live,
+  // above). Watching active_node_id alone missed a crash/restart that leaves the id unchanged:
+  // the banner would then keep showing a stale `live` value indefinitely with the truth having
+  // changed underneath. Skip while there are unsaved local edits.
+  let lastKnownCue: string | undefined = undefined;
+  $effect(() => {
+    const id = statusStore.value?.active_node_id ?? null;
+    const running = statusStore.value?.running ?? null;
+    const cue = `${id}:${running}`;
+    if (lastKnownCue !== undefined && lastKnownCue !== cue && !dirty) load();
+    lastKnownCue = cue;
+  });
   // Reality requires the SNI to be what `dest` actually serves. A mismatch is not rejected
   // anywhere — it just fails at handshake time with no useful error.
   let sniMismatch = $derived.by(() => {
@@ -168,8 +226,9 @@
             an empty client list, so none is emitted until you add a client.</div>
         {:else if rw.enabled && !live}
           <div class="warn-row"><span class="sdot warn"></span>
-            Stored, but not in the running config yet — there is no active node to rebuild it.
-            Connect a node and the inbound comes up with it.</div>
+            Stored, but not in the running config yet — either there is no active node to rebuild
+            it from, or xray itself is not running. Connect a node (or bring xray back up) and the
+            inbound comes up with it.</div>
         {/if}
         {#if sniMismatch}
           <div class="warn-row"><span class="sdot warn"></span>

@@ -2,15 +2,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import App from "../App.svelte";
+import ConfirmModal from "./ConfirmModal.svelte";
+import Dashboard from "./Dashboard.svelte";
 import Health from "./Health.svelte";
 import Login from "./Login.svelte";
 import NetworkScreen from "./Network.svelte";
+import Nodes from "./Nodes.svelte";
+import Operations from "./Operations.svelte";
 import RoadWarrior from "./RoadWarrior.svelte";
 import Routing from "./Routing.svelte";
 import SettingsScreen from "./Settings.svelte";
 import Setup from "./Setup.svelte";
-import { api, ApiError, type Network, type Rw, type Settings, type Status } from "./api";
-import { resetStatus } from "./status.svelte";
+import Subscriptions from "./Subscriptions.svelte";
+import Tuning from "./Tuning.svelte";
+import { api, ApiError, type Network, type Node, type Rw, type Settings, type Status, type Subscription, type TuningProfile } from "./api";
+import { pollStatusOnce, resetStatus } from "./status.svelte";
 
 const mounted: object[] = [];
 
@@ -40,13 +46,40 @@ function rw(over: Partial<Rw> = {}): Rw {
     enabled: false, port: 443, dest: "www.microsoft.com:443", server_names: "www.microsoft.com",
     short_ids: "ab12cd34", public_key: "PUB", endpoint: "home.example.org",
     has_private_key: false, state_error: "", hosts: {}, routed_nets: ["192.168.10.0/24"],
-    routed_nets_override: "", clients: [], live: false, ...over,
+    routed_nets_override: "", clients: [], live: false, revocation: "", ...over,
+  };
+}
+
+function node(id: number, name: string): Node {
+  return {
+    id, name, address: `${name}.example.org`, port: 443, uuid: `uuid-${id}`, transport: "vision",
+    network: "tcp", security: "reality", sni: "", public_key: "", short_id: "", fingerprint: "chrome",
+    path: "", host: "", mode: "", alpn: "", note: "", subscription_id: null, stale: false,
+    tuning_profile_id: null,
+  };
+}
+
+function subscription(id: number, name: string, over: Partial<Subscription> = {}): Subscription {
+  return {
+    id, name, url: `https://example.org/${name}`, injection: {}, interval_sec: 0, enabled: true,
+    default_profile_id: null, last_fetched: null, last_status: null, last_path: null, last_error: null,
+    up_bytes: null, down_bytes: null, total_bytes: null, expire_at: null, node_count: 0, ...over,
+  };
+}
+
+function profile(id: number, name: string, over: Partial<TuningProfile> = {}): TuningProfile {
+  return {
+    id, name, fingerprint: "chrome", frag_enabled: false, frag_packets: "tlshello", frag_length: "100-200",
+    frag_interval: "10-20", mux_enabled: false, doh_enabled: true, doh_url: "", quic: "allow",
+    noise_enabled: false, noises: [], xhttp_padding: "", xmux_max_concurrency: "", xmux_max_connections: "",
+    mux_concurrency: "", xudp_proxy_udp443: "", alpn: "", tls_min: "", tls_max: "",
+    is_default: false, is_active: false, node_count: 0, ...over,
   };
 }
 
 function settings(): Settings {
   return {
-    tunneled_fetch: true, routing_default_action: "proxy", health_enabled: true,
+    tunneled_fetch: true, subs_auto_switch: true, routing_default_action: "proxy", health_enabled: true,
     health_sweep_enabled: true, health_active_interval: 60,
     health_interval: 1800, health_hysteresis: 3, health_probe_url: "https://example.com",
     failover_enabled: true, failover_cooldown: 120, stats_enabled: true,
@@ -182,6 +215,36 @@ describe("mounted frontend regressions", () => {
     expect(document.body.textContent).toContain("not in the running config yet");
   });
 
+  it("trusts the server's live flag over a cleared active_node_id (disconnect keeps the inbound up)", async () => {
+    // disconnect() deliberately clears active_node_id while the road-warrior inbound can keep
+    // running — the banner must follow rw.live, not re-derive liveness from active_node_id.
+    vi.spyOn(api, "getStatus").mockResolvedValue({ ...STATUS, active_node_id: null });
+    await pollStatusOnce();
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true, live: true,
+           clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).not.toContain("not in the running config yet");
+  });
+
+  it("refetches remote-access state when xray's running state flips with the same active node (FIX-K)", async () => {
+    // A crash/restart that leaves active_node_id unchanged must still trigger a refetch — the
+    // old cue watched active_node_id alone, so the banner could keep showing a stale `live`
+    // value indefinitely with the truth having changed underneath.
+    await pollStatusOnce();   // baseline: STATUS has running: true, active_node_id: 1
+    const getRw = vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true, live: true,
+           clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    expect(getRw).toHaveBeenCalledTimes(1);
+    vi.spyOn(api, "getStatus").mockResolvedValue({ ...STATUS, running: false });   // same node, xray down
+    await pollStatusOnce();
+    await flush();
+    expect(getRw).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses to save a half-filled host row instead of dropping it silently", async () => {
     const put = vi.spyOn(api, "putRw");
     vi.spyOn(api, "getRw").mockImplementation(async () =>
@@ -235,6 +298,21 @@ describe("mounted frontend regressions", () => {
     await flush();
     expect(patch).toHaveBeenCalledWith("cid", false);
     expect(document.body.textContent).toContain("suspended");
+  });
+
+  it("exposes and can disable unattended subscription-driven node switching", async () => {
+    const put = vi.spyOn(api, "putSettings").mockImplementation(async () => settings());
+    mounted.push(mount(SettingsScreen, { target: document.body }));
+    await flush();
+    const toggle = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="subscription auto-switch"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");   // server default is on — must be visible, not hidden
+    expect(document.body.textContent).toContain("replace the active node on its own, with no operator action");
+    toggle.click();
+    await tick();
+    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await flush();
+    const sent = put.mock.calls[0][0] as any;
+    expect(sent.subs_auto_switch).toBe(false);
   });
 
   it("lets the all-server sweep be turned off while the active-server check stays on", async () => {
@@ -372,5 +450,273 @@ describe("mounted frontend regressions", () => {
     document.querySelector("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
     await flush();
     expect(setup).toHaveBeenCalledWith("admin", "password1", "proof");
+  });
+
+  it("cannot double-fire a node reorder while one is in flight (F9-1)", async () => {
+    vi.spyOn(api, "listNodes").mockResolvedValue([node(1, "n1"), node(2, "n2")]);
+    let resolveReorder!: () => void;
+    const reorder = vi.spyOn(api, "reorderNodes")
+      .mockReturnValue(new Promise((resolve) => { resolveReorder = () => resolve(undefined); }));
+    mounted.push(mount(Nodes, { target: document.body }));
+    await flush();
+    const down = document.querySelector<HTMLButtonElement>('[aria-label="move down"]')!;
+    down.click();
+    await tick();
+    expect(reorder).toHaveBeenCalledTimes(1);
+    expect(down.disabled).toBe(true);   // busy guard, mirrors applyingId/probingId elsewhere in this file
+    down.click();                       // must be a no-op — the first reorder hasn't resolved yet
+    await tick();
+    expect(reorder).toHaveBeenCalledTimes(1);
+    resolveReorder();
+    await flush();
+  });
+
+  it("warns before discarding a dirty Add-node modal instead of closing silently (F9-3)", async () => {
+    mounted.push(mount(Nodes, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "+ Add server")!.click();
+    await tick();
+    const name = document.querySelector<HTMLInputElement>('input[aria-label="Node name"]')!;
+    setValue(name, "staged-node");
+    await tick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await flush();
+    expect(document.body.textContent).toContain("Discard unsaved changes?");
+    // Cancel: the dirty form must still be there — nothing silently discarded.
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(document.querySelector('input[aria-label="Node name"]')).not.toBeNull();
+    // Confirm: now it actually closes.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(document.querySelector('input[aria-label="Node name"]')).toBeNull();
+  });
+
+  it("asks for confirmation before disarming the kill-switch (F9-5)", async () => {
+    mounted.push(mount(NetworkScreen, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    const toggle = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="kill-switch"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    toggle.click();
+    await flush();
+    expect(document.body.textContent).toContain("Disarm the fail-closed kill-switch");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");   // unchanged until confirmed
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("surfaces a stopped road-warrior revocation instead of leaving it invisible", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ has_private_key: true, clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    vi.spyOn(api, "deleteRwClient").mockImplementation(async () =>
+      rw({ has_private_key: true, clients: [], revocation: "stopped" }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>(".client-acts button")]
+      .find((b) => b.textContent === "Remove")!.click();
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(document.body.textContent).toContain("xray stopped");
+  });
+
+  it("does not delete a node until the confirm dialog is confirmed (T2)", async () => {
+    vi.spyOn(api, "listNodes").mockResolvedValue([node(1, "n1")]);
+    const del = vi.spyOn(api, "deleteNode").mockResolvedValue(undefined as any);
+    mounted.push(mount(Nodes, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLButtonElement>('[aria-label="Delete node"]')!.click();
+    await tick();
+    expect(document.body.textContent).toContain("Delete server");
+    expect(del).not.toHaveBeenCalled();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(del).not.toHaveBeenCalled();
+    expect(document.querySelector('[aria-label="Delete node"]')).not.toBeNull();   // row still there — nothing silently dropped
+    document.querySelector<HTMLButtonElement>('[aria-label="Delete node"]')!.click();
+    await tick();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(del).toHaveBeenCalledWith(1);
+  });
+
+  it("does not bulk-delete nodes until the confirm dialog is confirmed (T2)", async () => {
+    vi.spyOn(api, "listNodes").mockResolvedValue([node(1, "n1"), node(2, "n2")]);
+    const del = vi.spyOn(api, "deleteNode").mockResolvedValue(undefined as any);
+    mounted.push(mount(Nodes, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLInputElement>('input[aria-label="select all"]')!.click();
+    await tick();
+    const bulkDeleteBtn = () => [...document.querySelectorAll<HTMLButtonElement>(".bulk button")].find((b) => b.textContent?.trim() === "Delete")!;
+    bulkDeleteBtn().click();
+    await tick();
+    expect(document.body.textContent).toContain("Delete 2 server(s)?");
+    expect(del).not.toHaveBeenCalled();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(del).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("2 selected");   // selection preserved, nothing silently dropped
+    bulkDeleteBtn().click();
+    await tick();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(del).toHaveBeenCalledTimes(2);
+    expect(del).toHaveBeenCalledWith(1);
+    expect(del).toHaveBeenCalledWith(2);
+  });
+
+  it("does not restore a backup until the confirm dialog is confirmed (T3)", async () => {
+    const restore = vi.spyOn(api, "restore").mockResolvedValue({ ok: true, restored: { nodes: 1, profiles: 0 } });
+    mounted.push(mount(Operations, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const doc = { schema_version: 1, nodes: [] };
+    function selectBackup() {
+      const file = new File([JSON.stringify(doc)], "backup.json", { type: "application/json" });
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    selectBackup();
+    await flush();
+    expect(document.body.textContent).toContain("Restore replaces all nodes");
+    expect(restore).not.toHaveBeenCalled();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(restore).not.toHaveBeenCalled();
+    selectBackup();
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(restore).toHaveBeenCalledWith(doc);
+  });
+
+  it("does not reset settings to defaults until the confirm dialog is confirmed (T3)", async () => {
+    const reset = vi.spyOn(api, "resetSettings").mockResolvedValue(settings());
+    mounted.push(mount(Operations, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    const resetBtn = document.querySelector<HTMLButtonElement>(".danger .btn-danger")!;
+    resetBtn.click();
+    await tick();
+    expect(document.body.textContent).toContain("Reset all panel settings");
+    expect(reset).not.toHaveBeenCalled();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(reset).not.toHaveBeenCalled();
+    resetBtn.click();
+    await tick();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("mounts the Overview dashboard and renders live status without throwing (T4)", async () => {
+    // NOTE: api.rollback() (Dashboard.svelte's config-rollback handler, confirmDialog-gated) has
+    // no caller anywhere in this file or in ConnFlow.svelte — its "Rollback" button was removed by
+    // commit a34e293 ("Overview rebuilt to dense NOC layout") while the handler was left behind.
+    // The gate can't be exercised via user interaction because there is no control left to click;
+    // this is flagged separately rather than faked with a synthetic invocation.
+    vi.spyOn(api, "listNodes").mockResolvedValue([node(1, "n1")]);
+    mounted.push(mount(Dashboard, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("Live Traffic");
+    expect(document.body.textContent).toContain("Upstream Health");
+    expect(document.body.textContent).toContain("n1");
+  });
+
+  it("does not delete a subscription until the confirm dialog is confirmed (F13-4)", async () => {
+    vi.spyOn(api, "listSubs").mockResolvedValue([subscription(9, "sub1", { node_count: 3 })]);
+    const del = vi.spyOn(api, "deleteSub").mockResolvedValue(undefined as any);
+    mounted.push(mount(Subscriptions, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLButtonElement>('[aria-label="Delete subscription"]')!.click();
+    await tick();
+    expect(document.body.textContent).toContain("Delete subscription");
+    expect(del).not.toHaveBeenCalled();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(del).not.toHaveBeenCalled();
+    document.querySelector<HTMLButtonElement>('[aria-label="Delete subscription"]')!.click();
+    await tick();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(del).toHaveBeenCalledWith(9);
+  });
+
+  it("does not delete a tuning profile until the confirm dialog is confirmed (F13-4)", async () => {
+    vi.spyOn(api, "listProfiles").mockResolvedValue([profile(3, "p1", { node_count: 2 })]);
+    const del = vi.spyOn(api, "deleteProfile").mockResolvedValue(undefined as any);
+    mounted.push(mount(Tuning, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLButtonElement>('[aria-label="Delete profile"]')!.click();
+    await tick();
+    expect(document.body.textContent).toContain("Delete profile");
+    expect(del).not.toHaveBeenCalled();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(del).not.toHaveBeenCalled();
+    document.querySelector<HTMLButtonElement>('[aria-label="Delete profile"]')!.click();
+    await tick();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(del).toHaveBeenCalledWith(3);
+  });
+
+  it("does not discard unsaved tuning-profile edits until the confirm dialog is confirmed (F13-4)", async () => {
+    vi.spyOn(api, "listProfiles").mockResolvedValue([profile(1, "p1"), profile(2, "p2")]);
+    mounted.push(mount(Tuning, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    const editButtons = () => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Edit profile"]')];
+    editButtons()[0].click();
+    await tick();
+    const nameInput = document.querySelector<HTMLInputElement>('input[placeholder="name"]')!;
+    expect(nameInput.value).toBe("p1");
+    setValue(nameInput, "p1-edited");
+    await tick();
+    editButtons()[1].click();   // switch to p2 while p1's edit is unsaved
+    await tick();
+    expect(document.body.textContent).toContain("Discard unsaved profile changes?");
+    expect(nameInput.value).toBe("p1-edited");   // not yet overwritten
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(document.querySelector<HTMLInputElement>('input[placeholder="name"]')!.value).toBe("p1-edited");   // still unsaved, still there
+    editButtons()[1].click();
+    await tick();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    expect(document.querySelector<HTMLInputElement>('input[placeholder="name"]')!.value).toBe("p2");
+  });
+
+  it("shares one errText from api.ts — no local copies pasted across screens", () => {
+    // Vite's raw-source glob, not node:fs — this project has no @types/node dependency.
+    const sources = import.meta.glob("./*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    for (const [path, src] of Object.entries(sources)) {
+      expect(src, `${path} must not redefine errText locally`).not.toMatch(/function\s+errText\s*\(/);
+    }
+    const shouldImport = [
+      "./Nodes.svelte", "./Subscriptions.svelte", "./Tuning.svelte", "./Routing.svelte", "./Settings.svelte",
+      "./Operations.svelte", "./Network.svelte", "./Dashboard.svelte",
+    ];
+    for (const path of shouldImport) {
+      const src = sources[path];
+      expect(src, `${path} must import errText from ./api`).toMatch(/import\s*\{[^}]*\berrText\b[^}]*\}\s*from\s*"\.\/api"/);
+    }
   });
 });

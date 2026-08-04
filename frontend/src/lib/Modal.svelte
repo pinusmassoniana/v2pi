@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  let { title = "", onClose, children }:
-    { title?: string; onClose: () => void; children: Snippet } = $props();
+  import { confirmDialog } from "./confirm.svelte";
+  // F9-3: `dirty` lets a caller mark the modal's content as having unsaved data. Every close path
+  // (Esc, backdrop click, the × button) then confirms before discarding instead of calling
+  // onClose() unconditionally — a filled-in Add/Edit form used to vanish on a stray Esc.
+  let { title = "", onClose, dirty = false, confirmMessage = "Discard unsaved changes?", children }:
+    { title?: string; onClose: () => void; dirty?: boolean; confirmMessage?: string; children: Snippet } = $props();
 
   let dialogEl = $state<HTMLElement>();
   const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),'
@@ -17,8 +21,13 @@
     return () => prev?.focus?.();
   });
 
+  async function requestClose() {
+    if (dirty && !(await confirmDialog(confirmMessage))) return;
+    onClose();
+  }
+
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") { onClose(); return; }
+    if (e.key === "Escape") { requestClose(); return; }
     if (e.key !== "Tab" || !dialogEl) return;
     const f = [...dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE)]
       .filter((el) => el.offsetParent !== null);
@@ -31,11 +40,11 @@
 
 <svelte:window onkeydown={onKeydown} />
 <div class="backdrop" role="presentation"
-     onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+     onclick={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
   <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialogEl}>
     <div class="modal-head">
       <h3>{title}</h3>
-      <button class="btn-ghost icon-btn close" onclick={onClose} aria-label="Close">
+      <button class="btn-ghost icon-btn close" onclick={requestClose} aria-label="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>

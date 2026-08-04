@@ -130,6 +130,13 @@
   }
 
   function onDirtyChange(dirty: boolean) { screenDirty = dirty; }
+  // F9-3: Nodes and Subscriptions mount together on the "nodes" view, so a single shared
+  // onDirtyChange would let whichever one settles last clobber the other's true flag with false.
+  // Track each separately and OR them into screenDirty.
+  let nodesDirty = $state(false);
+  let subsDirty = $state(false);
+  function onNodesDirtyChange(dirty: boolean) { nodesDirty = dirty; screenDirty = nodesDirty || subsDirty; }
+  function onSubsDirtyChange(dirty: boolean) { subsDirty = dirty; screenDirty = nodesDirty || subsDirty; }
   function beforeUnload(e: BeforeUnloadEvent) {
     if (!screenDirty) return;
     e.preventDefault();
@@ -216,9 +223,9 @@
         {:else if view === "health"}
           <Health />
         {:else if view === "nodes"}
-          <Nodes />
+          <Nodes onDirtyChange={onNodesDirtyChange} />
           <div class="fold-head"><span class="eyebrow">Subscriptions</span></div>
-          <Subscriptions />
+          <Subscriptions onDirtyChange={onSubsDirtyChange} />
         {:else if view === "tuning"}
           <Tuning {onDirtyChange} />
         {:else if view === "routing"}
