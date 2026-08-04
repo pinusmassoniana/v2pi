@@ -101,6 +101,20 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
             store.set_setting(
                 "data_used_down", str(int(store.get_setting("data_used_down") or "0") + down_delta))
 
+    def _load_proxy_baseline() -> dict | None:
+        """Last absolute proxy counters persisted by `_save_proxy_baseline` (audit F8-3)."""
+        raw = store.get_setting("proxy_abs_baseline") or ""
+        up, _, down = raw.partition(":")
+        try:
+            return {"up": int(up), "down": int(down)}
+        except ValueError:
+            return None
+
+    def _save_proxy_baseline(up: int, down: int) -> None:
+        """Persist them so the first tick after a restart charges the downtime once, instead
+        of starting from a blank baseline and dropping an interval of "data used"."""
+        store.set_setting("proxy_abs_baseline", f"{int(up)}:{int(down)}")
+
     recorder = TrafficRecorder(
         sampler=sampler,
         history=history,
@@ -110,6 +124,11 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         or SETTINGS_DEFAULTS["traffic_sample_ms"],
         on_total=_add_data_used,
         on_minute=store.add_traffic_minute,   # N4: durable 1-min downsample for 24h/7d windows
+        baseline=_load_proxy_baseline(),
+        on_baseline=_save_proxy_baseline,
+        # Shares the store's real transaction so flush_total commits/rolls back the baseline and
+        # the total together (audit FIX-E-1) instead of as two independent writes.
+        transaction=store.transaction,
     )
     return AppState(
         settings=settings,

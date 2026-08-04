@@ -13,17 +13,31 @@ def ensure_session_secret(data_dir: str) -> str:
     run so the panel needs no configured secret. Lives in the data dir (a Docker volume),
     so it's stable across restarts and sessions stay valid. Mode 0600."""
     path = os.path.join(data_dir, "session_secret")
-    try:
-        with open(path) as f:
-            existing = f.read().strip()
-        if len(existing.encode("utf-8")) >= 32:
-            return existing
-    except OSError:
-        pass
+
+    def _persisted() -> str | None:
+        try:
+            existing = Path(path).read_text().strip()
+        except OSError:
+            return None
+        return existing if len(existing.encode("utf-8")) >= 32 else None
+
+    existing = _persisted()
+    if existing is not None:
+        return existing
     secret = secrets.token_urlsafe(48)
-    os.makedirs(data_dir, exist_ok=True)
-    with open(path, "w") as f:
-        f.write(secret)
+    # Create it 0600 rather than chmod'ing afterwards: with a permissive umask the forger of
+    # every session cookie was briefly world-readable (same reason db.py and the bootstrap
+    # token below open their files with an explicit mode).
+    os.makedirs(data_dir, mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        existing = _persisted()          # a racing process, or an unusably short leftover
+        if existing is not None:
+            return existing
+        fd = os.open(path, os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(secret)
     os.chmod(path, 0o600)
     return secret
 

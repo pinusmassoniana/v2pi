@@ -1,12 +1,10 @@
 """Coverage for the Nodes-panel audit fixes/features (NC1–NC3, NR2, NN3/NN4/NN10)."""
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.models import Node, Subscription, NodeHealth
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.health.monitor import HealthMonitor
 from pi_gw_panel.health.failover import decide
+from conftest import _client, _login
 
 
 def _store(settings):
@@ -101,17 +99,6 @@ def test_record_latency_caps_and_survives_upsert(settings):
 
 
 # --- NN10: pre-flight validate endpoint ---
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=__import__("pi_gw_panel.state", fromlist=["build_state"])
-                                 .build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
-
-
 def test_validate_node_ok(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
@@ -123,7 +110,7 @@ def test_validate_node_ok(settings, stub_xray):
 def test_detach_endpoint(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
-    sid = c.post("/api/subs", json={"name": "s", "url": "https://h/x"}, headers=h).json()["id"]
+    sid = c.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/x"}, headers=h).json()["id"]
     nid = c.post("/api/nodes", json={"name": "n", "address": "1.1.1.1", "port": 443, "uuid": "u"},
                  headers=h).json()["id"]
     # manually attach via a refresh would be heavy; just detach an already-manual node is a no-op,

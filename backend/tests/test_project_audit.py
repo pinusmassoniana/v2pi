@@ -1,8 +1,8 @@
 """Tests for the 2026-06-10 project audit fixes (B1-B9) and features N2/N4/N5."""
 import subprocess
 import time
+from datetime import datetime, timezone
 import pytest
-from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.net_control.dryrun import DryRunBackend
@@ -18,17 +18,7 @@ from pi_gw_panel.stats.history import TrafficHistory, TrafficRecorder
 from pi_gw_panel.subs.fetcher import fetch
 from pi_gw_panel.subs.parsers import safe_port, base64_vless, json_nodes, clash_yaml
 from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    app = create_app(settings, state=build_state(settings, net=DryRunBackend()))
-    return TestClient(app)
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme123"})
-    return c.get("/api/csrf").json()["csrf"]
+from conftest import _client, _login
 
 
 def _store(settings) -> NodeStore:
@@ -250,8 +240,12 @@ def test_traffic_minutes_upsert_and_retention(settings):
     store.add_traffic_minute(1000, 400, 40)           # additive on conflict
     rows = store.traffic_minutes(since_min=0)
     assert rows == [{"ts_min": 1000, "up_bytes": 1000, "down_bytes": 100}]
-    # a sample far in the future prunes anything beyond the retention window
+    # Retention prunes off the newest sample that already survived, not off the incoming
+    # timestamp: one sample from a stepped clock must not be able to wipe the table, so the
+    # jump itself prunes nothing and the *next* sample retires what is now out of the window.
     store.add_traffic_minute(1000 + store._TRAFFIC_RETENTION_MIN + 1, 1, 1)
+    assert any(r["ts_min"] == 1000 for r in store.traffic_minutes(since_min=0))
+    store.add_traffic_minute(1000 + store._TRAFFIC_RETENTION_MIN + 2, 1, 1)
     assert all(r["ts_min"] != 1000 for r in store.traffic_minutes(since_min=0))
 
 
@@ -282,11 +276,24 @@ def test_recorder_minute_rollover(settings):
     assert minutes[-1] == (1, 50, 0)
 
 
-def test_traffic_history_long_window_served_from_db(settings, stub_xray):
+def test_traffic_history_long_window_served_from_db(settings, stub_xray, monkeypatch):
     c = _client(settings, stub_xray)
     _login(c)
     state = c.app.state.app_state
-    now_min = int(time.time() // 60)
+    # Freeze the route's notion of "now" instead of racing the real wall clock against it: the
+    # endpoint computes its own now_ms via datetime.now() internally (no injection point), so a
+    # real-clock now_min here could land on the other side of a minute boundary from the
+    # server's now_ms by the time the request is handled — normally hidden by the 10-minute
+    # offset below, but not eliminated by it.
+    frozen = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr("pi_gw_panel.api.routes.datetime", _FrozenDatetime)
+    now_min = int(frozen.timestamp() // 60)
     state.store.add_traffic_minute(now_min - 10, 60_000, 6_000)   # bytes over one minute
     r = c.get("/api/traffic/history?window_sec=86400&max_points=500")
     assert r.status_code == 200
