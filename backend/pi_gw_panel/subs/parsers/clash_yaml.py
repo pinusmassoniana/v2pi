@@ -3,16 +3,34 @@ from pi_gw_panel.models import Node
 from pi_gw_panel.subs.parsers import safe_port
 
 
+# Real clash configs nest a handful of levels (proxies → proxy → opts → headers → value);
+# anything past this is a bomb, not a config.
+MAX_YAML_DEPTH = 50
+
+
 class _NoAliasLoader(yaml.SafeLoader):
-    """SafeLoader that refuses YAML aliases (P2). safe_load blocks arbitrary object
-    construction but NOT anchor/alias amplification ("billion laughs"): a small (<5MB) doc
-    can expand to gigabytes and OOM. Anchors (&a) are harmless alone; refusing to expand the
-    alias (*a) — where the blow-up actually happens — stops it without a threshold guess."""
+    """SafeLoader that refuses YAML aliases (P2) and caps nesting depth. safe_load blocks
+    arbitrary object construction but NOT anchor/alias amplification ("billion laughs"): a
+    small (<5MB) doc can expand to gigabytes and OOM. Anchors (&a) are harmless alone; refusing
+    to expand the alias (*a) — where the blow-up actually happens — stops it without a
+    threshold guess. compose_node also recurses once per nesting level, so a deeply nested
+    document (`[[[[…]]]]`) blows the interpreter stack before any of our own code runs; the
+    depth cap turns that into an ordinary rejected feed."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._depth = 0
 
     def compose_node(self, parent, index):
         if self.check_event(yaml.events.AliasEvent):
             raise yaml.YAMLError("YAML aliases are disabled (anchor/alias amplification guard)")
-        return super().compose_node(parent, index)
+        if self._depth >= MAX_YAML_DEPTH:
+            raise yaml.YAMLError(f"YAML nesting deeper than {MAX_YAML_DEPTH} levels is rejected")
+        self._depth += 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
 
 
 def _opts_path_host(p: dict) -> tuple[str, str]:

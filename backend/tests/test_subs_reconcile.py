@@ -22,8 +22,8 @@ def test_reconcile_add_update_remove(settings):
     parsed = [Node(id=None, name="A2", address="1.1.1.1", port=443, uuid="ua"),
               Node(id=None, name="C", address="3.3.3.3", port=443, uuid="uc")]
     counts = reconcile(s, sid, parsed, active_node_id=None)
-    assert counts == {"added": 1, "updated": 1, "removed": 1,
-                      "active_changed": False, "active_replacement": None, "skipped_deletes": 0}
+    assert counts == {"added": 1, "updated": 1, "removed": 1, "active_changed": False,
+                      "active_replacement": None, "skipped_deletes": 0, "active_downgrade": None}
     names = {n.address: n.name for n in s.list_nodes_for_sub(sid)}
     assert names == {"1.1.1.1": "A2", "3.3.3.3": "C"}  # B removed
     assert s.get_node(a).id == a  # A kept its id across the update
@@ -142,6 +142,7 @@ def test_restart_active_reapplies_on_config_change(monkeypatch, settings):
     s = _store(settings)
     sid = s.add_subscription(Subscription(id=None, name="x", url="u"))
     act = s.add_node(Node(id=None, name="A", address="1.1.1.1", port=443, uuid="u", subscription_id=sid))
+    s.set_setting("active_node_id", str(act))   # re-applying only happens while it IS still active
     calls = []
     monkeypatch.setattr(service, "apply_node", lambda node, *a, **k: calls.append(node.id))
     service._restart_active(_fake_state(s, settings), act,
@@ -161,6 +162,7 @@ def test_restart_active_switches_and_drops_stale_on_replacement(monkeypatch, set
     old = s.add_node(Node(id=None, name="old", address="1.1.1.1", port=443, uuid="u",
                           subscription_id=sid, stale=True))
     new = s.add_node(Node(id=None, name="new", address="2.2.2.2", port=443, uuid="v", subscription_id=sid))
+    s.set_setting("active_node_id", str(old))   # the switch only applies while it IS still active
     calls = []
     monkeypatch.setattr(service, "apply_node",
                         lambda node, *a, **k: calls.append(node.id) or ApplyResult(ok=True))
