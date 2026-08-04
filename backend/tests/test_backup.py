@@ -21,7 +21,9 @@ def _populate(s):
                           subscription_id=sid, tuning_profile_id=pid))
     s.replace_routing([RoutingRule(id=None, position=0, type="geoip", value="ru", action="direct")])
     s.set_setting("routing_default_action", "direct")
-    s.set_setting("health_interval", "15")
+    # A real, storable value: 15 was below the floor PUT /api/settings has always enforced, and a
+    # document is now held to the same bounds as the API that produced it.
+    s.set_setting("health_interval", "900")
     s.set_default_profile(pid)
     # transient state — must NOT be carried in a backup
     s.set_setting("active_node_id", str(nid))
@@ -56,7 +58,7 @@ def test_backup_restore_roundtrip(tmp_path):
     assert dst.get_profile(pid).frag_enabled is True
     assert [r.type for r in dst.get_routing()] == ["geoip"]
     assert dst.get_setting("routing_default_action") == "direct"
-    assert dst.get_setting("health_interval") == "15"
+    assert dst.get_setting("health_interval") == "900"
     assert dst.get_default_profile().id == pid
     # transient NOT restored
     assert dst.get_setting("active_node_id") is None
@@ -168,4 +170,4 @@ def test_export_holds_one_snapshot_lock_across_all_tables(tmp_path, monkeypatch)
     exporter.join(timeout=2)
     concurrent.join(timeout=2)
     assert writer_done.is_set()
-    assert exported["settings"]["health_interval"] == "15"
+    assert exported["settings"]["health_interval"] == "900"
