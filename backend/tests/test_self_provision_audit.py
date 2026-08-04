@@ -6,14 +6,13 @@ from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.net_control.dryrun import DryRunBackend
+from conftest import _build_dryrun_state, _login
 
 
 def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    state = build_state(settings, net=DryRunBackend())
+    state = _build_dryrun_state(settings, stub_xray)
     c = TestClient(create_app(settings, state=state))
-    c.post("/api/setup", json={"username": "admin", "password": "s3cret12"})
-    return c, {"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]}, state
+    return c, {"X-CSRF-Token": _login(c)}, state
 
 
 def test_build_state_wires_dnsmasq_and_pd(settings):

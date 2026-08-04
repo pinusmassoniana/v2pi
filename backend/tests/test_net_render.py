@@ -40,6 +40,14 @@ def test_nft_bypasses_dhcp_before_tproxy():
     assert dhcp_idx < tproxy_idx
 
 
+def test_nft_dhcp_carveout_is_scoped_to_the_segment_and_dhcp_destinations():
+    # An unscoped `udp dport { 67, 68 } return` above the tproxy rule lets ANY client datagram
+    # on those ports skip the tunnel; it leaves un-NAT'd, but the home router NATs it onward.
+    line = next(l for l in render_nft(_plan()).splitlines() if "udp dport { 67, 68 }" in l)
+    assert 'iifname "eth0.2"' in line
+    assert "ip daddr { 192.168.10.0/24, 255.255.255.255 }" in line
+
+
 def test_nft_tproxy_scoped_to_segment_iface():
     # tproxy must only catch traffic arriving on the segment iface — not the Docker
     # bridge or other host-forwarded traffic (which would otherwise get tunneled).

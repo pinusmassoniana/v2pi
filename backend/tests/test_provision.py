@@ -137,25 +137,25 @@ def test_ensure_sysctls_writes_three_knobs():
     assert ("/proc/sys/net/ipv6/conf/eth0/accept_ra", "2") in writes
 
 
-def test_ensure_segment_iface_creates_vlan_and_addresses():
+def test_ensure_segment_link_creates_vlan_and_records_ownership():
     fake = FakeRun()
+    store = _store()
     p = NetPlan.from_settings(Settings())
-    provision.ensure_segment_iface(p, run=fake, link_exists=lambda i: False)
+    provision.ensure_segment_link(store, p, run=fake, link_exists=lambda i: False)
     cmds = fake.cmds()
     assert ["ip", "link", "add", "link", "eth0", "name", "eth0.2", "type", "vlan", "id", "2"] in cmds
-    assert ["ip", "addr", "replace", "192.168.10.2/24", "dev", "eth0.2"] in cmds
     assert ["ip", "link", "set", "eth0.2", "up"] in cmds
+    assert store.get_setting("managed_segment_link") == "eth0.2"
 
 
-def test_ensure_segment_iface_skips_link_add_when_present_and_adds_v6():
+def test_ensure_segment_link_skips_link_add_and_ownership_when_present():
     fake = FakeRun()
+    store = _store()
     p = NetPlan.from_settings(Settings())
-    p.ipv6_enabled = True
-    p.segment_ip6 = "fd00:1:2:3::/64"
-    provision.ensure_segment_iface(p, run=fake, link_exists=lambda i: True)
-    cmds = fake.cmds()
-    assert not any(c[:3] == ["ip", "link", "add"] for c in cmds)
-    assert ["ip", "-6", "addr", "replace", "fd00:1:2:3::1/64", "dev", "eth0.2"] in cmds
+    provision.ensure_segment_link(store, p, run=fake, link_exists=lambda i: True)
+    assert not any(c[:3] == ["ip", "link", "add"] for c in fake.cmds())
+    # a link the panel did not create is never claimed, so disabling never deletes it
+    assert store.get_setting("managed_segment_link") in (None, "")
 
 
 def test_reconcile_segment_addresses_replaces_only_panel_owned_addresses():
@@ -193,6 +193,64 @@ def test_reconcile_segment_addresses_removes_managed_v6_when_disabled():
     assert store.get_setting("managed_segment_addr6") in (None, "")
 
 
+def test_reconcile_records_ownership_before_touching_the_kernel():
+    # The caller may run this inside a DB transaction that later rolls back. If the ownership
+    # write trails the `ip addr replace`, the rolled-back record no longer names the address
+    # left on the host and nothing ever removes it.
+    fake = FakeRun()
+    store = _store()
+    seen: list[str] = []
+    real_set = store.set_setting
+
+    def record(key, value):
+        real_set(key, value)
+        if key == "managed_segment_addr4":
+            seen.append(f"set:{value}")
+
+    def run(cmd, input=None):
+        if cmd[:3] == ["ip", "addr", "replace"]:
+            seen.append(f"kernel:{cmd[3]}")
+        return fake(cmd, input)
+
+    store.set_setting = record
+    provision.reconcile_segment_addresses(store, NetPlan.from_settings(Settings()), run=run)
+    assert seen.index("set:192.168.10.2/24") < seen.index("kernel:192.168.10.2/24")
+
+
+def test_reconcile_keeps_a_replaced_address_recorded_until_it_is_deleted():
+    # Between "the new address is on the host" and "the old one is gone" BOTH are the panel's;
+    # dropping the old record first would strand it if the process died in that window.
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+    recorded: list[str] = []
+
+    def run(cmd, input=None):
+        if cmd[:3] == ["ip", "addr", "replace"]:
+            recorded.append(store.get_setting(provision.STALE_KEY) or "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provision.reconcile_segment_addresses(store, NetPlan.from_settings(Settings()), run=run)
+    assert recorded == ["eth0.2 192.168.9.2/24"]
+    assert store.get_setting(provision.STALE_KEY) == ""      # drained once the delete ran
+
+
+def test_clear_managed_addresses_also_drains_a_stranded_stale_entry():
+    fake = FakeRun()
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+    store.set_setting(provision.STALE_KEY, "eth0.2 192.168.9.2/24\neth0.2 fd00:1:2:9::1/64")
+
+    provision.clear_managed_addresses(store, run=fake)
+
+    cmds = fake.cmds()
+    assert ["ip", "addr", "del", "192.168.9.2/24", "dev", "eth0.2"] in cmds
+    assert ["ip", "-6", "addr", "del", "fd00:1:2:9::1/64", "dev", "eth0.2"] in cmds
+    assert ["ip", "addr", "del", "192.168.10.2/24", "dev", "eth0.2"] in cmds
+    assert store.get_setting(provision.STALE_KEY) == ""
+
+
 def test_ensure_nm_unmanaged_writes_conf_and_reloads():
     fake = FakeRun()
     written = {}
@@ -209,6 +267,14 @@ def test_ensure_nm_unmanaged_no_reload_when_nm_inactive():
     provision.ensure_nm_unmanaged("eth0.2", run=fake, write_file=lambda p, t: None,
                                   nm_active=lambda: False)
     assert not any("nmcli" in c for c in fake.cmds())
+
+
+def test_remove_nm_unmanaged_deletes_the_dropin_and_reloads():
+    fake = FakeRun()
+    removed = []
+    provision.remove_nm_unmanaged(run=fake, remove_file=removed.append, nm_active=lambda: True)
+    assert removed == [provision.NM_CONF_PATH]
+    assert ["nsenter", "-t", "1", "-m", "-n", "--", "nmcli", "general", "reload"] in fake.cmds()
 
 
 # --- Task 4: prefix resolution + orchestrator ----------------------------------
@@ -295,6 +361,24 @@ def test_host_provision_skipped_when_manage_segment_off():
     assert ["ip", "-6", "addr", "del", "fd00:1:2:3::1/64", "dev", "eth0.2"] in fake.cmds()
 
 
+def test_host_provision_hands_the_segment_back_when_manage_segment_off(monkeypatch):
+    # Leaving the NM drop-in (and the VLAN the panel created) behind means NetworkManager
+    # refuses to manage the interface forever after the panel stops owning it.
+    fake = FakeRun()
+    store = _store()
+    store.set_setting("manage_segment", "0")
+    store.set_setting("managed_segment_link", "eth0.2")
+    removed: list[str] = []
+    monkeypatch.setattr(provision, "_remove_file", removed.append)
+
+    assert provision.host_provision(_State(store, LinuxBackend(fake), _Dnsmasq())).ok
+
+    assert removed == [provision.NM_CONF_PATH]
+    assert ["nsenter", "-t", "1", "-m", "-n", "--", "nmcli", "general", "reload"] in fake.cmds()
+    assert ["ip", "link", "delete", "eth0.2"] in fake.cmds()
+    assert store.get_setting("managed_segment_link") == ""
+
+
 def test_host_provision_respects_manage_dnsmasq_off():
     fake = FakeRun()
     store = _store()
@@ -354,6 +438,27 @@ def test_pd_prefix_change_readdresses_segment_and_reapplies_dnsmasq():
     assert ["ip", "-6", "addr", "replace", expected, "dev", "eth0.2"] in fake.cmds()
     assert ["ip", "-6", "addr", "del", old, "dev", "eth0.2"] in fake.cmds()
     assert len(state.dnsmasq.applied) == 2
+
+
+def test_pd_callback_ignores_a_late_notification_after_manage_segment_off():
+    # host_provision stops the PD client OUTSIDE the apply-lock (joining its watcher under the
+    # lock the watcher itself needs would block for the whole timeout), so a notification can
+    # still land right after the disable. It must not re-add the addresses just cleared.
+    fake = FakeRun()
+    store = _store()
+    store.set_setting("ipv6_enabled", "1")
+    store.set_setting("segment_ip6", "auto")
+    state = _State(store, LinuxBackend(fake), _Dnsmasq())
+    state.pd_client = _PD()
+    assert provision.host_provision(state).ok
+    callback = state.pd_client.callback
+    applied = len(state.dnsmasq.applied)
+
+    store.set_setting("manage_segment", "0")
+    callback("2001:db8:1200::/56")
+
+    assert store.get_setting("pd_segment_prefix6") in (None, "")
+    assert len(state.dnsmasq.applied) == applied
 
 
 def test_host_provision_reports_failure_as_net_result():

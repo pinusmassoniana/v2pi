@@ -36,6 +36,10 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
     # RFC-1918 daddr return does NOT cover — so without this explicit bypass it falls through
     # to tproxy and xray swallows it, and new segment clients never get a lease (only unicast
     # renewals to the gateway survive). Excluding udp 67/68 lets DHCP reach the local dnsmasq.
+    # It is scoped to the segment iface AND to a DHCP destination (the segment /24 or the
+    # limited broadcast): an unscoped `udp dport { 67, 68 } return` sitting above the tproxy
+    # rule would let ANY client datagram from/to those ports skip the tunnel entirely — the
+    # packet leaves un-NAT'd, but a home router happily NATs it onward, so it is a real leak.
     #
     # Kill-switch (fail-closed): when on, add a forward-chain drop for client-segment
     # traffic headed to a non-private destination. Correctly-tunneled client packets
@@ -53,6 +57,8 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
         iifname "{plan.segment_iface}" ip daddr != {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} drop
     }}
 """
+    seg_net, lan = net24(plan.segment_ip), net24(plan.mgmt_ip)
+    dhcp_dst = f"{seg_net}, 255.255.255.255" if seg_net else "255.255.255.255"
     prerouting = ""
     if tunnel_up:
         prerouting = f"""\
@@ -60,7 +66,7 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
         type filter hook prerouting priority mangle; policy accept;
         meta mark 0x{plan.egress_mark:x} return
         ip daddr {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} return
-        udp dport {{ 67, 68 }} return
+        iifname "{plan.segment_iface}" ip daddr {{ {dhcp_dst} }} udp dport {{ 67, 68 }} return
         iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
     }}
 """
@@ -70,7 +76,6 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
     # tunnel. The forward-accept that lets these packets past Docker's `FORWARD policy=drop` is
     # added by LinuxBackend in DOCKER-USER (a base chain's drop can't be overridden from here).
     postrouting = ""
-    seg_net, lan = net24(plan.segment_ip), net24(plan.mgmt_ip)
     if plan.lan_access and seg_net and lan:
         postrouting = f"""\
     chain postrouting {{
@@ -127,7 +132,27 @@ table ip6 pi_gw_panel {{
     return ""
 
 
+_DNSMASQ_FIELDS = ("segment_iface", "dnsmasq_leases", "dhcp_start", "dhcp_end", "dhcp_lease",
+                   "segment_ip", "client_dns", "client_dns6")
+
+
+def _no_line_break(plan: NetPlan) -> None:
+    """Refuse to render a dnsmasq config out of a value carrying CR/LF.
+
+    In this file format a newline is not data, it is the start of the next DIRECTIVE — and the
+    file is handed to a dnsmasq the panel supervises as root, so `12h\\ndhcp-script=/data/x.sh`
+    is remote code execution on the next lease event, in a config `dnsmasq --test` calls valid.
+    Every write path validates these values; this is the backstop for the one that gets added
+    later and forgets to.
+    """
+    for field in _DNSMASQ_FIELDS:
+        value = str(getattr(plan, field, "") or "")
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"{field} must not contain a line break")
+
+
 def render_dnsmasq(plan: NetPlan) -> str:
+    _no_line_break(plan)
     # dnsmasq is the segment's DHCP (v4) + RA (v6) server — the panel's own supervised child
     # (router DHCP/RA is off on the VLAN). It hands clients the Pi as gateway and a public DNS
     # the tproxy rule above intercepts and carries through the tunnel (no RU-resolver leak).
