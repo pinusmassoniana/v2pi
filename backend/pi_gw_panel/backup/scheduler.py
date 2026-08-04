@@ -1,12 +1,10 @@
 """Optional daily auto-backup (SN9). Writes a timestamped JSON snapshot to
 data_dir/backups/ when `auto_backup_enabled` is on, keeping the most recent `keep`."""
 import asyncio
-import json
 import logging
 import os
-import tempfile
 import time
-from pi_gw_panel.backup import export_state
+from pi_gw_panel.backup import backups_dir, export_state, validate_document, write_document
 
 _LAST_BACKUP_KEY = "last_backup_at"   # persisted so a box restarting < interval still backs up
 logger = logging.getLogger(__name__)
@@ -26,38 +24,16 @@ class BackupScheduler:
         if not self._enabled():
             return None
         now = int(time.time()) if now is None else now
-        d = os.path.join(self._state.settings.data_dir, "backups")
-        os.makedirs(d, exist_ok=True)
-        try:                                    # backups hold auth/token hashes + sub creds → dir 0700
-            os.chmod(d, 0o700)
-        except OSError:
-            pass
+        d = backups_dir(self._state.settings)   # backups hold sub creds → dir 0700
         path = os.path.join(d, f"backup-{now}.json")
         doc = export_state(self._state.store)
         doc["created_at"] = now                 # header for a future restore to validate (schema_version already present)
-        # Atomic write: dump to .tmp, flush+fsync, then os.replace — a crash/disk-full mid-write
-        # can't leave a truncated file that the pruner would keep while deleting older good ones.
-        fd, tmp = tempfile.mkstemp(prefix=".backup-", suffix=".tmp", dir=d)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(doc, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-            tmp = ""
-            # Persist the rename metadata before pruning the prior durable generation.
-            dir_fd = os.open(d, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        finally:
-            if tmp:
-                try:
-                    os.unlink(tmp)
-                except FileNotFoundError:
-                    pass
+        # A backup that restore would refuse is worse than no backup: it is a daily file that
+        # looks like a safety net until the day it is needed. Any drift between what the panel
+        # can store and what a document may contain has to surface here, loudly, on the first
+        # run after it appears — not silently, months later, during a recovery.
+        validate_document(doc)
+        write_document(doc, path)
         # Prune to keep-N only AFTER the replace succeeded (a complete file is now on disk).
         kept = sorted(os.path.join(d, x) for x in os.listdir(d)
                       if x.startswith("backup-") and x.endswith(".json"))

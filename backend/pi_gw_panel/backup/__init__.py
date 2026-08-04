@@ -7,12 +7,17 @@ never accepted from a backup.
 
 import ipaddress
 import json
-import re
+import os
+import tempfile
+import time
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from pi_gw_panel.config import SETTINGS_DEFAULTS
+from pi_gw_panel import rw_inbound as rw
+from pi_gw_panel.config import (SETTINGS_DEFAULTS, validate_net_settings,
+                                validate_setting_values)
 from pi_gw_panel.models import Node, RoutingRule, Subscription, TuningProfile
 from pi_gw_panel.nodes.store import _NODE_COLS, _node_values, _PROFILE_COLS, _profile_values
 
@@ -21,6 +26,9 @@ MAX_NODES = 5000
 MAX_SUBSCRIPTIONS = 256
 MAX_PROFILES = 256
 MAX_RULES = 256
+# Pre-restore snapshots are a safety net taken on every restore, not a bounded daily job, so
+# without a retention cap a burst of restores can grow this directory without limit.
+_PRE_RESTORE_RETAIN = 10
 
 # Complete config intent stored in SQLite. Explicit tuple prevents a hostile restore from
 # smuggling auth/session/transient keys simply because runtime code adds a new setting later.
@@ -207,6 +215,12 @@ class BackupDocument(_Strict):
             raise ValueError(f"unsupported setting keys: {', '.join(sorted(unknown))}")
         if any(len(str(value)) > 2048 for value in self.settings.values()):
             raise ValueError("setting value is too long")
+        # Type/range-check the numeric and closed-choice settings with the SAME table the
+        # interactive PUT /api/settings uses. Restore used to skip it entirely, so a document
+        # carrying health_interval="not-a-number" was accepted and then made GET /api/settings
+        # raise for good — an outage only fixable over SSH.
+        validate_setting_values(self.settings)
+        self._reconcile_default_action()
         default_id = self.settings.get("default_profile_id")
         if default_id not in (None, ""):
             try:
@@ -218,25 +232,86 @@ class BackupDocument(_Strict):
         _validate_network_settings(self.settings)
         return self
 
+    def _reconcile_default_action(self) -> None:
+        """Make `routing.default_action` the single source of truth for the default action.
+
+        A document carries it twice — as the Literal-typed routing field and as a raw string in
+        the settings map — because export writes both. The importer's settings loop runs after
+        the routing insert, so the *unchecked* copy silently won: `settings` could put any string
+        into the xray config the routing field exists to keep to direct/proxy/block. An omitted
+        routing field adopts the settings value (old documents); a genuine disagreement is a
+        hand-edited document and is refused rather than resolved by write order.
+        """
+        raw = self.settings.get("routing_default_action")
+        if raw is None:
+            return
+        raw = str(raw)
+        if "default_action" not in self.routing.model_fields_set:
+            self.routing.default_action = raw     # already checked by validate_setting_values
+        elif raw != self.routing.default_action:
+            raise ValueError("settings.routing_default_action conflicts with "
+                             "routing.default_action")
+
 
 def _validate_network_settings(settings: dict) -> None:
-    iface = str(settings.get("segment_iface", "eth0.2"))
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", iface):
-        raise ValueError("invalid segment_iface")
+    """Segment/DHCP/DNS + road-warrior values, checked with the very validators the interactive
+    routes use.
+
+    These land in the settings table and from there in the dnsmasq config the panel supervises
+    **as root** (`dhcp_lease` and `client_dns6` are interpolated verbatim), and in the client
+    artifacts the road-warrior screen generates. A second, laxer copy of the rules is exactly how
+    restore came to accept `dhcp_lease="12h\\ndhcp-script=/data/x.sh"` — a config `--test` calls
+    valid, which runs an arbitrary script as root on the next lease event — while
+    PUT /api/network rejected the very same string.
+    """
+    validate_net_settings(settings)
     values = {}
-    for key in ("segment_ip", "dhcp_start", "dhcp_end", "client_dns"):
-        if key not in settings:
-            continue
-        try:
-            values[key] = ipaddress.IPv4Address(str(settings[key]))
-        except ValueError as exc:
-            raise ValueError(f"{key} must be an IPv4 address") from exc
-    if {"segment_ip", "dhcp_start", "dhcp_end"} <= values.keys():
+    for key in ("segment_ip", "dhcp_start", "dhcp_end"):
+        raw = str(settings.get(key) or "").strip()
+        if raw:
+            values[key] = ipaddress.IPv4Address(raw)   # shape already proven above
+    if len(values) == 3:
         network = ipaddress.ip_network(f"{values['segment_ip']}/24", strict=False)
         if values["dhcp_start"] not in network or values["dhcp_end"] not in network:
             raise ValueError("DHCP range must be inside the segment subnet")
         if int(values["dhcp_start"]) > int(values["dhcp_end"]):
             raise ValueError("DHCP range start must not exceed end")
+    _validate_rw_settings(settings)
+
+
+def _validate_rw_settings(settings: dict) -> None:
+    """Road-warrior settings, through rw_inbound's own validators.
+
+    A backup used to be able to carry ANY string under 2048 chars into `realitySettings`, the
+    generated `.conf` and the `vless://` link. `rw_clients` is deliberately not checked here:
+    `rw_inbound.get_clients` already drops entries that don't have the shape `add_client`
+    produces, which errs toward less access rather than more.
+    """
+    def value(key: str) -> str:
+        return str(settings.get(key) or "").strip()
+
+    if value("rw_port"):
+        rw.validate_port(value("rw_port"))
+    if value("rw_dest"):
+        rw.validate_dest(value("rw_dest"))
+    if value("rw_server_names"):
+        rw.validate_server_names(rw.parse_csv(value("rw_server_names")))
+    if value("rw_short_ids"):
+        rw.validate_short_ids(rw.parse_csv(value("rw_short_ids")))
+    if value("rw_public_key"):
+        rw.validate_key(value("rw_public_key"), "the Reality public key")
+    if value("rw_endpoint"):
+        rw.validate_endpoint(value("rw_endpoint"))
+    if value("rw_routed_nets"):
+        rw.validate_nets(rw.parse_nets(value("rw_routed_nets")))
+    if value("rw_hosts"):
+        try:
+            hosts = json.loads(value("rw_hosts"))
+        except ValueError as exc:
+            raise ValueError("rw_hosts must be a JSON object of name → IPv4") from exc
+        if not isinstance(hosts, dict):
+            raise ValueError("rw_hosts must be a JSON object of name → IPv4")
+        rw.validate_hosts(hosts)
 
 
 def _node_dict(node: Node) -> dict:
@@ -276,6 +351,122 @@ def export_state(store) -> dict:
     }
 
 
+def backups_dir(settings) -> str:
+    """`data_dir/backups`, created 0700 — the files inside carry subscription URLs."""
+    path = os.path.join(settings.data_dir, "backups")
+    # mode= on the create, not only the chmod after it: between the two the directory stood
+    # open at whatever the process umask allowed, and the first backup can land in that window.
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
+def write_document(doc: dict, path: str) -> str:
+    """Write one backup document atomically at 0600, fsyncing the file and its directory.
+
+    A crash or a full disk mid-write must not leave a truncated file behind: the pruner would
+    keep it (it is the newest) while deleting the older good generations.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".backup-", suffix=".tmp", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(doc, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        tmp = ""
+        dir_fd = os.open(directory, os.O_RDONLY)   # persist the rename itself
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+    return path
+
+
+def _reserve_snapshot_path(directory: str, now: int) -> str:
+    """Claim a filename for a pre-restore snapshot that cannot collide with a concurrent one
+    (audit FIX-E-4): a second-precision timestamp alone let two restores inside the same second
+    resolve to the identical path, and `write_document`'s `os.replace` would then silently
+    overwrite the first recovery copy with the second. O_CREAT|O_EXCL makes the claim itself
+    atomic; the UUID suffix makes a genuine collision practically impossible in the first place.
+    """
+    for _ in range(8):
+        candidate = os.path.join(directory, f"pre-restore-{now}-{uuid.uuid4().hex}.json")
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return candidate
+    raise OSError("could not allocate a unique pre-restore snapshot filename")
+
+
+def _prune_pre_restore_snapshots(directory: str, keep: int = _PRE_RESTORE_RETAIN) -> None:
+    """Keep only the `keep` most recent pre-restore snapshots; best-effort — a failure here must
+    not undo the snapshot write that just succeeded."""
+    try:
+        names = [f for f in os.listdir(directory) if f.startswith("pre-restore-") and f.endswith(".json")]
+    except OSError:
+        return
+    if len(names) <= keep:
+        return
+    try:
+        paths = sorted((os.path.join(directory, f) for f in names), key=os.path.getmtime)
+    except OSError:
+        return
+    for stale in paths[:-keep]:
+        try:
+            os.unlink(stale)
+        except OSError:
+            pass
+
+
+def write_pre_restore_snapshot(state, now: int | None = None) -> str:
+    """Dump the state a restore is about to destroy, and return the path.
+
+    Restore is a whole-state replace with no undo, and daily auto-backup is off by default — so
+    without this the only copy of the configuration being overwritten is whatever the operator
+    happened to export by hand. Validated like any other backup, so the snapshot is known to be
+    restorable at the moment it is taken rather than at the moment it is needed.
+    """
+    now = int(time.time()) if now is None else now
+    doc = export_state(state.store)
+    doc["created_at"] = now
+    validate_document(doc)
+    directory = backups_dir(state.settings)
+    path = _reserve_snapshot_path(directory, now)
+    try:
+        write_document(doc, path)
+    except Exception:
+        # `_reserve_snapshot_path` claims `path` itself as an empty 0-byte placeholder so two
+        # concurrent restores can never collide on one filename; `write_document`'s `os.replace`
+        # normally fills it in. If serialization/fsync on the temp file fails *before* that
+        # replace, the reservation is still the empty file it started as — left behind, it counts
+        # toward the pruner's retention cap by mtime like any other snapshot and can displace an
+        # older *valid* one (audit FIX-J-4). Only remove it while still empty: once `os.replace`
+        # has landed the real content, a later failure (e.g. the directory fsync) must not delete
+        # a snapshot that already holds good data.
+        try:
+            if os.path.getsize(path) == 0:
+                os.unlink(path)
+        except OSError:
+            pass
+        raise
+    _prune_pre_restore_snapshots(directory)
+    return path
+
+
 def validate_document(doc: dict | BackupDocument) -> BackupDocument:
     if isinstance(doc, BackupDocument):
         return doc
@@ -309,9 +500,17 @@ def import_state(store, doc: dict | BackupDocument) -> dict:
         key: ("1" if value else "0") if isinstance(value, bool) else str(value)
         for key, value in validated.settings.items()
     }
+    # The routing block owns the default action (see _reconcile_default_action); dropping the
+    # settings copy here means the write order below can never decide it again.
+    settings.pop("routing_default_action", None)
 
     conn = store._conn
     with store.transaction():
+        # Read before the settings DELETE below wipes the allowlisted keys. The private half of
+        # the Reality pair is never in a backup, so these two decide whether the restored
+        # `rw_enabled` can honestly be honoured.
+        local_private = (store.get_setting("rw_private_key") or "").strip()
+        local_public = (store.get_setting("rw_public_key") or "").strip()
         conn.execute("DELETE FROM node_health")
         conn.execute("DELETE FROM nodes")
         conn.execute("DELETE FROM subscriptions")
@@ -349,6 +548,19 @@ def import_state(store, doc: dict | BackupDocument) -> dict:
         conn.execute(
             "INSERT INTO settings(key,value) VALUES('routing_default_action',?)",
             (validated.routing.default_action,))
+        # Remote access cannot come back on a key this box does not hold. Restoring `rw_enabled=1`
+        # without the matching private half leaves /api/rw reporting the inbound as enabled while
+        # rw_inbound.resolve() returns None and nothing is actually served — a split state the API
+        # itself refuses to create. A public key that belongs to a DIFFERENT pair than the private
+        # key that survived the restore is the same lie with a working-looking inbound behind it.
+        rw_disabled = ""
+        if settings.get("rw_enabled") == "1":
+            if not local_private:
+                rw_disabled = "no local Reality private key"
+            elif local_public and settings.get("rw_public_key", "") != local_public:
+                rw_disabled = "the restored public key does not match the local private key"
+            if rw_disabled:
+                settings["rw_enabled"] = "0"
         for key, value in settings.items():
             conn.execute(
                 "INSERT INTO settings(key,value) VALUES(?,?) "
@@ -356,4 +568,5 @@ def import_state(store, doc: dict | BackupDocument) -> dict:
     return {
         "nodes": len(nodes), "subscriptions": len(subscriptions),
         "profiles": len(profiles), "routing_rules": len(rules),
+        "rw_disabled": rw_disabled,
     }
