@@ -13,7 +13,6 @@ import threading
 
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
 from pi_gw_panel.config import Settings
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
@@ -25,6 +24,7 @@ from pi_gw_panel.net_control.render import render_nft6
 from pi_gw_panel.net_control import netcheck, events as conn_events
 from pi_gw_panel.controller import stop_net, sync_net, boot_guard
 from pi_gw_panel.health.liveness import LivenessLoop
+from conftest import _build_dryrun_state, _login
 
 
 def _store():
@@ -246,10 +246,8 @@ def test_network_status_uplink_injected():
 # --- N1 + N2: wan_blocked flag + event log on /network ----------------------
 
 def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    c = TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-    c.post("/api/setup", json={"username": "admin", "password": "s3cret12"})
-    return c, {"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]}
+    c = TestClient(create_app(settings, state=_build_dryrun_state(settings, stub_xray)))
+    return c, {"X-CSRF-Token": _login(c)}
 
 
 def test_network_payload_has_wan_blocked_and_events(settings, stub_xray):

@@ -1,21 +1,47 @@
 import asyncio
 import logging
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pi_gw_panel.health import probe
 from pi_gw_panel.controller import apply_lock
+from pi_gw_panel.net_control import events
 
 log = logging.getLogger("pi_gw_panel")
 DEFAULT_PROBE_URL = "https://api.ipify.org?format=json"
 DEFAULT_INTERVAL = 1800.0   # 30 min — TCP + direct-HTTPS sweep of all nodes (configurable)
+MIN_INTERVAL = 5.0          # a hand-edited/restored 0 must not turn the loop into a spin
+LOOP_ERROR_EVENT_GAP = 300.0
+
+
+class LoopErrorReporter:
+    """A loop that dies silently is the worst failure mode this subsystem has, so loop-level
+    errors are recorded as panel-visible events — but the event ring holds only 40 entries, so
+    a persistent error must not be allowed to flush every connect/failover record out of it.
+    One entry per `gap` seconds is enough to see it."""
+
+    def __init__(self, kind: str = "health-error", gap: float = LOOP_ERROR_EVENT_GAP):
+        self._kind, self._gap, self._last = kind, gap, None
+
+    def record(self, store, detail: str, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if self._last is not None and (now - self._last) < self._gap:
+            return
+        self._last = now
+        events.record(store, self._kind, detail, now=now)
 
 
 class HealthMonitor:
     """Background asyncio loop (mirrors subs/scheduler.py): every `health_interval`
     seconds it TCP-pings every node and runs a real HTTPS request through the active
-    node's local http proxy, persisting the result to `node_health`. Blocking probes
-    are offloaded to a thread; the loop is cancellable.
+    node's local http proxy, persisting the result to `node_health`.
+
+    Blocking probes are offloaded to a thread. Cancelling the loop stops further *scheduling*
+    immediately, but a probe already in flight is not interruptible and can outlive `stop()`
+    by its own socket timeout; what is guaranteed is that once `stop()` has been called no
+    probe result reaches the store (every write re-checks the stop event under `_write_lock`,
+    which `stop()` holds while setting it) and that queued probes return without dialling.
 
     The active node's `fail_count` accumulates consecutive real-request failures (reset
     on success) — this is the hysteresis counter the failover logic reads. Probes are
@@ -44,6 +70,7 @@ class HealthMonitor:
         self._stop_event = threading.Event()
         self._write_lock = threading.Lock()
         self._backoff: dict[int, dict] = {}   # node_id → {"streak": int, "skip": int}
+        self._errors = LoopErrorReporter()
 
     # --- config knobs (settings k/v, with defaults) ---
     def _enabled(self) -> bool:
@@ -55,10 +82,21 @@ class HealthMonitor:
                 and (store.get_setting("health_sweep_enabled") or "1") == "1")
 
     def _interval(self) -> float:
+        """Sweep cadence. Fully defensive: this is read OUTSIDE the tick guard, so a store
+        blip or a restored non-numeric `health_interval` used to kill the loop task outright
+        and take failover-to-standby down with it, permanently and silently."""
         if self._tick_override is not None:
             return self._tick_override
-        v = self._state.store.get_setting("health_interval")
-        return float(v) if v else DEFAULT_INTERVAL
+        try:
+            v = self._state.store.get_setting("health_interval")
+        except Exception:
+            log.warning("health monitor: could not read health_interval", exc_info=True)
+            return DEFAULT_INTERVAL
+        try:
+            return max(MIN_INTERVAL, float(v)) if v else DEFAULT_INTERVAL
+        except (TypeError, ValueError):
+            log.warning("health monitor: ignoring malformed health_interval %r", v)
+            return DEFAULT_INTERVAL
 
     def _active_id(self) -> int | None:
         v = self._state.store.get_setting("active_node_id")
@@ -95,6 +133,10 @@ class HealthMonitor:
         # The handshake fills the "real" column for all nodes — a real request *through* each
         # node isn't possible (xray has a single active outbound).
         def direct(node):
+            # A queued probe must not start dialling after stop() — otherwise draining the pool
+            # costs one full probe timeout per remaining node while shutdown waits.
+            if stop_event is not None and stop_event.is_set():
+                return None
             tcp_ok, tcp_ms = self._tcp_ping(node.address, node.port)
             http_ok, http_ms = self._http_ping(node.address, node.port, node.sni)
             return node, tcp_ok, tcp_ms, http_ok, http_ms
@@ -102,7 +144,7 @@ class HealthMonitor:
         if not due:
             return
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(due)))) as ex:
-            swept = list(ex.map(direct, due))
+            swept = [result for result in ex.map(direct, due) if result is not None]
 
         if stop_event is not None and stop_event.is_set():
             return
@@ -199,16 +241,25 @@ class HealthMonitor:
         # else the whole health sweep stops forever and failover runs on frozen data.
         try:
             self._tick(stop_event)
-        except Exception:
+        except Exception as exc:
             log.exception("health monitor sweep failed")
+            self._errors.record(self._state.store, f"health sweep failed: {exc}")
 
     async def _loop(self) -> None:
         # run one sweep immediately so health engages right after start instead of serving the
-        # stale pre-restart snapshot for a full interval (up to 30 min).
+        # stale pre-restart snapshot for a full interval (up to 30 min); then keep going. NOTHING
+        # short of cancellation may end this task: the sweep is what keeps standby health fresh
+        # enough for auto-failover to have a candidate.
         assert self._executor is not None
-        self._future = self._executor.submit(self._safe_tick, self._stop_event)
-        await asyncio.wrap_future(self._future)
         while True:
+            try:
+                self._future = self._executor.submit(self._safe_tick, self._stop_event)
+                await asyncio.wrap_future(self._future)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("health monitor tick could not run", exc_info=True)
+                self._errors.record(self._state.store, f"health sweep could not run: {exc}")
+            if self._stop_event.is_set():
+                return
             await asyncio.sleep(self._interval())
-            self._future = self._executor.submit(self._safe_tick, self._stop_event)
-            await asyncio.wrap_future(self._future)

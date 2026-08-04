@@ -22,7 +22,9 @@ def test_health_status_exposes_explicit_freshness_and_eligible_standbys():
     store.upsert_health(NodeHealth(node_id=fresh, last_tcp_ok=True, checked_at=_ts(950)))
     store.upsert_health(NodeHealth(node_id=stale, last_http_ok=True, checked_at=_ts(900)))
 
-    assert health_status(store, now=1000, freshness_ttl=60) == {
+    # standby_ttl is pinned here: standbys are otherwise judged by the (much slower) sweep
+    # cadence, which is what test_health_audit covers.
+    assert health_status(store, now=1000, freshness_ttl=60, standby_ttl=60) == {
         "active_health_fresh": True,
         "active_health_age_sec": 30.0,
         "health_freshness_ttl_sec": 60,

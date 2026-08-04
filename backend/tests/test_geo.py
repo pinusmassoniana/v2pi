@@ -37,10 +37,17 @@ def test_lookup_cc_reader_error_is_none():
 
 
 def test_country_code_none_when_db_absent(tmp_path):
-    geo.configure(str(tmp_path / "nope.mmdb"))      # no mmdb on dev/CI → graceful None
-    assert geo.country_code("1.2.3.4") is None
-    assert geo.country_code("") is None
-    geo.clear_cache()
+    # clear_cache() (called via configure(), and again below) resets _reader/_cache but not
+    # _db_path — without this explicit teardown, _db_path is left pointing at this test's
+    # (about-to-be-deleted) tmp_path for the rest of the process, masked only by the fact that
+    # build_state() happens to re-call configure() in nearly every other test.
+    original_db_path = geo._db_path
+    try:
+        geo.configure(str(tmp_path / "nope.mmdb"))      # no mmdb on dev/CI → graceful None
+        assert geo.country_code("1.2.3.4") is None
+        assert geo.country_code("") is None
+    finally:
+        geo.configure(original_db_path)
 
 
 def test_country_code_caches(monkeypatch):
