@@ -3,12 +3,15 @@
 Gated on the linux backend (a net backend carrying a `_run` seam) + the `manage_segment`
 setting. Every side-effect goes through an injectable seam — `run` for shell-outs,
 `write_proc`/`write_file` for /proc + conf files — so the command/file emission is unit-tested
-with no root or Pi. The real apply reuses the LinuxBackend runner so it shares logging."""
+with no root or Pi. The default runner/proc-writer ARE the LinuxBackend ones (imported, not
+re-declared) so both paths keep one contract; the real apply passes the backend's own seam."""
 import ipaddress
 import logging
+import os
 import secrets
 import subprocess
 
+from pi_gw_panel.net_control.linux import _run, _write_proc
 from pi_gw_panel.net_control.plan import NetPlan, NetResult
 from pi_gw_panel.net_control.render import render_dnsmasq
 
@@ -17,22 +20,17 @@ _log = logging.getLogger("pi_gw_panel")
 NM_CONF_PATH = "/etc/NetworkManager/conf.d/99-v2pi.conf"
 
 
-def _run(cmd: list[str], input: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, input=input, capture_output=True, text=True, check=True)
-
-
-def _write_proc(path: str, value: str) -> None:
-    try:
-        with open(path, "w") as f:
-            f.write(value)
-    except OSError:
-        pass
-
-
 def _write_file(path: str, text: str) -> None:
     try:
         with open(path, "w") as f:
             f.write(text)
+    except OSError:
+        pass
+
+
+def _remove_file(path: str) -> None:
+    try:
+        os.remove(path)
     except OSError:
         pass
 
@@ -103,31 +101,34 @@ def ensure_sysctls(settings, write_proc=_write_proc) -> None:
     write_proc(f"/proc/sys/net/ipv6/conf/{settings.mgmt_iface}/accept_ra", "2")
 
 
-def ensure_segment_iface(plan: NetPlan, run=_run, link_exists=None) -> None:
-    """Create the segment VLAN if absent, (re)assign its v4 (and v6 when enabled) address, bring
-    it up. `ip ... replace` + the existence check make every step idempotent."""
+def ensure_segment_link(store, plan: NetPlan, run=_run, link_exists=None) -> None:
+    """Create the configured VLAN when needed and bring the segment link up.
+
+    A VLAN the panel creates is recorded as panel-owned BEFORE the kernel call, so disabling
+    `manage_segment` can delete exactly the link this panel added (and never a pre-existing
+    one) even if the process dies between the record and the creation.
+    """
     link_exists = link_exists or (lambda i: _link_exists(i, run))
     seg = plan.segment_iface
     parent, vid = parse_vlan(seg)
     if vid is not None and not link_exists(seg):
-        run(["ip", "link", "add", "link", parent, "name", seg, "type", "vlan", "id", str(vid)])
-    run(["ip", "addr", "replace", f"{plan.segment_ip}/24", "dev", seg])
-    if plan.ipv6_enabled:
-        ha6 = host_addr6(plan.segment_ip6)
-        if ha6:
-            run(["ip", "-6", "addr", "replace", ha6, "dev", seg])
-    run(["ip", "link", "set", seg, "up"])
-
-
-def ensure_segment_link(plan: NetPlan, run=_run, link_exists=None) -> None:
-    """Create the configured VLAN when needed and bring the segment link up."""
-    link_exists = link_exists or (lambda i: _link_exists(i, run))
-    seg = plan.segment_iface
-    parent, vid = parse_vlan(seg)
-    if vid is not None and not link_exists(seg):
+        store.set_setting("managed_segment_link", seg)
         run(["ip", "link", "add", "link", parent, "name", seg,
              "type", "vlan", "id", str(vid)])
     run(["ip", "link", "set", seg, "up"])
+
+
+def clear_managed_link(store, run=_run) -> None:
+    """Delete only a VLAN link this panel created, and forget it."""
+    link = store.get_setting("managed_segment_link") or ""
+    if not link:
+        return
+    try:
+        run(["ip", "link", "delete", link])
+    except (subprocess.CalledProcessError, OSError):
+        # Already gone (reboot / manual cleanup). Ownership metadata still needs clearing.
+        pass
+    store.set_setting("managed_segment_link", "")
 
 
 def _delete_owned(addr: str, iface: str, *, ipv6: bool, run=_run) -> None:
@@ -143,8 +144,35 @@ def _delete_owned(addr: str, iface: str, *, ipv6: bool, run=_run) -> None:
         pass
 
 
+STALE_KEY = "managed_segment_stale"
+
+
+def _parse_stale(store) -> list[tuple[str, str]]:
+    """`(iface, addr)` pairs recorded as panel-owned but not yet removed from the kernel."""
+    out: list[tuple[str, str]] = []
+    for line in (store.get_setting(STALE_KEY) or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            out.append((parts[0], parts[1]))
+    return out
+
+
+def _record_ownership(store, iface: str, addr4: str, addr6: str,
+                      stale: list[tuple[str, str]]) -> None:
+    store.set_setting("managed_segment_iface", iface)
+    store.set_setting("managed_segment_addr4", addr4)
+    store.set_setting("managed_segment_addr6", addr6)
+    store.set_setting(STALE_KEY, "\n".join(f"{i} {a}" for i, a in stale))
+
+
 def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> None:
     """Atomically replace the desired addresses, then delete only addresses the panel owns.
+
+    Ownership is recorded BEFORE the kernel is touched, and an address that is being replaced
+    stays recorded (on the stale list) until its `ip addr del` has actually run. That ordering
+    is what keeps the panel's record a superset of what it put on the host: a failure — or a
+    caller whose surrounding DB transaction rolls back mid-apply — can then still find every
+    address to remove, instead of leaving an orphan no later pass would ever delete.
 
     The ownership keys make config changes and IPv6 disablement safe on hosts which also carry
     unrelated addresses on the segment interface: no wildcard/flush operation is ever used.
@@ -156,30 +184,43 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> None:
     new4 = f"{plan.segment_ip}/24"
     new6 = host_addr6(plan.segment_ip6) if plan.ipv6_enabled else None
 
+    stale = _parse_stale(store)
+    if old4 and (old4 != new4 or old_iface != new_iface):
+        stale.append((old_iface, old4))
+    if old6 and (old6 != new6 or old_iface != new_iface):
+        stale.append((old_iface, old6))
+
+    _record_ownership(store, new_iface, new4, new6 or "", stale)
+
     run(["ip", "addr", "replace", new4, "dev", new_iface])
     if new6:
         run(["ip", "-6", "addr", "replace", new6, "dev", new_iface])
 
-    if old4 and (old4 != new4 or old_iface != new_iface):
-        _delete_owned(old4, old_iface, ipv6=False, run=run)
-    if old6 and (old6 != new6 or old_iface != new_iface):
-        _delete_owned(old6, old_iface, ipv6=True, run=run)
-
-    store.set_setting("managed_segment_iface", new_iface)
-    store.set_setting("managed_segment_addr4", new4)
-    store.set_setting("managed_segment_addr6", new6 or "")
+    for iface, addr in stale:
+        _delete_owned(addr, iface, ipv6=":" in addr, run=run)
+    _record_ownership(store, new_iface, new4, new6 or "", [])
 
 
 def clear_managed_addresses(store, run=_run) -> None:
     """Remove only addresses previously installed by this panel and clear ownership state."""
     iface = store.get_setting("managed_segment_iface") or ""
+    for stale_iface, addr in _parse_stale(store):
+        _delete_owned(addr, stale_iface, ipv6=":" in addr, run=run)
     _delete_owned(store.get_setting("managed_segment_addr4") or "", iface,
                   ipv6=False, run=run)
     _delete_owned(store.get_setting("managed_segment_addr6") or "", iface,
                   ipv6=True, run=run)
-    store.set_setting("managed_segment_addr4", "")
-    store.set_setting("managed_segment_addr6", "")
-    store.set_setting("managed_segment_iface", "")
+    _record_ownership(store, "", "", "", [])
+
+
+def _nm_reload(run, nm_active) -> None:
+    """Reload NetworkManager live via nsenter into pid 1, but only when it is running."""
+    nm_active = nm_active or (lambda: _nm_active(run))
+    if nm_active():
+        try:
+            run(["nsenter", "-t", "1", "-m", "-n", "--", "nmcli", "general", "reload"])
+        except (subprocess.CalledProcessError, OSError):
+            pass
 
 
 def ensure_nm_unmanaged(seg: str, run=_run, write_file=_write_file, nm_active=None) -> None:
@@ -187,12 +228,18 @@ def ensure_nm_unmanaged(seg: str, run=_run, write_file=_write_file, nm_active=No
     Writes the drop-in unconditionally (honored whenever NM (re)starts); reloads NM live via
     nsenter into pid 1 only when NM is actually running."""
     write_file(NM_CONF_PATH, f"[keyfile]\nunmanaged-devices=interface-name:{seg}\n")
-    nm_active = nm_active or (lambda: _nm_active(run))
-    if nm_active():
-        try:
-            run(["nsenter", "-t", "1", "-m", "-n", "--", "nmcli", "general", "reload"])
-        except (subprocess.CalledProcessError, OSError):
-            pass
+    _nm_reload(run, nm_active)
+
+
+def remove_nm_unmanaged(run=_run, remove_file=None, nm_active=None) -> None:
+    """Hand the segment back to NetworkManager when the panel stops managing it.
+
+    Without this the drop-in outlives the panel's ownership and NM refuses to manage the
+    interface forever, so an operator who turns `manage_segment` off is left with a segment
+    nobody configures.
+    """
+    (remove_file or _remove_file)(NM_CONF_PATH)
+    _nm_reload(run, nm_active)
 
 
 def ensure_segment_prefix6(store, settings, rand=secrets.token_bytes) -> str:
@@ -252,8 +299,11 @@ def _pd_callback(state, run):
         from pi_gw_panel.net_control.pd_client import derive_segment_prefix
         with apply_lock:
             store, settings = state.store, state.settings
-            # Ignore a late hook notification after auto mode has been disabled.
-            if ((store.get_setting("ipv6_enabled") or "0") != "1"
+            # Ignore a late hook notification after auto mode (or segment management as a
+            # whole) has been disabled — otherwise this re-adds the addresses and restarts
+            # the dnsmasq that the disable path just tore down.
+            if ((store.get_setting("manage_segment") or "1") != "1"
+                    or (store.get_setting("ipv6_enabled") or "0") != "1"
                     or (store.get_setting("segment_ip6") or "").strip().lower() != "auto"):
                 return
             _, vid = parse_vlan(store.get_setting("segment_iface") or settings.segment_iface)
@@ -276,6 +326,17 @@ def _pd_callback(state, run):
     return changed
 
 
+def _stop_pd(pd) -> None:
+    """Stop the PD client and discard its last delegation. Never raises."""
+    try:
+        pd.stop()
+        clear_state = getattr(pd, "clear_state", None)
+        if clear_state is not None:
+            clear_state()
+    except Exception as exc:
+        _log.warning("stopping the DHCPv6-PD client failed: %s", exc)
+
+
 def host_provision(state) -> NetResult:
     """Idempotent host gateway bring-up. Gated on the linux backend + `manage_segment`.
     Never raises out — a provisioning failure is logged, not fatal to boot. Re-entrant under
@@ -285,48 +346,50 @@ def host_provision(state) -> NetResult:
         return _set_result(state, NetResult(ok=True))
     from pi_gw_panel.controller import apply_lock
     run = getattr(state.net, "_run", _run)
+    pd = getattr(state, "pd_client", None)
+    stop_pd = False
     with apply_lock:
         try:
-            pd = getattr(state, "pd_client", None)
             dnsmasq = getattr(state, "dnsmasq", None)
             if (store.get_setting("manage_segment") or "1") != "1":
-                if pd is not None:
-                    pd.stop()
-                    clear_state = getattr(pd, "clear_state", None)
-                    if clear_state is not None:
-                        clear_state()
+                stop_pd = True
                 store.set_setting("pd_segment_prefix6", "")
                 if dnsmasq is not None:
                     dnsmasq.stop()
                 clear_managed_addresses(store, run=run)
-                return _set_result(state, NetResult(ok=True))
-
-            ensure_sysctls(settings)
-            ensure_segment_prefix6(store, settings)
-            plan = NetPlan.from_store(store, settings)
-            plan.segment_ip6 = effective_segment_prefix6(store, settings)
-            ensure_segment_link(plan, run=run)
-            reconcile_segment_addresses(store, plan, run=run)
-            ensure_nm_unmanaged(plan.segment_iface, run=run)
-            auto_pd = (plan.ipv6_enabled
-                       and (store.get_setting("segment_ip6") or "").strip().lower() == "auto")
-            if pd is not None:
-                if auto_pd:
-                    set_callback = getattr(pd, "set_callback", None)
-                    if set_callback is not None:
-                        set_callback(_pd_callback(state, run))
-                    pd.start()
-                else:
-                    pd.stop()
-                    clear_state = getattr(pd, "clear_state", None)
-                    if clear_state is not None:
-                        clear_state()
-                    store.set_setting("pd_segment_prefix6", "")
-            if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
-                dnsmasq.apply(render_dnsmasq(plan))
-            elif dnsmasq is not None:
-                dnsmasq.stop()
-            return _set_result(state, NetResult(ok=True))
+                clear_managed_link(store, run=run)
+                remove_nm_unmanaged(run=run)
+                result = _set_result(state, NetResult(ok=True))
+            else:
+                ensure_sysctls(settings)
+                ensure_segment_prefix6(store, settings)
+                plan = NetPlan.from_store(store, settings)
+                plan.segment_ip6 = effective_segment_prefix6(store, settings)
+                ensure_segment_link(store, plan, run=run)
+                reconcile_segment_addresses(store, plan, run=run)
+                ensure_nm_unmanaged(plan.segment_iface, run=run)
+                auto_pd = (plan.ipv6_enabled
+                           and (store.get_setting("segment_ip6") or "").strip().lower() == "auto")
+                if pd is not None:
+                    if auto_pd:
+                        set_callback = getattr(pd, "set_callback", None)
+                        if set_callback is not None:
+                            set_callback(_pd_callback(state, run))
+                        pd.start()
+                    else:
+                        stop_pd = True
+                        store.set_setting("pd_segment_prefix6", "")
+                if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
+                    dnsmasq.apply(render_dnsmasq(plan))
+                elif dnsmasq is not None:
+                    dnsmasq.stop()
+                result = _set_result(state, NetResult(ok=True))
         except Exception as exc:    # never crash boot on a provisioning hiccup
             _log.warning("host_provision failed: %s", exc)
-            return _set_result(state, NetResult(ok=False, error=str(exc)))
+            result = _set_result(state, NetResult(ok=False, error=str(exc)))
+    # Outside the apply-lock on purpose: the PD watcher takes that same lock inside its
+    # callback, so joining its thread while holding it would block for the whole join
+    # timeout. The store state that makes a late callback a no-op is already committed above.
+    if stop_pd and pd is not None:
+        _stop_pd(pd)
+    return result

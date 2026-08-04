@@ -52,6 +52,7 @@ class PdClient:
         self._last_prefix = _UNSEEN
         self._stop_event = threading.Event()
         self._thread = None
+        self._thread_lock = threading.Lock()   # guards the watcher handle only
 
     def set_callback(self, callback) -> None:
         self._on_prefix_change = callback
@@ -103,20 +104,32 @@ exit 0
             self._on_prefix_change(prefix)
 
     def _watch(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self.poll_once()
-            except Exception:
-                _log.warning("DHCPv6-PD prefix callback failed", exc_info=True)
-            self._stop_event.wait(self._poll_interval)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self.poll_once()
+                except Exception:
+                    _log.warning("DHCPv6-PD prefix callback failed", exc_info=True)
+                self._stop_event.wait(self._poll_interval)
+        finally:
+            # Release our own handle so a later start() can spawn a fresh watcher.
+            with self._thread_lock:
+                if self._thread is threading.current_thread():
+                    self._thread = None
 
     def _ensure_watcher(self) -> None:
-        if self._on_prefix_change is None or self._thread is not None:
+        """Guarantee exactly one live watcher. A watcher that is still running (e.g. blocked in
+        its callback while `stop()` timed out joining it) is reused rather than duplicated —
+        two watchers would double every prefix apply."""
+        if self._on_prefix_change is None:
             return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._watch, name="dhcpv6-pd-prefix", daemon=True)
-        self._thread.start()
+        with self._thread_lock:
+            self._stop_event.clear()
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(
+                target=self._watch, name="dhcpv6-pd-prefix", daemon=True)
+            self._thread.start()
 
     def clear_state(self) -> None:
         """Discard the hook's last delegation when leaving auto mode."""
@@ -146,7 +159,13 @@ exit 0
                 self._proc.wait()
         self._proc = None
         self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=max(1.0, self._poll_interval * 2))
-            self._thread = None
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=max(1.0, self._poll_interval * 2))
+            # Only forget a watcher that actually finished. Dropping the handle on a timed-out
+            # join makes the next start() spawn a SECOND watcher next to the one still running.
+            if not thread.is_alive():
+                with self._thread_lock:
+                    if self._thread is thread:
+                        self._thread = None
         self._last_prefix = _UNSEEN

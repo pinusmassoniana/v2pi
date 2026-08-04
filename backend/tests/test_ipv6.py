@@ -7,7 +7,6 @@ import json
 import subprocess
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
 from pi_gw_panel.config import Settings
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
@@ -15,12 +14,12 @@ from pi_gw_panel.models import Node, NodeHealth
 from pi_gw_panel.health import probe as probe_mod
 from pi_gw_panel.health.snapshot import active_health
 from pi_gw_panel.health.liveness import LivenessLoop
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.net_control.linux import LinuxBackend
 from pi_gw_panel.net_control.plan import NetPlan
 from pi_gw_panel.net_control.render import render_nft6
 from pi_gw_panel.net_control import netcheck
 from pi_gw_panel.xray_config.builder import build_config
+from conftest import _build_dryrun_state, _login
 
 
 def _store():
@@ -133,11 +132,13 @@ def test_linux_apply_cleans_stale_v6_routing_when_off():
     assert ["ip", "-6", "rule", "del", "fwmark", "0x40", "lookup", "100"] in cmds        # E: stale cleanup
 
 
-def test_linux_teardown_flushes_v6_routing():
+def test_linux_teardown_removes_v6_routing():
     fake = FakeRun()
     LinuxBackend(Settings(), run=fake).teardown()
     assert ["ip", "-6", "rule", "del", "fwmark", "0x40", "lookup", "100"] in fake.cmds()
-    assert ["ip", "-6", "route", "flush", "table", "100"] in fake.cmds()
+    # only our own route — flushing table 100 would take any other route living there with it
+    assert ["ip", "-6", "route", "del", "local", "default", "dev", "lo",
+            "table", "100"] in fake.cmds()
 
 
 # --- xray builder ----------------------------------------------------------
@@ -184,11 +185,8 @@ def test_recommendations_gate_on_ipv6():
 # --- API: toggle rebuilds the live config ----------------------------------
 
 def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    state = build_state(settings, net=DryRunBackend())
-    c = TestClient(create_app(settings, state=state))
-    c.post("/api/setup", json={"username": "admin", "password": "s3cret12"})
-    return c, {"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]}
+    c = TestClient(create_app(settings, state=_build_dryrun_state(settings, stub_xray)))
+    return c, {"X-CSRF-Token": _login(c)}
 
 
 # --- DHCPv6-PD 'auto' (spec §9) --------------------------------------------
@@ -265,7 +263,8 @@ def test_real_through_node_probes_v6_egress(monkeypatch):
         seen.append(url)
         return (True, 200, 10, "2606::5" if "api6" in url else "9.9.9.9")
     monkeypatch.setattr(probe_mod, "real_request", fake_rr)
-    n = Node(id=None, name="n", address="aa", port=443, uuid="u")
+    # public literal: probes refuse private/loopback/unresolvable node endpoints
+    n = Node(id=None, name="n", address="1.2.3.4", port=443, uuid="u")
     ok, ms, egress, egress6 = probe_mod.real_through_node(
         n, "xray", "https://v4", spawn=lambda p: _FakeProc(), wait_ready=lambda p: None,
         probe_url6="https://api6.echo")

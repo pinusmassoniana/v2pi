@@ -30,14 +30,14 @@ def test_segment_up_none_when_sysfs_absent(tmp_path):
     assert netcheck.segment_up("eth0.2", sysfs=str(tmp_path)) is None
 
 
-def test_dhcp_clients_counts_unexpired_leases(tmp_path):
+def test_dhcp_leases_skip_blank_lines_and_expired_entries(tmp_path):
     leases = tmp_path / "dnsmasq.leases"
     # col0 = expiry epoch (0 = no expiry); a far-past expiry is dropped (audit F4).
     leases.write_text(
         "0 aa:bb 192.168.10.30 host1 *\n\n"
         "9999999999 cc:dd 192.168.10.31 host2 *\n"
         "100 ee:ff 192.168.10.32 stale *\n")
-    assert netcheck.dhcp_clients(str(leases)) == 2
+    assert len(netcheck.dhcp_leases(str(leases))) == 2
 
 
 def test_dhcp_leases_parse_fields_and_drop_expired(tmp_path):
@@ -52,8 +52,8 @@ def test_dhcp_leases_parse_fields_and_drop_expired(tmp_path):
     assert rows[0]["mac"] == "aa:bb:cc:dd:ee:01"
 
 
-def test_dhcp_clients_zero_when_file_missing(tmp_path):
-    assert netcheck.dhcp_clients(str(tmp_path / "nope.leases")) == 0
+def test_dhcp_leases_empty_when_file_missing(tmp_path):
+    assert netcheck.dhcp_leases(str(tmp_path / "nope.leases")) == []
 
 
 def test_network_status_shape_with_active_tunnel(tmp_path):

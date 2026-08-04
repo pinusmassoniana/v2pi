@@ -79,6 +79,33 @@ def test_readiness_fails_for_stale_tunnel_and_missing_managed_v6():
     assert checks["tunnel"] is False
 
 
+def test_readiness_reports_an_unexpected_extra_address_as_drift(caplog):
+    # The orphan a partially-applied reconcile can strand: a subset test never sees it, so it
+    # would stay invisible to the panel forever.
+    state = _ready_state()
+    checks = netcheck.readiness_checks(
+        state, address_reader=lambda _iface: {"192.168.10.2/24", "192.168.44.2/24"})
+    assert checks["segment_addresses"] is False
+    assert "192.168.44.2/24" in caplog.text
+
+
+def test_readiness_ignores_kernel_owned_link_local_addresses():
+    state = _ready_state()
+    checks = netcheck.readiness_checks(
+        state, address_reader=lambda _iface: {"192.168.10.2/24", "fe80::1/64"})
+    assert checks["segment_addresses"] is True
+
+
+def test_readiness_treats_unmanaged_segment_as_not_applicable():
+    # `manage_segment=0` (the host provisions the segment) is a supported mode. Reporting it as
+    # a failed check pins /api/ready at 503 and makes the migration script roll back a healthy
+    # cutover.
+    state = _ready_state()
+    state.store.set_setting("manage_segment", "0")
+    checks = netcheck.readiness_checks(state, address_reader=lambda _iface: set())
+    assert checks["segment_addresses"] is True
+
+
 def test_readiness_host_probe_errors_fail_closed():
     state = _ready_state()
 

@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import os
 import socket
 import subprocess
@@ -6,6 +7,8 @@ import time
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
 from pi_gw_panel.net_control.plan import NetPlan
+
+_log = logging.getLogger("pi_gw_panel")
 
 
 def _run_text(cmd: list[str]) -> str:
@@ -41,6 +44,27 @@ def _normalized_address(addr: str) -> str | None:
         return None
 
 
+def _kernel_owned(addr: str) -> bool:
+    """Addresses the kernel maintains on any up interface (link-local / loopback / multicast).
+    They are never panel-installed, so they can't be drift."""
+    try:
+        ip = ipaddress.ip_interface(addr).ip
+    except ValueError:
+        return True
+    return ip.is_link_local or ip.is_loopback or ip.is_multicast
+
+
+def address_drift(expected: set[str], actual: set[str]) -> set[str]:
+    """Addresses live on the panel-managed segment interface that the panel did not put there.
+
+    A subset test ("everything we expect is present") cannot see these, so an address stranded
+    by a partially-applied reconcile stays invisible to readiness forever. Exact-compare instead:
+    while the panel manages the segment it is the only writer of routable addresses on it, so
+    an extra one means the recorded ownership and the kernel have diverged.
+    """
+    return {addr for addr in actual if addr not in expected and not _kernel_owned(addr)}
+
+
 def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
     """Truthful gateway readiness, stricter than process liveness.
 
@@ -61,8 +85,17 @@ def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
     expected = [_normalized_address(store.get_setting("managed_segment_addr4") or "")]
     if (store.get_setting("ipv6_enabled") or "0") == "1":
         expected.append(_normalized_address(store.get_setting("managed_segment_addr6") or ""))
-    segment_addresses = bool(
-        manage_segment and expected and all(value is not None and value in actual for value in expected))
+    if not manage_segment:
+        # Running on a host-provisioned segment is a supported mode, not a failure: there are no
+        # panel-owned addresses to confirm. Reporting it as failed pins /api/ready at 503 for
+        # good and makes the migration script roll a perfectly healthy cutover back.
+        segment_addresses = True
+    else:
+        complete = all(value is not None and value in actual for value in expected)
+        drift = address_drift({v for v in expected if v is not None}, actual)
+        if drift:
+            _log.warning("segment address drift on %s: unexpected %s", iface, sorted(drift))
+        segment_addresses = bool(expected and complete and not drift)
 
     dns = getattr(state, "dnsmasq", None)
     try:
@@ -209,11 +242,6 @@ def dhcp_leases(leases_path: str, now: float | None = None) -> list[dict]:
     except OSError:
         return []
     return out
-
-
-def dhcp_clients(leases_path: str, now: float | None = None) -> int:
-    """Count of currently-leased (unexpired) clients; 0 when the file is absent."""
-    return len(dhcp_leases(leases_path, now))
 
 
 def _tunnel(store) -> dict:

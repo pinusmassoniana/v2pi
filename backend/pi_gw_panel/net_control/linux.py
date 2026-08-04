@@ -1,6 +1,10 @@
+import json
+import logging
 import subprocess
 from pi_gw_panel.net_control.plan import NetPlan, NetResult, net24
 from pi_gw_panel.net_control.render import render_nft, render_nft6
+
+_log = logging.getLogger("pi_gw_panel")
 
 NFT_TABLE = "pi_gw_panel"
 IPTABLES_CHAIN = "PI_GW_PANEL"
@@ -84,16 +88,28 @@ class LinuxBackend:
             forwarding_error = self._ensure_forward(ipv6=plan.ipv6_enabled)
             if forwarding_error:
                 raise RuntimeError(forwarding_error)
-            lan_error = self._apply_lan_access(plan)
-            if lan_error:
-                raise RuntimeError(lan_error)
+            lan_warning = self._apply_lan_access(plan)
             self._verify_tproxy(plan)
-            return NetResult(ok=True, rendered=nft_text)
+            return NetResult(ok=True, rendered=nft_text, warning=lan_warning)
         except (subprocess.CalledProcessError, OSError) as exc:
-            return NetResult(ok=False, rendered=nft_text,
-                             error=(getattr(exc, "stderr", None) or str(exc)).strip())
+            return self._failed_apply(
+                plan, nft_text, (getattr(exc, "stderr", None) or str(exc)).strip())
         except RuntimeError as exc:
-            return NetResult(ok=False, rendered=nft_text, error=str(exc))
+            return self._failed_apply(plan, nft_text, str(exc))
+
+    def _failed_apply(self, plan: NetPlan, nft_text: str, error: str) -> NetResult:
+        """Roll a half-applied tproxy back to the fail-closed guard before reporting failure.
+
+        `nft -f` loads the tproxy ruleset first, so a failure in the policy-routing/forwarding
+        steps after it would otherwise leave the segment tproxy'd to a route that does not
+        exist — a black hole no caller repairs (the recovery path just re-runs the same apply).
+        The guard is the same ruleset without tproxy: kill-switch drop when it is on, an empty
+        table when it is off, and never any policy routing.
+        """
+        guard = self.apply_guard(plan)
+        if not guard.ok:
+            error = f"{error}; fail-closed fallback also failed: {guard.error}"
+        return NetResult(ok=False, rendered=nft_text, error=error)
 
     def apply_guard(self, plan: NetPlan) -> NetResult:
         """Fail-closed leak-guard (A1): install the kill-switch drop (v4 + v6) with NO
@@ -106,13 +122,13 @@ class LinuxBackend:
             failures = self._remove_policy_routing(plan.fwmark, plan.table)
             if failures:
                 raise RuntimeError("; ".join(failures))
-            lan_error = self._apply_lan_access(plan)  # LAN access is independent of tunnel state
-            if lan_error:
-                raise RuntimeError(lan_error)
+            # LAN access is independent of tunnel state; it is also secondary, so a failure to
+            # place its rules is a warning — it must never fail the enforcement apply.
+            lan_warning = self._apply_lan_access(plan)
             self._verify_table("ip")
             if plan.kill_switch:
                 self._verify_table("ip6")
-            return NetResult(ok=True, rendered=nft_text)
+            return NetResult(ok=True, rendered=nft_text, warning=lan_warning)
         except (subprocess.CalledProcessError, OSError) as exc:
             return NetResult(ok=False, rendered=nft_text,
                              error=(getattr(exc, "stderr", None) or str(exc)).strip())
@@ -167,11 +183,19 @@ class LinuxBackend:
             failed.append(f"{label}: {exc}")
 
     def _remove_policy_routing(self, fwmark: int, table: int) -> list[str]:
+        """Undo exactly what `apply_tproxy` installed.
+
+        The policy table is not necessarily ours alone — an operator or another daemon may keep
+        routes there — so the single `local default dev lo` route we added is deleted by name
+        rather than flushing the whole table out from under them.
+        """
         failed: list[str] = []
         fw, tbl = f"0x{fwmark:x}", str(table)
         self._cleanup_command(
             ["ip", "rule", "del", "fwmark", fw, "lookup", tbl], failed, "IPv4 rule")
-        self._cleanup_command(["ip", "route", "flush", "table", tbl], failed, "IPv4 route")
+        self._cleanup_command(
+            ["ip", "route", "del", "local", "default", "dev", "lo", "table", tbl],
+            failed, "IPv4 route")
         failed.extend(self._remove_v6_policy_routing(fwmark, table))
         return failed
 
@@ -182,7 +206,8 @@ class LinuxBackend:
             ["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl], failed,
             "IPv6 rule")
         self._cleanup_command(
-            ["ip", "-6", "route", "flush", "table", tbl], failed, "IPv6 route")
+            ["ip", "-6", "route", "del", "local", "default", "dev", "lo", "table", tbl],
+            failed, "IPv6 route")
         return failed
 
     def _run_ok(self, cmd: list[str]) -> None:
@@ -194,9 +219,10 @@ class LinuxBackend:
             pass
 
     def _ensure_forward(self, ipv6: bool = False) -> str:
-        """Ensure IPv4 (and, when tunnelling v6, IPv6) forwarding. Returns a warning string when a
-        write failed or didn't take — with forwarding off, all forwarded client traffic is dropped
-        even though the nft/tproxy apply otherwise 'succeeded', so the operator must be told."""
+        """Ensure IPv4 (and, when tunnelling v6, IPv6) forwarding. Returns an error string when a
+        write failed or didn't take — with forwarding off, all forwarded client traffic is dropped,
+        so the segment is dead and the apply has not really succeeded (unlike LAN access, which is
+        secondary and only warns)."""
         if not self._forward_on("/proc/sys/net/ipv4/ip_forward"):
             return "ip_forward could not be enabled — forwarded client traffic will be dropped"
         if ipv6:
@@ -231,12 +257,20 @@ class LinuxBackend:
     def _apply_lan_access(self, plan: NetPlan) -> str:
         """Let the segment reach the home LAN: (re)insert the forward-accepts into Docker's
         DOCKER-USER chain (the masquerade itself rides the panel's own nft table, rendered above).
-        Idempotent — delete any prior copy, then insert only when lan_access is on. The delete is
-        best-effort (stale copy may be absent); an insert failure is surfaced as a warning (LAN
-        access is a secondary feature — it must not fail the whole tunnel apply, but the operator
-        should know it didn't take). Scoped to the LAN /24 — never a WAN path. Returns a warning."""
+        Idempotent — delete any prior copy, then insert. Scoped to the LAN /24 — never a WAN path.
+
+        With `lan_access` off this only tears the panel's chain down, entirely best-effort: it
+        must never touch DOCKER-USER in a way that can fail, because a host with no Docker has
+        no such chain and would otherwise be unable to bring the tunnel up at all.
+
+        Returns a WARNING string, never an error: LAN access is a secondary feature, so the
+        operator is told it didn't take while enforcement itself still applies.
+        """
         lan = net24(plan.mgmt_ip)
         if not lan or not plan.segment_iface or not plan.mgmt_iface:
+            return ""
+        if not plan.lan_access:
+            self._remove_lan_chain([])      # best-effort; a missing DOCKER-USER is fine here
             return ""
         rules = _lan_forward_rules(plan.segment_iface, plan.mgmt_iface, lan)
         try:
@@ -246,11 +280,13 @@ class LinuxBackend:
             self._run_ok(["iptables", "-D", "DOCKER-USER", "-j", IPTABLES_CHAIN])
             self._run(["iptables", "-I", "DOCKER-USER", "1", "-j", IPTABLES_CHAIN])
             self._run(["iptables", "-F", IPTABLES_CHAIN])
-            if plan.lan_access:
-                for rule in rules:
-                    self._run(["iptables", "-A", *rule])
+            for rule in rules:
+                self._run(["iptables", "-A", *rule])
         except (subprocess.CalledProcessError, OSError) as exc:
-            return f"LAN access chain not applied: {(getattr(exc, 'stderr', None) or str(exc)).strip()}"
+            warning = ("LAN access chain not applied: "
+                       f"{(getattr(exc, 'stderr', None) or str(exc)).strip()}")
+            _log.warning("%s", warning)
+            return warning
         return ""
 
     def _remove_lan_chain(self, failed: list[str]) -> None:
@@ -263,21 +299,53 @@ class LinuxBackend:
     def _verify_table(self, family: str) -> None:
         self._run(["nft", "list", "table", family, NFT_TABLE])
 
+    def _json(self, cmd: list[str]) -> list[dict]:
+        """Structured `ip -j …` read-back. Anything unparseable reads as 'nothing found', so a
+        verification built on it fails closed instead of matching stray text."""
+        out = (self._run(cmd).stdout or "").strip()
+        try:
+            data = json.loads(out) if out else []
+        except ValueError:
+            return []
+        return [entry for entry in data if isinstance(entry, dict)] if isinstance(data, list) else []
+
+    @staticmethod
+    def _same_mark(value, fwmark: int) -> bool:
+        """`ip -j rule show` reports fwmark as '0x40' (or, on some builds, an int)."""
+        if isinstance(value, bool) or value is None:
+            return False
+        if isinstance(value, int):
+            return value == fwmark
+        try:
+            return int(str(value), 0) == fwmark
+        except ValueError:
+            return False
+
+    def _has_fwmark_rule(self, entries: list[dict], fwmark: int, table: int) -> bool:
+        return any(self._same_mark(e.get("fwmark"), fwmark) and str(e.get("table")) == str(table)
+                   for e in entries)
+
+    @staticmethod
+    def _has_local_lo_route(entries: list[dict]) -> bool:
+        return any(e.get("type") == "local" and e.get("dst") == "default" and e.get("dev") == "lo"
+                   for e in entries)
+
     def _verify_tproxy(self, plan: NetPlan) -> None:
-        """Bounded kernel read-back after a mutation; absence is a failed apply, not a warning."""
+        """Bounded kernel read-back after a mutation; absence is a failed apply, not a warning.
+
+        Matched structurally against `ip -j` output: a substring search for the table number
+        hits any unrelated rule that happens to contain those digits (and `"lo" in routes` is
+        satisfied by the word 'local'), so a text match can call an unapplied ruleset verified.
+        """
         self._verify_table("ip")
         self._verify_table("ip6")
         fw, tbl = f"0x{plan.fwmark:x}", str(plan.table)
-        rules = self._run(["ip", "rule", "show"]).stdout or ""
-        routes = self._run(["ip", "route", "show", "table", tbl]).stdout or ""
-        if fw.lower() not in rules.lower() or tbl not in rules:
-            raise RuntimeError(f"post-apply verification missing IPv4 fwmark {fw} rule")
-        if "local" not in routes or "lo" not in routes:
-            raise RuntimeError(f"post-apply verification missing IPv4 local route table {tbl}")
-        if plan.ipv6_enabled:
-            rules6 = self._run(["ip", "-6", "rule", "show"]).stdout or ""
-            routes6 = self._run(["ip", "-6", "route", "show", "table", tbl]).stdout or ""
-            if fw.lower() not in rules6.lower() or tbl not in rules6:
-                raise RuntimeError(f"post-apply verification missing IPv6 fwmark {fw} rule")
-            if "local" not in routes6 or "lo" not in routes6:
-                raise RuntimeError(f"post-apply verification missing IPv6 local route table {tbl}")
+        families = [("IPv4", [])] + ([("IPv6", ["-6"])] if plan.ipv6_enabled else [])
+        for label, flag in families:
+            rules = self._json(["ip", *flag, "-j", "rule", "show"])
+            routes = self._json(["ip", *flag, "-j", "route", "show", "table", tbl])
+            if not self._has_fwmark_rule(rules, plan.fwmark, plan.table):
+                raise RuntimeError(f"post-apply verification missing {label} fwmark {fw} rule")
+            if not self._has_local_lo_route(routes):
+                raise RuntimeError(
+                    f"post-apply verification missing {label} local route table {tbl}")
