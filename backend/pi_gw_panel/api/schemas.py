@@ -1,6 +1,9 @@
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from pi_gw_panel import rw_inbound as rw_mod
+from pi_gw_panel.auth.tokens import SCOPES
 
 
 # Upper bounds so one request can't ship a multi-MB string (memory/CPU DoS — hashing a huge
@@ -50,7 +53,7 @@ class SetupIn(StrictIn):
 
 class TokenCreateIn(StrictIn):
     name: str = Field(min_length=1, max_length=64)
-    scope: Literal["monitor", "read", "readwrite"]
+    scope: Literal[SCOPES]      # the scope vocabulary is defined once, in auth.tokens
     expires_at: int | None = Field(default=None, ge=1)
 
 
@@ -81,11 +84,14 @@ class PasswordChangeIn(StrictIn):
     new_password: str = Field(min_length=8, max_length=_MAX_PW)
 
 
+# min_length mirrors the backup schema (BackupNode). Without it the API could store a node the
+# panel's own backup document refuses to carry — and the drift only surfaced as an unrestorable
+# backup, long after the empty name was accepted.
 class NodeIn(StrictIn):
-    name: str = Field(max_length=_MAX_FIELD)
-    address: str = Field(max_length=_MAX_HOST)
+    name: str = Field(min_length=1, max_length=_MAX_FIELD)
+    address: str = Field(min_length=1, max_length=_MAX_HOST)
     port: int = Field(ge=1, le=65535)
-    uuid: str = Field(max_length=_MAX_FIELD)
+    uuid: str = Field(min_length=1, max_length=_MAX_FIELD)
     transport: str = Field(default="vision", max_length=64)
     security: str = Field(default="reality", max_length=32)   # reality | tls (normalize() downgrades reality→tls if no key)
     sni: str = Field(default="", max_length=_MAX_HOST)
@@ -101,10 +107,10 @@ class NodeIn(StrictIn):
 
 class NodeUpdate(NonNullPatch):
     nullable_fields = frozenset({"tuning_profile_id"})
-    name: str | None = Field(default=None, max_length=_MAX_FIELD)
-    address: str | None = Field(default=None, max_length=_MAX_HOST)
+    name: str | None = Field(default=None, min_length=1, max_length=_MAX_FIELD)
+    address: str | None = Field(default=None, min_length=1, max_length=_MAX_HOST)
     port: int | None = Field(default=None, ge=1, le=65535)
-    uuid: str | None = Field(default=None, max_length=_MAX_FIELD)
+    uuid: str | None = Field(default=None, min_length=1, max_length=_MAX_FIELD)
     transport: str | None = Field(default=None, max_length=64)
     security: str | None = Field(default=None, max_length=32)
     sni: str | None = Field(default=None, max_length=_MAX_HOST)
@@ -149,7 +155,12 @@ class StatusOut(BaseModel):
     xray_state: str = "stopped"   # working | stopped | error (sidebar xray-core box)
     active_since: int | None = None   # epoch the active node was applied (uptime anchor, P3)
     last_failover_at: float | None = None   # epoch of the last auto-failover (NN8)
-    prev_active_node_id: int | None = None   # rollback target; None → Rollback button disabled (U2)
+    prev_active_node_id: int | None = None   # the node a rollback would return to, if any (U2)
+    # Whether POST /rollback would actually succeed. NOT implied by prev_active_node_id: the
+    # snapshot must also be provably the config the live one replaced, and a revocation
+    # deliberately drops that pairing so its effect can never be undone. Advertising only the
+    # node id told API consumers a rollback was available that answers {"ok": false}.
+    rollback_available: bool = False
     server_now: float = 0.0   # Pi wall-clock at response time → client clock-skew correction (D4)
     tunnel_online: bool
     active_health_fresh: bool
@@ -162,8 +173,8 @@ class StatusOut(BaseModel):
 
 class SubscriptionIn(NonNullPatch):
     nullable_fields = frozenset({"default_profile_id"})
-    name: str = Field(max_length=_MAX_FIELD)
-    url: str = Field(max_length=_MAX_URL)
+    name: str = Field(min_length=1, max_length=_MAX_FIELD)   # BackupSubscription requires both
+    url: str = Field(min_length=1, max_length=_MAX_URL)
     interval_sec: int = 0
     injection: dict | None = Field(default=None, max_length=64)
     enabled: bool = True
@@ -172,8 +183,8 @@ class SubscriptionIn(NonNullPatch):
 
 class SubscriptionPatch(NonNullPatch):
     nullable_fields = frozenset({"default_profile_id"})
-    name: str | None = Field(default=None, max_length=_MAX_FIELD)
-    url: str | None = Field(default=None, max_length=_MAX_URL)
+    name: str | None = Field(default=None, min_length=1, max_length=_MAX_FIELD)
+    url: str | None = Field(default=None, min_length=1, max_length=_MAX_URL)
     interval_sec: int | None = None
     injection: dict | None = Field(default=None, max_length=64)
     enabled: bool | None = None
@@ -285,6 +296,7 @@ class ConnectBestIn(StrictIn):
 # anti-DPI tuning knobs moved to per-node tuning profiles (see ProfileIn/Out).
 class SettingsOut(BaseModel):
     tunneled_fetch: bool
+    subs_auto_switch: bool        # let a refreshed subscription move the live tunnel by itself
     routing_default_action: str
     health_enabled: bool          # master: off stops both loops below
     health_sweep_enabled: bool    # the all-nodes sweep, on its own
@@ -304,6 +316,7 @@ class SettingsOut(BaseModel):
 
 class SettingsIn(NonNullPatch):
     tunneled_fetch: bool | None = None
+    subs_auto_switch: bool | None = None
     routing_default_action: str | None = None
     health_enabled: bool | None = None
     health_sweep_enabled: bool | None = None
@@ -342,7 +355,7 @@ class NoiseSpec(StrictIn):
 
 
 class ProfileIn(StrictIn):
-    name: str = Field(max_length=_MAX_FIELD)
+    name: str = Field(min_length=1, max_length=_MAX_FIELD)   # BackupProfile requires a name
     fingerprint: str = Field(default="chrome", max_length=32)
     frag_enabled: bool = False
     frag_packets: str = Field(default="tlshello", max_length=64)
@@ -365,7 +378,7 @@ class ProfileIn(StrictIn):
 
 
 class ProfileUpdate(NonNullPatch):
-    name: str | None = Field(default=None, max_length=_MAX_FIELD)
+    name: str | None = Field(default=None, min_length=1, max_length=_MAX_FIELD)
     fingerprint: str | None = Field(default=None, max_length=32)
     frag_enabled: bool | None = None
     frag_packets: str | None = Field(default=None, max_length=64)
@@ -561,7 +574,9 @@ class NetworkIn(NonNullPatch):
     dhcp_lease: str | None = Field(default=None, min_length=1, max_length=32)
     client_dns: str | None = Field(default=None, min_length=1, max_length=45)
     client_dns6: str | None = Field(default=None, min_length=1, max_length=45)
-    segment_ip6: str | None = None          # empty allowed (clears the prefix / v6 off)
+    # empty allowed (clears the prefix / v6 off); bounded like its siblings — the longest legal
+    # value is a full /64 prefix ("ffff:…:ffff/64", 43 chars) or the literal "auto"
+    segment_ip6: str | None = Field(default=None, max_length=45)
     kill_switch_enabled: bool | None = None
     lan_access_enabled: bool | None = None
     ipv6_enabled: bool | None = None
@@ -614,9 +629,20 @@ class RwOut(BaseModel):
     routed_nets: list[str]      # effective list (derived from the net plan unless overridden)
     routed_nets_override: str   # the raw csv override, "" when deriving
     clients: list[RwClientOut]
-    # Whether the running xray config reflects these settings. False with no active node:
-    # the settings are stored but nothing rebuilt them into the live config yet.
+    # Whether remote access is being SERVED right now: xray is up and the config it loaded
+    # carries the `rw-in` inbound. Deliberately not "there is an active node" — disconnect
+    # clears the active node and leaves xray running on that same config, so the inbound can
+    # be live with no active node (and a revocation rebuild leaves it live for everyone who
+    # was not revoked). It does NOT mean the settings in this response are the ones in the
+    # running config; a save with no active node is stored and applied on the next connect.
     live: bool
+    # How a REVOCATION (client suspended/deleted, feature switched off, key rotated) reached the
+    # running xray. "" for anything that isn't a revocation; otherwise "reapplied" (the active
+    # node was rebuilt), "rebuilt" (no active node — the config was rebuilt from the previous one
+    # and reloaded), "stopped" (nothing to rebuild from, so xray was stopped), or "not-live"
+    # (nothing was serving the inbound, so there was no live access to cut). Never empty on a
+    # revocation: a revocation that could not be applied must say so, not look like a success.
+    revocation: str = ""
 
 
 class RwIn(StrictIn):
@@ -630,10 +656,45 @@ class RwIn(StrictIn):
     # write-only; "" means "keep whatever is stored" so a round-trip through the UI (which
     # never receives the key) can't blank it out.
     private_key: str = Field(default="", max_length=_MAX_FIELD)
-    # Bounded like every other input here (see the note at the top of this file). The ceilings
-    # also keep `rw_hosts`/`rw_clients` under the 2048-char per-setting limit a backup enforces.
+    # Bounded like every other input here (see the note at the top of this file). The COUNT
+    # ceiling alone is not enough to keep `rw_hosts` under the 2048-char per-setting limit a
+    # backup enforces — the name length is capped in rw_inbound.validate_hosts, which is what
+    # actually makes the write ceiling fit under the backup ceiling.
     hosts: dict[str, str] = Field(default_factory=dict, max_length=_MAX_RW_HOSTS)
     routed_nets: str = Field(default="", max_length=_MAX_FIELD)
+
+    # Shape checks at the boundary, so a malformed value is never persisted. Without them a
+    # `dest` of "this is not host:port" or a non-x25519 private key was COMMITTED (the apply
+    # that would have caught it is skipped when no node is active) and then made `xray -test`
+    # fail on every subsequent apply — the tunnel could not come up at all. "" always means
+    # "not set / keep the default" and is checked again where it is used.
+    @field_validator("dest")
+    @classmethod
+    def _check_dest(cls, v: str) -> str:
+        return rw_mod.validate_dest(v) if v.strip() else v
+
+    @field_validator("server_names")
+    @classmethod
+    def _check_server_names(cls, v: str) -> str:
+        names = rw_mod.parse_csv(v)
+        if names:
+            rw_mod.validate_server_names(names)
+        return v
+
+    @field_validator("endpoint")
+    @classmethod
+    def _check_endpoint(cls, v: str) -> str:
+        return rw_mod.validate_endpoint(v) if v.strip() else v
+
+    @field_validator("public_key")
+    @classmethod
+    def _check_public_key(cls, v: str) -> str:
+        return rw_mod.validate_key(v, "the Reality public key") if v.strip() else v
+
+    @field_validator("private_key")
+    @classmethod
+    def _check_private_key(cls, v: str) -> str:
+        return rw_mod.validate_key(v, "the Reality private key") if v.strip() else v
 
 
 class RwClientIn(StrictIn):

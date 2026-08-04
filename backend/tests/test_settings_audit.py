@@ -1,12 +1,12 @@
 """Coverage for the Settings-panel audit fixes/features (SC1/SC2, SS1/SS3, SN1/SN8/SN9)."""
 from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.backup import export_state, import_state
+from conftest import _client, _login
 
 
 def _store(tmp_path):
@@ -60,14 +60,6 @@ def test_backup_v1_back_compat_rederives_node(tmp_path):
 
 
 # --- API ---
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
 
 
 def test_settings_validation_rejects_busyloop_values(settings, stub_xray):

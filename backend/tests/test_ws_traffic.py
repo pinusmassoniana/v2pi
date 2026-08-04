@@ -5,16 +5,13 @@ from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.models import Node, NodeHealth
+from conftest import _login as _auth
 
 
 def _client_state(settings, stub_xray):
     settings.xray_bin = stub_xray
     state = build_state(settings, net=DryRunBackend())
     return TestClient(create_app(settings, state=state)), state
-
-
-def _auth(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
 
 
 class _FakeSampler:

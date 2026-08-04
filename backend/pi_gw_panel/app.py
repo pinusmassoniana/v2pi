@@ -3,6 +3,7 @@ import inspect
 import logging
 import os
 import time
+import anyio.to_thread
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +16,7 @@ from pi_gw_panel.health.monitor import HealthMonitor
 from pi_gw_panel.health.liveness import LivenessLoop
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.health.snapshot import active_health
-from pi_gw_panel.api.deps import _token_principal, session_invalid_reason
+from pi_gw_panel.api.deps import _token_principal, session_invalid_reason_async
 from pi_gw_panel.auth.auth import SESSION_AUTHED
 from pi_gw_panel.stats.history import bounded_interval_ms
 from pi_gw_panel.api.schemas import ReadinessOut
@@ -81,11 +82,25 @@ class RequestBodyLimitMiddleware:
         await self.app(scope, replay_receive, send)
 
 
+def _traffic_settings(store) -> tuple[bool, float]:
+    """The traffic stream's two per-tick settings reads, as one blocking unit.
+
+    Both are SQLite reads behind the store's single connection lock — the same lock a REST
+    handler holds for the length of a whole xray/nft apply. They belong on a worker thread,
+    never on the event loop (see `_traffic_frame` and `session_invalid_reason_async`)."""
+    enabled = (store.get_setting("stats_enabled") or "1") == "1"
+    interval = bounded_interval_ms(store.get_setting("traffic_sample_ms") or "1000") / 1000.0
+    return enabled, interval
+
+
 def _traffic_frame(state) -> dict:
     """Enrich the recorder's immutable latest sample with health and durable totals.
 
     `totals` is the recorder sampler's process-lifetime counters (reset on xray restart);
-    `lifetime` is the recorder-accumulated total that survives restarts (audit F)."""
+    `lifetime` is the recorder-accumulated total that survives restarts (audit F).
+
+    BLOCKING: the recorder snapshot is detached, but the durable/session totals and
+    `active_health` are SQLite reads. Call it off the event loop."""
     recorder = getattr(state, "recorder", None)
     frame = recorder.snapshot() if recorder is not None else {
         "error": "stats recorder unavailable", "stale": True}
@@ -240,7 +255,11 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         # session-auth (same cookie as the REST API) — enforce the FULL contract (epoch +
         # idle timeout), not just the authed flag, so a password change / idle-out kills the
         # traffic stream too (audit D2).
-        if session_invalid_reason(websocket.session, store) is not None:
+        # Every store touch in this handler goes through the threadpool. Done inline, these
+        # blocking SQLite reads take the store's connection lock ON the event loop, so one open
+        # traffic socket stalls the entire panel for as long as a REST handler holds that lock
+        # across an xray/nft apply (measured: GET /api/health 4ms → 1.7s).
+        if await session_invalid_reason_async(websocket.session, store) is not None:
             await websocket.close(code=4401)
             return
         await websocket.accept()
@@ -249,10 +268,11 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             while True:
                 # Revalidate established sockets too: password epoch rotation and idle expiry
                 # must revoke a stream that was valid at handshake time.
-                if session_invalid_reason(websocket.session, store, touch=False) is not None:
+                if await session_invalid_reason_async(
+                        websocket.session, store, touch=False) is not None:
                     await websocket.close(code=4401)
                     return
-                enabled = (store.get_setting("stats_enabled") or "1") == "1"
+                enabled, interval = await anyio.to_thread.run_sync(_traffic_settings, store)
                 if not enabled:
                     if not disabled_sent:
                         await websocket.send_json({"disabled": True})
@@ -260,9 +280,8 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
                     await asyncio.sleep(5.0)  # idle cheaply; a still-open client can re-enable
                     continue
                 disabled_sent = False
-                interval = bounded_interval_ms(
-                    store.get_setting("traffic_sample_ms") or "1000") / 1000.0
-                frame = _traffic_frame(state)  # no I/O: detached recorder snapshot only
+                # Blocking store reads (durable totals + active health) — off the loop.
+                frame = await anyio.to_thread.run_sync(_traffic_frame, state)
                 await websocket.send_json(frame)
                 await asyncio.sleep(interval)
         except (WebSocketDisconnect, RuntimeError):

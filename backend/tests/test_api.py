@@ -3,20 +3,10 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.net_control import events as conn_events
-
-
-def _state(settings, stub_xray):
-    # exercise the real build_state wiring, injecting the dry-run net + stub xray
-    settings.xray_bin = stub_xray
-    return build_state(settings, net=DryRunBackend())
-
-
-def _client(settings, stub_xray):
-    app = create_app(settings, state=_state(settings, stub_xray))
-    return TestClient(app)
+# _login: first-run setup creates the credential AND opens a session; the full auth flow
+# (login, logout, re-setup-409, password change) is covered in test_api_wave3a.py
+from conftest import _build_dryrun_state as _state, _client, _login
 
 
 def test_health_is_open(settings, stub_xray):
@@ -36,13 +26,6 @@ def test_lifespan_starts_and_stops_health_monitor(settings, stub_xray):
     assert app.state.monitor._task is None        # stop() ran on shutdown
 
 
-def _login(c):
-    # first-run setup creates the credential AND opens a session; the full auth flow
-    # (login, logout, re-setup-409, password change) is covered in test_api_wave3a.py
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
-
-
 def test_status_and_nodes(settings, stub_xray):
     c = _client(settings, stub_xray)
     tok = _login(c)
@@ -52,7 +35,7 @@ def test_status_and_nodes(settings, stub_xray):
     assert {k: v for k, v in st.items() if k != "server_now"} == {
         "running": False, "pid": None, "active_node_id": None,
         "xray_state": "stopped", "active_since": None, "last_failover_at": None,
-        "prev_active_node_id": None,
+        "prev_active_node_id": None, "rollback_available": False,
         "tunnel_online": False, "active_health_fresh": False,
         "failover_ready": False, "eligible_standby_count": 0,
         "health_enabled": True, "failover_enabled": True, "failovers_24h": 0}

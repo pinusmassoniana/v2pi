@@ -1,19 +1,5 @@
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.models import NodeHealth
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    app = create_app(settings, state=build_state(settings, net=DryRunBackend()))
-    return TestClient(app)
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
+from conftest import _client, _login
 
 
 # --- Task 10: profiles ---

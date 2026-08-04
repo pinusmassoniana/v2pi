@@ -1,25 +1,12 @@
 """Locks the new contracts introduced by the 2026-07-10 full GUI+backend audit fixes."""
 import pytest
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.models import RoutingRule
 from pi_gw_panel.xray_config.routing import _rule_to_field
 from pi_gw_panel.subs import fetcher
 from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme123"})
-    return c.get("/api/csrf").json()["csrf"]
+from conftest import _client, _login
 
 
 def _store(settings) -> NodeStore:

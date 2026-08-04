@@ -3,16 +3,7 @@ from pi_gw_panel.app import create_app
 from pi_gw_panel.state import build_state
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.net_control.plan import NetResult
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
+from conftest import _client, _login
 
 
 def _add_and_apply(c, tok):

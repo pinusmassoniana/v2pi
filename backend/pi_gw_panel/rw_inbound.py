@@ -10,6 +10,8 @@ None when the feature must not emit an inbound at all.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import json
 import re
@@ -33,6 +35,23 @@ DEFAULTS = {
 
 _HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
 _EMAIL = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+# Any DNS name, case-insensitive, single label allowed (SNI / DDNS endpoint). Deliberately
+# excludes every character that carries meaning in the artifacts we generate — comma (splits a
+# Shadowrocket `[Proxy]` line into fields), CR/LF (starts a new directive, e.g. an injected
+# `[Rule]` / `FINAL,DIRECT` that would send the phone straight past the VPN), space, `#`, `?`, `&`.
+_ANY_HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$")
+# x25519 keys as `xray x25519` prints them: 32 raw bytes ⇒ 43 base64 chars (std or url alphabet),
+# padding optional. Shape alone is not enough — the decoded length is checked too.
+_B64_KEY = re.compile(r"^[A-Za-z0-9+/_-]{43}=?$")
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+_MAX_DNS_NAME = 253
+# A stored setting may not exceed 2048 chars or the panel's own backup becomes unrestorable
+# (backup validates every value against that cap). `rw_hosts` is the widest blob we write:
+# 32 entries × ("name": "255.255.255.255" ⇒ len(name) + 15 + 6) + separators. At 40 that is
+# 32*61 + 64 = 2016 — under the cap with room to spare. Raising either bound needs this redone.
+MAX_HOSTS = 32
+MAX_HOST_NAME = 40
 
 
 def gen_client_id() -> str:
@@ -75,6 +94,90 @@ def validate_port(raw: str) -> int:
     return port
 
 
+def validate_hostname(raw: str, what: str) -> str:
+    """A DNS name that is safe to interpolate into the generated artifacts. `what` names the
+    field so the message points at the box the operator has to fix."""
+    name = (raw or "").strip()
+    if not name:
+        raise ValueError(f"{what} must not be empty")
+    if len(name) > _MAX_DNS_NAME:
+        raise ValueError(f"{what} is longer than {_MAX_DNS_NAME} characters")
+    if not _ANY_HOSTNAME.match(name) or any(len(l) > 63 for l in name.split(".")):
+        raise ValueError(f"{what} must be a host name (letters, digits, dashes and dots), "
+                         f"got {name!r}")
+    return name
+
+
+def validate_server_names(names: list[str]) -> list[str]:
+    """Reality `serverNames`. Each is echoed into `realitySettings` AND into the client's
+    `sni=` field, so an unvalidated one lands in both the xray config and the .conf."""
+    if not names:
+        raise ValueError("at least one server name is required")
+    return [validate_hostname(n, "server name") for n in names]
+
+
+def validate_dest(raw: str) -> str:
+    """Reality `dest` — always `host:port`. Never format-checked before, so a value like
+    'this is not host:port' reached realitySettings verbatim and made `xray -test` fail on
+    every later apply: one bad setting could keep the whole tunnel down."""
+    dest = (raw or "").strip()
+    host, sep, port = dest.rpartition(":")
+    if not sep or not host or not port:
+        raise ValueError(f"rw_dest must be host:port (e.g. www.microsoft.com:443), got {dest!r}")
+    if host.startswith("[") and host.endswith("]"):
+        try:
+            ipaddress.IPv6Address(host[1:-1])
+        except ValueError:
+            raise ValueError(f"rw_dest has an invalid IPv6 literal, got {dest!r}")
+    else:
+        validate_hostname(host, "the rw_dest host")
+    try:
+        parsed = int(port)
+    except ValueError:
+        raise ValueError(f"rw_dest port must be an integer, got {port!r}")
+    if not 1 <= parsed <= 65535:
+        raise ValueError(f"rw_dest port out of range: {parsed}")
+    return f"{host}:{parsed}"
+
+
+def validate_key(raw: str, what: str) -> str:
+    """A Reality x25519 key. The VALUE is never echoed in the error — `what` is one of these
+    keys the private half, and an error message travels back to the browser and into logs."""
+    key = (raw or "").strip()
+    if not _B64_KEY.match(key):
+        raise ValueError(f"{what} must be a base64 x25519 key — 43 characters, exactly as "
+                         "`xray x25519` prints it")
+    try:
+        decoded = base64.urlsafe_b64decode(
+            key.rstrip("=").replace("+", "-").replace("/", "_") + "=")
+    except (ValueError, binascii.Error):
+        raise ValueError(f"{what} is not valid base64")
+    if len(decoded) != 32:
+        raise ValueError(f"{what} must decode to 32 bytes, got {len(decoded)}")
+    return key
+
+
+def validate_endpoint(raw: str) -> str:
+    """The externally reachable address clients dial. Interpolated into both the .conf and the
+    `vless://` link, so a bare IPv6 (which would need brackets there) is refused along with
+    everything else that isn't a plain name or address."""
+    endpoint = (raw or "").strip()
+    if not endpoint:
+        raise ValueError("the external endpoint must not be empty")
+    if endpoint.startswith("[") and endpoint.endswith("]"):
+        try:
+            ipaddress.IPv6Address(endpoint[1:-1])
+        except ValueError:
+            raise ValueError(f"the external endpoint has an invalid IPv6 literal: {endpoint!r}")
+        return endpoint
+    try:
+        ipaddress.IPv4Address(endpoint)
+        return endpoint
+    except ValueError:
+        pass
+    return validate_hostname(endpoint, "the external endpoint")
+
+
 def validate_short_ids(ids: list[str]) -> list[str]:
     """Reality shortIds are 1–8 bytes of hex ⇒ 2–16 hex chars, even length."""
     for sid in ids:
@@ -84,12 +187,30 @@ def validate_short_ids(ids: list[str]) -> list[str]:
 
 
 def validate_hosts(hosts: dict) -> dict[str, str]:
-    """`{name: ip}` for the LAN-by-name path. Names must be dotted (a bare label would
-    collide with search-domain resolution) and must NOT end in `.local` — iOS/macOS answer
-    that over mDNS/Bonjour and never hand it to the proxy, so it would silently never work."""
+    """`{name: ip}` for the LAN-by-name path. Names must be dotted (a bare label would collide
+    with search-domain resolution) and must NOT end in `.local` — iOS/macOS answer that over
+    mDNS/Bonjour and never hand it to the proxy, so such a mapping would silently never work.
+
+    A name under a REAL public suffix (`nas.example.com`, `nas.corp.ru`) is accepted: that is
+    split-horizon DNS, which an operator who owns the domain is entitled to want. It used to be
+    refused by a hand-kept TLD list, which rejected every ccTLD (i.e. every operator outside the
+    gTLD space) while still allowing the many delegated gTLDs the list never heard of — a guard
+    both over-strict and porous. What the list was really protecting against was a *suffix*
+    routing rule spilling onto unrelated traffic, and that is now structural: the builder emits
+    one exact `full:<name>` rule per mapping, so a mapped name can only ever capture itself.
+    The residual effect is scoped and deliberate — the gateway answers that one exact name with
+    a LAN address for the clients it resolves for, and removing the entry undoes it.
+
+    Both bounds are load-bearing, not tidiness: the serialized map is one k/v setting, and a
+    backup refuses any setting over 2048 chars. Bounding only the entry COUNT let 32 long names
+    write a blob the panel's own `GET /api/backup` could no longer restore."""
+    if len(hosts) > MAX_HOSTS:
+        raise ValueError(f"at most {MAX_HOSTS} host mappings, got {len(hosts)}")
     out: dict[str, str] = {}
     for name, ip in hosts.items():
         name = str(name).strip().lower().rstrip(".")
+        if len(name) > MAX_HOST_NAME:
+            raise ValueError(f"host name {name!r} is longer than {MAX_HOST_NAME} characters")
         if not _HOSTNAME.match(name):
             raise ValueError(f"invalid host name {name!r} (need a dotted name, e.g. nas.v2pi)")
         if name.endswith(".local"):
@@ -124,6 +245,12 @@ def validate_email(email: str) -> str:
 # --- clients ----------------------------------------------------------------------------
 
 def get_clients(store) -> list[dict]:
+    """Every client we would put in the config or in a generated profile.
+
+    Entries whose id/name don't have the shape `add_client` produces are DROPPED rather than
+    repaired: `rw_clients` is restorable from a backup, and both fields are interpolated into
+    the `[Proxy]` line and the `vless://` link. Dropping errs toward less access, never more.
+    """
     try:
         raw = json.loads(_get(store, "rw_clients"))
     except (TypeError, ValueError):
@@ -132,9 +259,11 @@ def get_clients(store) -> list[dict]:
         return []
     out = []
     for c in raw:
-        if isinstance(c, dict) and c.get("id") and c.get("email"):
-            out.append({"id": str(c["id"]), "email": str(c["email"]),
-                        "enabled": bool(c.get("enabled", True))})
+        if not isinstance(c, dict):
+            continue
+        cid, email = str(c.get("id") or ""), str(c.get("email") or "")
+        if _UUID.match(cid) and _EMAIL.match(email):
+            out.append({"id": cid, "email": email, "enabled": bool(c.get("enabled", True))})
     return out
 
 
@@ -202,6 +331,12 @@ def resolve(store) -> dict | None:
     None when: disabled, no private key, or no *enabled* clients — xray refuses to start on a
     vless inbound with an empty `clients` list, so an enabled-but-clientless config must not
     emit the inbound at all rather than take the whole tunnel down.
+
+    Every value is re-validated here even though the API validates on write: the settings are
+    also reachable through a restore and through a hand-edited DB, and a malformed `dest` or
+    `private_key` reaching `realitySettings` verbatim makes `xray -test` fail on EVERY later
+    apply. A raise here is caught upstream and degrades to "feature off" — one bad remote-access
+    value must never be able to hold the tunnel down.
     """
     if _get(store, "rw_enabled") != "1":
         return None
@@ -211,11 +346,15 @@ def resolve(store) -> dict | None:
     clients = [c for c in get_clients(store) if c["enabled"]]
     if not clients:
         return None
+    # An empty stored value means "never set" (a partial PUT writes ""), so fall back to the
+    # documented default instead of emitting an empty dest/serverNames xray would choke on.
+    dest = _get(store, "rw_dest").strip() or DEFAULTS["rw_dest"]
+    names = parse_csv(_get(store, "rw_server_names")) or parse_csv(DEFAULTS["rw_server_names"])
     return {
         "port": validate_port(_get(store, "rw_port")),
-        "dest": _get(store, "rw_dest"),
-        "server_names": parse_csv(_get(store, "rw_server_names")),
-        "private_key": private_key,
+        "dest": validate_dest(dest),
+        "server_names": validate_server_names(names),
+        "private_key": validate_key(private_key, "the Reality private key"),
         "short_ids": validate_short_ids(parse_csv(_get(store, "rw_short_ids"))),
         "clients": clients,
         "hosts": get_hosts(store),
@@ -224,22 +363,49 @@ def resolve(store) -> dict | None:
 
 # --- client-facing artifacts ------------------------------------------------------------
 
-def link(store, client: dict) -> str:
-    """`vless://` share link. Shadowrocket parses these reliably, so this stays the fallback
-    when the generated .conf is refused."""
+def _artifact_fields(store) -> tuple[str, str, list[str], list[str], int]:
+    """Everything both artifacts interpolate, validated once, in one place.
+
+    Neither output is JSON — the .conf is a line/comma-delimited format and the link is a URI —
+    so a value carrying a newline or a comma does not get escaped, it becomes STRUCTURE. A
+    newline in the endpoint could close `[Proxy]` and open a `[Rule]` block with `FINAL,DIRECT`:
+    an imported profile that looks right and routes nothing through the VPN. These settings are
+    restorable from a backup, so validating them on write is not enough — check them here too.
+    """
     endpoint = (_get(store, "rw_endpoint") or "").strip()
     if not endpoint:
         raise ValueError("set the external endpoint (DDNS name or WAN IP) first")
     public_key = (_get(store, "rw_public_key") or "").strip()
     if not public_key:
         raise ValueError("set the Reality public key first")
-    names = parse_csv(_get(store, "rw_server_names"))
-    sids = parse_csv(_get(store, "rw_short_ids"))
+    # Same "" ⇒ default fallback resolve() uses, so the SNI the client is told to send is the
+    # one the inbound actually presents.
+    names = parse_csv(_get(store, "rw_server_names")) or parse_csv(DEFAULTS["rw_server_names"])
+    return (validate_endpoint(endpoint),
+            validate_key(public_key, "the Reality public key"),
+            validate_server_names(names),
+            validate_short_ids(parse_csv(_get(store, "rw_short_ids"))),
+            validate_port(_get(store, "rw_port")))
+
+
+def _artifact_client(client: dict) -> tuple[str, str]:
+    """The uuid and label are interpolated too. get_clients() already drops malformed entries;
+    this is the second lock, for any caller that hands us a client from somewhere else."""
+    cid, email = str(client.get("id") or ""), str(client.get("email") or "")
+    if not _UUID.match(cid):
+        raise ValueError("client id is malformed — remove and re-add the client")
+    return cid, validate_email(email)
+
+
+def link(store, client: dict) -> str:
+    """`vless://` share link. Shadowrocket parses these reliably, so this stays the fallback
+    when the generated .conf is refused."""
+    endpoint, public_key, names, sids, port = _artifact_fields(store)
+    cid, email = _artifact_client(client)
     q = ("type=tcp&security=reality&encryption=none&flow=xtls-rprx-vision&fp=chrome"
-         f"&sni={quote(names[0] if names else '')}&pbk={quote(public_key)}"
+         f"&sni={quote(names[0])}&pbk={quote(public_key)}"
          f"&sid={quote(sids[0] if sids else '')}")
-    port = validate_port(_get(store, "rw_port"))
-    return f"vless://{client['id']}@{endpoint}:{port}?{q}#{quote(client['email'])}"
+    return f"vless://{cid}@{endpoint}:{port}?{q}#{quote(email)}"
 
 
 def _tag(email: str) -> str:
@@ -266,20 +432,13 @@ def shadowrocket_conf(store, client: dict, nets: list[str]) -> str:
     line here most likely to need correcting against a real device, which is why the whole
     line is built in one place and pinned by a golden-file test.
     """
-    endpoint = (_get(store, "rw_endpoint") or "").strip()
-    if not endpoint:
-        raise ValueError("set the external endpoint (DDNS name or WAN IP) first")
-    public_key = (_get(store, "rw_public_key") or "").strip()
-    if not public_key:
-        raise ValueError("set the Reality public key first")
-    names = parse_csv(_get(store, "rw_server_names"))
-    sids = parse_csv(_get(store, "rw_short_ids"))
-    port = validate_port(_get(store, "rw_port"))
-    tag = _tag(client["email"])
+    endpoint, public_key, names, sids, port = _artifact_fields(store)
+    cid, email = _artifact_client(client)
+    tag = _tag(email)
     hosts = get_hosts(store)
 
-    proxy = (f"{tag} = vless, {endpoint}, {port}, username={client['id']}, tls=true, "
-             f"network=tcp, flow=xtls-rprx-vision, sni={names[0] if names else ''}, "
+    proxy = (f"{tag} = vless, {endpoint}, {port}, username={cid}, tls=true, "
+             f"network=tcp, flow=xtls-rprx-vision, sni={names[0]}, "
              f"fingerprint=chrome, reality-public-key={public_key}, "
              f"reality-short-id={sids[0] if sids else ''}, udp=true")
 

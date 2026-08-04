@@ -20,17 +20,13 @@ from pi_gw_panel.auth.auth import SESSION_AUTHED, SESSION_EPOCH, SESSION_LASTSEE
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.health import probe as probe_mod
+from conftest import _login as _auth
 
 
 def _client_state(settings, stub_xray):
     settings.xray_bin = stub_xray
     state = build_state(settings, net=DryRunBackend())
     return TestClient(create_app(settings, state=state)), state
-
-
-def _auth(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
 
 
 def _store():

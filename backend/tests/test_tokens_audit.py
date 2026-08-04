@@ -7,6 +7,7 @@ from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.auth import tokens
+from conftest import _login
 
 
 # --- token primitives ---
@@ -62,11 +63,6 @@ def test_store_never_persists_the_plaintext_secret():
 def _app(settings, stub_xray):
     settings.xray_bin = stub_xray
     return create_app(settings, state=build_state(settings, net=DryRunBackend()))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
 
 
 def test_token_lifecycle_and_scopes(settings, stub_xray):

@@ -1,9 +1,10 @@
 import time
+import anyio.to_thread
 from fastapi import Request, HTTPException, Header
 from pi_gw_panel.state import AppState
 from pi_gw_panel.auth.auth import (
     SESSION_AUTHED, SESSION_CSRF, SESSION_EPOCH, SESSION_LASTSEEN, csrf_matches)
-from pi_gw_panel.auth.tokens import hash_token
+from pi_gw_panel.auth.tokens import SCOPE_MONITOR, SCOPE_READWRITE, hash_token
 
 
 def get_state(request: Request) -> AppState:
@@ -31,6 +32,19 @@ def session_invalid_reason(session, store, *, touch: bool = True) -> str | None:
         if touch:
             session[SESSION_LASTSEEN] = now
     return None
+
+
+async def session_invalid_reason_async(session, store, *, touch: bool = True) -> str | None:
+    """`session_invalid_reason` for callers running ON the event loop (the traffic WebSocket).
+
+    The sync version is two blocking SQLite reads that take the store's single connection lock —
+    the same lock a REST handler holds for the length of a whole xray/nft apply. Awaited straight
+    from an `async def` it stalls the whole event loop for that duration (measured: an unrelated
+    `GET /api/health` went from 4ms to 1.7s while the traffic socket polled through a 3s
+    transaction). Off-loading to the threadpool keeps the block on a worker thread, where it costs
+    only that one socket its tick."""
+    return await anyio.to_thread.run_sync(
+        lambda: session_invalid_reason(session, store, touch=touch))
 
 
 def _token_principal(request: Request) -> dict | None:
@@ -61,7 +75,7 @@ def require_auth(request: Request) -> None:
     # A valid API token (read or readwrite) authenticates — this gate covers reads.
     token = _token_principal(request)
     if token is not None:
-        if token["scope"] == "monitor":
+        if token["scope"] == SCOPE_MONITOR:
             allowed = request.method == "GET" and request.url.path in {
                 "/api/status", "/api/traffic/history", "/api/node-health", "/api/network",
             }
@@ -81,7 +95,7 @@ def require_csrf(request: Request, x_csrf_token: str | None = Header(default=Non
     # auth isn't cookie-based, so it isn't CSRF-exposed). Session auth: double-submit CSRF as before.
     token = _token_principal(request)
     if token is not None:
-        if token["scope"] != "readwrite":
+        if token["scope"] != SCOPE_READWRITE:
             raise HTTPException(status_code=403, detail="token is read-only")
         return
     if not csrf_matches(request.session.get(SESSION_CSRF), x_csrf_token):
