@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Diagnostics } from "./api";
+  import { api, errText, type Diagnostics } from "./api";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
 
@@ -9,8 +9,11 @@
   let pwMsg = $state(""); let pwKind = $state<"ok" | "err">("ok");
   let pwBusy = $state(false); let showPw = $state(false);
   let dangerMsg = $state(""); let dangerKind = $state<"ok" | "err">("ok");
+  // F9-4: neither the restore file input nor the reset button had an in-flight guard (unlike the
+  // pwBusy-gated password button below) — overlapping clicks could fire two concurrent restores/resets.
+  let restoring = $state(false);
+  let resetting = $state(false);
 
-  function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
   function fmtBytes(n: number): string {
     const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0, v = n;
     while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
@@ -34,22 +37,22 @@
   async function onRestoreFile(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
-    if (!file) return;
-    if (!(await confirmDialog("Restore replaces all nodes, subscriptions, profiles, routing and settings. Continue?"))) {
-      input.value = ""; return;
-    }
-    let doc: any;
-    try { doc = JSON.parse(await file.text()); }
-    catch { restoreMsg = "not a valid backup file"; restoreKind = "err"; input.value = ""; return; }
-    if (!doc || typeof doc !== "object" || Array.isArray(doc) || !("schema_version" in doc) || !Array.isArray(doc.nodes)) {
-      restoreMsg = "not a valid backup file"; restoreKind = "err"; input.value = ""; return;
-    }
+    if (!file || restoring) return;
+    restoring = true;
     try {
-      const r = await api.restore(doc);
-      restoreMsg = `restored ${r.restored.nodes} nodes, ${r.restored.profiles} profiles — gateway is disconnected; Connect a node when ready`;
-      restoreKind = "ok";
-    } catch (err) { restoreMsg = errText(err, "restore failed"); restoreKind = "err"; }
-    finally { input.value = ""; }
+      if (!(await confirmDialog("Restore replaces all nodes, subscriptions, profiles, routing and settings. Continue?"))) return;
+      let doc: any;
+      try { doc = JSON.parse(await file.text()); }
+      catch { restoreMsg = "not a valid backup file"; restoreKind = "err"; return; }
+      if (!doc || typeof doc !== "object" || Array.isArray(doc) || !("schema_version" in doc) || !Array.isArray(doc.nodes)) {
+        restoreMsg = "not a valid backup file"; restoreKind = "err"; return;
+      }
+      try {
+        const r = await api.restore(doc);
+        restoreMsg = `restored ${r.restored.nodes} nodes, ${r.restored.profiles} profiles — gateway is disconnected; Connect a node when ready`;
+        restoreKind = "ok";
+      } catch (err) { restoreMsg = errText(err, "restore failed"); restoreKind = "err"; }
+    } finally { restoring = false; input.value = ""; }
   }
 
   const pwStrength = $derived.by(() => {
@@ -77,9 +80,12 @@
   }
 
   async function resetDefaults() {
+    if (resetting) return;
     if (!(await confirmDialog("Reset all panel settings (stats, health, failover, session) to their defaults? Nodes, subscriptions and routing are kept."))) return;
+    resetting = true;
     try { await api.resetSettings(); dangerMsg = "settings reset to defaults"; dangerKind = "ok"; }
     catch (err) { dangerMsg = errText(err, "reset failed"); dangerKind = "err"; }
+    finally { resetting = false; }
   }
 
   $effect(() => { api.getDiagnostics().then((d) => (diag = d)).catch(() => {}); });
@@ -91,7 +97,7 @@
     <div class="card-top"><span class="eyebrow">Backup &amp; Restore</span></div>
     <div class="row">
       <button class="btn btn-primary" type="button" onclick={downloadBackup}>+ Create backup</button>
-      <label class="file btn">Restore…<input type="file" accept="application/json,.json" onchange={onRestoreFile} /></label>
+      <label class="file btn">{restoring ? "Restoring…" : "Restore…"}<input type="file" accept="application/json,.json" onchange={onRestoreFile} disabled={restoring} /></label>
     </div>
     <Alert msg={restoreMsg} kind={restoreKind} />
     <p class="muted-sm">A backup bundles nodes, subscriptions, anti-DPI profiles, routing rules and settings into one JSON file. Restore replaces all of them.</p>
@@ -129,7 +135,7 @@
       <div class="card-top"><span class="eyebrow err">Danger zone</span></div>
       <div class="danger-row">
         <span class="muted-sm">Reset all panel settings to defaults — keeps nodes, subscriptions &amp; routing.</span>
-        <button class="btn btn-danger" type="button" onclick={resetDefaults}>Reset settings</button>
+        <button class="btn btn-danger" type="button" onclick={resetDefaults} disabled={resetting}>{resetting ? "Resetting…" : "Reset settings"}</button>
       </div>
       <Alert msg={dangerMsg} kind={dangerKind} />
     </div>

@@ -28,7 +28,6 @@
   --bg: var(--bg0);
   --surface: var(--bg1);
   --surface-2: var(--bg2);
-  --surface-3: var(--bg3);
   --border: var(--bd);
   --border-strong: var(--bd2);
   --text: var(--tx);
@@ -46,15 +45,14 @@
   --radius: 10px;
   --radius-lg: 10px;
   --radius-sm: 6px;
-  --gap: 0.75rem;
   /* elevation — flat for the NOC look */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
   --shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 10px 30px -12px rgba(0, 0, 0, 0.6);
   --shadow-lg: 0 22px 50px -18px rgba(0, 0, 0, 0.7);
-  /* type — monospace everywhere; Plex Sans only for long prose */
+  /* type — monospace everywhere (IBM Plex Mono is the only self-hosted family; Plex Sans was
+     removed as dead weight — nothing referenced --prose) */
   --font: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --prose: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: dark;
 }
 [data-theme="light"] {
@@ -111,7 +109,6 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .page-title { font-size: 1.1rem; font-weight: 680; letter-spacing: -0.01em; margin: 0; color: var(--text); }
 .toolbar { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 .row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
-.stack { display: grid; gap: 0.6rem; }
 .muted { color: var(--muted); }
 /* eyebrow / section micro-label — premium hierarchy without oversized type */
 .eyebrow { text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.08em; font-weight: 650; color: var(--faint); }

@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { api, ApiError, type Subscription, type Preview, type PreviewNodes, type TuningProfile } from "./api";
+  import { api, errText, type Subscription, type Preview, type PreviewNodes, type TuningProfile } from "./api";
   import Modal from "./Modal.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
   import { serverNow } from "./status.svelte";
   import { I } from "./icons";
+  import { createMsg } from "./msg.svelte";
+
+  let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
   let subs = $state<Subscription[]>([]);
   let profiles = $state<TuningProfile[]>([]);
-  let msg = $state("");
-  let msgKind = $state<"ok" | "err">("ok");
+  const msg = createMsg();
   // add form — interval is set here now (F5); 0 = off.
   let form = $state({ name: "", url: "", interval_min: 0 });
   // default injection mirrors the backend default_injection() (F6)
@@ -22,6 +24,16 @@
   let previewNodes = $state<PreviewNodes | null>(null);
   let refreshing = $state<Record<number, boolean>>({});
   let refreshingAll = $state(false);
+  // F9-3: dirty-tracking for the Add (inline) and Edit (modal) forms — Subscriptions previously
+  // got no onDirtyChange prop at all, so a filled-in form vanished silently on sidebar nav/tab
+  // close, and the Edit modal on Esc/backdrop click too.
+  const addFormSnap = JSON.stringify(form);
+  const addHeadersSnap = JSON.stringify(headers);
+  const addQueriesSnap = JSON.stringify(queries);
+  const addDirty = $derived(
+    JSON.stringify(form) !== addFormSnap
+    || JSON.stringify(headers) !== addHeadersSnap
+    || JSON.stringify(queries) !== addQueriesSnap);
 
   // edit modal
   let editId = $state<number | null>(null);
@@ -29,11 +41,10 @@
                           default_profile_id: null as number | null });
   let editHeaders = $state<{ k: string; v: string }[]>([]);
   let editQueries = $state<{ k: string; v: string }[]>([]);
-
-  function setMsg(text: string, kind: "ok" | "err" = "ok") { msg = text; msgKind = kind; }
-  function errText(err: unknown, fallback: string) {
-    return err instanceof ApiError ? err.message : fallback;
-  }
+  let editSnap = $state("");
+  const editDirty = $derived(editId !== null
+    && JSON.stringify({ editForm, editHeaders, editQueries }) !== editSnap);
+  $effect(() => { onDirtyChange?.(addDirty || editDirty); return () => onDirtyChange?.(false); });
 
   function buildInjection(hs: { k: string; v: string }[], qs: { k: string; v: string }[]) {
     const h: Record<string, string> = {};
@@ -74,7 +85,7 @@
     try {
       const [ss, ps] = await Promise.all([api.listSubs(), api.listProfiles()]);
       subs = ss; profiles = ps;
-    } catch (err) { setMsg(errText(err, "load failed"), "err"); }
+    } catch (err) { msg.set(errText(err, "load failed"), "err"); }
   }
   async function add(e: Event) {
     e.preventDefault();
@@ -84,25 +95,25 @@
         injection: buildInjection(headers, queries) });
       form.name = ""; form.url = ""; form.interval_min = 0;
       preview = null; previewNodes = null;
-      setMsg("subscription added", "ok");
+      msg.set("subscription added", "ok");
       await refresh();
-    } catch (err) { setMsg(errText(err, "add failed"), "err"); }
+    } catch (err) { msg.set(errText(err, "add failed"), "err"); }
   }
   async function doPreview() {
     try { preview = await api.previewSub(form.url, buildInjection(headers, queries)); }
-    catch (err) { setMsg(errText(err, "preview failed"), "err"); }
+    catch (err) { msg.set(errText(err, "preview failed"), "err"); }
   }
   async function doPreviewNodes() {
     previewNodes = null;
     try {
       previewNodes = await api.previewSubNodes(form.url, buildInjection(headers, queries));
-      setMsg(`parsed ${previewNodes.count} node(s) (${previewNodes.format})`, "ok");
-    } catch (err) { setMsg(errText(err, "dry-run failed"), "err"); }
+      msg.set(`parsed ${previewNodes.count} node(s) (${previewNodes.format})`, "ok");
+    } catch (err) { msg.set(errText(err, "dry-run failed"), "err"); }
   }
   async function refreshSub(id: number) {
     refreshing = { ...refreshing, [id]: true };
-    try { const r = await api.refreshSub(id); setMsg(r.status ?? r.error ?? "refreshed", r.error ? "err" : "ok"); await refresh(); }
-    catch (err) { setMsg(errText(err, "refresh failed"), "err"); }
+    try { const r = await api.refreshSub(id); msg.set(r.status ?? r.error ?? "refreshed", r.error ? "err" : "ok"); await refresh(); }
+    catch (err) { msg.set(errText(err, "refresh failed"), "err"); }
     finally { refreshing = { ...refreshing, [id]: false }; }
   }
   async function refreshAll() {
@@ -112,18 +123,18 @@
       const results = Array.isArray(r.results) ? r.results : Object.values(r.results ?? {});
       const failures = results.filter((item) => item.error || item.ok === false);
       const details = failures.slice(0, 3).map((item) => `${item.name ?? `#${item.id ?? "?"}`}: ${item.error ?? item.status ?? "failed"}`).join(" · ");
-      setMsg(
+      msg.set(
         `${r.succeeded}/${r.attempted} refreshed${r.failed ? ` · ${r.failed} failed${details ? ` — ${details}` : ""}` : ""}`,
         r.failed ? "err" : "ok",
       );
       await refresh();
     }
-    catch (err) { setMsg(errText(err, "refresh-all failed"), "err"); }
+    catch (err) { msg.set(errText(err, "refresh-all failed"), "err"); }
     finally { refreshingAll = false; }
   }
   async function toggleEnabled(s: Subscription) {
     try { await api.updateSub(s.id, { enabled: !s.enabled }); await refresh(); }
-    catch (err) { setMsg(errText(err, "toggle failed"), "err"); }
+    catch (err) { msg.set(errText(err, "toggle failed"), "err"); }
   }
   function startEdit(s: Subscription) {
     editId = s.id;
@@ -131,6 +142,7 @@
                  enabled: s.enabled, default_profile_id: s.default_profile_id };
     editHeaders = rows(s.injection?.headers);
     editQueries = rows(s.injection?.query);
+    editSnap = JSON.stringify({ editForm, editHeaders, editQueries });
   }
   async function saveEdit() {
     if (editId === null) return;
@@ -141,14 +153,14 @@
         enabled: editForm.enabled, default_profile_id: editForm.default_profile_id,
         injection: buildInjection(editHeaders, editQueries),
       });
-      editId = null; setMsg("saved", "ok"); await refresh();
-    } catch (err) { setMsg(errText(err, "save failed"), "err"); }
+      editId = null; msg.set("saved", "ok"); await refresh();
+    } catch (err) { msg.set(errText(err, "save failed"), "err"); }
   }
   async function del(s: Subscription) {
     if (!(await confirmDialog(`Delete subscription “${s.name}”?\nIts ${s.node_count} node(s) are detached to Servers (an active connection is kept).`)))
       return;
-    try { await api.deleteSub(s.id); editId = null; setMsg("deleted", "ok"); await refresh(); }
-    catch (err) { setMsg(errText(err, "delete failed"), "err"); }
+    try { await api.deleteSub(s.id); editId = null; msg.set("deleted", "ok"); await refresh(); }
+    catch (err) { msg.set(errText(err, "delete failed"), "err"); }
   }
 
   let previewText = $derived(
@@ -158,7 +170,7 @@
   $effect(() => { refresh(); });
 </script>
 
-<Alert {msg} kind={msgKind} />
+<Alert msg={msg.text} kind={msg.kind} />
 
 <div class="bar">
   <button class="btn" onclick={refreshAll} disabled={refreshingAll || subs.length === 0}>
@@ -263,7 +275,7 @@
 {/if}
 
 {#if editId !== null}
-  <Modal title="Edit subscription" onClose={() => (editId = null)}>
+  <Modal title="Edit subscription" dirty={editDirty} onClose={() => (editId = null)}>
     <div class="edit">
       <label class="field"><span>Name</span><input class="input" bind:value={editForm.name} /></label>
       <label class="field"><span>URL</span><input class="input" bind:value={editForm.url} /></label>

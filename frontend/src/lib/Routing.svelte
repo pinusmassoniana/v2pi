@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { api, ApiError, type RoutingRuleIn, type PresetInfo } from "./api";
+  import { api, errText, type RoutingRuleIn, type PresetInfo } from "./api";
   import { confirmDialog } from "./confirm.svelte";
   import { I } from "./icons";
   import { inIPv4Cidr, parseDestination } from "./routing";
+  import { createMsg } from "./msg.svelte";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -14,8 +15,7 @@
   let defaultAction = $state("proxy");
   let domainStrategy = $state("IPIfNonMatch");
   let presets = $state<PresetInfo[]>([]);
-  let msg = $state("");
-  let msgKind = $state<"ok" | "err">("ok");
+  const msg = createMsg();
   let validateMsg = $state("");
   let savedSnapshot = $state("");
   let saving = $state(false);      // RR5: in-flight guard so save/validate/import can't double-fire
@@ -27,9 +27,6 @@
   let testResult = $state("");
 
   const GEO_TOKENS = ["ru", "cn", "private", "category-ru", "category-ads-all", "geolocation-!cn", "cn", "google", "telegram"];
-
-  function setMsg(t: string, kind: "ok" | "err" = "ok") { msg = t; msgKind = kind; }
-  function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
   const strip = (rs: Row[]): RoutingRuleIn[] =>
     rs.map(({ type, value, action, enabled, label }) => ({ type, value, action, enabled, label }));
   function snapshot(): string {
@@ -53,7 +50,7 @@
       const [r, ps, st] = await Promise.all([api.getRouting(), api.listRoutingPresets(), api.getStatus()]);
       rules = toRows(r.rules); defaultAction = r.default_action; domainStrategy = r.domain_strategy;
       presets = ps; hasActive = st.active_node_id !== null; savedSnapshot = snapshot();
-    } catch (err) { setMsg(errText(err, "load failed"), "err"); }
+    } catch (err) { msg.set(errText(err, "load failed"), "err"); }
   }
   function addRule() { rules = [...rules, { uid: nextUid(), type: "domain", value: "", action: "proxy", enabled: true, label: "" }]; }
   function removeRule(uid: number) { rules = rules.filter((r) => r.uid !== uid); }
@@ -81,8 +78,8 @@
       const r = await api.putRouting({ rules: strip(deduped), default_action: defaultAction, domain_strategy: domainStrategy });
       rules = toRows(r.rules); defaultAction = r.default_action; domainStrategy = r.domain_strategy;
       savedSnapshot = snapshot(); validateMsg = "";
-      setMsg((hasActive ? "saved & applied" : "saved — applies on next Connect") + (dupCount ? ` · ${dupCount} duplicate row(s) dropped` : ""), "ok");
-    } catch (err) { setMsg(errText(err, "save failed"), "err"); }
+      msg.set((hasActive ? "saved & applied" : "saved — applies on next Connect") + (dupCount ? ` · ${dupCount} duplicate row(s) dropped` : ""), "ok");
+    } catch (err) { msg.set(errText(err, "save failed"), "err"); }
     finally { saving = false; }
   }
   async function importPreset(name: string) {
@@ -94,8 +91,8 @@
       rules = toRows(r.rules);                       // all preset fields are staged, not yet applied
       defaultAction = r.default_action;
       domainStrategy = r.domain_strategy;
-      setMsg(`preset “${name}” staged — review and Save`, "ok");
-    } catch (err) { setMsg(errText(err, "preset failed"), "err"); }
+      msg.set(`preset “${name}” staged — review and Save`, "ok");
+    } catch (err) { msg.set(errText(err, "preset failed"), "err"); }
     finally { saving = false; }
   }
   async function validate() {
@@ -114,19 +111,19 @@
   }
   function exportJSON() {
     const doc = JSON.stringify({ rules: strip(nonEmpty), default_action: defaultAction, domain_strategy: domainStrategy }, null, 2);
-    navigator.clipboard?.writeText(doc).then(() => setMsg("ruleset copied as JSON", "ok"), () => setMsg("copy failed", "err"));
+    navigator.clipboard?.writeText(doc).then(() => msg.set("ruleset copied as JSON", "ok"), () => msg.set("copy failed", "err"));
   }
   async function doImportJSON() {
     if (dirty && !(await confirmDialog("Discard staged rules?"))) return;   // RC2: don't clobber staged edits
     let doc: any;
     try { doc = JSON.parse(importText); }
-    catch { setMsg("invalid JSON", "err"); return; }
+    catch { msg.set("invalid JSON", "err"); return; }
     const rs = Array.isArray(doc) ? doc : doc?.rules;
-    if (!Array.isArray(rs)) { setMsg("no rules array / bad rule shape", "err"); return; }   // RC11: clearer than a rs.map throw
+    if (!Array.isArray(rs)) { msg.set("no rules array / bad rule shape", "err"); return; }   // RC11: clearer than a rs.map throw
     rules = toRows(rs);
     if (doc.default_action) defaultAction = doc.default_action;
     if (doc.domain_strategy) domainStrategy = doc.domain_strategy;
-    importText = ""; importOpen = false; setMsg("imported — review and Save", "ok");
+    importText = ""; importOpen = false; msg.set("imported — review and Save", "ok");
   }
 
   // --- RN6 client-side destination tester (literal rule types only) ---
@@ -160,12 +157,12 @@
   $effect(() => { load(); });
 </script>
 
-{#if msg && !dirty}<p class="msg" class:err={msgKind === "err"} role={msgKind === "err" ? "alert" : "status"} aria-live="polite">{msg}</p>{/if}
+{#if msg.text && !dirty}<p class="msg" class:err={msg.kind === "err"} role={msg.kind === "err" ? "alert" : "status"} aria-live="polite">{msg.text}</p>{/if}
 
 {#if dirty}
   <div class="staged" role="status">
     <span class="staged-chip">STAGED</span>
-    <span class="staged-txt"><strong>{nonEmpty.length} rules</strong> edited — not yet applied to the live config.{#if msg} · {msg}{/if}</span>
+    <span class="staged-txt"><strong>{nonEmpty.length} rules</strong> edited — not yet applied to the live config.{#if msg.text} · {msg.text}{/if}</span>
     <button class="btn sm" type="button" onclick={load}>Discard</button>
     <button class="btn btn-primary sm" type="button" onclick={save} disabled={saving}>Apply staged</button>
   </div>

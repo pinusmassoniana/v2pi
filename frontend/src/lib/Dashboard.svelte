@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, createLatestRequest, type Node, type TrafficMessage, type Network, type Subscription, type Routing } from "./api";
+  import { api, errText, createLatestRequest, type Node, type TrafficMessage, type Network, type Subscription, type Routing } from "./api";
   import TrafficGraph from "./TrafficGraph.svelte";
   import ConnFlow from "./ConnFlow.svelte";
   import Alert from "./Alert.svelte";
@@ -21,8 +21,10 @@
   let routing = $state<Routing | null>(null);    // routing summary card
   let subs = $state<Subscription[]>([]);          // E: expiry / data-cap warnings
   let tick = $state(0);                            // 1s heartbeat → live uptime / freshness labels
-  // U3: remember the dismissed failover across reloads
-  let failoverDismissed = $state<number | null>(Number(localStorage.getItem("failoverDismissed")) || null);
+  // U3: remember the dismissed failover across reloads. F9-2: guarded like Nodes.svelte's
+  // nodes-density flag (typeof check + try/catch) and theme.ts (?.) — localStorage is absent
+  // under SSR/jsdom and can throw in private-browsing/quota-exceeded contexts.
+  let failoverDismissed = $state<number | null>(Number(globalThis.localStorage?.getItem("failoverDismissed")) || null);
   const seedRequest = createLatestRequest();
   const longRequest = createLatestRequest();
 
@@ -106,7 +108,7 @@
 
   async function refresh() {
     try { nodes = await api.listNodes(); }   // status comes from the shared store now
-    catch (err) { msg = err instanceof ApiError ? err.message : "refresh failed"; }
+    catch (err) { msg = errText(err, "refresh failed"); }
   }
   async function rollback() {
     if (!(await confirmDialog("Roll back the live config to the previously applied node?"))) return;
@@ -114,7 +116,7 @@
       const r = await api.rollback();                    // D1: honour ok — don't claim success on a no-op
       msg = r.ok ? "rolled back" : "nothing to roll back";
       if (r.ok) { await pollStatusOnce(); await refresh(); }
-    } catch (err) { msg = err instanceof ApiError ? err.message : "rollback failed"; }
+    } catch (err) { msg = errText(err, "rollback failed"); }
   }
 
   // re-pull recorded history and merge by timestamp (dedup) so the graph fills in after a
@@ -235,7 +237,7 @@
 {#if failover}
   <div class="banner warn" role="status">
     <span>⚠ Auto-failover {agoLabel(failover, serverNow() / 1000)} — the gateway switched node on its own.</span>
-    <button class="banner-x" onclick={() => { failoverDismissed = failover; if (failover) localStorage.setItem("failoverDismissed", String(failover)); }} aria-label="Dismiss">✕</button>
+    <button class="banner-x" onclick={() => { failoverDismissed = failover; if (failover) { try { globalThis.localStorage?.setItem("failoverDismissed", String(failover)); } catch {} } }} aria-label="Dismiss">✕</button>
   </div>
 {/if}
 {#if warnings.length}

@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { api, ApiError, type TuningProfile, type ProfilePreset } from "./api";
+  import { api, errText, type TuningProfile, type ProfilePreset } from "./api";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
   import { I } from "./icons";
+  import { createMsg } from "./msg.svelte";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -21,16 +22,12 @@
 
   let profiles = $state<TuningProfile[]>([]);
   let presets = $state<ProfilePreset[]>([]);
-  let msg = $state("");
-  let msgKind = $state<"ok" | "err">("ok");
+  const msg = createMsg();
   let validateMsg = $state("");
   let editor = $state(blank());
   let editorSnap = $state(JSON.stringify(blank()));   // T1: baseline for unsaved-changes tracking
   let busy = $state(false);                           // T6: in-flight guard for row/save actions
   const dirty = $derived(JSON.stringify(editor) !== editorSnap);
-
-  function setMsg(t: string, kind: "ok" | "err" = "ok") { msg = t; msgKind = kind; }
-  function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
 
   // T1: reset the editor to blank and re-baseline (a clean, non-dirty state — used after save/delete/New)
   function resetEditor() { const b = blank(); editor = b; editorSnap = JSON.stringify(b); validateMsg = ""; }
@@ -52,7 +49,7 @@
     try {
       const [ps, pr] = await Promise.all([api.listProfiles(), api.listProfilePresets()]);
       profiles = ps; presets = pr;
-    } catch (err) { setMsg(errText(err, "load failed"), "err"); }
+    } catch (err) { msg.set(errText(err, "load failed"), "err"); }
   }
   async function edit(p: TuningProfile) {
     if (dirty && !(await confirmDialog("Discard unsaved profile changes?"))) return;   // T1: guard in-progress edits
@@ -67,7 +64,7 @@
     if (!p) return;
     if (dirty && !(await confirmDialog("Discard unsaved profile changes?"))) return;
     editor = { ...editor, ...p.fields, id: editor.id, name: editor.name || name };
-    setMsg(`preset “${name}” staged into the editor — Create/Save to apply`, "ok");
+    msg.set(`preset “${name}” staged into the editor — Create/Save to apply`, "ok");
   }
   async function save(e: Event) {
     e.preventDefault();
@@ -77,8 +74,8 @@
     try {
       const saved = id === null ? await api.addProfile(body) : await api.updateProfile(id, body);
       resetEditor(); await refresh();
-      setMsg(saved.is_active ? "saved & applied to the live tunnel" : "saved", "ok");
-    } catch (err) { setMsg(errText(err, "save failed"), "err"); }
+      msg.set(saved.is_active ? "saved & applied to the live tunnel" : "saved", "ok");
+    } catch (err) { msg.set(errText(err, "save failed"), "err"); }
     finally { busy = false; }
   }
   async function validate() {
@@ -92,21 +89,21 @@
     if (!(await confirmDialog(`Delete profile “${p.name}”?${p.node_count ? `\n${p.node_count} node(s) using it fall back to the default.` : ""}`))) return;
     busy = true;
     try { await api.deleteProfile(p.id); if (editor.id === p.id) resetEditor(); await refresh(); }
-    catch (err) { setMsg(errText(err, "delete failed"), "err"); }
+    catch (err) { msg.set(errText(err, "delete failed"), "err"); }
     finally { busy = false; }
   }
   async function makeDefault(id: number) {
     if (busy) return;
     busy = true;
-    try { await api.setDefaultProfile(id); await refresh(); setMsg("default updated", "ok"); }
-    catch (err) { setMsg(errText(err, "set-default failed"), "err"); }
+    try { await api.setDefaultProfile(id); await refresh(); msg.set("default updated", "ok"); }
+    catch (err) { msg.set(errText(err, "set-default failed"), "err"); }
     finally { busy = false; }
   }
   async function applyActive(id: number) {
     if (busy) return;
     busy = true;
-    try { const r = await api.applyProfileActive(id); setMsg(`applied to active node ${r.node_id}`, "ok"); await refresh(); }
-    catch (err) { setMsg(errText(err, "apply failed"), "err"); }
+    try { const r = await api.applyProfileActive(id); msg.set(`applied to active node ${r.node_id}`, "ok"); await refresh(); }
+    catch (err) { msg.set(errText(err, "apply failed"), "err"); }
     finally { busy = false; }
   }
   function addNoise() { editor.noises = [...editor.noises, { type: "rand", packet: "50-150", delay: "10-16" }]; }
@@ -116,7 +113,7 @@
   $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 </script>
 
-<Alert {msg} kind={msgKind} />
+<Alert msg={msg.text} kind={msg.kind} />
 
 <div class="card">
   <div class="card-top"><span class="eyebrow">Anti-DPI profiles</span><span class="muted-sm">{profiles.length} profiles · ⟳ live-apply</span></div>
@@ -229,7 +226,8 @@
     <legend>DNS / QUIC</legend>
     <div class="check"><Toggle checked={editor.doh_enabled} onchange={(v) => (editor.doh_enabled = v)} label="DoH" /> <span>DoH</span></div>
     {#if editor.doh_enabled}
-      <label class="field"><span>DoH URL</span><input class="input" bind:value={editor.doh_url} placeholder="(default resolver)" /></label>
+      <label class="field"><span>DoH URL <small class="muted">https:// only, blank = default</small></span>
+        <input class="input" bind:value={editor.doh_url} placeholder="https://1.1.1.1/dns-query" /></label>
     {/if}
     <label class="field"><span>QUIC</span>
       <select class="input" bind:value={editor.quic}>

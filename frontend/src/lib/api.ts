@@ -38,7 +38,11 @@ export interface PreviewNodes { format: string; count: number; returned_count: n
 export interface RefreshResult { id?: number; name?: string; ok?: boolean; status?: string; error?: string | null; }
 export interface RefreshAllResult { attempted: number; succeeded: number; failed: number; results: RefreshResult[] | Record<string, RefreshResult>; }
 export interface Settings {
-  tunneled_fetch: boolean; routing_default_action: string;
+  tunneled_fetch: boolean;
+  // Off by default protection would be nicer, but the server currently defaults this ON: a
+  // scheduled subscription refresh may replace the LIVE active node with no operator action.
+  subs_auto_switch: boolean;
+  routing_default_action: string;
   // health_enabled is the master switch; the two loops below it are separately controllable.
   health_enabled: boolean; health_sweep_enabled: boolean;
   health_interval: number;          // all-nodes sweep cadence (s)
@@ -140,6 +144,10 @@ export interface Rw {
   routed_nets_override: string;  // raw csv override, "" when deriving
   clients: RwClient[];
   live: boolean;                 // the running xray config reflects these settings
+  // How a revocation (client suspended/deleted, feature switched off, key rotated) reached the
+  // running xray: "" for anything that isn't a revocation, else "reapplied" | "rebuilt" |
+  // "stopped" | "not-live". Never empty on a revocation — see backend RwOut for the full contract.
+  revocation: string;
 }
 export interface RwPatch {
   enabled?: boolean; port?: number; dest?: string; server_names?: string; short_ids?: string;
@@ -167,7 +175,7 @@ export interface ApiTokenCreated extends ApiToken { token: string; }
 // audit log (N2): successful mutations — who/what/when
 export interface AuditEntry { ts: number; actor: string; method: string; path: string; status: number; }
 
-export function formatApiDetail(detail: unknown, fallback: string): string {
+function formatApiDetail(detail: unknown, fallback: string): string {
   if (typeof detail === "string" && detail) return detail;
   if (Array.isArray(detail)) {
     const lines = detail.map((item) => {
@@ -183,6 +191,12 @@ export function formatApiDetail(detail: unknown, fallback: string): string {
 
 export class ApiError extends Error {
   constructor(public status: number, msg: string, public detail: unknown = msg) { super(msg); }
+}
+
+// Shared fallback-message extractor — was pasted across eight call sites; every screen now
+// imports this instead of redefining it.
+export function errText(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
 }
 
 let _csrf: string | null = null;

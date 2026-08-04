@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type Node, type NodeHealth, type TuningProfile, type Status, type Subscription, type Settings } from "./api";
+  import { api, ApiError, errText, createLatestRequest, type Node, type NodeHealth, type TuningProfile, type Status, type Subscription, type Settings } from "./api";
   import Modal from "./Modal.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
@@ -8,6 +8,9 @@
   import { flagEmoji } from "./flag";
   import { I } from "./icons";
   import { formatUriHost } from "./format";
+  import { createMsg } from "./msg.svelte";
+
+  let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
   let nodes = $state<Node[]>([]);
   let health = $state<Record<number, NodeHealth>>({});
@@ -15,8 +18,7 @@
   let subs = $state<Subscription[]>([]);
   let status = $state<Status | null>(null);
   let settings = $state<Settings | null>(null);
-  let msg = $state("");
-  let msgKind = $state<"ok" | "err">("ok");
+  const msg = createMsg();
   let tab = $state<number | "servers" | null>(null);   // selected switcher tab (sub id | manual)
   let query = $state("");                                // NN5 search
   let sortKey = $state<"pos" | "name" | "address" | "tcp" | "http">("pos");
@@ -37,11 +39,17 @@
                       fingerprint: "chrome", path: "", host: "", mode: "", alpn: "", note: "",
                       tuning_profile_id: null as number | null });
   let validateMsg = $state("");
+  // F9-3: dirty-tracking for the Add/Edit modals — Nodes previously got no onDirtyChange prop at
+  // all, so a filled-in form vanished silently on Esc/backdrop click/sidebar nav/tab close.
+  // Seeded empty rather than from `edit` itself — irrelevant until startEdit() sets both together,
+  // and reading a $state inside another $state's initializer only captures a stale snapshot anyway.
+  let editSnap = $state("");
+  const addDirty = $derived(addOpen && JSON.stringify(form) !== JSON.stringify(blankForm()));
+  const editDirty = $derived(editId !== null && JSON.stringify(edit) !== editSnap);
+  $effect(() => { onDirtyChange?.(addDirty || editDirty); return () => onDirtyChange?.(false); });
 
   // compact action icons — shared set (src/lib/icons.ts), used across all data tables.
 
-  function setMsg(t: string, kind: "ok" | "err" = "ok") { msg = t; msgKind = kind; }
-  function errText(err: unknown, fb: string) { return err instanceof ApiError ? err.message : fb; }
   function nodeMutationError(err: unknown, fb: string) {
     return err instanceof ApiError && err.status === 409
       ? "That node is active. Disconnect → Edit/Delete → Connect, then try again."
@@ -103,35 +111,53 @@
     return `vless://${n.uuid}@${formatUriHost(n.address)}:${n.port}?${p.toString()}#${encodeURIComponent(n.name)}`;
   }
   async function copy(text: string) {
-    try { await navigator.clipboard.writeText(text); setMsg("copied", "ok"); }
-    catch { setMsg("copy failed", "err"); }
+    try { await navigator.clipboard.writeText(text); msg.set("copied", "ok"); }
+    catch { msg.set("copy failed", "err"); }
   }
+
+  // F9-1: refresh()/refreshNodes()/pollHealth() all write overlapping state (nodes/health/status)
+  // from many call sites (mount, poll timer, every mutation). Routing them through one
+  // createLatestRequest() means a slow response can no longer clobber a newer one — only the
+  // most recently *started* request's result is ever applied.
+  const dataRequest = createLatestRequest();
 
   async function refresh() {
     try {
-      const [ns, hs, ps, ss, st, se] = await Promise.all([
-        api.listNodes(), api.listNodeHealth(), api.listProfiles(), api.listSubs(), api.getStatus(), api.getSettings()]);
-      nodes = ns;
-      health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
-      profiles = ps; subs = ss; status = st; settings = se;
-      if (tab === null || (tab !== "servers" && !ss.some((s) => s.id === tab)))
-        tab = ss[0]?.id ?? "servers";
-    } catch (err) { setMsg(errText(err, "load failed"), "err"); }
+      await dataRequest.run(
+        () => Promise.all([
+          api.listNodes(), api.listNodeHealth(), api.listProfiles(), api.listSubs(), api.getStatus(), api.getSettings()]),
+        ([ns, hs, ps, ss, st, se]) => {
+          nodes = ns;
+          health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
+          profiles = ps; subs = ss; status = st; settings = se;
+          if (tab === null || (tab !== "servers" && !ss.some((s) => s.id === tab)))
+            tab = ss[0]?.id ?? "servers";
+        },
+      );
+    } catch (err) { msg.set(errText(err, "load failed"), "err"); }
   }
   // D1: connect/disconnect change only nodes + status + health, not profiles/subs/settings
   async function refreshNodes() {
     try {
-      const [ns, hs, st] = await Promise.all([api.listNodes(), api.listNodeHealth(), api.getStatus()]);
-      nodes = ns;
-      health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
-      status = st;
+      await dataRequest.run(
+        () => Promise.all([api.listNodes(), api.listNodeHealth(), api.getStatus()]),
+        ([ns, hs, st]) => {
+          nodes = ns;
+          health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
+          status = st;
+        },
+      );
     } catch { /* transient */ }
   }
   async function pollHealth() {
     try {
-      const [hs, st] = await Promise.all([api.listNodeHealth(), api.getStatus()]);
-      health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
-      status = st;
+      await dataRequest.run(
+        () => Promise.all([api.listNodeHealth(), api.getStatus()]),
+        ([hs, st]) => {
+          health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
+          status = st;
+        },
+      );
     } catch { /* transient; keep last values */ }
   }
 
@@ -143,7 +169,7 @@
       tab = "servers";   // NN9: manual nodes land under Servers — switch there so the new one is visible
       await refresh();
     }
-    catch (err) { setMsg(errText(err, "add failed"), "err"); }
+    catch (err) { msg.set(errText(err, "add failed"), "err"); }
   }
   function startEdit(n: Node) {
     editId = n.id; validateMsg = "";
@@ -151,12 +177,13 @@
              security: n.security, sni: n.sni, public_key: n.public_key, short_id: n.short_id,
              fingerprint: n.fingerprint, path: n.path, host: n.host, mode: n.mode, alpn: n.alpn,
              note: n.note, tuning_profile_id: n.tuning_profile_id };
+    editSnap = JSON.stringify(edit);
   }
   async function saveEdit(e: Event) {
     e.preventDefault();
     if (editId === null) return;
     try { await api.updateNode(editId, { ...edit }); editId = null; await refresh(); }
-    catch (err) { setMsg(nodeMutationError(err, "save failed"), "err"); }
+    catch (err) { msg.set(nodeMutationError(err, "save failed"), "err"); }
   }
   function cloneNode(n: Node) {   // NN9
     form = { name: n.name + " copy", address: n.address, port: n.port, uuid: n.uuid,
@@ -168,7 +195,7 @@
   async function del(n: Node) {
     if (!(await confirmDialog(`Delete server “${n.name}” (${n.address})?`))) return;
     try { await api.deleteNode(n.id); await refresh(); }
-    catch (err) { setMsg(nodeMutationError(err, "delete failed"), "err"); }
+    catch (err) { msg.set(nodeMutationError(err, "delete failed"), "err"); }
   }
   async function validateForm(f: typeof form | typeof edit) {   // NN10
     validateMsg = "validating…";
@@ -179,23 +206,29 @@
   async function connect(id: number) {
     applyingId = id;
     try { await api.apply(id); await refreshNodes(); }
-    catch (err) { setMsg(errText(err, "connect failed"), "err"); }
+    catch (err) { msg.set(errText(err, "connect failed"), "err"); }
     finally { applyingId = null; }
   }
   async function disconnect(id: number) {
     applyingId = id;
     try { await api.disconnect(id); await refreshNodes(); }
-    catch (err) { setMsg(errText(err, "disconnect failed"), "err"); }
+    catch (err) { msg.set(errText(err, "disconnect failed"), "err"); }
     finally { applyingId = null; }
   }
-  // N8 reorder
+  // N8 reorder. F9-1: a busy guard (like applyingId/probingId elsewhere in this file) — without
+  // it, a second click before reorderNodes()+refreshNodes() resolves recomputes the swap from the
+  // still-stale `shown` order and silently drops the first reorder.
+  let reordering = $state(false);
   async function move(i: number, dir: -1 | 1) {
+    if (reordering) return;
     const list = shown.map((n) => n.id);
     const j = i + dir;
     if (j < 0 || j >= list.length) return;
     [list[i], list[j]] = [list[j], list[i]];
+    reordering = true;
     try { await api.reorderNodes(list); await refreshNodes(); }   // reorder only touches node order — lighter refresh
-    catch (err) { setMsg(errText(err, "reorder failed"), "err"); }
+    catch (err) { msg.set(errText(err, "reorder failed"), "err"); }
+    finally { reordering = false; }
   }
   // N4 import
   let importOpen = $state(false); let importText = $state(""); let importing = $state(false);
@@ -203,17 +236,17 @@
     importing = true;
     try {
       const r = await api.importNodes(importText);
-      setMsg(`imported ${r.added}/${r.total} node(s) (${r.format})`, "ok");
+      msg.set(`imported ${r.added}/${r.total} node(s) (${r.format})`, "ok");
       importText = ""; importOpen = false; await refresh();
-    } catch (err) { setMsg(errText(err, "import failed"), "err"); }
+    } catch (err) { msg.set(errText(err, "import failed"), "err"); }
     finally { importing = false; }
   }
   // N9 connect-best
   let connectingBest = $state(false);
   async function connectBest() {
     connectingBest = true;
-    try { const r = await api.connectBest(tab === "servers" ? null : (tab as number)); setMsg(`connected to node ${r.node_id}`, "ok"); await refresh(); }
-    catch (err) { setMsg(errText(err, "connect-best failed"), "err"); }
+    try { const r = await api.connectBest(tab === "servers" ? null : (tab as number)); msg.set(`connected to node ${r.node_id}`, "ok"); await refresh(); }
+    catch (err) { msg.set(errText(err, "connect-best failed"), "err"); }
     finally { connectingBest = false; }
   }
   // probes
@@ -223,14 +256,14 @@
     try {
       const hs = kind === "tcp" ? await api.probeTcp(scope) : await api.probeHttp(scope);
       health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
-    } catch (err) { setMsg(errText(err, "ping failed"), "err"); }
+    } catch (err) { msg.set(errText(err, "ping failed"), "err"); }
     finally { pinging = null; }
   }
   let probingId = $state<number | null>(null);
   async function probeNode(id: number) {
     probingId = id;
     try { const h = await api.probeNode(id); health = { ...health, [h.node_id]: h }; }
-    catch (err) { setMsg(errText(err, "probe failed"), "err"); }
+    catch (err) { msg.set(errText(err, "probe failed"), "err"); }
     finally { probingId = null; }
   }
   let testAllN = $state(0);   // NN2 real-test-all progress (0 = idle)
@@ -253,18 +286,18 @@
   async function bulkDelete() {
     if (!selIds.length || !(await confirmDialog(`Delete ${selIds.length} server(s)?`))) return;
     try { for (const id of selIds) await api.deleteNode(id); clearSel(); await refresh(); }
-    catch (err) { setMsg(nodeMutationError(err, "bulk delete failed"), "err"); }
+    catch (err) { msg.set(nodeMutationError(err, "bulk delete failed"), "err"); }
   }
   async function bulkDetach() {
     if (!selIds.length) return;
     try { await api.detachNodes(selIds); clearSel(); await refresh(); }
-    catch (err) { setMsg(errText(err, "detach failed"), "err"); }
+    catch (err) { msg.set(errText(err, "detach failed"), "err"); }
   }
   async function bulkProfile(v: string) {
     if (!selIds.length) return;
     const pid = v === "" ? null : Number(v);
     try { for (const id of selIds) await api.updateNode(id, { tuning_profile_id: pid }); clearSel(); await refresh(); }
-    catch (err) { setMsg(errText(err, "assign failed"), "err"); }
+    catch (err) { msg.set(errText(err, "assign failed"), "err"); }
   }
 
   // NN6 export
@@ -279,7 +312,7 @@
   const failoverArmed = $derived(settings?.failover_enabled ?? false);
 </script>
 
-<Alert {msg} kind={msgKind} />
+<Alert msg={msg.text} kind={msg.kind} />
 
 <div class="switcher">
   {#each subs as s (s.id)}
@@ -365,8 +398,8 @@
           <td data-label="">
             <div class="actions">
             {#if canReorder}
-              <button class="btn iconbtn ord" title="Move up" onclick={() => move(i, -1)} disabled={i === 0} aria-label="move up">{@html I.up}</button>
-              <button class="btn iconbtn ord" title="Move down" onclick={() => move(i, 1)} disabled={i === shown.length - 1} aria-label="move down">{@html I.down}</button>
+              <button class="btn iconbtn ord" title="Move up" onclick={() => move(i, -1)} disabled={i === 0 || reordering} aria-label="move up">{@html I.up}</button>
+              <button class="btn iconbtn ord" title="Move down" onclick={() => move(i, 1)} disabled={i === shown.length - 1 || reordering} aria-label="move down">{@html I.down}</button>
             {/if}
             {#if n.id === activeId}
               <button class="btn" onclick={() => disconnect(n.id)} disabled={applyingId === n.id}>{applyingId === n.id ? "…" : "Disconnect"}</button>
@@ -394,7 +427,7 @@
 {/if}
 
 {#if addOpen}
-  <Modal title="Add server" onClose={() => (addOpen = false)}>
+  <Modal title="Add server" dirty={addDirty} onClose={() => (addOpen = false)}>
     <form onsubmit={add} class="grid-form">
       <input class="input" bind:value={form.name} placeholder="name" aria-label="Node name" required />
       <input class="input" bind:value={form.address} placeholder="address" aria-label="Node address" required />
@@ -453,7 +486,7 @@
 {/if}
 
 {#if editId !== null}
-  <Modal title="Edit node" onClose={() => (editId = null)}>
+  <Modal title="Edit node" dirty={editDirty} onClose={() => (editId = null)}>
     <form onsubmit={saveEdit} class="grid-form">
       <label class="field"><span>name</span><input class="input" bind:value={edit.name} /></label>
       <label class="field"><span>address</span><input class="input" bind:value={edit.address} /></label>

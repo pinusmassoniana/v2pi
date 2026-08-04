@@ -3,7 +3,7 @@ import { ensureLoggedIn } from "./auth-helper";
 
 const screens = [
   "Overview", "Health & Traffic", "Nodes", "Anti-DPI", "Routing",
-  "Network", "Operations", "Settings",
+  "Network", "Remote Access", "Operations", "Settings",
 ] as const;
 
 test("primary screens expose named controls and readable dim text", async ({ page }) => {

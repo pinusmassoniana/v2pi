@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { api, ApiError, type Network } from "./api";
+  import { api, errText, type Network } from "./api";
   import { networkView } from "./network";
   import { serverNow } from "./status.svelte";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
+  import { confirmDialog } from "./confirm.svelte";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -14,7 +15,7 @@
 
   async function load() {
     try { net = await api.getNetwork(); }
-    catch (err) { msg = err instanceof ApiError ? err.message : "load failed"; }
+    catch (err) { msg = errText(err, "load failed"); }
   }
   async function save() {
     if (!net || saving) return;
@@ -32,8 +33,19 @@
       net = await api.putNetwork(patch);
       dirty = false;
       msg = "saved · network + DHCP applied to host";
-    } catch (err) { msg = err instanceof ApiError ? err.message : "save failed"; }
+    } catch (err) { msg = errText(err, "save failed"); }
     finally { saving = false; }
+  }
+
+  // F9-5: every other risk-relevant action in this app confirms first (rollback, delete, disarm
+  // remote access) — disarming the fail-closed kill-switch opens clients to a tunnel-down leak and
+  // used to flip with a single click, no confirmDialog. Only the OFF direction is gated; arming it
+  // back on is always safe.
+  async function toggleKillSwitch(val: boolean) {
+    if (!net) return;
+    if (!val && !(await confirmDialog("Disarm the fail-closed kill-switch? If the tunnel goes down, client traffic will no longer be dropped — it can leak around the tunnel instead."))) return;
+    net.kill_switch_enabled = val;
+    dirty = true;
   }
 
   // live poll; pauses while dirty (don't clobber edited fields) and while the tab is hidden
@@ -132,7 +144,7 @@
       <div class="card">
         <div class="card-top"><span class="eyebrow">Fail-closed kill-switch</span></div>
         <div class="kill">
-          <Toggle checked={net.kill_switch_enabled} disabled={saving} onchange={(val) => { if (net) { net.kill_switch_enabled = val; dirty = true; } }} label="kill-switch" />
+          <Toggle checked={net.kill_switch_enabled} disabled={saving} onchange={toggleKillSwitch} label="kill-switch" />
           <div class="kill-state">
             <div class="kill-lbl" class:armed={net.kill_switch_enabled && net.status.enforcement_status === "ok"} class:open={!net.kill_switch_enabled}>
               {!net.kill_switch_enabled ? "OPEN" : net.status.enforcement_status === "ok" ? "ARMED" : "UNVERIFIED"}
