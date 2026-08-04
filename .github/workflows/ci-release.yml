@@ -109,8 +109,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      attestations: write
-      id-token: write
     strategy:
       fail-fast: true
       matrix:
@@ -183,7 +181,18 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+      # Version tags are immutable: a released v<version> must keep pointing at the bytes that were
+      # released under that name. A push that forgot to bump the version therefore publishes no tag
+      # at all — its tested digests are already in the registry, and deployment is digest-pinned.
+      - name: Refuse to move tags of an already-released version
+        if: steps.version.outputs.exists == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "::warning title=No image tags published::v${VERSION} is already released; the tested" \
+               "digests were pushed but no tag was moved. Bump the version to publish a new release."
       - name: Publish manifest from tested digests
+        if: steps.version.outputs.exists == 'false'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           MINOR: ${{ steps.version.outputs.minor }}
@@ -202,9 +211,12 @@ jobs:
         if: steps.version.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Never interpolate the parsed version into the script body: `${{ }}` is substituted
+          # before bash sees it, so a crafted pyproject version would execute in this job.
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
-          gh release create "v${{ steps.version.outputs.version }}" \
-            --title "v${{ steps.version.outputs.version }}" \
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
             --generate-notes

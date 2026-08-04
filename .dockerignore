@@ -8,6 +8,13 @@ backend/pi_gw_panel/static
 .planning
 .claude
 docs
-*.sqlite
 e2e
 .github
+# Local secrets and dev data mirror .gitignore: the runtime stage copies backend/ wholesale, so a
+# developer's backend/.env or scratch database must never be baked into a from-source image.
+**/.env
+**/.env.*
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log

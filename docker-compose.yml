@@ -3,7 +3,11 @@ services:
     # Deployment must select an immutable manifest, for example
     # ghcr.io/pinusmassoniana/v2pi-x@sha256:<64-hex-digest>. Tags are not accepted operationally.
     image: ${V2PI_IMAGE:?Set V2PI_IMAGE to an immutable ghcr.io/pinusmassoniana/v2pi-x@sha256 digest}
-    build: .                                        # `docker compose up --build` builds from source for the host arch instead (dev)
+    # Dev-only from-source path. Compose tags the built image with `image:`, and a @sha256 digest is
+    # not a valid tag, so building requires swapping the pin for a plain local tag first:
+    #   V2PI_IMAGE=v2pi-local docker compose up --build
+    # Never leave a gateway running on a mutable local tag.
+    build: .
     network_mode: host          # tproxy / nft / dnsmasq live in the host netns (Pi)
     privileged: true            # Pi acceptance dependency: writable /proc/sys plus host net ownership.
                                 # Removing this requires a native Pi cutover/rollback test; cap_add
