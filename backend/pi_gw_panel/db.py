@@ -2,8 +2,17 @@ import logging
 import os
 import sqlite3
 
+from pi_gw_panel.auth.tokens import SCOPES
+
 
 logger = logging.getLogger(__name__)
+
+# The scope vocabulary as a SQL literal list, derived from `auth.tokens.SCOPES` so the CHECK
+# constraint and the API's scope gates can never drift apart. The values are module constants,
+# not input — the shape check keeps it that way if someone adds a scope later.
+if not all(scope.isalpha() for scope in SCOPES):
+    raise ValueError("token scopes must be plain identifiers to be inlined as SQL literals")
+_SCOPES_SQL = ",".join(f"'{scope}'" for scope in SCOPES)
 
 
 def _secure_path(path: str, mode: int, *, kind: str) -> None:
@@ -316,6 +325,19 @@ def _migration_13(conn: sqlite3.Connection) -> None:
     )
 
 
+# Columns an operator fills in by hand, as opposed to values derived from the node link or
+# its subscription. They decide which duplicate survives the identity dedup below, and are
+# merged onto the survivor when it has none of its own.
+_V14_OPERATOR_COLS = ("note", "tuning_profile_id")
+_V14_NODE_ARCHIVE = "nodes_premigration_v14"
+_V14_HEALTH_ARCHIVE = "node_health_premigration_v14"
+
+
+def _v14_filled(value: object) -> bool:
+    """True when a column carries operator-entered content (not NULL, not blank)."""
+    return value is not None and str(value).strip() != ""
+
+
 def _migration_14(conn: sqlite3.Connection) -> None:
     """Enforce the identities and ownership relationships used by runtime code."""
     active_row = conn.execute(
@@ -325,19 +347,83 @@ def _migration_14(conn: sqlite3.Connection) -> None:
     except (TypeError, ValueError):
         active_id = None
 
+    node_cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    operator_cols = [c for c in _V14_OPERATOR_COLS if c in node_cols]
+
     duplicate_groups = conn.execute(
         """SELECT GROUP_CONCAT(id) AS ids
            FROM nodes
            GROUP BY COALESCE(subscription_id, -1), address, port, uuid, path, sni, short_id
            HAVING COUNT(*) > 1""").fetchall()
+    archived = 0
+    superseded: dict[int, int] = {}   # removed id -> surviving id (same identity)
     for group in duplicate_groups:
-        ids = [int(value) for value in group["ids"].split(",")]
-        keep = active_id if active_id in ids else min(ids)
+        ids = sorted(int(value) for value in group["ids"].split(","))
+        marks = ",".join("?" for _ in ids)
+        rows = {int(r["id"]): r for r in conn.execute(
+            f"SELECT * FROM nodes WHERE id IN ({marks})", ids).fetchall()}
+
+        def score(node_id: int, rows: dict = rows) -> int:
+            return sum(1 for c in operator_cols if _v14_filled(rows[node_id][c]))
+
+        # Keep the row carrying the most operator-entered data — the oldest id is only the
+        # tie-break, never the rule. The active node still wins outright: dropping it would
+        # break the pointer that runtime code follows.
+        keep = active_id if active_id in ids else min(ids, key=lambda nid: (-score(nid), nid))
         remove = [node_id for node_id in ids if node_id != keep]
         marks = ",".join("?" for _ in remove)
+
+        # Archive before destroying. This runs inside the migration's transaction (see
+        # migrate()), so the copy and the delete commit or roll back together.
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_V14_NODE_ARCHIVE} AS "
+            "SELECT n.*, 0 AS archived_at, 0 AS superseded_by FROM nodes n WHERE 0")
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_V14_HEALTH_ARCHIVE} AS "
+            "SELECT * FROM node_health WHERE 0")
+        conn.execute(
+            f"""INSERT INTO {_V14_NODE_ARCHIVE}
+                SELECT n.*, CAST(strftime('%s','now') AS INTEGER), ?
+                FROM nodes n WHERE n.id IN ({marks})""", [keep, *remove])
+        conn.execute(
+            f"INSERT INTO {_V14_HEALTH_ARCHIVE} "
+            f"SELECT * FROM node_health WHERE node_id IN ({marks})", remove)
+        archived += len(remove)
+
+        # Merge, don't drop: an empty survivor inherits operator data from the rows that are
+        # about to disappear, newest first (the most recent thing the operator typed).
+        for col in operator_cols:
+            if _v14_filled(rows[keep][col]):
+                continue
+            for node_id in sorted(remove, reverse=True):
+                if _v14_filled(rows[node_id][col]):
+                    conn.execute(f"UPDATE nodes SET {col}=? WHERE id=?",
+                                 (rows[node_id][col], keep))
+                    break
+
         conn.execute(f"DELETE FROM node_health WHERE node_id IN ({marks})", remove)
         conn.execute(f"DELETE FROM nodes WHERE id IN ({marks})", remove)
+        superseded.update({node_id: keep for node_id in remove})
         logger.warning("deduplicated node identities: kept id=%s, removed ids=%s", keep, remove)
+
+    if superseded:
+        logger.warning(
+            "identity dedup: %s duplicate group(s), %s node row(s) archived to %s "
+            "(their health rows to %s) before deletion — recover from there if needed",
+            len(duplicate_groups), archived, _V14_NODE_ARCHIVE, _V14_HEALTH_ARCHIVE)
+        # active_node_id is protected by keeping its row; prev_active_node_id (the Rollback
+        # target) is a second node pointer and must not be left dangling at a deleted id.
+        prev_row = conn.execute(
+            "SELECT value FROM settings WHERE key='prev_active_node_id'").fetchone()
+        try:
+            prev_id = int(prev_row["value"]) if prev_row and prev_row["value"] else None
+        except (TypeError, ValueError):
+            prev_id = None
+        if prev_id in superseded:
+            conn.execute("UPDATE settings SET value=? WHERE key='prev_active_node_id'",
+                         (str(superseded[prev_id]),))
+            logger.warning("repointed prev_active_node_id from removed id=%s to id=%s",
+                           prev_id, superseded[prev_id])
 
     # Normalize legacy duplicate/gapped positions before adding the invariant.
     for position, row in enumerate(conn.execute(
@@ -373,28 +459,30 @@ def _migration_14(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE node_health")
     conn.execute("ALTER TABLE node_health_new RENAME TO node_health")
 
-    # Scope CHECK and expiry also require a table rebuild on SQLite.
+    # Scope CHECK and expiry also require a table rebuild on SQLite. The accepted scopes come
+    # from `auth.tokens.SCOPES` (see _SCOPES_SQL) — spelling them here as well is how the DB
+    # and the API's scope gates drift apart.
     conn.execute(
-        """CREATE TABLE api_tokens_new (
+        f"""CREATE TABLE api_tokens_new (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             name         TEXT    NOT NULL,
             token_hash   TEXT    NOT NULL UNIQUE,
-            scope        TEXT    NOT NULL CHECK(scope IN ('monitor','read','readwrite')),
+            scope        TEXT    NOT NULL CHECK(scope IN ({_SCOPES_SQL})),
             prefix       TEXT    NOT NULL DEFAULT '',
             created_at   INTEGER NOT NULL,
             last_used_at INTEGER,
             expires_at   INTEGER
         )""")
     invalid = conn.execute(
-        "SELECT COUNT(*) AS n FROM api_tokens WHERE scope NOT IN ('monitor','read','readwrite')"
+        f"SELECT COUNT(*) AS n FROM api_tokens WHERE scope NOT IN ({_SCOPES_SQL})"
     ).fetchone()["n"]
     if invalid:
         logger.warning("discarding %s API token(s) with invalid legacy scopes", invalid)
     conn.execute(
-        """INSERT INTO api_tokens_new
+        f"""INSERT INTO api_tokens_new
            (id,name,token_hash,scope,prefix,created_at,last_used_at,expires_at)
            SELECT id,name,token_hash,scope,prefix,created_at,last_used_at,NULL
-           FROM api_tokens WHERE scope IN ('monitor','read','readwrite')""")
+           FROM api_tokens WHERE scope IN ({_SCOPES_SQL})""")
     conn.execute("DROP TABLE api_tokens")
     conn.execute("ALTER TABLE api_tokens_new RENAME TO api_tokens")
 

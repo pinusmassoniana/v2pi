@@ -140,3 +140,85 @@ def test_identity_migration_deduplicates_and_preserves_active(tmp_path):
     rows = conn.execute("SELECT id FROM nodes WHERE address='a'").fetchall()
     assert [row[0] for row in rows] == [active]
     assert active != first
+
+
+def _legacy_v13(tmp_path, name):
+    """A real pre-identity-constraint database: full schema, user_version rewound to 13."""
+    conn = connect(str(tmp_path / name))
+    init_schema(conn)
+    conn.execute("DROP INDEX IF EXISTS uq_nodes_identity")
+    conn.execute("PRAGMA user_version = 13")
+    return conn
+
+
+def _add_node(conn, name, **extra):
+    cols = "name,address,port,uuid,path,sni,short_id"
+    values = [name, "a", 1, "u", "", "", ""]
+    for col, value in extra.items():
+        cols += f",{col}"
+        values.append(value)
+    marks = ",".join("?" for _ in values)
+    conn.execute(f"INSERT INTO nodes({cols}) VALUES({marks})", values)
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def test_identity_migration_keeps_the_operator_annotated_duplicate(tmp_path):
+    """The keeper is chosen by operator data, not by lowest id: a note typed on the NEWER
+    duplicate must survive the dedup."""
+    conn = _legacy_v13(tmp_path, "annotated.sqlite")
+    profile = conn.execute("SELECT id FROM tuning_profiles WHERE name='default'").fetchone()[0]
+    bare = _add_node(conn, "bare")
+    annotated = _add_node(conn, "annotated", note="do not lose me", tuning_profile_id=profile)
+    migrate(conn)
+
+    rows = conn.execute("SELECT id,note,tuning_profile_id FROM nodes WHERE address='a'").fetchall()
+    assert [row["id"] for row in rows] == [annotated]
+    assert rows[0]["note"] == "do not lose me"
+    assert rows[0]["tuning_profile_id"] == profile
+    assert bare != annotated
+    assert [row["id"] for row in conn.execute(
+        "SELECT id FROM nodes_premigration_v14").fetchall()] == [bare]
+
+
+def test_identity_migration_archives_every_removed_row_and_merges_operator_data(tmp_path):
+    """Nothing is deleted without being archived first, and the pinned active row inherits the
+    operator data of the duplicates it supersedes."""
+    conn = _legacy_v13(tmp_path, "archive.sqlite")
+    profile = conn.execute("SELECT id FROM tuning_profiles WHERE name='default'").fetchone()[0]
+    active = _add_node(conn, "active")
+    dup_a = _add_node(conn, "dup-a", tuning_profile_id=profile)
+    dup_b = _add_node(conn, "dup-b", note="typed later")
+    conn.execute("INSERT INTO node_health(node_id,fail_count) VALUES(?,7)", (dup_b,))
+    conn.execute("INSERT INTO settings(key,value) VALUES('active_node_id',?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(active),))
+    migrate(conn)
+
+    survivors = conn.execute("SELECT id,note,tuning_profile_id FROM nodes").fetchall()
+    assert [row["id"] for row in survivors] == [active]
+    assert survivors[0]["note"] == "typed later"          # merged from dup_b
+    assert survivors[0]["tuning_profile_id"] == profile   # merged from dup_a
+
+    archived = {row["id"]: row for row in conn.execute(
+        "SELECT * FROM nodes_premigration_v14").fetchall()}
+    assert set(archived) == {dup_a, dup_b}                # every deleted row is recoverable
+    assert archived[dup_b]["note"] == "typed later"
+    assert archived[dup_a]["tuning_profile_id"] == profile
+    assert all(row["superseded_by"] == active for row in archived.values())
+    assert conn.execute(
+        "SELECT fail_count FROM node_health_premigration_v14 WHERE node_id=?",
+        (dup_b,)).fetchone()["fail_count"] == 7
+
+
+def test_identity_migration_leaves_no_dangling_prev_active_pointer(tmp_path):
+    conn = _legacy_v13(tmp_path, "prev.sqlite")
+    first = _add_node(conn, "first")
+    second = _add_node(conn, "second")
+    conn.execute("INSERT INTO settings(key,value) VALUES('prev_active_node_id',?)", (str(second),))
+    migrate(conn)
+
+    live = {row["id"] for row in conn.execute("SELECT id FROM nodes").fetchall()}
+    assert live == {first}
+    prev = conn.execute(
+        "SELECT value FROM settings WHERE key='prev_active_node_id'").fetchone()["value"]
+    assert prev != str(second)               # never left dangling at the deleted id
+    assert prev == "" or int(prev) in live   # cleared or repointed to a live row

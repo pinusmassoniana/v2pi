@@ -4,6 +4,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 _log = logging.getLogger(__name__)
 _IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
@@ -185,6 +186,10 @@ class Settings:
 # routing default action and the health/auto-failover knobs.
 SETTINGS_DEFAULTS = {
     "tunneled_fetch": "1",
+    # When a single-server subscription rotates its identity, a scheduled refresh may move the
+    # LIVE tunnel onto the replacement the feed just supplied. That is unattended, remote-driven
+    # config, so it is switchable — and even when on it never accepts weaker node security.
+    "subs_auto_switch": "1",
     "routing_default_action": "proxy",
     # Master switch: off stops BOTH health loops (kept as-is so an install that turned health
     # off stays off after upgrade).
@@ -224,3 +229,139 @@ SETTINGS_DEFAULTS = {
     "ipv6_pd": "0",
     "client_dns6": "2606:4700:4700::1111",
 }
+
+
+# --- shared value validation -----------------------------------------------------------------
+# ONE validator per family, used by every path that can write these settings: the interactive
+# routes (which turn the ValueError into a 422) and a restored backup document. A second copy is
+# exactly how restore came to accept a `dhcp_lease` carrying a newline while `PUT /api/network`
+# rejected it — and these values are interpolated verbatim into the dnsmasq config the panel
+# starts as root, where an embedded newline is a new directive (`dhcp-script=…`), not data.
+
+# IFNAMSIZ-bounded, and only characters that are inert in nft/dnsmasq syntax.
+_NET_IFACE_RE = re.compile(r"[A-Za-z0-9._@:-]{1,15}")
+# dnsmasq lease time: '3600', '45m', '12h', '2d', '1w', 'infinite'.
+_NET_LEASE_RE = re.compile(r"infinite|\d{1,9}[smhdw]?")
+
+# Segment/DHCP/DNS settings. Rendered into nft + dnsmasq; every one of them is operator-settable
+# through PUT /api/network AND through a restored backup.
+NET_SETTING_KEYS = ("segment_iface", "segment_ip", "segment_ip6", "dhcp_start", "dhcp_end",
+                    "dhcp_lease", "client_dns", "client_dns6", "ula_prefix6")
+_NET_IPV4_KEYS = ("segment_ip", "dhcp_start", "dhcp_end", "client_dns")
+
+
+def validate_net_settings(data: Mapping[str, Any]) -> dict[str, str]:
+    """Check every segment/DHCP/DNS setting present in `data`; return the normalized values.
+
+    Raises ``ValueError('<field>: <why>')``. An empty value is left alone — it means "fall back
+    to the configured default" everywhere these settings are read. Matching is done with
+    ``fullmatch`` on purpose: ``re.match(r'…$', 'eth0\\n')`` succeeds, so an anchored ``$``
+    would still let a trailing newline through into the rendered config.
+    """
+    def bad(field: str, why: str):
+        raise ValueError(f"{field}: {why}")
+
+    def present(field: str) -> str | None:
+        if field not in data:
+            return None
+        value = str(data[field] if data[field] is not None else "").strip()
+        return value or None
+
+    out: dict[str, str] = {}
+    if "segment_iface" in data:
+        value = present("segment_iface")
+        if not value or not _NET_IFACE_RE.fullmatch(value):
+            bad("segment_iface", "must be a plain interface name")
+        out["segment_iface"] = value
+    for field in _NET_IPV4_KEYS:
+        value = present(field)
+        if value is None:
+            continue
+        try:
+            ipaddress.IPv4Address(value)
+        except ValueError:
+            bad(field, "must be an IPv4 address")
+        out[field] = value
+    value = present("client_dns6")
+    if value is not None:
+        try:
+            ipaddress.IPv6Address(value)
+        except ValueError:
+            bad("client_dns6", "must be an IPv6 address")
+        out["client_dns6"] = value
+    value = present("dhcp_lease")
+    if value is not None:
+        if not _NET_LEASE_RE.fullmatch(value):
+            bad("dhcp_lease", "must be a lease time like '12h', '3600', or 'infinite'")
+        out["dhcp_lease"] = value
+    value = present("segment_ip6")
+    if value is not None and value.lower() != "auto":
+        out["segment_ip6"] = _v6_prefix64(value, "segment_ip6", "an IPv6 /64 or 'auto'")
+    elif value is not None:
+        out["segment_ip6"] = value
+    value = present("ula_prefix6")
+    if value is not None:
+        out["ula_prefix6"] = _v6_prefix64(value, "ula_prefix6", "an IPv6 /64 prefix")
+    return out
+
+
+def _v6_prefix64(value: str, field: str, what: str) -> str:
+    try:
+        network = ipaddress.IPv6Network(value, strict=False)
+    except ValueError as exc:
+        raise ValueError(f"{field}: must be {what}") from exc
+    if network.prefixlen != 64:
+        raise ValueError(f"{field}: must use a /64 prefix")
+    return str(network)
+
+
+# Settings whose stored value is `int()`-ed on read, with the bounds the runtime needs. A restore
+# that stored a non-numeric one used to make GET /api/settings raise for good, and kill the
+# health sweep with it.
+SETTINGS_INT_BOUNDS: dict[str, tuple[int, int | None]] = {
+    # health_active_interval spins up a throwaway xray each time, so its floor is well above
+    # zero — a few seconds would mean a permanent probe process.
+    "health_interval": (60, None),
+    "health_active_interval": (10, None),
+    "health_hysteresis": (1, None),
+    "failover_cooldown": (0, None),
+    "session_timeout_min": (0, None),
+    "traffic_sample_ms": (500, 60_000),
+    "stats_api_port": (1, 65535),
+}
+# Settings that feed straight into the built xray config: an out-of-set value produces a config
+# xray rejects on the next apply (a self-inflicted outage).
+SETTINGS_CHOICES: dict[str, tuple[str, ...]] = {
+    "routing_default_action": ("direct", "proxy", "block"),
+    "routing_domain_strategy": ("AsIs", "IPIfNonMatch", "IPOnDemand"),
+}
+
+
+def validate_setting_values(data: Mapping[str, Any], *, reserved_ports: tuple[int, ...] = ()) -> None:
+    """Type/range-check the settings present in `data` (int-typed keys and closed choices).
+
+    Accepts both the ints the API sends and the strings a backup carries. Raises ValueError.
+    """
+    for key, (low, high) in SETTINGS_INT_BOUNDS.items():
+        if key not in data:
+            continue
+        value = data[key]
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be an integer") from None
+        if key == "stats_api_port":
+            if not low <= number <= high:
+                raise ValueError("stats_api_port must be 1..65535")
+            if number in reserved_ports:
+                raise ValueError("stats_api_port collides with a system port")
+            continue
+        if number < low:
+            raise ValueError(f"{key} must be >= {low}")
+        if high is not None and number > high:
+            raise ValueError(f"{key} must be <= {high}")
+    for key, allowed in SETTINGS_CHOICES.items():
+        if key in data and str(data[key]) not in allowed:
+            raise ValueError(f"{key} must be {'/'.join(allowed)}")

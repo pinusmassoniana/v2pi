@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import time
 import pytest
 from fastapi.testclient import TestClient
@@ -114,6 +115,52 @@ def test_lifetime_total_callback_rolls_back_both_counters_on_partial_failure(
     state.recorder._on_total(5, 7)
     assert store.get_setting("data_used_up") == "15"
     assert store.get_setting("data_used_down") == "27"
+    state.close()
+
+
+def test_flush_total_keeps_pending_bytes_when_commit_fails(settings, monkeypatch):
+    """FIX-J-2 regression: `flush_total` used to clear `_pending` *inside* the shared
+    transaction body, before `NodeStore`'s real SQLite commit (the `_SafeConn.__exit__` in
+    nodes/store.py) actually lands at the end of that `with` block. A commit failure there
+    rolled the DB back but had already zeroed memory, losing the bytes for good. This forces
+    the real commit (not just a callback) to fail once and asserts the delta survives to be
+    re-flushed on the next attempt instead of being silently dropped."""
+    state = build_state(settings, net=DryRunBackend())
+    store = state.store
+    recorder = state.recorder
+    recorder._prev_abs = {"up": 500, "down": 700}
+    recorder._pending = {"up": 111, "down": 222}
+
+    # sqlite3.Connection is a C type — its `commit` cannot be monkeypatched directly (instance
+    # attributes are read-only, the class is immutable). Swap in a thin proxy that forwards
+    # everything to the real connection except `commit`, which fails once then behaves.
+    raw_conn = store._conn._conn          # underlying sqlite3.Connection under the _SafeConn
+    calls = {"n": 0}
+
+    class _FlakyConn:
+        def commit(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raw_conn.rollback()       # a real commit failure leaves the connection clean
+                raise sqlite3.OperationalError("disk I/O error (simulated)")
+            return raw_conn.commit()
+
+        def __getattr__(self, name):
+            return getattr(raw_conn, name)
+
+    monkeypatch.setattr(store._conn, "_conn", _FlakyConn())
+
+    with pytest.raises(sqlite3.OperationalError):
+        recorder.flush_total()
+    # The bug: `_pending` was already zeroed at this point even though nothing durable landed.
+    assert recorder._pending == {"up": 111, "down": 222}
+    assert store.get_setting("data_used_up") is None
+    assert store.get_setting("data_used_down") is None
+
+    recorder.flush_total()                # retry once the commit path works again
+    assert recorder._pending == {"up": 0, "down": 0}
+    assert store.get_setting("data_used_up") == "111"
+    assert store.get_setting("data_used_down") == "222"
     state.close()
 
 

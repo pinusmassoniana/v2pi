@@ -9,6 +9,13 @@ from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, N
 logger = logging.getLogger(__name__)
 
 
+class TransactionRolledBack(RuntimeError):
+    """A transaction was discarded even though its outermost block completed normally.
+
+    Raised when an inner `with store.transaction():` failed and the caller swallowed that
+    exception: the writes are gone, so returning normally would report data loss as success."""
+
+
 class _Result:
     """Materialized result of one locked execute, so callers keep the existing
     `execute(...).fetchone()/.fetchall()/.lastrowid` pattern with no DB access after
@@ -77,11 +84,18 @@ class _SafeConn:
                 self._rollback_only = True
             self._transaction_depth -= 1
             if self._transaction_depth == 0:
-                if self._rollback_only:
+                rollback_only, self._rollback_only = self._rollback_only, False
+                if rollback_only:
                     self._conn.rollback()
+                    if exc_type is None:
+                        # A nested block failed and its caller swallowed the exception, so the
+                        # whole unit was discarded while this block is exiting cleanly. Staying
+                        # silent here reports data loss as success — raise instead.
+                        raise TransactionRolledBack(
+                            "transaction rolled back: a nested block failed and its exception "
+                            "was handled inside the transaction")
                 else:
                     self._conn.commit()
-                self._rollback_only = False
             return False
         finally:
             self._lock.release()
@@ -334,11 +348,18 @@ class NodeStore:
         self._conn.commit()
 
     def delete_token(self, token_id: int) -> bool:
-        found = self._conn.execute(
-            "SELECT 1 FROM api_tokens WHERE id = ?", (token_id,)).fetchone()
-        self._conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
-        self._conn.commit()
-        return found is not None
+        """True only for the caller that actually removed the row.
+
+        Probe + delete run in one transaction: as two separately-locked autocommitting
+        statements, two concurrent revocations both saw the row and both reported (and
+        audited) a success for the same single deletion."""
+        with self._conn:
+            found = self._conn.execute(
+                "SELECT 1 FROM api_tokens WHERE id = ?", (token_id,)).fetchone()
+            if found is None:
+                return False
+            self._conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+            return True
 
     # --- audit log (N2) ---
     _AUDIT_CAP = 2000
@@ -369,13 +390,21 @@ class NodeStore:
         the same minute must not lose the earlier slice). Prunes beyond the retention window."""
         # One transaction so the upsert + prune are atomic (audit P1).
         with self._conn:
+            newest = self._conn.execute(
+                "SELECT MAX(ts_min) AS m FROM traffic_minutes").fetchone()["m"]
             self._conn.execute(
                 "INSERT INTO traffic_minutes(ts_min, up_bytes, down_bytes) VALUES(?, ?, ?) "
                 "ON CONFLICT(ts_min) DO UPDATE SET up_bytes = up_bytes + excluded.up_bytes, "
                 "down_bytes = down_bytes + excluded.down_bytes",
                 (ts_min, up_bytes, down_bytes))
+            # `ts_min` is raw wall clock, so one NTP/RTC step forward would otherwise put the
+            # prune floor 90 days past every stored row and wipe the whole history in a single
+            # call. Anchor the floor to the newest sample that already survived instead: a lone
+            # far-future sample can no longer delete anything, while a series that genuinely
+            # advances past the window still prunes on the next sample.
+            anchor = ts_min if newest is None else min(int(ts_min), int(newest))
             self._conn.execute("DELETE FROM traffic_minutes WHERE ts_min < ?",
-                               (ts_min - self._TRAFFIC_RETENTION_MIN,))
+                               (anchor - self._TRAFFIC_RETENTION_MIN,))
 
     def traffic_minutes(self, since_min: int) -> list[dict]:
         """Per-minute samples (ascending) since `since_min` (unix//60)."""
@@ -591,10 +620,13 @@ class NodeStore:
         # Read-modify-write in one transaction so concurrent samples don't lose updates (audit P1).
         with self._conn:
             row = self._conn.execute(
-                "SELECT lat_history FROM node_health WHERE node_id = ?", (node_id,)).fetchone()
+                "SELECT node_id, lat_history FROM node_health WHERE node_id = ?",
+                (node_id,)).fetchone()
             if row is None:
                 return
-            hist = json.loads(row["lat_history"] or "[]")
+            # Same tolerance as every other JSON column read: a corrupt ring must cost this
+            # node its history, not abort the health sweep that is walking every node.
+            hist = _safe_json(row, "lat_history", list, list)
             hist.append(int(ms))
             self._conn.execute("UPDATE node_health SET lat_history = ? WHERE node_id = ?",
                                (json.dumps(hist[-cap:]), node_id))

@@ -1,18 +1,15 @@
 """Backend coverage for the 2026-06-04 Nodes-panel audit (v1.6.1): per-node note (N-C)."""
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.models import Node
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
+from conftest import _build_dryrun_state, _login
 
 
 def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    c = TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c, c.get("/api/csrf").json()["csrf"]
+    c = TestClient(create_app(settings, state=_build_dryrun_state(settings, stub_xray)))
+    return c, _login(c)
 
 
 def test_note_round_trips_through_api(settings, stub_xray):

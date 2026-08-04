@@ -6,6 +6,7 @@ The recorder is the sole TrafficSampler owner. WebSockets read its immutable lat
 snapshot, so extra tabs never multiply gRPC calls or disturb delta baselines. The
 buffer is a bounded deque → O(1) append, fixed memory."""
 import asyncio
+import contextlib
 import copy
 import logging
 import threading
@@ -44,12 +45,15 @@ class TrafficHistory:
         self._buf: deque = deque(maxlen=maxlen)
         self._lock = threading.Lock()
 
-    def record(self, ts_ms: int, up_bps: float, down_bps: float) -> None:
+    def record(self, ts_ms: int, up_bps: float, down_bps: float) -> int:
+        """Append one point; returns the timestamp actually stored (see the clamp below), so
+        callers bucket their own accounting on the same value the series uses."""
         with self._lock:
             ts_ms = int(ts_ms)
             if self._buf and ts_ms < self._buf[-1][0]:      # NTP step moved wall-clock back → clamp so the series stays monotonic
                 ts_ms = self._buf[-1][0]
             self._buf.append((ts_ms, round(up_bps), round(down_bps)))
+            return ts_ms
 
     def series(self, since_ms: int | None = None, max_points: int | None = None) -> list:
         with self._lock:
@@ -72,9 +76,16 @@ class TrafficRecorder:
     `sampler` is a TrafficSampler (its own instance), `stats_enabled`/`interval_ms` are
     callables read live so a settings change takes effect without a restart."""
 
+    # A minute bucket is ~40 bytes; 1440 of them is a full day of writer downtime retained
+    # before the oldest starts falling off. Bounded so a permanently failing DB write can no
+    # longer grow the queue by one entry per minute until the process is OOM-killed.
+    _MAX_PENDING_MINUTES = 1440
+    _WARN_INTERVAL = 60.0        # per failure kind — these fire on every tick while broken
+
     def __init__(self, sampler, history: TrafficHistory, stats_enabled, interval_ms,
                  running=lambda: True, clock=lambda: time.time(),
-                 on_total=None, flush_interval=30.0, on_minute=None):
+                 on_total=None, flush_interval=30.0, on_minute=None,
+                 baseline=None, on_baseline=None, transaction=None):
         self._sampler = sampler
         self._history = history
         self._stats_enabled = stats_enabled        # callable -> bool
@@ -87,9 +98,26 @@ class TrafficRecorder:
         # flushed at most every `flush_interval` s to spare the SD card.
         self._on_total = on_total
         self._flush_interval = flush_interval
+        # `baseline`/`on_baseline` persist those absolute counters across a panel restart: with
+        # an in-memory-only baseline the first post-restart tick recorded a zero delta, so every
+        # restart silently dropped one interval of "data used". The stored value is only ever
+        # advanced after the deltas it covers have been handed to `on_total`.
         self._prev_abs: dict | None = None         # last absolute proxy counters seen
+        if baseline:
+            self._prev_abs = {"up": int(baseline["up"]), "down": int(baseline["down"])}
+        self._on_baseline = on_baseline
+        # The gap a restored baseline spans belongs to the downtime, not to the minute the panel
+        # came back in — count it once in the lifetime total and leave the per-minute gap a gap.
+        self._recovered = self._prev_abs is not None
         self._pending = {"up": 0, "down": 0}
         self._last_flush = 0.0
+        # Caller-supplied context-manager factory (e.g. `store.transaction`) so flush_total can
+        # wrap the baseline write and the total write in ONE store transaction: a callback
+        # failure or a crash between the two must roll back both, never commit the baseline
+        # without the bytes it covers (audit FIX-E-1). None (the default) preserves the old
+        # untransacted behaviour for callers/tests that don't share a real store.
+        self._transaction = transaction
+        self._warned: dict = {}                    # failure kind -> monotonic ts of last warning
         # N4: `on_minute(ts_min, up_bytes, down_bytes)` persists a 1-min downsample of the
         # same deltas (one DB write/min) — the durable series behind the 24h/7d windows.
         self._on_minute = on_minute
@@ -99,13 +127,25 @@ class TrafficRecorder:
         self._latest_error = ""
         self._latest_lock = threading.Lock()
 
+    def _warn(self, kind: str, msg: str) -> None:
+        """Surface a failure at a level that actually reaches a handler, at most once a minute
+        per kind. These paths fire on every tick while the DB is unwritable, and an unthrottled
+        warning would rotate the 5 MB app log clean of everything else within hours."""
+        now = time.monotonic()
+        if now - self._warned.get(kind, float("-inf")) >= self._WARN_INTERVAL:
+            self._warned[kind] = now
+            log.warning(msg, exc_info=True)
+        else:
+            log.debug(msg, exc_info=True)
+
     def record_sample(self, out: dict) -> None:
         """Map one sampler output to a history point (proxy outbound, zeros if absent)."""
-        now = self._clock()
         p = (out or {}).get("proxy") or {}
-        ts_ms = int(now * 1000)
-        self._history.record(ts_ms,
-                             p.get("up_bps", 0.0), p.get("down_bps", 0.0))
+        # The series clamps a backward clock step; take the clamped value back so the byte
+        # accounting buckets on exactly the timestamp the graph shows.
+        ts_ms = self._history.record(int(self._clock() * 1000),
+                                     p.get("up_bps", 0.0), p.get("down_bps", 0.0))
+        now = ts_ms / 1000.0
         with self._latest_lock:
             self._latest = {
                 "ts": ts_ms,
@@ -153,18 +193,23 @@ class TrafficRecorder:
             if self._on_total is not None:
                 self._pending["up"] += du
                 self._pending["down"] += dd
-            self._accumulate_minute(du, dd, now)
+            if self._recovered:
+                # First delta after a restart: it spans the downtime, so charging it to the
+                # minute the panel came back in would draw a spike that never happened.
+                self._recovered = False
+            else:
+                self._accumulate_minute(du, dd, now)
         else:
             self._prev_abs = {"up": up, "down": down}
         if (self._pending["up"] or self._pending["down"]) and now - self._last_flush >= self._flush_interval:
             try:
                 self.flush_total()
             except Exception:
-                log.debug("data-used total flush failed; retained for retry", exc_info=True)
+                self._warn("total", "data-used total flush failed; retained for retry")
         try:
             self.flush_minute(include_current=False)
         except Exception:
-            log.debug("traffic-minute flush failed; retained for retry", exc_info=True)
+            self._warn("minute", "traffic-minute flush failed; retained for retry")
 
     def _accumulate_minute(self, du: int, dd: int, now: float) -> None:
         """Bucket this tick's byte delta by wall-clock minute; persist a bucket when the
@@ -174,7 +219,7 @@ class TrafficRecorder:
         cur = int(now // 60)
         if self._minute is not None and self._minute["min"] != cur:
             if self._minute["up"] or self._minute["down"]:
-                self._pending_minutes.append(self._minute)
+                self._queue_minute(self._minute)
             self._minute = None
         if du or dd:
             if self._minute is None:
@@ -182,13 +227,25 @@ class TrafficRecorder:
             self._minute["up"] += du
             self._minute["down"] += dd
 
+    def _queue_minute(self, bucket: dict) -> None:
+        """Enqueue one completed bucket, dropping the oldest once the backlog is full.
+
+        Unbounded retention turned a persistently failing DB write into unbounded memory
+        growth; the drop is logged (not silently swallowed) because it is real data loss."""
+        while len(self._pending_minutes) >= self._MAX_PENDING_MINUTES:
+            dropped = self._pending_minutes.popleft()
+            log.warning("traffic-minute backlog full (%d buckets); dropping minute %s "
+                        "(%d/%d bytes) — the durable series will have a gap",
+                        self._MAX_PENDING_MINUTES, dropped["min"], dropped["up"], dropped["down"])
+        self._pending_minutes.append(bucket)
+
     def flush_minute(self, *, include_current: bool = True) -> None:
         """Persist completed buckets in order, removing each only after callback success."""
         if self._on_minute is None:
             return
         if include_current and self._minute is not None:
             if self._minute["up"] or self._minute["down"]:
-                self._pending_minutes.append(self._minute)
+                self._queue_minute(self._minute)
             self._minute = None
         while self._pending_minutes:
             minute = self._pending_minutes[0]
@@ -196,9 +253,34 @@ class TrafficRecorder:
             self._pending_minutes.popleft()
 
     def flush_total(self) -> None:
-        """Persist and clear the pending byte deltas (also called on shutdown)."""
-        if self._on_total is not None and (self._pending["up"] or self._pending["down"]):
-            self._on_total(self._pending["up"], self._pending["down"])
+        """Persist and clear the pending byte deltas (also called on shutdown).
+
+        Baseline and total are written inside ONE `self._transaction()` (when the caller
+        supplied one) instead of two independent commits: the earlier "baseline first" ordering
+        alone only bounded which side under-counted on failure — a crash or callback exception
+        landing between the two separate writes still let the baseline commit durably while the
+        bytes it covers were never added, losing that delta forever. With a shared transaction,
+        either both land or neither does, so a failed/interrupted flush is always safe to retry
+        (audit FIX-E-1)."""
+        do_baseline = self._on_baseline is not None and self._prev_abs is not None
+        do_total = self._on_total is not None and (self._pending["up"] or self._pending["down"])
+        if not do_baseline and not do_total:
+            self._last_flush = self._clock()
+            return
+        ctx = self._transaction() if self._transaction is not None else contextlib.nullcontext()
+        with ctx:
+            if do_baseline:
+                self._on_baseline(self._prev_abs["up"], self._prev_abs["down"])
+            if do_total:
+                self._on_total(self._pending["up"], self._pending["down"])
+        # Clear the in-memory delta only after the `with` block above returns without raising.
+        # The real SQLite commit for a shared transaction happens in `NodeStore`'s context
+        # manager __exit__ (nodes/store.py), which runs at the end of that `with` block — so
+        # resetting `_pending` inside the block (as before) zeroed memory before the commit was
+        # known to succeed. A commit failure then rolled storage back but left memory at zero,
+        # losing the bytes for good instead of leaving them for the next flush to retry
+        # (audit FIX-J-2, the remaining half of FIX-E-1).
+        if do_total:
             self._pending = {"up": 0, "down": 0}
         self._last_flush = self._clock()
 
@@ -218,7 +300,7 @@ class TrafficRecorder:
             self.flush_total()        # don't lose the last batch of data-used on shutdown
             self.flush_minute(include_current=True)
         except Exception:
-            log.debug("data-used flush on stop failed", exc_info=True)
+            self._warn("stop", "data-used flush on stop failed")
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -235,7 +317,7 @@ class TrafficRecorder:
                         self.record_error("xray is not running")
             except Exception as exc:
                 self.record_error(exc)
-                log.debug("traffic history sample failed", exc_info=True)
+                self._warn("sample", "traffic history sample failed")
             # sleep to the next deadline so sample latency doesn't stretch the real period
             next_t += interval
             now = time.monotonic()

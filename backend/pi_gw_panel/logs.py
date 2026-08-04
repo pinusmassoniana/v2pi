@@ -27,11 +27,29 @@ def tail(path: str, lines: int) -> list[str]:
         return []
 
 
+class _OwnerOnlyRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler whose every generation is created 0600.
+
+    The base class opens each new file through `open()`, so its permissions come from the
+    process umask — a rollover would otherwise hand back a world-readable log."""
+
+    def _open(self):
+        fd = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        return os.fdopen(fd, "a", encoding=self.encoding)
+
+
 def setup_app_logging(path: str) -> logging.Handler:
     """Attach and return the exact handler owned by one application lifespan."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(
-        path, maxBytes=5_000_000, backupCount=3)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    handler = _OwnerOnlyRotatingFileHandler(path, maxBytes=5_000_000, backupCount=3)
+    # A log predating this (or a directory created by something else) keeps its old mode
+    # until it is fixed here; failure to tighten it must not stop the panel from booting.
+    for target, mode in ((directory, 0o700), (path, 0o600)):
+        try:
+            os.chmod(target, mode)
+        except OSError:
+            logging.getLogger(__name__).warning("could not secure log path %s", target)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root = logging.getLogger()
     root.addHandler(handler)
