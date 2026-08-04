@@ -1,11 +1,9 @@
 """Coverage for the Routing-panel audit fixes/features (RC1–RC3, RN1/RN3/RN5/RN9)."""
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.models import RoutingRule
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.xray_config.routing import rules_to_xray, validate_routing, _split
+from conftest import _client, _login
 
 
 def _store(settings):
@@ -60,17 +58,6 @@ def test_split_helper():
 
 
 # --- API ---
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    from pi_gw_panel.state import build_state
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
-
-
 def test_put_routing_rejects_bad_rule(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}

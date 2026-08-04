@@ -1,10 +1,7 @@
 """Coverage for the Tuning-panel audit fixes/features (TC1/TC2, TB1, is_active, TN1/TN6-8)."""
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.models import TuningProfile
 from pi_gw_panel.xray_config.tuning import validate_profile
+from conftest import _client, _login
 
 
 # --- TC2: structural validation ---
@@ -39,16 +36,6 @@ def test_validate_profile_rejects_descending_unbounded_and_ranged_scalar_values(
         mux_concurrency="1024",
     )
     assert validate_profile(valid) == (True, "")
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
 
 
 def _add_node(c, h):

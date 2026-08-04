@@ -61,9 +61,10 @@ def test_build_config_passes_real_xray_test():
     assert ok, out
 
 
-# A valid 32-byte x25519 key in base64url-without-padding — the shape REALITY demands. A
-# placeholder string of the wrong length is rejected by real xray, which is the whole point here.
-_RW_PRIV = "-Om9OloQidkL0MBAaet2TSDnHR2bMODRibIVZhKksj0"
+# A throwaway, freshly generated 32-byte x25519 key in base64url-without-padding — the shape
+# REALITY demands. A placeholder string of the wrong length is rejected by real xray, which is
+# the whole point here. Not a real/deployed key.
+_RW_PRIV = "WGRPGQda2QYBzYzkJPdQk75SlhQ8kPsd1xBUAF2vCnA"
 
 
 def _rw(**over):

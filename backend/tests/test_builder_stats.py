@@ -27,8 +27,10 @@ def test_stats_block_present_when_enabled():
     api_in = next(i for i in cfg["inbounds"] if i["tag"] == "api")
     assert api_in["protocol"] == "dokodemo-door"
     assert api_in["listen"] == "127.0.0.1" and api_in["port"] == 10085
-    # the api routing rule is dispatched first
-    assert cfg["routing"]["rules"][0] == {"type": "field", "inboundTag": ["api"], "outboundTag": "api"}
+    # the api routing rule is dispatched ahead of all traffic rules — only the loopback guard
+    # for client-facing inbounds (which never matches the api inbound) sits in front of it
+    assert cfg["routing"]["rules"][0]["outboundTag"] == "block"
+    assert cfg["routing"]["rules"][1] == {"type": "field", "inboundTag": ["api"], "outboundTag": "api"}
 
 
 def test_stats_config_validates_with_stub(settings, stub_xray):

@@ -4,9 +4,9 @@ from pi_gw_panel.xray_config.builder import build_config
 
 
 def _xhttp():
-    return Node(id=1, name="FI2", address="ru.pinusm.ru", port=443, uuid="u1",
-                transport="xhttp", network="xhttp", security="tls", sni="ru.pinusm.ru",
-                path="/xhttp-stream-fi2v", host="ru.pinusm.ru", mode="stream-up",
+    return Node(id=1, name="FI2", address="edge.example.net", port=443, uuid="u1",
+                transport="xhttp", network="xhttp", security="tls", sni="edge.example.net",
+                path="/xhttp-stream-fi2v", host="edge.example.net", mode="stream-up",
                 alpn="h2,http/1.1", fingerprint="chrome")
 
 
@@ -25,8 +25,8 @@ def test_build_xhttp_tls():
     ss = out["streamSettings"]
     assert ss["network"] == "xhttp"
     assert ss["security"] == "tls"
-    assert ss["xhttpSettings"] == {"path": "/xhttp-stream-fi2v", "host": "ru.pinusm.ru", "mode": "stream-up"}
-    assert ss["tlsSettings"]["serverName"] == "ru.pinusm.ru"
+    assert ss["xhttpSettings"] == {"path": "/xhttp-stream-fi2v", "host": "edge.example.net", "mode": "stream-up"}
+    assert ss["tlsSettings"]["serverName"] == "edge.example.net"
     assert ss["tlsSettings"]["alpn"] == ["h2", "http/1.1"]
     assert "realitySettings" not in ss
     assert "flow" not in out["settings"]["vnext"][0]["users"][0]   # XHTTP: no Vision flow

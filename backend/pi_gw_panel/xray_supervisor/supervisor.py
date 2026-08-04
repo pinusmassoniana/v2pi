@@ -1,10 +1,13 @@
 import json
+import logging
 import subprocess
 import threading
 import time
 from typing import TypedDict
 
 from pi_gw_panel.xray_config.validate import scrub_output
+
+logger = logging.getLogger(__name__)
 
 
 class SupervisorStatus(TypedDict):
@@ -56,12 +59,25 @@ class XraySupervisor:
             self._last_exit_code = None
             with self._stderr_lock:
                 self._stderr_tail = ""
+            # Refresh the secret vocabulary used to scrub the stderr tail (exposed as
+            # /api/status.last_error). On failure KEEP the last one we managed to read: the
+            # config being unreadable is exactly when xray is loudest, and dropping to {}
+            # switched redaction off wholesale — the uuid/keys of the config it last ran with
+            # are still the ones its complaints quote.
             try:
                 with open(self.config_path) as f:
                     config = json.load(f)
-                self._redaction_config = config if isinstance(config, dict) else {}
-            except (OSError, json.JSONDecodeError):
-                self._redaction_config = {}
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "could not read %s for stderr redaction (%s) — keeping the previous "
+                    "config's secrets redacted", self.config_path, exc)
+            else:
+                if isinstance(config, dict):
+                    self._redaction_config = config
+                else:
+                    logger.warning(
+                        "%s is not a JSON object — keeping the previous redaction vocabulary",
+                        self.config_path)
             try:
                 self._proc = subprocess.Popen(
                     [self.xray_bin, "-config", self.config_path],
@@ -119,7 +135,12 @@ class XraySupervisor:
         """Restart xray and report whether it came up. False = the new process died at boot or
         never became ready — the caller must roll the config back and reload, else all tunnelled
         traffic blackholes on a config that passed `-test` but can't actually run (port bound,
-        cap drop, tproxy/nft state)."""
+        cap drop, tproxy/nft state).
+
+        This is stop→start unconditionally, NOT "restart if it was running": called while xray
+        is deliberately stopped it STARTS it, and sets `_want_running`. A caller that must not
+        resurrect a stopped process has to establish that it is running first — and an
+        unqueryable status() is not that proof (see _rw_revoke, which stops instead)."""
         with self._lock:
             self.stop()
             self.start()

@@ -71,6 +71,7 @@ class RestoreResult:
     ok: bool
     summary: dict | None = None
     error: str = ""
+    snapshot: str = ""     # the pre-restore copy of the state this replaced
 
 
 def _record_enforcement(net, result: NetResult, *, wan_blocked: bool | None) -> NetResult:
@@ -180,7 +181,8 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
 
 
 def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
-               net, store=None, xray_bin: str | None = None) -> ApplyResult:
+               net, store=None, xray_bin: str | None = None,
+               irreversible: bool = False) -> ApplyResult:
     """Backbone: build -> validate(+snapshot) -> reload xray -> apply net.
 
     Serialized by `apply_lock` so a manual Connect and the failover tick can't interleave.
@@ -188,6 +190,19 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
     *validated* config fails downstream (xray reload or net), roll the live config
     back to last-good, tear down the net ruleset, and report — never leave a
     half-applied state. On success, persist the active node id (if a store given).
+
+    `irreversible` is for an apply whose effect `POST /rollback` may NEVER undo — a
+    remote-access revocation, and so far nothing else. It writes through
+    `ConfigManager.apply_irreversible`, which publishes no rollback target at all, instead of
+    `apply()`, which files the config it REPLACES as the undo. That difference is the whole
+    point: a revocation applied through the ordinary path necessarily snapshots the
+    credential-bearing config and marks the pairing valid, leaving `/rollback` one button from
+    reinstating the lost device until something else invalidates the marker — and a sweep that
+    can only run afterwards is a guard with a window, not a guard.
+
+    OFF by default, and it must stay that way: publishing the undo target is the feature for
+    every other caller (Connect, boot reapply, a subscription refresh, the failover tick), and
+    an ordinary apply that stopped doing it would take the operator's undo away.
     """
     with apply_lock:
         previous_id_raw = store.get_setting("active_node_id") if store is not None else None
@@ -197,14 +212,26 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
             previous_id = None
         previous_node = store.get_node(previous_id) if store is not None and previous_id else None
 
-        cfg = build_node_config(node, settings, store)
         mgr = ConfigManager(settings, xray_bin=xray_bin)
         try:
-            ok, out = mgr.apply(cfg)
+            # Build inside the guard too. Rendering reads stored values that are only validated
+            # at the API boundary, so hand-edited or restored state can raise here (e.g. a
+            # non-numeric `stats_api_port` reaching `int()`); outside the try that surfaced as a
+            # 500 from every caller instead of a reported ApplyResult. Nothing is mutated yet,
+            # so returning is safe — there is no runtime to roll back.
+            cfg = build_node_config(node, settings, store)
+            ok, out = mgr.apply_irreversible(cfg) if irreversible else mgr.apply(cfg)
         except Exception as exc:
             return ApplyResult(ok=False, error=f"config apply failed: {exc}")
         if not ok:
             return ApplyResult(ok=False, error=out)
+        if store is not None and node.id is not None:
+            # Crash-forward intent marker. From here on the LIVE config on disk already
+            # describes `node`, but `active_node_id` still names the old one, and the window
+            # spans an xray reload plus a full net apply. A panel crash inside it used to make
+            # boot reapply silently UNDO a completed failover — it would re-apply the node we
+            # had just failed away from, because that is what the store still said.
+            store.set_setting("pending_active_node_id", str(node.id))
         try:
             # reload() now reports whether xray actually came up — a config can pass `-test` yet
             # the live process still die at boot (port bound, cap drop, tproxy/nft state). Treat a
@@ -215,13 +242,22 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         except Exception as exc:
             recovery: list[str] = []
             restored = False
-            try:
-                rolled_back = mgr.rollback()
-            except Exception as rollback_exc:
-                rolled_back = False
-                recovery.append(f"config rollback raised: {rollback_exc}")
-            if not rolled_back:
-                recovery.append("config rollback unavailable")
+            rolled_back = False
+            if irreversible:
+                # Restoring the config this apply replaced is the one thing an irreversible
+                # apply exists to prevent: that config still grants what was just revoked, and
+                # the restore below would reload — on an xray this recovery may have stopped,
+                # start — a process to serve it. There is nothing promotable to restore either
+                # (apply_irreversible invalidated the pairing before writing), so this says so
+                # rather than proving it again, and the fail-closed branch below takes over.
+                recovery.append("config rollback withheld: this apply may not be undone")
+            else:
+                try:
+                    rolled_back = mgr.rollback()
+                except Exception as rollback_exc:
+                    recovery.append(f"config rollback raised: {rollback_exc}")
+                if not rolled_back:
+                    recovery.append("config rollback unavailable")
 
             # A valid prior active node means the rolled-back config describes a tunnel we can
             # restore. Both the process readiness and host rules are authoritative contracts.
@@ -250,6 +286,9 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
                 if not guard.ok:
                     recovery.append(f"fail-closed recovery failed: {guard.error or 'unknown error'}")
 
+            if store is not None:
+                # The switch did not happen; there is no forward to converge to.
+                store.set_setting("pending_active_node_id", "")
             suffix = f"; recovery: {'; '.join(recovery)}" if recovery else ""
             return ApplyResult(ok=False, error=f"apply failed after validation: {exc}{suffix}")
         if store is not None and node.id is not None:
@@ -260,6 +299,7 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
                     store.set_setting(
                         "prev_active_node_id", previous_id_raw if previous_id_raw is not None else "")
                 store.set_setting("active_node_id", str(node.id))
+                store.set_setting("pending_active_node_id", "")   # intent and fact agree again
                 store.set_setting("active_since", str(int(time.time())))   # uptime anchor (P3)
                 # NF4: snapshot the lifetime data-used baseline so the Dashboard can show "this
                 # session" (since (re)connect) = lifetime − baseline, beside the lifetime total.
@@ -268,12 +308,44 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
         return ApplyResult(ok=True)
 
 
-def reapply_active_node(state) -> ApplyResult | None:
+def _pending_or_active(state) -> str | None:
+    """Which node boot should re-establish: the interrupted switch if there was one.
+
+    `apply_node` writes `pending_active_node_id` before touching the runtime and clears it once
+    `active_node_id` matches. Finding one still set means we died mid-switch — the live config,
+    and quite possibly the running xray and the host rules, already belong to the pending node,
+    so converging FORWARD onto it is what makes boot agree with the world. Without this a crash
+    during auto-failover reverts the panel to the very node the failover fled."""
+    store = state.store
+    active = store.get_setting("active_node_id")
+    pending = store.get_setting("pending_active_node_id")
+    if not pending or pending == active:
+        return active or None
+    try:
+        node = store.get_node(int(pending))
+    except (TypeError, ValueError):
+        node = None
+    if node is None:
+        store.set_setting("pending_active_node_id", "")
+        return active or None
+    from pi_gw_panel.net_control import events as conn_events
+    conn_events.record(store, "failover",
+                       f"resumed node switch to {pending} interrupted by shutdown")
+    logger.warning("boot: resuming interrupted switch to node %s (store still says %s)",
+                   pending, active or "none")
+    return pending
+
+
+def reapply_active_node(state, irreversible: bool = False) -> ApplyResult | None:
     """Boot/restart persistence: re-apply the saved active node (rebuild+validate → start
     xray → apply net) on startup, so a reboot or container restart restores the tunnel with
     no manual Connect. Returns the ApplyResult, or None when there is no (valid) saved active
-    node. Never raises — a failure is reported in the result, not by crashing boot."""
-    aid = state.store.get_setting("active_node_id")
+    node. Never raises — a failure is reported in the result, not by crashing boot.
+
+    `irreversible` is forwarded to `apply_node` verbatim: the same rebuild is how a revocation
+    reaches the config when a node is connected, and that one may leave no rollback target
+    behind. Off by default — boot and every ordinary reapply keep publishing the undo."""
+    aid = _pending_or_active(state)
     if not aid:
         return None
     try:
@@ -286,6 +358,7 @@ def reapply_active_node(state) -> ApplyResult | None:
         with apply_lock:
             with state.store.transaction():
                 state.store.set_setting("active_node_id", "")
+                state.store.set_setting("pending_active_node_id", "")
                 state.store.set_setting("active_since", "")
                 from pi_gw_panel.net_control import events as conn_events
                 conn_events.record(state.store, "stale-active", f"cleared missing active node {aid}")
@@ -295,7 +368,8 @@ def reapply_active_node(state) -> ApplyResult | None:
         return None
     try:
         return apply_node(node, state.settings, state.supervisor, state.net,
-                          store=state.store, xray_bin=state.xray_bin)
+                          store=state.store, xray_bin=state.xray_bin,
+                          irreversible=irreversible)
     except Exception as exc:  # never let boot crash on a bad saved node/config
         return ApplyResult(ok=False, error=f"boot reapply failed: {exc}")
 
@@ -307,6 +381,16 @@ def restore_backup(state, document) -> RestoreResult:
 
     validated = backup_mod.validate_document(document)  # pure preflight before stopping anything
     with apply_lock:
+        # Snapshot AND restore are one serialized operation (audit FIX-E-2): taking the snapshot
+        # before the lock let a concurrent mutation (e.g. a manual Connect) commit in the gap and
+        # then get erased by the restore below without ever appearing in the recovery copy — the
+        # safety net had a hole exactly when it was needed. Held inside the same `with apply_lock`
+        # as the destructive work, no other mutator can land between "what we're about to replace"
+        # and "replacing it".
+        try:            # keep a copy of what this is about to replace, before anything is touched
+            snapshot = backup_mod.write_pre_restore_snapshot(state)
+        except (OSError, ValueError) as exc:
+            return RestoreResult(ok=False, error=f"could not snapshot the current state: {exc}")
         stats_client = getattr(state, "stats_client", None)
         previous_stats_address = (
             stats_client.status().get("address") if stats_client is not None else None)
@@ -322,6 +406,7 @@ def restore_backup(state, document) -> RestoreResult:
                 summary = backup_mod.import_state(state.store, validated)
                 state.store.set_setting("active_node_id", "")
                 state.store.set_setting("prev_active_node_id", "")
+                state.store.set_setting("pending_active_node_id", "")
                 state.store.set_setting("active_since", "")
                 provisioned = host_provision(state)
                 if getattr(provisioned, "ok", True) is False:
@@ -339,6 +424,7 @@ def restore_backup(state, document) -> RestoreResult:
             with state.store.transaction():
                 state.store.set_setting("active_node_id", "")
                 state.store.set_setting("prev_active_node_id", "")
+                state.store.set_setting("pending_active_node_id", "")
                 state.store.set_setting("active_since", "")
             try:
                 previous_host = host_provision(state)
@@ -355,5 +441,6 @@ def restore_backup(state, document) -> RestoreResult:
                 except Exception as recovery_exc:
                     recovery.append(f"stats client restore raised: {recovery_exc}")
             suffix = f"; recovery: {'; '.join(recovery)}" if recovery else ""
-            return RestoreResult(ok=False, error=f"restore apply failed: {exc}{suffix}")
-        return RestoreResult(ok=True, summary=summary)
+            return RestoreResult(ok=False, error=f"restore apply failed: {exc}{suffix}",
+                                 snapshot=snapshot)
+        return RestoreResult(ok=True, summary=summary, snapshot=snapshot)

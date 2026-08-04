@@ -49,8 +49,17 @@ def validate_profile(p: TuningProfile) -> tuple[bool, str]:
             return False, f"bad fragment length {p.frag_length!r}"
         if not _bounded_number(p.frag_interval or "", 0, 60000):
             return False, f"bad fragment interval {p.frag_interval!r}"
-    if p.doh_enabled and p.doh_url and not p.doh_url.startswith(("http://", "https://")):
-        return False, "DoH URL must start with http:// or https://"
+    # Checked whenever it is non-empty, NOT only while `doh_enabled` is on: `build_config` makes
+    # doh_url the sole dns server whenever gateway DNS interception is enabled, regardless of the
+    # profile's own toggle — so a stored bare `8.8.8.8` would turn every client's DNS into
+    # plaintext UDP to a third party while the profile still reads "DoH off".
+    #
+    # https:// ONLY. `http://` used to pass here and then got installed as the sole entry of
+    # dns.servers, where the panel calls it the encrypted resolver: every client domain would
+    # leave the gateway in cleartext, to a third party, with the UI still showing DoH. The
+    # scheme is the only thing that distinguishes the two, so it is not a matter of taste.
+    if p.doh_url and (not p.doh_url.startswith("https://") or not p.doh_url[len("https://"):]):
+        return False, "DoH URL must start with https:// (a plaintext http:// resolver is not DoH)"
     for n in (p.noises or []):
         if not isinstance(n, dict) or n.get("type") not in ("rand", "str", "base64", "hex"):
             return False, f"bad noise entry {n!r}"
