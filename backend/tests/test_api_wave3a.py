@@ -1,12 +1,4 @@
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
+from conftest import _client
 
 
 def test_setup_creates_credential_and_authenticates(settings, stub_xray):

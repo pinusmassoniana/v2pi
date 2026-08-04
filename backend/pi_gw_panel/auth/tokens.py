@@ -9,7 +9,13 @@ import hashlib
 import secrets
 
 PREFIX = "pgwp_"
-SCOPES = ("monitor", "read", "readwrite")
+
+# The scope vocabulary, least → most privileged. This tuple is the single source for the API
+# schema's accepted values and for the scope gates in `api/deps.py` — don't re-spell the strings.
+SCOPE_MONITOR = "monitor"        # a handful of dashboard GETs, secrets redacted
+SCOPE_READ = "read"              # every GET
+SCOPE_READWRITE = "readwrite"    # every GET + mutations (CSRF-exempt: not cookie-borne)
+SCOPES = (SCOPE_MONITOR, SCOPE_READ, SCOPE_READWRITE)
 
 
 def generate() -> tuple[str, str, str]:

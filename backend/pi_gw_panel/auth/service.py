@@ -46,11 +46,25 @@ def verify_login(store, username: str, password: str) -> bool:
 
 
 def set_password(store, password: str) -> None:
-    """Rotate the password hash (username unchanged) AND bump the session epoch so previously-issued
-    sessions are invalidated — keeps the invalidation guarantee at the credential layer, not only in
-    whichever caller happens to remember to bump."""
-    store.set_setting(_HASH, hash_password(password))
-    bump_session_epoch(store)
+    """Rotate the password hash (username unchanged) and end EVERY credential issued before it.
+
+    Two kinds of access exist and both have to go, or a password rotation after a suspected
+    compromise is only half a revocation:
+      * cookie sessions — invalidated by bumping the session epoch (`session_invalid_reason`
+        compares the stamped epoch on every request);
+      * API tokens — `require_auth` short-circuits on a Bearer token and never reaches the epoch
+        check, and a token row carries no epoch to compare against, so the tokens are deleted.
+        The operator re-issues them after the rotation; a stale one must not outlive the password.
+
+    The invalidation lives here, at the credential layer, rather than in whichever caller
+    happens to remember it. The scrypt hash is computed before the transaction so the store's
+    connection lock isn't held for the KDF."""
+    password_hash = hash_password(password)
+    with store.transaction():
+        store.set_setting(_HASH, password_hash)
+        bump_session_epoch(store)
+        for row in store.list_tokens():
+            store.delete_token(int(row["id"]))
 
 
 def session_epoch(store) -> int:

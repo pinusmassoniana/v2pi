@@ -1,13 +1,5 @@
-from fastapi.testclient import TestClient
-
-from pi_gw_panel.app import AUTH_BODY_LIMIT, create_app
-from pi_gw_panel.net_control.dryrun import DryRunBackend
-from pi_gw_panel.state import build_state
-
-
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
+from pi_gw_panel.app import AUTH_BODY_LIMIT
+from conftest import _client
 
 
 def test_oversized_content_length_is_rejected_before_login(settings, stub_xray, monkeypatch):

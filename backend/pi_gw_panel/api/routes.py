@@ -1,8 +1,9 @@
-import ipaddress
+import hmac
 import json
+import logging
 import os
-import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -43,13 +44,19 @@ from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel.xray_config.routing import PRESETS, preset_rules, validate_routing
 from pi_gw_panel.xray_config.tuning import resolve_profile, validate_profile, PROFILE_PRESETS
-from pi_gw_panel.xray_config.builder import build_config
+from pi_gw_panel.xray_config.builder import (build_config, rw_inbound_block, rw_grants,
+                                             rw_lan_outbound, rw_lan_rule, RW_TAG,
+                                             DIRECT_LAN_TAG)
 from pi_gw_panel.xray_config.validate import ConfigManager, validate_config
-from pi_gw_panel.config import SETTINGS_DEFAULTS
+from pi_gw_panel.config import (SETTINGS_DEFAULTS, safe_int, validate_net_settings,
+                                validate_setting_values)
 from pi_gw_panel.subs.inject import build_request, default_injection, host_tokens
 from pi_gw_panel.subs import service
-from pi_gw_panel.subs.fetcher import fetch
+from pi_gw_panel.subs.fetcher import assert_public_url, fetch
+from pi_gw_panel.subs.parsers import clamp_node_fields
 from pi_gw_panel.subs.parsers.dispatch import parse_subscription, detect
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -73,6 +80,25 @@ def _clamp_interval(sec: int) -> int:
     """R3: 0 = manual-only; otherwise floor the auto-update interval at 60s so a typo can't
     hammer the provider every scheduler tick."""
     return 0 if sec <= 0 else max(60, sec)
+
+
+def _check_sub_url(url: str) -> None:
+    """Run the fetcher's own scheme/SSRF check when the URL is saved, so a typo or an internal
+    address is reported to the operator right there instead of silently failing on the first
+    scheduled refresh (the fetch still re-pins and re-checks at request time)."""
+    try:
+        assert_public_url(url)
+    except (ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=422, detail=f"url: {exc}")
+
+
+def _check_profile_id(store, profile_id: int | None) -> None:
+    """Reject a reference to a tuning profile that doesn't exist, with 422 rather than the 500 the
+    enforced foreign key would otherwise produce. None means "no profile" (inherit the default)
+    and is always fine. Shared by every route that accepts a profile id — node create/edit,
+    subscription create/edit and the node pre-flight — so they answer alike."""
+    if profile_id is not None and store.get_profile(profile_id) is None:
+        raise HTTPException(status_code=422, detail="tuning profile not found")
 
 
 _PROFILE_FIELDS = ("id", "name", "fingerprint", "frag_enabled", "frag_packets",
@@ -149,63 +175,65 @@ def _settings_out(state) -> SettingsOut:
 
     def val(key: str) -> str:
         return m.get(key) or SETTINGS_DEFAULTS[key]
+
+    def num(key: str) -> int:
+        """A stored value that isn't a number falls back to the default instead of raising.
+
+        Values are range-checked on every write path now, so a bad one means a hand-edited DB or
+        a document restored by an older build. int()-ing it here used to make this endpoint —
+        and with it the whole Settings screen, the one place the operator could fix it — 500
+        for good; the panel has to stay reachable enough to repair itself."""
+        return safe_int(val(key), int(SETTINGS_DEFAULTS[key]), key)
     return SettingsOut(
         tunneled_fetch=val("tunneled_fetch") == "1",
+        subs_auto_switch=val("subs_auto_switch") == "1",
         routing_default_action=val("routing_default_action"),
         health_enabled=val("health_enabled") == "1",
         health_sweep_enabled=val("health_sweep_enabled") == "1",
-        health_interval=int(val("health_interval")),
-        health_active_interval=int(val("health_active_interval")),
-        health_hysteresis=int(val("health_hysteresis")),
+        health_interval=num("health_interval"),
+        health_active_interval=num("health_active_interval"),
+        health_hysteresis=num("health_hysteresis"),
         health_probe_url=val("health_probe_url"),
         failover_enabled=val("failover_enabled") == "1",
-        failover_cooldown=int(val("failover_cooldown")),
+        failover_cooldown=num("failover_cooldown"),
         stats_enabled=val("stats_enabled") == "1",
-        stats_api_port=int(val("stats_api_port")),
-        traffic_sample_ms=int(val("traffic_sample_ms")),
+        stats_api_port=num("stats_api_port"),
+        traffic_sample_ms=num("traffic_sample_ms"),
         dns_intercept=val("dns_intercept") == "1",
-        session_timeout_min=int(val("session_timeout_min")),
+        session_timeout_min=num("session_timeout_min"),
         auto_backup_enabled=val("auto_backup_enabled") == "1")
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
                  "dhcp_start", "dhcp_end", "dhcp_lease", "client_dns", "client_dns6")
-
-_IFACE_RE = re.compile(r"^[A-Za-z0-9._@:-]+$")     # iface / VLAN sub-iface names (e.g. eth0.2)
-_LEASE_RE = re.compile(r"^(infinite|\d+[smhd]?)$")  # dnsmasq lease: '3600', '12h', 'infinite'
+# Everything but segment_ip6: for these, "" is not a value the operator can mean. segment_ip6 is
+# genuinely clearable (empty = no static prefix / v6 off), so an empty one is kept, not rejected.
+_NET_REQUIRED = tuple(f for f in _NET_EDITABLE if f != "segment_ip6")
 
 
 def _validate_net_fields(data: dict) -> None:
     """Reject any segment/DHCP/DNS value that isn't well-formed BEFORE it reaches set_setting and,
-    from there, the nft/dnsmasq render (config-injection + broken-segment guard). Raises 422."""
-    def bad(field: str, why: str):
-        raise HTTPException(status_code=422, detail=f"{field}: {why}")
+    from there, the nft/dnsmasq render (config-injection + broken-segment guard). Raises 422.
 
-    if "segment_iface" in data:
-        v = (data["segment_iface"] or "").strip()
-        if not v or not _IFACE_RE.match(v):
-            bad("segment_iface", "must be a plain interface name")
-        data["segment_iface"] = v
-    for f in ("segment_ip", "dhcp_start", "dhcp_end", "client_dns"):
-        if f in data and (data[f] or "").strip():
-            v = data[f].strip()
-            try:
-                ipaddress.IPv4Address(v)
-            except ValueError:
-                bad(f, "must be an IPv4 address")
-            data[f] = v
-    if "client_dns6" in data and (data["client_dns6"] or "").strip():
-        v = data["client_dns6"].strip()
-        try:
-            ipaddress.IPv6Address(v)
-        except ValueError:
-            bad("client_dns6", "must be an IPv6 address")
-        data["client_dns6"] = v
-    if "dhcp_lease" in data and (data["dhcp_lease"] or "").strip():
-        v = data["dhcp_lease"].strip()
-        if not _LEASE_RE.match(v):
-            bad("dhcp_lease", "must be a lease time like '12h', '3600', or 'infinite'")
-        data["dhcp_lease"] = v
+    The rules themselves live in `config.validate_net_settings`, shared with restore: these
+    values are equally settable from a backup document, and the local copy this used to keep
+    accepted a trailing newline (`re.match(r'…$', 'eth0\\n')` succeeds) that the shared
+    `fullmatch` does not. Normalized values are merged back so what is stored is what was checked.
+
+    Strip first, then reject. `validate_net_settings` reads an all-whitespace value as absent and
+    returns nothing for it, so `" "` used to skip validation entirely and be stored verbatim —
+    and `net_control.plan` treats `" "` as a set value, so that one space silently displaced the
+    working default. Schema `min_length=1` doesn't catch it either: a space is one character."""
+    for field in _NET_EDITABLE:
+        value = data.get(field)
+        if isinstance(value, str):
+            data[field] = value.strip()
+            if not data[field] and field in _NET_REQUIRED:
+                raise HTTPException(status_code=422, detail=f"{field}: must not be blank")
+    try:
+        data.update(validate_net_settings(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _network_out(state) -> NetworkOut:
@@ -282,8 +310,11 @@ def setup_create(body: SetupIn, request: Request,
         except OSError:
             pass
     if expected:
-        import hmac
-        if not x_bootstrap_token or not hmac.compare_digest(expected, x_bootstrap_token):
+        # Compare as bytes: Starlette decodes headers as latin-1 and compare_digest raises
+        # TypeError on a non-ASCII str, which would turn a garbage bootstrap header into a 500
+        # on this unauthenticated route instead of the 403 it deserves.
+        if not x_bootstrap_token or not hmac.compare_digest(
+                expected.encode("utf-8"), x_bootstrap_token.encode("utf-8")):
             raise HTTPException(status_code=403, detail="bad bootstrap token")
     elif not state.settings.loopback_bind:
         raise HTTPException(status_code=503, detail="bootstrap token unavailable")
@@ -305,6 +336,29 @@ _login_guard_lock = threading.Lock()   # sync handlers run in a threadpool → s
 _login_kdf_slots = threading.BoundedSemaphore(2)
 
 
+def _evict_login_guard(guards: dict, now: float) -> bool:
+    """Free at least one bucket slot. True when a slot is available afterwards.
+
+    Preference order matters. Buckets carrying no state (not locked out, not mid-count) are
+    dropped first — an attacker must not be able to clear their own failure count by flooding
+    the table from other addresses. Only when every bucket carries state do we fall back to
+    evicting the least-recently-seen one: buckets sitting at count 1..4 have `until == 0.0` and
+    were never eligible for the state-free sweep, so a table filled with them used to wedge at
+    the cap and blanket-429 every untracked client until the process restarted. A bucket with a
+    request in flight is never evicted (its handler still holds the reference)."""
+    idle = [key for key, g in guards.items()
+            if g["until"] <= now and g["count"] == 0 and g.get("in_flight", 0) == 0]
+    if idle:
+        for key in idle:
+            del guards[key]
+        return True
+    stale = [(g.get("seen", 0.0), key) for key, g in guards.items() if g.get("in_flight", 0) == 0]
+    if not stale:
+        return False
+    del guards[min(stale)[1]]
+    return True
+
+
 @router.post("/login")
 def login(body: LoginIn, request: Request) -> dict:
     state = get_state(request)
@@ -314,15 +368,12 @@ def login(body: LoginIn, request: Request) -> dict:
     # Serialize the whole read-modify-write: concurrent requests from one IP would otherwise race
     # on guard["count"] (lost updates) and let an attacker exceed the 5-attempt lockout.
     with _login_guard_lock:
-        if len(guards) >= _LOGIN_GUARD_MAX:         # only prune under memory pressure
-            # drop idle buckets (not mid-count, not currently locked) — never a counting bucket,
-            # or an attacker could reset their own count by flooding other IPs.
-            for k in [k for k, g in guards.items()
-                      if g["until"] <= now and g["count"] == 0 and g.get("in_flight", 0) == 0]:
-                del guards[k]
-            if len(guards) >= _LOGIN_GUARD_MAX and ip not in guards:
+        # Only prune under memory pressure, and only when this client actually needs a new slot.
+        if len(guards) >= _LOGIN_GUARD_MAX and ip not in guards:
+            if not _evict_login_guard(guards, now):
                 raise HTTPException(status_code=429, detail="too many clients — try again shortly")
-        guard = guards.setdefault(ip, {"count": 0, "until": 0.0, "in_flight": 0})
+        guard = guards.setdefault(ip, {"count": 0, "until": 0.0, "in_flight": 0, "seen": now})
+        guard["seen"] = now                      # recency for the LRU fallback above
         locked = guard["until"] > now
         saturated = guard.get("in_flight", 0) >= 5
         if not locked and not saturated:
@@ -408,7 +459,12 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
                      xray_state=state.supervisor.state(),
                      active_since=int(since) if since else None,
                      last_failover_at=float(last_fo) if last_fo else None,
-                     prev_active_node_id=int(prev) if prev else None,  # U2: gate the Rollback button
+                     prev_active_node_id=int(prev) if prev else None,
+                     # The honest answer to "would Rollback work": read-only, no side effects.
+                     # A revocation intentionally invalidates the pairing, so prev_active_node_id
+                     # can name a node while the rollback itself is refused.
+                     rollback_available=ConfigManager(
+                         state.settings, xray_bin=state.xray_bin).rollback_available(),
                      server_now=now,   # D4: client offsets freshness/uptime by this
                      tunnel_online=tunnel_online,
                      active_health_fresh=health["active_health_fresh"],
@@ -476,7 +532,12 @@ def add_node(body: NodeIn, request: Request,
                 sni=body.sni, public_key=body.public_key, short_id=body.short_id,
                 fingerprint=body.fingerprint, path=body.path, host=body.host,
                 mode=body.mode, alpn=body.alpn, note=body.note)
-    nid = state.store.add_node(node)
+    # `uq_nodes_identity` makes a re-add of the same server a constraint violation, not a crash:
+    # report the conflict instead of letting sqlite3.IntegrityError surface as an opaque 500.
+    try:
+        nid = state.store.add_node(node)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="a node with this identity already exists") from exc
     saved = state.store.get_node(nid)
     if saved is None:  # unreachable: lastrowid is valid right after a successful insert
         raise HTTPException(status_code=500, detail="node vanished after insert")
@@ -495,11 +556,18 @@ def update_node(node_id: int, body: NodeUpdate, request: Request,
             status_code=409, detail="disconnect the active node before editing it")
     # exclude_unset (not exclude_none) so an explicit `tuning_profile_id: null` clears
     # the assignment (→ inherit the global default) rather than being dropped.
-    for k, v in body.model_dump(exclude_unset=True).items():
+    patch = body.model_dump(exclude_unset=True)
+    if "tuning_profile_id" in patch:
+        _check_profile_id(state.store, patch["tuning_profile_id"])
+    for k, v in patch.items():
         setattr(node, k, v)
     # single source of truth: re-derive network/security/flow from the edited fields
     node.normalize()
-    state.store.update_node(node)
+    try:
+        state.store.update_node(node)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409, detail="a node with this identity already exists") from exc
     return _node_out(state.store.get_node(node_id))
 
 
@@ -534,12 +602,25 @@ def apply(node_id: int, request: Request,
 @router.post("/nodes/{node_id}/disconnect")
 def disconnect(node_id: int, request: Request,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
-    """Disconnect the active node and clear the active selection. The net rules come down
-    via stop_net: with the kill-switch ON the fail-closed leak-guard stays in place (so
-    'disconnect' doesn't leak client→WAN — A1); with it off, clients fall back to direct.
-    xray is left running — the sidebar toggle is the only thing that stops xray-core."""
+    """Disconnect `node_id` — which must be the currently active node — and clear the active
+    selection. The net rules come down via stop_net: with the kill-switch ON the fail-closed
+    leak-guard stays in place (so 'disconnect' doesn't leak client→WAN — A1); with it off, clients
+    fall back to direct. xray is left running — the sidebar toggle is the only thing that stops
+    xray-core.
+
+    The path id is checked rather than ignored. There is only ever one active node, so the handler
+    can only ever act on that one; accepting any id and reporting success let a stale UI (or an
+    automation racing a failover) ask to disconnect node A, silently take down node B, and be told
+    it worked. The id is read inside apply_lock so the answer can't be invalidated by a failover
+    switching nodes between the check and the teardown."""
     state = get_state(request)
     with apply_lock:   # don't race a concurrent apply / failover tick (NR1)
+        active = state.store.get_setting("active_node_id")
+        if not active:
+            raise HTTPException(status_code=409, detail="no node is connected")
+        if active != str(node_id):
+            raise HTTPException(
+                status_code=409, detail=f"node {node_id} is not connected (active is {active})")
         result = stop_net(state.settings, state.net, state.store)
         if not result.ok:
             raise HTTPException(status_code=502, detail=result.error or "network stop failed")
@@ -556,11 +637,13 @@ def disconnect(node_id: int, request: Request,
 def xray_start(request: Request,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
     """Start xray-core. If a node is active, bring its tunnel back up (config + net);
-    otherwise just start the process."""
+    otherwise just start the process — on the config already on disk, which is why that branch
+    checks the file's remote-access grants against the store first (see `_rw_guard_start`)."""
     state = get_state(request)
     with apply_lock:   # reapply_active_node re-enters the lock (RLock); guards plain start()
         res = reapply_active_node(state)
         if res is None:
+            _rw_guard_start(state)
             state.supervisor.start()
         elif not res.ok:
             raise HTTPException(status_code=502, detail=res.error)
@@ -944,7 +1027,16 @@ def get_logs(request: Request, source: str = "xray-error", lines: int = 200,
 # --- backup / restore ---
 @router.get("/backup")
 def get_backup(request: Request, _: None = Depends(require_auth)) -> dict:
-    return backup_mod.export_state(get_state(request).store)
+    doc = backup_mod.export_state(get_state(request).store)
+    # Hand back nothing the panel's own restore would refuse. A downloaded file that turns out to
+    # be unrestorable is discovered during a recovery, when it is the only copy left; a 500 here
+    # is discovered now, while the state it describes is still live and fixable in the UI.
+    try:
+        backup_mod.validate_document(doc)
+    except ValueError as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"stored state is not restorable: {exc}") from exc
+    return doc
 
 
 @router.post("/restore")
@@ -960,7 +1052,10 @@ def post_restore(body: dict, request: Request,
         raise HTTPException(status_code=400, detail=f"invalid backup: {exc}")
     if not result.ok:
         raise HTTPException(status_code=502, detail=result.error)
-    return {"ok": True, "restored": result.summary, "runtime": "disconnected"}
+    # The snapshot of what this restore replaced — name it, or the operator has no way to know
+    # an undo exists.
+    return {"ok": True, "restored": result.summary, "runtime": "disconnected",
+            "pre_restore_snapshot": result.snapshot}
 
 
 # --- subscriptions ---
@@ -975,6 +1070,8 @@ def list_subs(request: Request, _: None = Depends(require_auth)) -> list[Subscri
 def add_sub(body: SubscriptionIn, request: Request,
             _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> SubscriptionOut:
     state = get_state(request)
+    _check_sub_url(body.url)
+    _check_profile_id(state.store, body.default_profile_id)
     injection = body.injection if body.injection is not None else default_injection()
     sid = state.store.add_subscription(Subscription(
         id=None, name=body.name, url=body.url, injection=injection,
@@ -992,7 +1089,12 @@ def update_sub(sub_id: int, body: SubscriptionPatch, request: Request,
         raise HTTPException(status_code=404, detail="subscription not found")
     # exclude_unset so an explicit `default_profile_id: null` clears the inherited profile
     # rather than being dropped (mirrors update_node).
-    for k, v in body.model_dump(exclude_unset=True).items():
+    patch = body.model_dump(exclude_unset=True)
+    if patch.get("url") is not None and patch["url"] != sub.url:
+        _check_sub_url(patch["url"])
+    if "default_profile_id" in patch:
+        _check_profile_id(state.store, patch["default_profile_id"])
+    for k, v in patch.items():
         setattr(sub, k, v)
     sub.interval_sec = _clamp_interval(sub.interval_sec)
     state.store.update_subscription(sub)
@@ -1003,6 +1105,10 @@ def update_sub(sub_id: int, body: SubscriptionPatch, request: Request,
 def delete_sub(sub_id: int, request: Request,
                _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
     state = get_state(request)
+    # 404 on a missing id, like delete_node / delete_token / delete_rw_client. Reporting success
+    # for an id that was never there hides a stale UI or a wrong id from whoever called.
+    if state.store.get_subscription(sub_id) is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
     state.store.delete_subscription(sub_id)
     return {"ok": True}
 
@@ -1098,8 +1204,7 @@ def validate_node(body: NodeValidateIn, request: Request,
                 sni=body.sni, public_key=body.public_key, short_id=body.short_id,
                 fingerprint=body.fingerprint, path=body.path, host=body.host,
                 mode=body.mode, alpn=body.alpn, tuning_profile_id=body.tuning_profile_id)
-    if body.tuning_profile_id is not None and state.store.get_profile(body.tuning_profile_id) is None:
-        raise HTTPException(status_code=422, detail="tuning profile not found")
+    _check_profile_id(state.store, body.tuning_profile_id)
     cfg = build_node_config(node, state.settings, state.store)
     ok, out = validate_config(cfg, state.xray_bin or state.settings.xray_bin)
     return NodeValidateOut(ok=ok, error="" if ok else out)
@@ -1117,15 +1222,28 @@ def import_nodes(body: ImportNodesIn, request: Request,
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
     added = 0
-    for p in parsed[:service.MAX_NODES]:
-        if state.store.get_node_by_identity(
-            None, p.address, p.port, p.uuid, p.path, p.sni, p.short_id) is not None:
-            continue
-        p.id = None
-        p.subscription_id = None
-        p.stale = False
-        state.store.add_node(p)
-        added += 1
+    # One transaction for the whole batch: these inserts used to autocommit one at a time, so a
+    # failure partway through left the earlier nodes behind and still answered 500 — an import the
+    # operator was told had failed had in fact half-happened. All or nothing now.
+    #
+    # And clamp every parsed node, the same way a subscription refresh does (subs/reconcile) —
+    # this is the other door untrusted feed strings come through, and unbounded ones bloat the DB
+    # and every config render from here on.
+    try:
+        with state.store.transaction():
+            for p in parsed[:service.MAX_NODES]:
+                clamp_node_fields(p)
+                if state.store.get_node_by_identity(
+                    None, p.address, p.port, p.uuid, p.path, p.sni, p.short_id) is not None:
+                    continue
+                p.id = None
+                p.subscription_id = None
+                p.stale = False
+                state.store.add_node(p)
+                added += 1
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"import rejected, nothing was added: {exc}") from exc
     return ImportNodesOut(added=added, total=len(parsed), format=fmt)
 
 
@@ -1154,7 +1272,7 @@ def get_settings(request: Request, _: None = Depends(require_auth)) -> SettingsO
 # Settings that are baked into the xray config → changing them needs a live re-apply.
 _SETTINGS_CONFIG_KEYS = {"tunneled_fetch", "dns_intercept", "stats_enabled", "stats_api_port"}
 # Settings the Settings screen owns (reset target — excludes routing-owned keys).
-_SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled",
+_SETTINGS_RESET_KEYS = ("tunneled_fetch", "subs_auto_switch", "dns_intercept", "health_enabled",
                         "health_sweep_enabled", "health_interval", "health_active_interval",
                         "health_hysteresis", "health_probe_url", "failover_enabled",
                         "failover_cooldown", "stats_enabled", "stats_api_port",
@@ -1162,26 +1280,17 @@ _SETTINGS_RESET_KEYS = ("tunneled_fetch", "dns_intercept", "health_enabled",
 
 
 def _validate_settings(state, data: dict) -> None:
-    """SC2: reject out-of-range values that would break the runtime (busy loops, bad ports)."""
-    # health_active_interval spins up a throwaway xray each time, so its floor is well above
-    # zero — a few seconds would mean a permanent probe process.
-    floors = {"health_interval": 60, "health_active_interval": 10, "traffic_sample_ms": 500,
-              "health_hysteresis": 1, "failover_cooldown": 0, "session_timeout_min": 0}
-    for k, lo in floors.items():
-        if isinstance(data.get(k), int) and data[k] < lo:
-            raise HTTPException(status_code=422, detail=f"{k} must be >= {lo}")
-    if "stats_api_port" in data:
-        p = data["stats_api_port"]
-        if not (1 <= p <= 65535):
-            raise HTTPException(status_code=422, detail="stats_api_port must be 1..65535")
-        if p in (state.settings.tproxy_port, state.settings.local_proxy_port):
-            raise HTTPException(status_code=422, detail="stats_api_port collides with a system port")
-    if "traffic_sample_ms" in data and data["traffic_sample_ms"] > 60_000:
-        raise HTTPException(status_code=422, detail="traffic_sample_ms must be <= 60000")
-    # routing_default_action feeds straight into the built xray config; an out-of-set value would
-    # produce a config xray rejects on the next apply (a self-inflicted outage bypassing /routing).
-    if "routing_default_action" in data and data["routing_default_action"] not in ("direct", "proxy", "block"):
-        raise HTTPException(status_code=422, detail="routing_default_action must be direct/proxy/block")
+    """SC2: reject out-of-range values that would break the runtime (busy loops, bad ports).
+
+    The bounds live in `config.SETTINGS_INT_BOUNDS` / `SETTINGS_CHOICES` and are shared with the
+    backup validator, because the same keys are equally writable by a restored document — which
+    used to skip these checks entirely.
+    """
+    try:
+        validate_setting_values(
+            data, reserved_ports=(state.settings.tproxy_port, state.settings.local_proxy_port))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.put("/settings", response_model=SettingsOut)
@@ -1239,6 +1348,104 @@ def diagnostics(request: Request, _: None = Depends(require_auth)) -> Diagnostic
                           stats_fail_count=stats_status.get("fail_count", 0))
 
 
+# A rolled-back host-provisioning pass leaves the kernel state it already installed behind. The
+# candidate is recorded here, outside the DB transaction, so the rollback (or a later boot, after
+# a crash between the two) can still find it. Never returned by the API.
+_PROVISION_UNDO_KEY = "pending_provision_undo"
+
+
+def _managed_host_state(store) -> dict:
+    """The interface and addresses the panel currently claims ownership of."""
+    return {"iface": store.get_setting("managed_segment_iface") or "",
+            "addr4": store.get_setting("managed_segment_addr4") or "",
+            "addr6": store.get_setting("managed_segment_addr6") or ""}
+
+
+def _link_present(state, iface: str) -> bool:
+    """`ip link show` through the backend's own seam. Anything but a clean exit ⇒ not there."""
+    from pi_gw_panel.net_control.provision import _link_exists
+    run = getattr(state.net, "_run", None)
+    if run is None:
+        return True
+    try:
+        return _link_exists(iface, run)
+    except Exception:
+        return False
+
+
+def _provision_candidate(state, data: dict) -> dict:
+    """What a host-provisioning pass for THIS request may put on the host.
+
+    `host_provision` runs inside the DB transaction and records what it installed through the
+    same `set_setting` calls, so a later failure rolls that ownership metadata back while the
+    address and the VLAN link it created stay on the host. Both the recovery pass and the
+    readiness check then read the RESTORED metadata, which names the old interface — so when
+    `segment_iface` changed, the orphan is invisible to the panel and sits outside the nft
+    guard, which is scoped to that same old interface. Recording the candidate outside the
+    transaction is what lets the rollback still find it.
+    """
+    if not hasattr(state.net, "_run"):      # linux-backend seam; the dry-run one touches no host
+        return {}
+    from pi_gw_panel.net_control.provision import host_addr6, parse_vlan
+    plan = NetPlan.from_store(state.store, state.settings)
+    iface = data.get("segment_iface") or plan.segment_iface
+    ip = data.get("segment_ip") or plan.segment_ip
+    ip6 = data.get("segment_ip6", plan.segment_ip6)
+    return {
+        "iface": iface,
+        "addr4": f"{ip}/24" if ip else "",
+        # `auto`/blank resolve to a delegated or generated prefix inside the pass itself, so the
+        # candidate v6 is knowable up front only for a static one. What the pass actually
+        # claimed is read back straight afterwards and covers the rest for an in-process failure.
+        "addr6": (host_addr6(ip6) or "") if plan.ipv6_enabled else "",
+        "vlan": parse_vlan(iface)[1] is not None,
+        "link_existed": _link_present(state, iface),
+    }
+
+
+def _undo_provision_candidate(state, candidate: dict, installed: dict) -> list[str]:
+    """Remove host state a rolled-back provisioning pass left behind. Returns what it removed.
+
+    Runs AFTER the recovery pass, so the ownership keys already name the state we went back to:
+    anything the candidate installed that is not in that set is an orphan no later pass would
+    look at. Needed even when the interface did not change — `ip addr replace` replaces one
+    address and leaves any other in place — though there the leftover is at least visible to the
+    readiness drift check, while one on a candidate interface is visible to nothing.
+    """
+    run = getattr(state.net, "_run", None)
+    if run is None or not candidate:
+        return []
+    from pi_gw_panel.net_control.provision import _delete_owned
+    restored = _managed_host_state(state.store)
+    keep = {(restored["iface"], restored["addr4"]), (restored["iface"], restored["addr6"])}
+    iface = candidate.get("iface") or ""
+    done: list[str] = []
+    # A VLAN link this pass created carries every address that went onto it, so dropping the
+    # link takes the addresses with it. Only ever a link the panel added: one that already
+    # existed, or that the restored state is using, is left alone.
+    if (iface and candidate.get("vlan") and not candidate.get("link_existed")
+            and iface != restored["iface"] and _link_present(state, iface)):
+        try:
+            run(["ip", "link", "delete", iface])
+            return [f"removed the orphaned candidate link {iface}"]
+        except Exception as exc:
+            done.append(f"removing the orphaned candidate link {iface} failed: {exc}")
+    seen: set[tuple[str, str]] = set()
+    for pair in ((iface, candidate.get("addr4") or ""), (iface, candidate.get("addr6") or ""),
+                 (installed.get("iface") or "", installed.get("addr4") or ""),
+                 (installed.get("iface") or "", installed.get("addr6") or "")):
+        if not all(pair) or pair in keep or pair in seen:
+            continue
+        seen.add(pair)
+        try:
+            _delete_owned(pair[1], pair[0], ipv6=":" in pair[1], run=run)
+            done.append(f"removed the orphaned candidate address {pair[1]} from {pair[0]}")
+        except Exception as exc:
+            done.append(f"removing the orphaned candidate address {pair[1]} from {pair[0]} "
+                        f"failed: {exc}")
+    return done
+
+
 # --- network (editable Pi net config + kill-switch + live status + router guidance) ---
 @router.get("/network", response_model=NetworkOut)
 def get_network(request: Request, _: None = Depends(require_auth)) -> NetworkOut:
@@ -1250,17 +1457,6 @@ def put_network(body: NetworkIn, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NetworkOut:
     state = get_state(request)
     data = body.model_dump(exclude_none=True)
-    if "segment_ip6" in data:                       # F: validate before it can reach the nft render
-        v6 = (data["segment_ip6"] or "").strip()
-        if v6 and v6.lower() != "auto":
-            try:
-                network = ipaddress.IPv6Network(v6, strict=False)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=422, detail="segment_ip6 must be an IPv6 /64 or 'auto'") from exc
-            if network.prefixlen != 64:
-                raise HTTPException(status_code=422, detail="segment_ip6 must use a /64 prefix")
-            data["segment_ip6"] = str(network)
     # These values are interpolated verbatim into the nft ruleset and dnsmasq.conf; a newline/quote
     # would inject arbitrary nft rules or dnsmasq directives (DNS-leak `server=`, kill-switch removal),
     # and a merely malformed value silently breaks the live segment. Validate strictly at the boundary.
@@ -1269,6 +1465,12 @@ def put_network(body: NetworkIn, request: Request,
     ipv6_changed = False
     running_active = False
     with apply_lock:
+        # Committed OUTSIDE the transaction on purpose: a record that rolls back with the
+        # transaction it is meant to clean up after would never be readable when it is needed.
+        candidate = _provision_candidate(state, data)
+        if candidate:
+            state.store.set_setting(_PROVISION_UNDO_KEY, json.dumps(candidate))
+        installed: dict = {}
         try:
             with state.store.transaction():
                 for k in _NET_EDITABLE:
@@ -1299,6 +1501,9 @@ def put_network(body: NetworkIn, request: Request,
                             state.store, "ipv6", "enabled" if on6 else "disabled")
 
                 provision_result = host_provision(state)
+                # Read back before anything can roll it away: this is exactly what the pass put
+                # on the host, including the v6 prefix only it could resolve.
+                installed = _managed_host_state(state.store)
                 if getattr(provision_result, "ok", True) is False:
                     raise RuntimeError(
                         f"host provisioning failed: {provision_result.error or 'unknown error'}")
@@ -1322,6 +1527,11 @@ def put_network(body: NetworkIn, request: Request,
                     recovery.append(restored_host.error or "host provisioning restore failed")
             except Exception as restore_exc:
                 recovery.append(f"host provisioning restore raised: {restore_exc}")
+            # The restore reconciles the OLD interface only, so whatever the candidate pass put
+            # somewhere else has to be named and removed explicitly.
+            recovery.extend(_undo_provision_candidate(state, candidate, installed))
+            if candidate:
+                state.store.set_setting(_PROVISION_UNDO_KEY, "")
             try:
                 if ipv6_changed and running_active:
                     restored_runtime = reapply_active_node(state)
@@ -1337,6 +1547,8 @@ def put_network(body: NetworkIn, request: Request,
             if recovery:
                 detail = f"{detail}; recovery: {'; '.join(recovery)}"
             raise HTTPException(status_code=502, detail=detail) from exc
+        if candidate:                       # committed, so nothing is left pointing at an undo
+            state.store.set_setting(_PROVISION_UNDO_KEY, "")
     return _network_out(state)
 
 
@@ -1392,7 +1604,58 @@ def _rw_nets(state) -> list[str]:
     return override or _rw_default_nets(state)
 
 
-def _rw_out(state, *, live: bool | None = None) -> RwOut:
+def _rw_credentials(store) -> dict:
+    """Everything that decides WHO the running inbound accepts and WHERE it accepts them.
+
+    Snapshotted before and after a save so the narrowing test below reads the values that were
+    actually stored, instead of a hand-kept list of "fields that count" which drifts the moment
+    a new one is added.
+    """
+    def get(key: str) -> str:
+        value = store.get_setting(key)
+        return rw_mod.DEFAULTS.get(key, "") if value is None else value
+
+    def port(raw: str) -> str:
+        try:
+            return str(rw_mod.validate_port(raw))
+        except ValueError:                      # malformed stored value: compare it verbatim
+            return raw.strip()
+
+    return {
+        "enabled": get("rw_enabled") == "1",
+        "port": port(get("rw_port")),
+        # Lowercased on purpose: Reality matches short ids by BYTES and SNI case-insensitively,
+        # so `AB12` → `ab12` is the same credential, not a rotation.
+        "short_ids": {s.lower() for s in rw_mod.parse_csv(get("rw_short_ids"))},
+        "server_names": {n.lower() for n in rw_mod.parse_csv(get("rw_server_names"))},
+        "private_key": (store.get_setting("rw_private_key") or "").strip(),
+    }
+
+
+def _rw_narrows(before: dict, after: dict) -> bool:
+    """Whether a save TAKES AWAY access the live inbound was granting.
+
+    Every credential counts, not just the private key. Rotating or dropping a short id, dropping
+    a server name, and moving the port each cut off a client that can connect right now — and
+    rotating a short id is the most natural thing an operator reaches for after losing a device.
+    Misclassifying one of those as a widening change is not cosmetic: it takes the "stored, and
+    picked up on the next connect" path, which with no active node leaves the running inbound
+    accepting the very credential the operator just revoked.
+
+    Adding a short id or a server name grants and never revokes, so a superset is not a
+    narrowing. `before` with no key granted nothing at all — resolve() emits no inbound without
+    one — so setting the first key is a grant, not a rotation.
+    """
+    if not before["enabled"] or not before["private_key"]:
+        return False
+    return (not after["enabled"]
+            or after["private_key"] != before["private_key"]
+            or after["port"] != before["port"]
+            or not before["short_ids"] <= after["short_ids"]
+            or not before["server_names"] <= after["server_names"])
+
+
+def _rw_out(state, *, revocation: str = "") -> RwOut:
     store = state.store
 
     def get(key: str) -> str:
@@ -1425,24 +1688,526 @@ def _rw_out(state, *, live: bool | None = None) -> RwOut:
         routed_nets=_rw_nets(state),
         routed_nets_override=get("rw_routed_nets"),
         clients=[RwClientOut(**c) for c in rw_mod.get_clients(store)],
-        live=bool(store.get_setting("active_node_id")) if live is None else live,
+        live=_rw_serving(state),
+        revocation=revocation,
     )
 
 
-def _rw_apply(state) -> bool:
-    """Rebuild+apply so a change reaches the live inbound. Returns whether it actually did.
+def _rw_apply(state) -> None:
+    """Rebuild+apply so a change reaches the live inbound.
 
-    With no active node there is nothing to build a config from, so the settings are stored
-    and picked up on the next connect — reported honestly as live=False rather than pretended.
-    The inbound itself does NOT need a reachable node to serve LAN access: `private → direct`
-    is independent of the proxy outbound, and disconnect leaves xray running.
+    With no active node there is nothing to build a config from, so the settings are stored and
+    picked up on the next connect. The inbound itself does NOT need a reachable node to serve
+    LAN access: `private → direct` is independent of the proxy outbound, and disconnect leaves
+    xray running — which is exactly why the reported liveness is read back off the running
+    config (see _rw_serving) instead of inferred from whether this rebuilt anything.
+
+    Only correct for changes that GRANT or widen access. A revocation must go through
+    _rw_revoke — "stored, picked up later" is a silent no-op when the point was to cut a lost
+    device off right now.
     """
     res = reapply_active_node(state)
-    if res is None:
-        return False
-    if not res.ok:
+    if res is not None and not res.ok:
         raise HTTPException(status_code=502, detail=res.error)
-    return True
+
+
+def _rw_rebuild_node(state):
+    """The node a revocation must rebuild the on-disk config from WITHOUT reconnecting.
+
+    The active one when a node is selected — `/xray/stop` keeps the selection, so that is
+    exactly what the next `/xray/start` rebuilds the file from, and writing it now only makes
+    the file agree with itself sooner. Otherwise the node the last apply ran from:
+    `disconnect` records it and leaves xray running on that very config, so it is what the
+    live config already describes.
+
+    Only ever used to WRITE a config; deciding whether the running process is told to pick
+    that config up is a separate question with a separate answer (see _rw_revoke).
+    """
+    for key in ("active_node_id", "prev_active_node_id"):
+        raw = state.store.get_setting(key)
+        if not raw:
+            continue
+        try:
+            node = state.store.get_node(int(raw))
+        except (TypeError, ValueError):
+            node = None
+        if node is not None:
+            return node
+    return None
+
+
+def _rw_sanitized_config(state) -> dict | None:
+    """The config ON DISK with its remote-access inbound brought in line with what the store
+    says AFTER the revocation — or None when the live file cannot be read as an xray config.
+
+    REMOVING something from a config needs no node. Rebuilding from a node is a whole-config
+    render and therefore needs one; requiring it made "the operator deleted the node after
+    disconnecting" — the ordinary aftermath of losing a device — a state where the revocation
+    could not clean the file at all, so the credential sat in it waiting for the next bare
+    `/xray/start` to serve it again. Editing the file we already have has no such precondition.
+
+    The credentials are exactly one object: `rw_inbound_block` is where every remote-access
+    credential lives, so replacing it with what `resolve()` now returns removes the revoked
+    client, the rotated short id, the moved port and the dropped server name alike — whatever the
+    store no longer grants. `resolve()` returning None means there is nothing left to serve
+    (feature off, key gone, no enabled clients) and the inbound is dropped outright.
+
+    The inbound is not the only thing the feature owns, though, and reconciling it alone left
+    three live fragments behind (see `_rw_reconcile_lan`): the `dns.hosts` mapping, the
+    `direct-lan` outbound, and the exact-domain rule pointing at it. Two consequences, both
+    real: a host removal shipped together with a credential rotation reported success while the
+    old name→address mapping stayed live, and turning remote access OFF left the mapped names
+    still routed out an untunnelled freedom outbound — for TPROXY clients too, since that rule
+    is not scoped to `rw-in`. Same family as the `.com` suffix leak. So the reconcile covers
+    every fragment the builder emits for this feature, and nothing else: still a surgical
+    removal of access, not a re-render that would drag in unrelated store changes the operator
+    never asked to apply.
+
+    Malformed stored settings resolve to None rather than raising — the same "degrade to feature
+    off" rule the apply path uses, which here is also the fail-safe direction.
+
+    Returns a config to be written through ConfigManager (validated there); None when the live
+    file is missing, unparseable, or not shaped like a config, since then we cannot know what
+    removing the inbound would leave behind. `_rw_write_config` falls back to a node rebuild for
+    exactly that case — a file we cannot read is the one thing a rebuild is still better at.
+    """
+    try:
+        with open(state.settings.config_path) as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            return None
+        inbounds = cfg["inbounds"]
+        if not isinstance(inbounds, list) or not all(isinstance(i, dict) for i in inbounds):
+            return None
+    except Exception:
+        return None
+    try:
+        rw = rw_mod.resolve(state.store)
+    except ValueError:
+        rw = None
+    kept = [i for i in inbounds if i.get("tag") != RW_TAG]
+    if rw is not None:
+        kept.append(rw_inbound_block(rw))
+    else:
+        _rw_drop_routing_refs(cfg)
+    cfg["inbounds"] = kept
+    _rw_reconcile_lan(cfg, (rw or {}).get("hosts") or {}, state.settings)
+    return cfg
+
+
+def _rw_reconcile_lan(cfg, hosts: dict, settings) -> None:
+    """Bring the LAN-by-name fragments in line with `hosts`, in place.
+
+    `dns.hosts`, the `direct-lan` outbound and the one exact-domain rule naming it are emitted
+    only by the remote-access feature and only together, so reconciling them is the same job as
+    reconciling the inbound — and skipping it was not cosmetic. The rule is NOT scoped to
+    `rw-in`, so it steers tproxy traffic as well: with remote access turned off, a stale
+    `full:nas.example.com → direct-lan` kept sending that name out a plain freedom outbound for
+    every LAN client, past the tunnel. And a mapping removed in the same save as a credential
+    rotation stayed live while the response said `rebuilt`.
+
+    Removal first and unconditionally, re-emission only when there is something to emit — so
+    every exit from here either matches what `build_config` would produce for `hosts` or grants
+    strictly less. The rule keeps its position when one was already there (ordering against the
+    user's own rules is not this function's to change) and otherwise lands where the builder puts
+    it: immediately before the catch-all, which is the only position where an exact-name rule can
+    still match.
+
+    A `dns` block that is not an object is left alone rather than replaced: `dns.servers` carries
+    the encrypted resolver, and inventing a dns block here could silently drop it. The mapping is
+    then simply not re-emitted — less access, never more.
+    """
+    outs = cfg.get("outbounds")
+    if isinstance(outs, list):
+        cfg["outbounds"] = [o for o in outs
+                            if not (isinstance(o, dict) and o.get("tag") == DIRECT_LAN_TAG)]
+    dns = cfg.get("dns")
+    if isinstance(dns, dict):
+        dns.pop("hosts", None)
+    routing = cfg.get("routing")
+    rules = routing.get("rules") if isinstance(routing, dict) else None
+    at = None
+    if isinstance(rules, list):
+        keep = []
+        for rule in rules:
+            if isinstance(rule, dict) and rule.get("outboundTag") == DIRECT_LAN_TAG:
+                at = len(keep) if at is None else at
+                continue
+            keep.append(rule)
+        rules[:] = keep
+    # Nothing to map, or nowhere safe to say it: everything above already removed what was there.
+    if not hosts or not isinstance(dns, dict) or not isinstance(cfg.get("outbounds"), list):
+        return
+    dns["hosts"] = dict(hosts)
+    cfg["outbounds"].append(rw_lan_outbound(settings))
+    if isinstance(rules, list):
+        rules.insert(at if at is not None else max(0, len(rules) - 1), rw_lan_rule(hosts))
+
+
+def _rw_drop_routing_refs(cfg) -> None:
+    """Stop routing rules naming an `rw-in` that is no longer emitted, in place.
+
+    Cosmetic in xray (a rule matching a tag no inbound carries simply never fires) but not
+    cosmetic HERE: this config has to pass `xray -test`, and a sanitize that will not validate
+    is a revocation that does not happen. Leaving the reference out makes the result the same
+    shape build_config emits with the feature off — a shape that validates on every apply —
+    instead of one nothing else in the codebase ever produces.
+
+    A rule whose ONLY inbound was `rw-in` is left exactly as it is rather than emptied or
+    deleted: xray reads an empty `inboundTag` as "no inbound condition at all", so pruning the
+    last entry would silently WIDEN the rule from one inbound to every inbound. An untouched
+    rule that can never match is inert; a widened one is a routing change nobody asked for.
+    """
+    rules = cfg.get("routing", {}).get("rules") if isinstance(cfg.get("routing"), dict) else None
+    if not isinstance(rules, list):
+        return
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        tags = rule.get("inboundTag")
+        if isinstance(tags, list) and RW_TAG in tags and any(t != RW_TAG for t in tags):
+            rule["inboundTag"] = [t for t in tags if t != RW_TAG]
+
+
+def _rw_write_config(state) -> bool:
+    """Rewrite the live config so it no longer carries the revoked credential. Write ONLY —
+    nothing is reloaded, nothing is started. Returns whether the file was actually replaced.
+
+    This is the half of a revocation that is safe in every supervisor state, and separating it
+    from the reload is what lets the revocation be complete without ever bringing xray up.
+    ConfigManager.apply_irreversible() is already exactly this (validate → durably invalidate the
+    rollback pairing → atomic write; the reload has always been the caller's separate step in
+    apply_node too), so there is no second writer of config_path here — it stays the only one,
+    which is the property that keeps the on-disk config and the rollback provenance consistent.
+
+    `apply_irreversible` rather than `apply` because the ordinary path FILES the config it
+    replaces as the undo target and marks the pairing valid, which for a revocation means
+    publishing a promotable pre-revocation config for as long as it takes to invalidate it
+    afterwards. Here the pairing is never written at all.
+
+    Two ways to produce the clean config, tried in the order of what each can promise:
+
+      1. Sanitize the file that is there. Needs no node and no re-render, so it is the only one
+         available once the node has been deleted, and it changes nothing but the inbound.
+      2. Rebuild from the node still on file. Needs a node, but it does not need the live config
+         to be readable — so it is what repairs a missing or malformed file, and it is the
+         second chance when a sanitized config will not validate.
+
+    Either producing or writing a clean config can fail (an unreadable file with no node left to
+    rebuild from, a full disk, an `xray -test` that rejects the result). It fails safe rather
+    than raising: the file may still carry the credential, and the caller has to take that as a
+    failed revocation — not as a 500, and not as a success.
+    """
+    mgr = ConfigManager(state.settings, xray_bin=state.xray_bin)
+    node = _rw_rebuild_node(state)
+
+    def _sanitize():
+        return _rw_sanitized_config(state)
+
+    def _rebuild():
+        return None if node is None else build_node_config(node, state.settings, state.store)
+
+    for produce in (_sanitize, _rebuild):
+        try:
+            cfg = produce()
+            if cfg is None:
+                continue
+            ok, _out = mgr.apply_irreversible(cfg)
+        except Exception:
+            continue
+        if ok:
+            return True
+    return False
+
+
+def _rw_live_excess(state) -> bool:
+    """Whether the config ON DISK would hand out remote access the store does NOT grant.
+
+    The question a bare `/xray/start` has to ask before serving that file. Every other way the
+    config is served rebuilds it from the store first (`reapply_active_node` → `apply_node`), so
+    it agrees with the store by construction; the bare start — no active node, so nothing to
+    rebuild from — is a plain `supervisor.start()` on whatever the file happens to say. That is
+    the door every leak on this path has eventually gone through: a revocation that could not
+    write the file (both config producers rejected, a full disk, an `xray -test` failure) ends at
+    the stop, and the stop is exactly what the next start undoes. Checking here rather than in
+    the revocation covers all of them at once, including the ones not yet thought of — the file
+    is untrusted input to the start, whatever left it in that state.
+
+    SUBSET, not equality: a file listing fewer clients than the store grants is stale in the
+    harmless direction (the next apply widens it); one listing a client, short id, server name,
+    port or private key the store no longer grants is not. `rw_grants` derives both sides from
+    the block definition, so a credential added to the inbound is a credential compared here.
+
+    An unreadable or malformed file is NOT excess, deliberately — the opposite of the
+    `_rw_live_inbound` rule, and for a reason that inverts with it. There, xray is already
+    running on a config it loaded long ago and the file is not evidence about what is being
+    served. Here the file IS what is about to be loaded, and xray will not come up on something
+    it cannot parse — a config that cannot be served grants nothing, and refusing to start on it
+    would only take away the operator's ability to see the process fail.
+    """
+    try:
+        with open(state.settings.config_path) as f:
+            cfg = json.load(f)
+        inbounds = cfg["inbounds"] if isinstance(cfg, dict) else None
+        if not isinstance(inbounds, list):
+            return False
+    except Exception:
+        return False
+    live = frozenset().union(*[rw_grants(i) for i in inbounds
+                               if isinstance(i, dict) and i.get("tag") == RW_TAG] or [frozenset()])
+    if not live:
+        return False
+    try:
+        rw = rw_mod.resolve(state.store)
+    except ValueError:
+        rw = None
+    granted = rw_grants(rw_inbound_block(rw)) if rw is not None else frozenset()
+    return bool(live - granted)
+
+
+def _rw_guard_start(state) -> None:
+    """Refuse to start xray on a config that grants more remote access than the store does —
+    after one attempt to bring the file into line, which is all a revocation ever needed.
+
+    Fails CLOSED. Not starting costs the operator a tunnel they can restore by fixing whatever
+    stopped the sanitize from landing; starting hands a lost device its access back, minutes
+    after the panel said it was cut off. Between an outage and an unrevocation, an access-control
+    path takes the outage.
+    """
+    if not _rw_live_excess(state):
+        return
+    if _rw_write_config(state):
+        conn_events.record(state.store, "rw-revoke",
+                           "cleaned a remote-access grant the store no longer makes out of the "
+                           "config before starting xray")
+        return
+    raise HTTPException(
+        status_code=409,
+        detail="refusing to start: the stored config still grants remote access that has been "
+               "revoked, and it could not be rewritten. Reconnect a node to rebuild it.")
+
+
+def _rw_live_inbound(state) -> bool:
+    """Whether the config xray is currently running on actually carries the remote-access
+    inbound. The on-disk config IS what the supervisor loads, so it is the honest answer to
+    "could a revoked client still get in".
+
+    Anything we cannot read back — missing, truncated, unparseable — counts as serving.
+    MISSING especially: xray keeps serving the configuration it already loaded long after the
+    file is unlinked, so an absent file is evidence about the filesystem, not about what is
+    listening. Treating it as "nothing is live" made _rw_revoke answer "not-live" and do
+    nothing at all, which is the silent no-op the whole fail-safe path exists to prevent. The
+    only proof that nothing is being served is a supervisor that is not running (see
+    _rw_serving), and that is checked separately.
+
+    The fail-safe covers the STRUCTURE, not just the read and the parse. A file that parses to
+    a valid JSON value of the wrong shape — `[]`, a bare string, `inbounds` holding anything
+    but a list of objects — used to raise out of here (`[]` → AttributeError), so a revocation
+    500ed having neither rebuilt nor stopped anything: the same silent no-op arriving through
+    malformed content instead of an unreadable file. Only a well-formed `inbounds` list with
+    no `rw-in` tag POSITIVELY PROVES nothing is being served; every other shape — including an
+    object with no `inbounds` at all, which xray would refuse to start on and so cannot be
+    what a running xray loaded — says we failed to read the config, not that it is harmless.
+    """
+    try:
+        with open(state.settings.config_path) as f:
+            cfg = json.load(f)
+        inbounds = cfg["inbounds"]
+        if not isinstance(inbounds, list) or not all(isinstance(i, dict) for i in inbounds):
+            return True
+        return any(i.get("tag") == "rw-in" for i in inbounds)
+    except Exception:
+        return True
+
+
+def _rw_supervisor_running(state) -> bool | None:
+    """Tri-state: True = running, False = affirmatively not running, None = we could not tell.
+
+    The three answers are not interchangeable, and collapsing them is how this went wrong twice
+    in opposite directions. Reading "unknown" as not-running let a revocation return `not-live`
+    having done nothing; reading it as running (correct for the fail-safe REPORTING in
+    _rw_serving) lets the revocation logic reach a rebuild, and a rebuild restarts xray. Callers
+    that ACT on the answer must therefore branch on the third value, not on truthiness.
+    """
+    try:
+        return bool(state.supervisor.status().get("running"))
+    except Exception:
+        return None
+
+
+def _rw_serving(state) -> bool:
+    """Whether remote access is being served RIGHT NOW — the value the screen reports as `live`.
+
+    NOT derived from `active_node_id`. `disconnect` clears that id and deliberately leaves xray
+    running on the config it already loaded, so the inbound keeps accepting clients with no
+    active node: reading the id there reports "not live" about an inbound that is serving, and
+    reports the same about a successful revocation rebuild, which is the inverse of the bug it
+    was meant to describe. Supervisor state plus the config the supervisor actually loaded is
+    the only honest answer. An unreadable config counts as serving, for the same fail-safe
+    reason _rw_live_inbound does: we cannot prove nothing is listening.
+
+    A supervisor that cannot be QUERIED counts as serving for that same reason. Only a
+    supervisor that affirmatively reports not-running is proof that nothing is served; an
+    exception is a failure to observe, not an observation of absence, and reading it as "not
+    live" let a revocation issued while the supervisor is unreachable return having done
+    nothing — the same silent no-op a missing config used to cause, through another door.
+    """
+    return _rw_supervisor_running(state) is not False and _rw_live_inbound(state)
+
+
+def _rw_revoke(state) -> str:
+    """Push a REVOCATION into the running xray, failing safe. Returns HOW it was applied.
+
+    A rollback may not undo it, so the rollback target is dropped on the way out — see
+    `_rw_revoke_apply` for the mechanics and `ConfigManager.invalidate_rollback` for why the
+    provenance marker is the right lever. Unconditional, including the paths that write nothing:
+    the snapshot on file is by construction a config from BEFORE this revocation, so whether it
+    still grants what was just revoked is exactly the question a rollback would answer wrongly.
+    `finally`, because a revocation that ends in a 502 is a revocation whose outcome is unknown
+    — the last state in which restoring an older config unexamined is a good idea.
+
+    NO path that WRITES depends on this sweep any more. Both of them — `_rw_write_config` and
+    the connected rebuild — go through `apply_irreversible`, which never publishes a pairing to
+    begin with and refuses to touch the live config if it cannot durably say so. What is left
+    for the sweep is the paths that write NOTHING (`not-live`, `stopped`, a revocation that
+    ended in an exception): there the live config is untouched, so the marker still pairs it
+    with a snapshot from before the revocation, and that snapshot grants what was just revoked.
+    A failure there IS reportable — a pre-revocation snapshot may still be promotable — so it is
+    logged as an error and written into the connection log rather than swallowed.
+    """
+    try:
+        return _rw_revoke_apply(state)
+    finally:
+        if not ConfigManager(state.settings, xray_bin=state.xray_bin).invalidate_rollback():
+            logger.error("a remote-access revocation could not invalidate the rollback target; "
+                         "POST /rollback may still be able to reinstate the revoked credential")
+            conn_events.record(
+                state.store, "rw-revoke",
+                "could not drop the rollback target after a remote-access revocation — "
+                "rolling back may reinstate the revoked device")
+
+
+def _rw_revoke_apply(state) -> str:
+    """The revocation itself. Call `_rw_revoke`, never this — on its own it leaves a rollback
+    target that puts the revoked credential back.
+
+    The lost-device path. `disconnect` deliberately leaves xray running on the old config and
+    clears `active_node_id`, so reapply_active_node has nothing to rebuild and returns None —
+    which used to mean the revoked uuid kept LAN + tunnel access until some unrelated rebuild
+    happened. That is not an acceptable outcome for an access-control action, so when the
+    normal reapply is unavailable this rewrites the live config WITHOUT reconnecting (config +
+    xray reload only; the net rules stay exactly as disconnect left them), and if even that is
+    impossible it stops xray. Never returns quietly having done nothing while xray still serves
+    the client.
+
+    THE FILE AND THE PROCESS ARE TWO SEPARATE QUESTIONS, and answering them together is how
+    this path leaked in both directions at once:
+
+      * Rewriting the on-disk config is safe in EVERY supervisor state — it neither starts nor
+        reloads anything — and it is the only thing that keeps a revoked credential from coming
+        back. The `stopped` and `not-live` branches used to leave the file alone, so the config
+        still listed the revoked client; `/xray/start` with no active node is a bare
+        supervisor.start() on that exact file, and the revoked credential was live again. A
+        revocation that survives only until the next start is not a revocation.
+      * Making the RUNNING process pick that file up is a reload, and reload() is an
+        unconditional stop→start. Only a supervisor we affirmatively know is running may be
+        told to do it. The same goes for reapply_active_node, which starts xray AND re-applies
+        the net rules: `/xray/stop` keeps the node selection, so a revocation issued while xray
+        was deliberately down used to bring the whole tunnel back UP in order to revoke.
+
+    A revocation may take access away. It may never give any back — least of all by starting a
+    process the operator stopped.
+
+    And it has exactly one exit that means "done": a branch that reports HOW. A rebuild that
+    fails is not one — it falls through to the write-only path and, failing that, to the stop,
+    because the alternatives are reporting a revocation that did not happen or raising out of
+    the transaction the whole handler runs in and rolling the revocation itself back.
+    """
+    running = _rw_supervisor_running(state)
+
+    # Reconnecting is only ever right for a process we KNOW is up (see above); with xray down
+    # or unobservable the rebuild-without-reconnecting path below writes the same file without
+    # touching the process. Note this is what makes the write-only path load-bearing rather
+    # than belt-and-braces: it is now the ONLY thing that happens in those states.
+    if running is True:
+        # IRREVERSIBLE, for the same reason `_rw_write_config` is: this rebuild reaches the live
+        # config through the ordinary `apply()` otherwise, which files the config it replaces as
+        # the undo target and marks the pairing valid — so the connected case published a
+        # promotable PRE-revocation config, and the only thing that took it away was a sweep
+        # running afterwards, in a `finally`, whose failure was logged and then reported as a
+        # successful revocation. The pairing is now never written on this path either, and the
+        # sweep is a backstop instead of the guard.
+        res = reapply_active_node(state, irreversible=True)
+        if res is not None and res.ok:
+            return "reapplied"
+        if res is not None:
+            # A failed REBUILD is not a finished revocation, and it may not be reported as one —
+            # nor as a 502. Raising out of here aborts the whole handler, and the handler is one
+            # DB transaction: the client deletion, the settings write and every event recorded on
+            # the way roll back with it, leaving the operator a 500-shaped error, a device still
+            # granted in the store, and an xray still serving it. Everything below this point is
+            # already the answer to "no clean config could be produced or made live" — sanitize
+            # the file instead of re-rendering it, and take xray down if even that fails — so a
+            # failed rebuild continues down it rather than ending the revocation.
+            logger.error("a remote-access revocation could not rebuild the active node's config "
+                         "(%s); falling back to rewriting the live config", res.error)
+            conn_events.record(
+                # Truncated: an apply error can carry the whole of `xray -test`'s output, and
+                # the event ring lives in one settings value that the backup document has to
+                # stay under. The full text is in the log line above.
+                state.store, "rw-revoke",
+                f"rebuilding the active node's config failed ({(res.error or '')[:200]}) — "
+                "falling back to rewriting the live config")
+            # Re-observe the supervisor: `apply_node` fails CLOSED and may have stopped xray on
+            # its way out, and the branches below must not tell a stopped process to reload
+            # (a reload is a start) nor call a config nothing is serving "live".
+            running = _rw_supervisor_running(state)
+
+    # Read before anything is written: the question is what the config the supervisor LOADED
+    # carries, and the write below is precisely what stops the answer being true. A config that
+    # provably holds no rw-in cannot hold the revoked credential either, so there is nothing to
+    # cut, nothing to clean, and no reason to disturb the process to prove it.
+    if not _rw_live_inbound(state):
+        return "not-live"
+
+    written = _rw_write_config(state)
+
+    if running is True and written:
+        try:
+            # The reload is guarded: a supervisor that throws on the way back up is a failed
+            # rebuild, not a reason to abandon the revocation with a 500 and leave the old
+            # config serving. Anything short of a confirmed reload falls through to the stop.
+            if state.supervisor.reload():
+                return "rebuilt"
+        except Exception:
+            pass
+    elif running is False and written:
+        # Affirmatively down, and now the file it would come up on no longer names the revoked
+        # client. Nothing is being served and nothing will be on a later start — which is the
+        # whole of what this revocation had to achieve. Starting xray to "apply" it would be
+        # the one outcome worse than doing nothing, and stopping an already-stopped process
+        # proves nothing, so `not-live` here is a completed revocation, not a no-op.
+        return "not-live"
+
+    # Unknown state (stopping is correct if xray was running and a no-op if it was not, so it
+    # is the one action that is safe under both readings), or no clean config could be produced
+    # or made live. Stop xray: remote access is gone for everyone, which is the safe direction —
+    # the alternative is a revoked device keeping its access. Bring the net rules to their
+    # tunnel-down state as /xray/stop does.
+    state.supervisor.stop()
+    guard = stop_net(state.settings, state.net, state.store)
+    # Say what actually happened. `stop()` on an xray that was already down changes nothing, and
+    # recording it as "stopped xray" writes an action into the incident record that was never
+    # taken — the one record an operator reads afterwards to work out what the box did with a
+    # lost device. The three supervisor states earned three different outcomes; the event says
+    # which, and does not claim observation it did not have.
+    did = {True: "stopped xray",
+           False: "ensured xray remained stopped",
+           None: "issued a stop to an xray whose state could not be observed"}[running]
+    conn_events.record(state.store, "rw-revoke",
+                       f"{did} to apply a remote-access revocation"
+                       + ("" if guard.ok else f" (network stop failed: {guard.error})"))
+    return "stopped"
 
 
 @router.get("/rw", response_model=RwOut)
@@ -1476,7 +2241,21 @@ def put_rw(body: RwIn, request: Request,
             if not value:
                 raise HTTPException(status_code=422,
                                     detail=f"set {what} before enabling the inbound")
+    # Any save that takes a credential away — the feature switched off, the private key rotated,
+    # a short id rotated or removed, a server name removed, the port moved — revokes issued
+    # clients just as surely as deleting them one by one, so it takes the fail-safe path rather
+    # than the "stored, applied later" one. Decided by comparing the stored credential surface
+    # before and after the write (see _rw_narrows).
+    #
+    # The `before` snapshot is taken INSIDE apply_lock, not on arrival. Two saves that overlap
+    # serialize their writes here but would otherwise both classify against the surface they saw
+    # on arrival, so the second one compares against credentials another request has already
+    # replaced — and gets the answer wrong in both directions: a save that only widens reads as
+    # a revocation (cutting every device off), and a save that drops the short id the other
+    # request had just installed reads as a widening, leaving it live on the running inbound.
+    # Classification only means anything against what is live at decision time.
     with apply_lock, state.store.transaction():
+        before = _rw_credentials(state.store)
         s = state.store.set_setting
         s("rw_enabled", "1" if body.enabled else "0")
         s("rw_port", str(body.port))
@@ -1490,8 +2269,12 @@ def put_rw(body: RwIn, request: Request,
         # "" means keep — the UI never receives the key, so a plain round-trip must not blank it.
         if body.private_key.strip():
             s("rw_private_key", body.private_key.strip())
-        live = _rw_apply(state)
-    return _rw_out(state, live=live)
+        if _rw_narrows(before, _rw_credentials(state.store)):
+            how = _rw_revoke(state)
+        else:
+            _rw_apply(state)
+            how = ""
+    return _rw_out(state, revocation=how)
 
 
 @router.post("/rw/clients", response_model=RwOut, status_code=201)
@@ -1503,8 +2286,8 @@ def add_rw_client(body: RwClientIn, request: Request,
             rw_mod.add_client(state.store, body.email)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-        live = _rw_apply(state)
-    return _rw_out(state, live=live)
+        _rw_apply(state)
+    return _rw_out(state)
 
 
 @router.patch("/rw/clients/{client_id}", response_model=RwOut)
@@ -1516,8 +2299,13 @@ def patch_rw_client(client_id: str, body: RwClientPatch, request: Request,
     with apply_lock, state.store.transaction():
         if not rw_mod.set_client_enabled(state.store, client_id, body.enabled):
             raise HTTPException(status_code=404, detail="client not found")
-        live = _rw_apply(state)
-    return _rw_out(state, live=live)
+        # Suspending is a revocation; resuming only grants, so it can wait for the next apply.
+        if body.enabled:
+            _rw_apply(state)
+            how = ""
+        else:
+            how = _rw_revoke(state)
+    return _rw_out(state, revocation=how)
 
 
 @router.post("/rw/short-id", response_model=RwShortIdOut)
@@ -1535,8 +2323,8 @@ def delete_rw_client(client_id: str, request: Request,
     with apply_lock, state.store.transaction():
         if not rw_mod.delete_client(state.store, client_id):
             raise HTTPException(status_code=404, detail="client not found")
-        live = _rw_apply(state)
-    return _rw_out(state, live=live)
+        how = _rw_revoke(state)
+    return _rw_out(state, revocation=how)
 
 
 def _rw_client(state, client_id: str) -> dict:

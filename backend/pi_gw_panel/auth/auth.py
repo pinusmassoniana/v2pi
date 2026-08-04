@@ -46,6 +46,11 @@ def new_csrf_token() -> str:
 
 
 def csrf_matches(session_token: str | None, header_token: str | None) -> bool:
+    """Constant-time double-submit comparison.
+
+    Both sides are encoded first: Starlette decodes request headers as latin-1, and
+    `hmac.compare_digest` raises TypeError on a `str` holding a codepoint above U+007F. Comparing
+    the raw strings turned a non-ASCII `X-CSRF-Token` into a 500 instead of a clean 403."""
     if not session_token or not header_token:
         return False
-    return hmac.compare_digest(session_token, header_token)
+    return hmac.compare_digest(session_token.encode("utf-8"), header_token.encode("utf-8"))
