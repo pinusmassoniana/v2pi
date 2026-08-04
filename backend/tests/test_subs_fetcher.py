@@ -84,7 +84,8 @@ def test_http_get_follows_cookie_challenge_redirect(monkeypatch):
         server.shutdown()
         thread.join()
     assert body == "vless://node"
-    assert isinstance(headers, dict)
+    # headers come back as the raw (name, value) pairs so repeated headers survive
+    assert ("Content-Type", "text/plain; charset=utf-8") in headers
 
 
 def test_resolve_public_returns_pinned_ip_and_rejects_mixed_answer(monkeypatch):

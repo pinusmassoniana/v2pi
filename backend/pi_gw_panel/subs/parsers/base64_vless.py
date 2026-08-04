@@ -48,8 +48,12 @@ def _parse_vless(uri: str) -> Node | None:
 
     network = "xhttp" if g("type") in ("xhttp", "splithttp") else "tcp"
     transport = "xhttp" if network == "xhttp" else "vision"
-    # explicit `security` wins; else reality iff a reality public key is present, else tls
-    security = g("security") or ("reality" if g("pbk") else "tls")
+    # An explicit `security` wins only if it is one we support: the feed is untrusted, and
+    # `security=none` would otherwise land in streamSettings verbatim and carry VLESS in the
+    # clear. Anything else falls back to reality iff a reality public key is present, else tls.
+    # (Node.normalize re-checks this — this keeps the parsed node honest too.)
+    requested = g("security").strip().lower()
+    security = requested if requested in ("reality", "tls") else ("reality" if g("pbk") else "tls")
     port_n = safe_port(port_n)
     if port_n is None:
         return None

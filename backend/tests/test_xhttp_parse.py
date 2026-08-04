@@ -1,9 +1,9 @@
 from pi_gw_panel.subs.parsers.base64_vless import parse
 
-# Real shape from the live subscription: XHTTP-over-TLS, distinguished by `path`.
-XHTTP = ("vless://fcb64f70-b969@ru.pinusm.ru:443?encryption=none&type=xhttp"
-         "&path=%2Fxhttp-stream-fi2v&host=ru.pinusm.ru&mode=stream-up&security=tls"
-         "&sni=ru.pinusm.ru&fp=chrome&alpn=h2%2Chttp%2F1.1#%F0%9F%87%AB%F0%9F%87%AEFI2")
+# Synthetic node in the real subscription shape: XHTTP-over-TLS, distinguished by `path`.
+XHTTP = ("vless://fcb64f70-b969@edge.example.net:443?encryption=none&type=xhttp"
+         "&path=%2Fxhttp-stream-fi2v&host=edge.example.net&mode=stream-up&security=tls"
+         "&sni=edge.example.net&fp=chrome&alpn=h2%2Chttp%2F1.1#%F0%9F%87%AB%F0%9F%87%AEFI2")
 # Legacy reality+vision node (must stay byte-identical downstream).
 REALITY = ("vless://abcd-uuid@70.34.197.74:443?encryption=none&security=reality"
            "&sni=hilex.se&pbk=PUBKEY&sid=SID&fp=chrome&flow=xtls-rprx-vision#SW1")
@@ -15,7 +15,7 @@ def test_parse_xhttp_tls_node_captures_stream_fields():
     assert n.network == "xhttp"
     assert n.security == "tls"
     assert n.path == "/xhttp-stream-fi2v"
-    assert n.host == "ru.pinusm.ru"
+    assert n.host == "edge.example.net"
     assert n.mode == "stream-up"
     assert n.alpn == "h2,http/1.1"
     assert n.flow == ""          # XHTTP carries no Vision flow

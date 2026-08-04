@@ -14,8 +14,12 @@ def safe_port(value, default: int = 443) -> int | None:
 # render; clamp them at the single choke point (reconcile) before they reach the store.
 _STR_LIMITS = {"name": 256, "address": 253, "sni": 253, "host": 253, "uuid": 128}
 _DEFAULT_STR_LIMIT = 512
+# `security` and `transport` are persisted feed strings too (and echoed back out of the API),
+# so they are clamped like the rest — `flow` is already here, and `network` is forced to
+# tcp/xhttp by Node.normalize().
 _CLAMP_FIELDS = ("name", "address", "uuid", "sni", "path", "host", "alpn",
-                 "public_key", "short_id", "fingerprint", "flow", "mode", "note")
+                 "public_key", "short_id", "fingerprint", "flow", "mode", "note",
+                 "security", "transport")
 
 
 def clamp_node_fields(node):

@@ -17,6 +17,25 @@ def _config_differs(a: Node, b: Node) -> bool:
     return any(getattr(a, f) != getattr(b, f) for f in _CONFIG_FIELDS)
 
 
+# How much protection a transport security offers. A feed-driven change to the live tunnel may
+# move *up* this ladder or stay level, never down — a feed must not be able to walk the live
+# tunnel to a weaker mode, whether by offering a replacement node or by rewriting the active
+# node in place.
+_SECURITY_RANK = {"tls": 1, "reality": 2}
+
+
+def security_kept(old, new) -> bool:
+    """True when `new` protects at least as well as `old` on the transport-security ladder.
+    Unknown/absent values rank 0, so anything → unknown is a downgrade and unknown → anything
+    is not. A missing node on either side is not something to judge, so it passes.
+
+    Lives here rather than in `service` because the ladder has to be enforced at the point the
+    weakened row would be *written* (below), and `service` already imports this module."""
+    if old is None or new is None:
+        return True
+    return _SECURITY_RANK.get(new.security, 0) >= _SECURITY_RANK.get(old.security, 0)
+
+
 def _identity(n: Node) -> tuple:
     # sni/short_id are part of the key so a reality feed presenting many concurrent exit configs
     # on one IP:port (same uuid, differing only by SNI/shortId) keeps each as a distinct node
@@ -46,8 +65,8 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
     (flagged stale instead) so a live connection survives.
 
     User-owned per-node state is preserved across a refresh: an updated node keeps its
-    assigned ``tuning_profile_id`` (the feed never carries one), and a *new* node inherits the
-    subscription's ``default_profile_id`` when one is set.
+    assigned ``tuning_profile_id`` and its operator ``note`` (the feed carries neither), and a
+    *new* node inherits the subscription's ``default_profile_id`` when one is set.
 
     Also reports how the active node was affected, so the caller can restart the tunnel on
     the refreshed server:
@@ -55,12 +74,17 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
       (e.g. the reality key/sni rotated) → re-apply it.
     - ``active_replacement``: the active node vanished (its identity rotated) and the sub now
       has exactly one fresh node — that node's id, the single server to move the connection to.
+    - ``active_downgrade``: the feed re-advertised the active node's identity with a *weaker*
+      transport security. That one row is left exactly as stored (see below) and the caller
+      fails the refresh; the pair ``(stored_security, offered_security)`` is reported so it can
+      say what was refused.
     """
     # Bound untrusted strings at the single reconcile choke point, then make the complete merge
     # one SQLite transaction. Store mutator commit calls are transaction-aware no-ops.
     parsed = _dedupe([clamp_node_fields(p) for p in parsed])
     added = updated = removed = skipped_deletes = 0
     active_changed = active_vanished = False
+    active_downgrade: tuple[str, str] | None = None
     try:
         with store.transaction():
             existing = store.list_nodes_for_sub(sub_id)
@@ -84,7 +108,27 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
                     added += 1
                 else:
                     p.id = cur.id
+                    # user-owned columns the feed never carries: update_node writes the whole
+                    # row, so anything not carried over here is wiped on every refresh.
                     p.tuning_profile_id = cur.tuning_profile_id
+                    p.note = cur.note
+                    if cur.id == active_node_id and not security_kept(cur, p):
+                        # The security ladder has to be enforced *here*, where the weakened row
+                        # would be written — not after the merge. Every store mutator commits,
+                        # so a row written "to be restored by the caller" is durable and
+                        # readable the instant it lands: a concurrent manual apply (which reads
+                        # the node before taking its own lock) could capture and apply the
+                        # downgrade, and a restore that itself fails would park the weakened
+                        # config for the next Connect. So refuse the feed's version of this one
+                        # row and leave the stored node untouched — not its config, not its
+                        # position, not its stale flag. The rest of the merge still lands, and
+                        # the caller turns the subscription red.
+                        active_downgrade = (cur.security, p.security)
+                        log.warning(
+                            "reconcile: sub %s re-advertised the active node %s with weaker "
+                            "security=%s (stored security=%s) — refusing to write the row",
+                            sub_id, cur.id, p.security, cur.security)
+                        continue
                     if cur.id == active_node_id and _config_differs(cur, p):
                         active_changed = True
                     store.update_node(p)  # also clears a prior first-shrink stale marker
@@ -117,4 +161,4 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
             active_replacement = fresh[0].id
     return {"added": added, "updated": updated, "removed": removed,
             "active_changed": active_changed, "active_replacement": active_replacement,
-            "skipped_deletes": skipped_deletes}
+            "skipped_deletes": skipped_deletes, "active_downgrade": active_downgrade}

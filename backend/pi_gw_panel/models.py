@@ -47,6 +47,11 @@ class Node:
             self.network = "tcp"
             if not self.flow:
                 self.flow = "xtls-rprx-vision"
+        # `security` arrives from untrusted subscription feeds and goes straight into
+        # streamSettings.security. Only reality/tls are ever honoured — a feed offering
+        # `security=none` (plaintext VLESS) is downgraded here, not passed through.
+        if self.security not in ("reality", "tls"):
+            self.security = "reality" if self.public_key else "tls"
         # reality needs a public key; without one fall back to plain TLS (a reality
         # outbound with an empty publicKey is broken/insecure).
         if self.security == "reality" and not self.public_key:

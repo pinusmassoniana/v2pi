@@ -11,16 +11,16 @@ def _store() -> NodeStore:
 
 
 def _xhttp(name, path):
-    return Node(id=None, name=name, address="ru.pinusm.ru", port=443, uuid="u1",
-                transport="xhttp", network="xhttp", security="tls", sni="ru.pinusm.ru",
-                path=path, host="ru.pinusm.ru", mode="stream-up", alpn="h2,http/1.1")
+    return Node(id=None, name=name, address="edge.example.net", port=443, uuid="u1",
+                transport="xhttp", network="xhttp", security="tls", sni="edge.example.net",
+                path=path, host="edge.example.net", mode="stream-up", alpn="h2,http/1.1")
 
 
 def test_node_roundtrip_preserves_xhttp_fields():
     st = _store()
     n = st.get_node(st.add_node(_xhttp("FI2", "/p-fi2")))
     assert (n.network, n.security) == ("xhttp", "tls")
-    assert (n.path, n.host, n.mode, n.alpn) == ("/p-fi2", "ru.pinusm.ru", "stream-up", "h2,http/1.1")
+    assert (n.path, n.host, n.mode, n.alpn) == ("/p-fi2", "edge.example.net", "stream-up", "h2,http/1.1")
 
 
 def test_reconcile_keeps_xhttp_variants_sharing_addr_port_uuid():
