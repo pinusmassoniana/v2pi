@@ -15,12 +15,6 @@ PRESETS: dict[str, dict] = {
                    "rules": [("ip", "192.168.0.0/16", "direct"), ("ip", "10.0.0.0/8", "direct")]},
 }
 
-# Back-compat alias used by the old preset import path / tests.
-RU_DIRECT_PRESET: list[RoutingRule] = [
-    RoutingRule(id=None, position=i, type=t, value=v, action=a)
-    for i, (t, v, a) in enumerate(PRESETS["ru-direct"]["rules"])
-]
-
 _TYPES = {"geoip", "geosite", "domain", "ip", "port"}
 _ACTIONS = {"direct", "proxy", "block"}
 
@@ -36,6 +30,35 @@ def preset_rules(name: str) -> list[RoutingRule] | None:
 def _split(value: str) -> list[str]:
     """Split a rule value on commas/newlines into trimmed, non-empty tokens (multi-value)."""
     return [v.strip() for v in re.split(r"[,\n]", value or "") if v.strip()]
+
+
+def _is_private_net(value: str) -> bool:
+    """True when the whole literal sits inside a range xray's `geoip:private` covers."""
+    try:
+        net = ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return net.is_private or net.is_loopback or net.is_link_local
+
+
+def _shadowed_by_private(r: RoutingRule, vals: list[str]) -> str | None:
+    """`rules_to_xray` puts the built-in `geoip:private → direct` ahead of every user rule, and
+    xray takes the FIRST match. A user rule that targets a private range with any action other
+    than `direct` can therefore never fire — it would validate, display as active, and silently
+    do nothing (a `block` on a private range would quietly go direct instead). Reject it here so
+    the operator is told, rather than trusting a rule the router cannot reach."""
+    if r.action == "direct":
+        return None
+    hint = ("the built-in 'geoip:private → direct' rule is matched first, so this rule could "
+            f"never send it to {r.action!r} — only 'direct' is reachable for private ranges")
+    if r.type == "ip":
+        for v in vals:
+            if _is_private_net(v):
+                return f"{v!r} is a private range and {hint}"
+    elif r.type == "geoip":
+        if any(v.lower() == "private" for v in vals):
+            return f"'geoip:private' and {hint}"
+    return None
 
 
 def validate_rule(r: RoutingRule) -> str | None:
@@ -60,7 +83,7 @@ def validate_rule(r: RoutingRule) -> str | None:
                 ipaddress.ip_network(v, strict=False)
             except ValueError:
                 return f"bad ip/cidr {v!r}"
-    return None
+    return _shadowed_by_private(r, vals)
 
 
 def validate_routing(rules: list[RoutingRule], default_action: str) -> tuple[bool, str]:

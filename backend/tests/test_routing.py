@@ -1,7 +1,7 @@
 from pi_gw_panel.config import Settings
 from pi_gw_panel.models import Node, RoutingRule, TuningProfile
 from pi_gw_panel.xray_config.builder import build_config
-from pi_gw_panel.xray_config.routing import rules_to_xray, RU_DIRECT_PRESET
+from pi_gw_panel.xray_config.routing import rules_to_xray, preset_rules
 from pi_gw_panel.xray_config.validate import validate_config
 
 
@@ -47,7 +47,7 @@ def test_empty_rules_proxy_default_is_wave0_routing():
 
 
 def test_ru_direct_preset():
-    out = rules_to_xray(RU_DIRECT_PRESET, "proxy")
+    out = rules_to_xray(preset_rules("ru-direct"), "proxy")
     tags = [(r.get("ip") or r.get("domain"), r["outboundTag"]) for r in out[1:-1]]
     assert tags == [(["geoip:ru"], "direct"), (["geosite:category-ru"], "direct")]
 
@@ -65,8 +65,12 @@ def test_routing_and_quic_compose():
     cfg = build_config(_node(), Settings(), profile=p, routing=(rules, "direct"))
     rlist = cfg["routing"]["rules"]
     quic_idx = next(i for i, r in enumerate(rlist) if r.get("protocol") == ["quic"])
+    private_idx = next(i for i, r in enumerate(rlist) if r.get("ip") == ["geoip:private"])
+    user_idx = next(i for i, r in enumerate(rlist) if r.get("domain") == ["x.com"])
     assert rlist[quic_idx]["outboundTag"] == "block"
-    assert quic_idx == len(rlist) - 2                     # right before the catch-all
+    # immediately after private→direct, i.e. ahead of every user rule: behind one it would
+    # silently stop applying (first match wins)
+    assert quic_idx == private_idx + 1 < user_idx
     assert rlist[-1]["outboundTag"] == "direct"           # custom default action preserved
 
 
