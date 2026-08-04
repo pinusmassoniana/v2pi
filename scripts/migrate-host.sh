@@ -71,22 +71,47 @@ rollback() {
     nmcli general reload
   fi
 
-  # Restore the exact nft ruleset. Policy routing owned by the panel is confined to TABLE;
-  # address restore follows a targeted segment flush, so unrelated interface addresses remain.
+  # Flush a layer only when its own snapshot can put it back. The snapshots above are best-effort
+  # (`|| :`), so a host without a facility — or a save that failed — leaves a zero-byte file; an
+  # unconditional flush would then destroy state nothing restores. `ip rule flush` in particular
+  # drops the main/default lookup rules and black-holes off-host routing. Policy routing owned by
+  # the panel is confined to TABLE; the address flush is scoped to the segment interface.
   if [ -s "${SNAP}/nftables.conf" ]; then
     nft flush ruleset
     nft -f "${SNAP}/nftables.conf"
+  else
+    echo "==> no nftables snapshot; leaving the current ruleset in place" >&2
   fi
-  ip addr flush dev "${SEG}"
-  [ ! -s "${SNAP}/addresses.bin" ] || ip addr restore < "${SNAP}/addresses.bin"
-  ip route flush table "${TABLE}"
-  ip -6 route flush table "${TABLE}"
-  [ ! -s "${SNAP}/routes4.bin" ] || ip route restore < "${SNAP}/routes4.bin"
-  [ ! -s "${SNAP}/routes6.bin" ] || ip -6 route restore < "${SNAP}/routes6.bin"
-  ip rule flush
-  ip -6 rule flush
-  [ ! -s "${SNAP}/rules4.bin" ] || ip rule restore < "${SNAP}/rules4.bin"
-  [ ! -s "${SNAP}/rules6.bin" ] || ip -6 rule restore < "${SNAP}/rules6.bin"
+  if [ -s "${SNAP}/addresses.bin" ]; then
+    ip addr flush dev "${SEG}"
+    ip addr restore < "${SNAP}/addresses.bin"
+  else
+    echo "==> no address snapshot; leaving ${SEG} addressing in place" >&2
+  fi
+  if [ -s "${SNAP}/routes4.bin" ]; then
+    ip route flush table "${TABLE}"
+    ip route restore < "${SNAP}/routes4.bin"
+  else
+    echo "==> no IPv4 route snapshot; leaving table ${TABLE} in place" >&2
+  fi
+  if [ -s "${SNAP}/routes6.bin" ]; then
+    ip -6 route flush table "${TABLE}"
+    ip -6 route restore < "${SNAP}/routes6.bin"
+  else
+    echo "==> no IPv6 route snapshot; leaving table ${TABLE} in place" >&2
+  fi
+  if [ -s "${SNAP}/rules4.bin" ]; then
+    ip rule flush
+    ip rule restore < "${SNAP}/rules4.bin"
+  else
+    echo "==> no IPv4 rule snapshot; leaving the current rules in place" >&2
+  fi
+  if [ -s "${SNAP}/rules6.bin" ]; then
+    ip -6 rule flush
+    ip -6 rule restore < "${SNAP}/rules6.bin"
+  else
+    echo "==> no IPv6 rule snapshot; leaving the current rules in place" >&2
+  fi
 
   while IFS='|' read -r svc active enabled; do
     [ -n "${svc}" ] || continue

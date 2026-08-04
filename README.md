@@ -164,8 +164,10 @@ immutable manifest. The image bundles a pinned **Xray-core** plus
 on the host itself — so the host needs nothing but Docker, and you only configure your router.
 
 For development, build the Dockerfile directly (`docker build -t v2pi-local .`) or use the non-container
-workflow in [CONTRIBUTING.md](CONTRIBUTING.md). Do not silently replace the production digest pin with a
-mutable local tag on a gateway.
+workflow in [CONTRIBUTING.md](CONTRIBUTING.md). Building through Compose needs the same tag swap —
+Compose tags the built image with the `image:` value and a digest is not a valid tag, so use
+`V2PI_IMAGE=v2pi-local docker compose up --build`. Do not silently replace the production digest pin
+with a mutable local tag on a gateway.
 
 ## Router setup
 
