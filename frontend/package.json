@@ -1,7 +1,7 @@
 {
   "name": "pi-gw-panel-frontend",
   "private": true,
-  "version": "1.17",
+  "version": "1.17.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
