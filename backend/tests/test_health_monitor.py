@@ -196,19 +196,22 @@ def test_disabled_monitor_is_noop(settings):
 def test_after_tick_called_and_loop_cancellable(settings):
     st = _state(settings)
     st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
-    ticks = []
+    # after_tick runs on the monitor's worker thread (see _tick/_safe_tick) — a threading.Event
+    # lets the test wait for the real tick to fire instead of hoping a fixed sleep window is
+    # long enough under load.
+    ticked = threading.Event()
 
     async def drive():
         mon = _monitor(st, tick_sec=0.001, tcp_ping=lambda *_: (True, 5),
                        http_ping=lambda *_: (True, 6),
                        real_request=lambda *_: (True, 200, 9, "x"),
-                       after_tick=lambda: ticks.append(1))
+                       after_tick=ticked.set)
         mon.start()
-        await asyncio.sleep(0.05)
+        await asyncio.to_thread(ticked.wait, 2)
         await mon.stop()
 
     asyncio.run(drive())
-    assert ticks  # after_tick ran at least once before cancellation
+    assert ticked.is_set()  # after_tick ran at least once before cancellation
 
 
 def test_stop_waits_for_current_sweep_and_blocks_late_health_writes(settings):

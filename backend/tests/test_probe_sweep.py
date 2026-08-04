@@ -1,8 +1,5 @@
-from fastapi.testclient import TestClient
-from pi_gw_panel.app import create_app
-from pi_gw_panel.state import build_state
-from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.health import probe
+from conftest import _client, _login
 
 
 # --- probe.http_ping (TLS-handshake reachability) ---
@@ -12,7 +9,10 @@ def test_http_ping_ok_measures_latency():
     seen = []
     def fake_connect(addr, timeout):
         seen.append((addr, timeout)); return _Conn()
-    clock = iter([1.0, 1.25])
+    # three reads: the deadline is armed before the lookup, the dial is timed after it, and the
+    # handshake is measured at the end. A literal address costs no lookup time, so the whole
+    # 5 s budget is still on the dial.
+    clock = iter([1.0, 1.0, 1.25])
     ok, ms = probe.http_ping("1.2.3.4", 443, "sni.example",
                              connect=fake_connect, clock=lambda: next(clock))
     assert ok is True and ms == 250
@@ -26,16 +26,6 @@ def test_http_ping_fail_returns_none():
 
 
 # --- /api/probe/{tcp,http} sweeps ---
-def _client(settings, stub_xray):
-    settings.xray_bin = stub_xray
-    return TestClient(create_app(settings, state=build_state(settings, net=DryRunBackend())))
-
-
-def _login(c):
-    c.post("/api/setup", json={"username": "admin", "password": "changeme"})
-    return c.get("/api/csrf").json()["csrf"]
-
-
 def _add(c, tok, name):
     body = {"name": name, "address": "1.2.3.4", "port": 443, "uuid": f"u-{name}",
             "sni": "x", "public_key": "PK", "short_id": "ab"}
@@ -81,7 +71,8 @@ def test_probe_outbound_xhttp_and_reality():
 def test_real_through_node_spawns_and_probes(monkeypatch):
     import json as _j
     from pi_gw_panel.models import Node
-    n = Node(id=1, name="n", address="aa", port=443, uuid="u", transport="vision",
+    # a routable public literal: probes now refuse private/loopback/unresolvable endpoints
+    n = Node(id=1, name="n", address="1.2.3.7", port=443, uuid="u", transport="vision",
              network="tcp", security="reality", sni="s", public_key="PK", short_id="x")
     spawned = []
     class _Proc:
@@ -95,7 +86,7 @@ def test_real_through_node_spawns_and_probes(monkeypatch):
     assert ok is True and ms == 77 and egress == "9.9.9.9" and egress6 is None
     cfg = spawned[0]
     assert cfg["inbounds"][0]["protocol"] == "http"
-    assert cfg["outbounds"][0]["settings"]["vnext"][0]["address"] == "aa"
+    assert cfg["outbounds"][0]["settings"]["vnext"][0]["address"] == "1.2.3.7"
 
 
 def test_probe_node_endpoint_runs_all_three(settings, stub_xray, monkeypatch):
