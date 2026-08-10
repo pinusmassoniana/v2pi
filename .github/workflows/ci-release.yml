@@ -70,6 +70,53 @@ jobs:
         working-directory: frontend
         run: npm audit --audit-level=high
 
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install pinned gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+      # Scans the checked-out tree rather than the history behind it. Rewriting what is already
+      # published is a deliberate operator action, and a gate that fails until it happens would
+      # never go green; what this one protects is everything a new commit adds. Findings are
+      # redacted because the log is public — the rule id and file:line say what to look at.
+      - name: Scan working tree for key material and production identifiers
+        run: ./gitleaks dir . --config .gitleaks.toml --redact --verbose --exit-code 1
+      # A rule nobody has seen fire is a rule nobody can trust. Copy the fixture that plants the
+      # violations these rules exist to catch into a throwaway backend/tests/-shaped tree — so the
+      # path-scoped IPv6 rule sees a matching path — and scan that copy on its own: it must exit
+      # non-zero, and it must be these two rules that caught it, not some other one firing by
+      # coincidence. A .gitleaks.toml allowlist keeps the fixture itself out of the scan above, so
+      # this step can never make that one fail.
+      - name: Prove the canary rules actually fire
+        run: |
+          canary_root="$(mktemp -d)"
+          mkdir -p "$canary_root/backend/tests"
+          cp .github/secret-scan-canary/planted_violations.py "$canary_root/backend/tests/planted_violations.py"
+          gitleaks_bin="$PWD/gitleaks"
+          config="$PWD/.gitleaks.toml"
+          cd "$canary_root"
+          set +e
+          "$gitleaks_bin" dir . --config "$config" --redact --verbose \
+            --report-format json --report-path canary-report.json --exit-code 1
+          gl_status=$?
+          set -e
+          if [ "$gl_status" -eq 0 ]; then
+            echo "canary did not trip the scanner — the new rules are not firing" >&2
+            exit 1
+          fi
+          for rule in raw-x25519-public-key test-fixture-routable-ipv6; do
+            jq -e --arg rule "$rule" 'any(.[]; .RuleID == $rule)' canary-report.json > /dev/null \
+              || { echo "canary tripped, but not rule $rule as expected" >&2; exit 1; }
+          done
+
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -103,7 +150,7 @@ jobs:
           retention-days: 7
 
   build-image:
-    needs: [backend-tests, frontend-tests, dep-audit, e2e]
+    needs: [backend-tests, frontend-tests, dep-audit, secret-scan, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

@@ -1,0 +1,206 @@
+title = "pi-gw-panel secret scanning"
+
+# This repository is public and its test fixtures describe a live VPN gateway, so what is most
+# worth catching here carries no provider prefix and is invisible to GitHub's native scanning: a
+# raw x25519 REALITY key (just 32 base64url-encoded bytes, either half of the pair) and a
+# production endpoint identifier (an IPv4/IPv6 address, or a hostname plus the front domain it
+# fronts as). The rules below exist for exactly those.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "raw-x25519-private-key"
+description = "Raw base64url key material next to a private-key identifier"
+# A REALITY private key is 32 raw bytes: 43 base64url characters with no prefix, no entropy tell,
+# and nothing a generic scanner keys on. Anchor on the identifier instead and take any key-length
+# literal within a couple of lines of it. Fixtures should build such values from an obvious byte
+# pattern (see backend/tests/test_xray_real.py) rather than paste a literal.
+regex = '''(?i)(?:private_?key|_priv)[\s\S]{0,200}?["'`]([A-Za-z0-9_\-]{40,48})["'`]'''
+secretGroup = 1
+keywords = ["private_key", "privatekey", "_priv"]
+
+
+[[rules]]
+id = "raw-x25519-public-key"
+description = "Raw base64url key material next to a public-key identifier"
+# The public half of a REALITY pair is exactly as unmarked as the private half: 32 raw bytes, 43
+# base64url characters, no prefix, no entropy tell — and the rule above cannot see it, because
+# "public_key"/"_PUB" never matches its private-key keyword anchor. Same fix, mirrored: anchor on
+# the public-key identifier and take any key-length literal nearby. Fixtures should build such
+# values from an obvious byte pattern (see backend/tests/test_xray_real.py and
+# backend/tests/test_rw_inbound.py) rather than paste a literal — nothing in this tree does as of
+# this rule, so it currently needs no allowlist of its own.
+regex = '''(?i)(?:public_?key|_pub)\b[\s\S]{0,200}?["'`]([A-Za-z0-9_\-]{40,48})["'`]'''
+secretGroup = 1
+keywords = ["public_key", "publickey", "_pub"]
+
+
+[[rules]]
+id = "test-fixture-routable-ipv4"
+description = "IPv4 literal in a test fixture outside documentation and private space"
+regex = '''\b(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}\b'''
+path = '''^backend/tests/.*\.py$'''
+
+  [[rules.allowlists]]
+  description = "Private, loopback, link-local, CGNAT, multicast, unspecified, reserved and broadcast space"
+  regexTarget = "match"
+  regexes = [
+    '''^0\.''',
+    '''^10\.''',
+    '''^100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.''',
+    '''^127\.''',
+    '''^169\.254\.''',
+    '''^172\.(?:1[6-9]|2[0-9]|3[01])\.''',
+    '''^192\.168\.''',
+    '''^(?:22[4-9]|23[0-9])\.''',
+    '''^(?:24[0-9]|25[0-4])\.''',
+    '''^255\.''',
+  ]
+
+  [[rules.allowlists]]
+  description = "RFC5737 documentation ranges — the correct choice for a new fixture"
+  regexTarget = "match"
+  regexes = [
+    '''^192\.0\.2\.''',
+    '''^198\.51\.100\.''',
+    '''^203\.0\.113\.''',
+  ]
+
+  [[rules.allowlists]]
+  description = """
+  Long-standing synthetic placeholders in this suite. They cannot be moved to RFC5737: the
+  subscription SSRF guard rejects every address `ipaddress` calls private, and Python counts the
+  documentation ranges as private, so a test that must exercise the allow path needs an address
+  that is genuinely global. These patterns are the grandfathered set — anything else fails.
+  """
+  regexTarget = "match"
+  regexes = [
+    '''^1\.1\.1\.[12]$''',
+    '''^1\.2\.3\.[0-9]{1,3}$''',
+    '''^2\.2\.2\.2$''',
+    '''^2\.3\.4\.5$''',
+    '''^3\.3\.3\.3$''',
+    '''^5\.5\.5\.[59]$''',
+    '''^5\.6\.7\.8$''',
+    '''^7\.7\.7\.7$''',
+    '''^8\.8\.8\.[0-9]$''',
+    '''^9\.9\.9\.[0-9]$''',
+  ]
+
+[[rules]]
+id = "test-fixture-routable-ipv6"
+description = "IPv6 literal in a test fixture outside documentation and reserved space"
+# Mirrors test-fixture-routable-ipv4: this project tunnels IPv6 as well, so a real gateway or
+# segment address is just as plausible a paste here as a real IPv4 one, and just as invisible to
+# generic scanners. Three shapes: the uncompressed 8-group form, a compressed form with a group on
+# each side of "::" (fe80::1, 2001:db8::1), and a compressed form ending bare in "::" (a network
+# prefix like fd00:1:2:3::/64). The bare-"::" branch requires two leading groups rather than one —
+# a single group before a trailing "::" is indistinguishable from an unrelated numeric suffix (see
+# test_provision.py's `.endswith(":5::/64")` assertions) and carries no address-like information
+# anyway, so it is left to the allowlist below only for the shapes that are worth naming.
+regex = '''(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b|\b(?:[0-9a-f]{1,4}:){1,7}:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6}\b|\b(?:[0-9a-f]{1,4}:){2,7}:|\B:(?::[0-9a-f]{1,4}){1,7}\b|["'`]::["'`]'''
+path = '''^backend/tests/.*\.py$'''
+
+  [[rules.allowlists]]
+  description = "Loopback, unspecified, link-local (/10), unique local (/7) and multicast (/8) space — none of these ever identify a single real host"
+  regexTarget = "match"
+  regexes = [
+    '''(?i)^["'`]?::["'`]?$''',
+    '''(?i)^::1$''',
+    '''(?i)^fe[89ab][0-9a-f]:''',
+    '''(?i)^f[cd][0-9a-f]{2}:''',
+    '''(?i)^ff[0-9a-f]{2}:''',
+  ]
+
+  [[rules.allowlists]]
+  description = "RFC3849 documentation range (2001:db8::/32) — the correct choice for a new fixture"
+  regexTarget = "match"
+  regexes = ['''(?i)^2001:0?db8:''']
+
+  [[rules.allowlists]]
+  description = """
+  Public shared-service constants this project's own defaults already point at, and long-standing
+  synthetic placeholders in this suite. `2606:4700:4700::1111` is Cloudflare's resolver — the
+  compiled-in default for `client_dns6` (backend/pi_gw_panel/config.py) — and
+  `2001:4860:4860::8888` is its Google equivalent, exercised as the override case. `2a05:f480::1`
+  is a known-country geolocation vector paired with a fixed ISO code (test_geo.py), not operator
+  infrastructure. `2606::5` / `2606::9` / `2606::a` are egress-IPv6 stand-ins chosen to sit next to
+  the IPv4 placeholders above (test_health_probe.py, test_ipv6.py). Anything else of this shape is
+  a finding.
+  """
+  regexTarget = "match"
+  regexes = [
+    '''(?i)^2606:4700:4700::1111$''',
+    '''(?i)^2001:4860:4860::8888$''',
+    '''(?i)^2a05:f480::1$''',
+    '''(?i)^2606::[0-9a-f]$''',
+  ]
+
+[[rules]]
+id = "test-fixture-real-hostname"
+description = "Hostname in a test fixture outside the reserved documentation domains"
+# Scoped to host-bearing positions inside string data — either a `sni=`/`servername:` key within a
+# quoted URI or YAML blob, or a `host="…"`-style keyword whose value opens with a quote. Requiring
+# the value to live in a string is what keeps ordinary Python attribute chains (`n.address: n.name`)
+# from reading as an FQDN.
+regex = '''(?i)(?:["'][^"'\n]{0,200}?\b(?:sni|servername|server_name|address|host|hostname|dest|domain|endpoint|url)\s*[=:]\s*|\b(?:sni|servername|server_name|address|host|hostname|dest|domain|endpoint|url)["']?\s*[=:]\s*["'])(?:https?://)?((?:[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.)+[a-z]{2,})\b'''
+path = '''^backend/tests/.*\.py$'''
+secretGroup = 1
+keywords = ["sni", "servername", "server_name", "address", "host", "dest", "domain", "endpoint", "url"]
+
+  [[rules.allowlists]]
+  description = "RFC2606 and RFC6761 reserved names, plus local-only suffixes"
+  regexes = [
+    '''^(?:[a-z0-9\-]+\.)*example\.(?:com|net|org)$''',
+    '''\.(?:example|invalid|test|localhost|local|lan|home|internal)$''',
+  ]
+
+  [[rules.allowlists]]
+  description = """
+  Third-party names the code genuinely talks to or fronts as, not operator infrastructure: the
+  default REALITY camouflage destinations and the egress-IP probe endpoints. `nas.corp.ru` is a
+  deliberate ccTLD case in the road-warrior host validator test — the point of that test is a name
+  under a real public suffix, so a reserved domain cannot stand in for it.
+  """
+  regexes = [
+    '''^(?:www\.microsoft\.com|www\.bing\.com)$''',
+    '''^(?:api\.ipify\.org|httpbin\.org)$''',
+    '''^nas\.corp\.ru$''',
+    '''^ya\.ru$''',
+  ]
+
+[[allowlists]]
+description = """
+A base64url-encoded English sentence used as a wrong-length negative case — 34 raw bytes, not the
+32 an x25519 key decodes to, so it decodes to something no key generator would ever produce and is
+synthetic by construction rather than by assertion. Anything else of key shape next to a key
+identifier is a finding — see raw-x25519-private-key and raw-x25519-public-key above.
+"""
+regexes = [
+  '''^aGVsbG8td29ybGQtdGhpcy1pcy1ub3QtYS1yZWFsLWtleQ$''',
+]
+
+[[allowlists]]
+description = """
+The CI canary under .github/secret-scan-canary/ intentionally plants the violations these rules
+exist to catch, to prove in CI that they fire. It is never scanned in place — the canary job copies
+it into a throwaway backend/tests/-shaped tree first — so this exclusion only keeps it from ever
+being read as a finding against the real tree it lives in.
+"""
+paths = ['''^\.github/secret-scan-canary/''']
+
+[[allowlists]]
+description = "Pinned upstream release digests read as opaque hex to several of the default rules"
+regexTarget = "line"
+regexes = ['''ARG XRAY_SHA256_(?:AMD64|ARM64)=''']
+
+[[allowlists]]
+description = "Generated and vendored artifacts are not hand-written secrets"
+paths = [
+  '''(^|/)uv\.lock$''',
+  '''(^|/)package-lock\.json$''',
+  '''^backend/pi_gw_panel/static/''',
+  '''^frontend/(dist|node_modules)/''',
+  '''^\.gitleaks\.toml$''',
+]

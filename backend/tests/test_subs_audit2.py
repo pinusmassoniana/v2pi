@@ -53,7 +53,7 @@ def test_xhttp_feed_offering_security_none_is_downgraded_not_honoured():
 
 
 def test_reality_feed_security_none_with_key_falls_back_to_reality():
-    uri = "vless://user-x@1.2.3.4:443?security=none&pbk=PK&sid=SID&sni=hilex.se#node"
+    uri = "vless://user-x@1.2.3.4:443?security=none&pbk=PK&sid=SID&sni=reality.example.net#node"
     node = parse_subscription(uri)[0]
     assert node.security == "reality"
 
@@ -138,7 +138,7 @@ def test_injected_headers_are_dropped_on_a_cross_origin_redirect(monkeypatch):
     seen = []
 
     def resolve(host, port, deadline):
-        return {"one.example": "93.184.216.34", "two.example": "93.184.216.35"}[host]
+        return {"one.example": "1.2.3.4", "two.example": "1.2.3.5"}[host]
 
     def request(parts, pinned_ip, headers, proxy, deadline):
         seen.append((parts.hostname, dict(headers)))
@@ -167,7 +167,7 @@ def test_injected_headers_survive_a_same_origin_redirect(monkeypatch):
             return 302, [("Location", "https://one.example/final")], b""
         return 200, [("Content-Type", "text/plain")], b"ok"
 
-    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "93.184.216.34")
+    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "1.2.3.4")
     monkeypatch.setattr(fetcher, "_request_once", request)
     fetcher._http_get("https://one.example/start", {"x-hwid": "SECRET"}, None, 5.0)
     assert seen[1]["x-hwid"] == "SECRET"
@@ -188,7 +188,7 @@ def test_credential_travel_rules(monkeypatch, start, location, travels):
             return 302, [("Location", location)], b""
         return 200, [("Content-Type", "text/plain")], b"ok"
 
-    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "93.184.216.34")
+    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "1.2.3.4")
     monkeypatch.setattr(fetcher, "_request_once", request)
     fetcher._http_get(start, {"x-hwid": "SECRET"}, None, 5.0)
     assert ("x-hwid" in seen[1]) is travels
@@ -218,7 +218,7 @@ def test_security_and_transport_are_length_clamped():
 # --- F6-13: the response picks its decoder; only ones we know are allowed ---
 @pytest.mark.parametrize("charset", ["idna", "punycode", "not-a-charset", "zip"])
 def test_hostile_charset_does_not_escape_http_get(monkeypatch, charset):
-    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "93.184.216.34")
+    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "1.2.3.4")
     monkeypatch.setattr(fetcher, "_request_once", lambda *a, **k: (
         200, [("Content-Type", f"text/plain; charset={charset}")], "vless://ünïcode".encode()))
     body, _headers = fetcher._http_get("https://one.example/s", {}, None, 5.0)
@@ -236,7 +236,7 @@ def test_every_set_cookie_is_kept_across_a_redirect(monkeypatch):
                          ("Location", "https://one.example/final")], b""
         return 200, [("Content-Type", "text/plain")], b"ok"
 
-    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "93.184.216.34")
+    monkeypatch.setattr(fetcher, "_resolve_public", lambda h, p, d: "1.2.3.4")
     monkeypatch.setattr(fetcher, "_request_once", request)
     fetcher._http_get("https://one.example/start", {}, None, 5.0)
     assert "a=1" in seen[1]["Cookie"] and "b=2" in seen[1]["Cookie"]
@@ -306,7 +306,7 @@ def test_dribbling_server_cannot_outlive_the_wall_deadline(monkeypatch):
     started = time.monotonic()
     try:
         with pytest.raises(TimeoutError):
-            fetcher._request_once(parts, "93.184.216.34", {}, None, time.monotonic() + 0.3)
+            fetcher._request_once(parts, "1.2.3.4", {}, None, time.monotonic() + 0.3)
         elapsed = time.monotonic() - started
     finally:
         stop.set()
@@ -494,7 +494,7 @@ def test_scheduled_refresh_cannot_weaken_the_live_tunnel_in_place(monkeypatch, s
     node's Reality to plain TLS. The refresh must fail, the stored row must be put back, and
     nothing may be applied — leaving neither the tunnel nor the next Connect on the weaker mode."""
     store = _store(settings)
-    sid = store.add_subscription(Subscription(id=None, name="x", url="https://93.184.216.34/s"))
+    sid = store.add_subscription(Subscription(id=None, name="x", url="https://1.2.3.4/s"))
     nid = store.add_node(_live_reality(sid))
     store.set_setting("active_node_id", str(nid))
     calls = []
@@ -509,7 +509,7 @@ def test_scheduled_refresh_cannot_weaken_the_live_tunnel_in_place(monkeypatch, s
 
 def test_scheduled_refresh_still_applies_a_feed_driven_upgrade(monkeypatch, settings):
     store = _store(settings)
-    sid = store.add_subscription(Subscription(id=None, name="x", url="https://93.184.216.34/s"))
+    sid = store.add_subscription(Subscription(id=None, name="x", url="https://1.2.3.4/s"))
     nid = store.add_node(_live_reality(sid, security="tls", public_key=""))
     store.set_setting("active_node_id", str(nid))
     calls = []
@@ -528,7 +528,7 @@ def test_saving_a_private_subscription_url_is_rejected(settings, stub_xray):
     for url in ("http://192.168.1.1/sub", "http://169.254.169.254/latest/meta-data"):
         assert client.post("/api/subs", json={"name": "s", "url": url},
                            headers=headers).status_code == 422
-    ok = client.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/sub"},
+    ok = client.post("/api/subs", json={"name": "s", "url": "https://1.2.3.4/sub"},
                      headers=headers)
     assert ok.status_code == 200
     assert client.patch(f"/api/subs/{ok.json()['id']}", json={"url": "http://10.0.0.1/sub"},
@@ -609,7 +609,7 @@ def test_refresh_reports_the_refusal_and_keeps_the_rest_of_the_merge(monkeypatch
     subscription goes red with an actionable status, and the nodes the same feed legitimately
     added still land — one hostile row must not block every other update forever."""
     store = _store(settings)
-    sid = store.add_subscription(Subscription(id=None, name="x", url="https://93.184.216.34/s"))
+    sid = store.add_subscription(Subscription(id=None, name="x", url="https://1.2.3.4/s"))
     nid = store.add_node(_live_reality(sid))
     store.set_setting("active_node_id", str(nid))
     writes = []
@@ -637,7 +637,7 @@ def test_refresh_still_applies_a_same_rank_key_rotation(monkeypatch, settings):
     """The gate is one-directional. A reality feed rotating its public key (same rank, same
     identity) is the routine unattended change the panel exists to pick up."""
     store = _store(settings)
-    sid = store.add_subscription(Subscription(id=None, name="x", url="https://93.184.216.34/s"))
+    sid = store.add_subscription(Subscription(id=None, name="x", url="https://1.2.3.4/s"))
     nid = store.add_node(_live_reality(sid))
     store.set_setting("active_node_id", str(nid))
     calls = []

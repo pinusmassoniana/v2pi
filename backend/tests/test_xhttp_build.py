@@ -11,8 +11,8 @@ def _xhttp():
 
 
 def _reality():
-    return Node(id=2, name="SW1", address="70.34.197.74", port=443, uuid="u2",
-                transport="vision", network="tcp", security="reality", sni="hilex.se",
+    return Node(id=2, name="SW1", address="203.0.113.74", port=443, uuid="u2",
+                transport="vision", network="tcp", security="reality", sni="reality.example.net",
                 public_key="PUBKEY", short_id="SID", flow="xtls-rprx-vision")
 
 
@@ -37,7 +37,7 @@ def test_build_reality_vision_intact():
     ss = out["streamSettings"]
     assert ss["network"] == "tcp"
     assert ss["security"] == "reality"
-    assert ss["realitySettings"] == {"serverName": "hilex.se", "fingerprint": "chrome",
+    assert ss["realitySettings"] == {"serverName": "reality.example.net", "fingerprint": "chrome",
                                      "publicKey": "PUBKEY", "shortId": "SID"}
     assert "tlsSettings" not in ss and "xhttpSettings" not in ss
     assert out["settings"]["vnext"][0]["users"][0]["flow"] == "xtls-rprx-vision"

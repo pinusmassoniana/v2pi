@@ -69,7 +69,7 @@ docker run --rm "${platform_args[@]}" \
   --volume "$tmp_dir:/smoke" \
   --entrypoint python \
   "$image_ref" -c \
-  'import json; from pi_gw_panel.config import Settings; from pi_gw_panel.models import Node; from pi_gw_panel.xray_config.builder import build_config; node = Node(id=1, name="smoke", address="1.2.3.4", port=443, uuid="00000000-0000-0000-0000-000000000000", sni="www.microsoft.com", public_key="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI_T4E7RoLJS0", short_id="0123abcd"); json.dump(build_config(node, Settings(data_dir="/smoke")), open("/smoke/xray.json", "w"))'
+  'import base64, json; from pi_gw_panel.config import Settings; from pi_gw_panel.models import Node; from pi_gw_panel.xray_config.builder import build_config; pub = base64.urlsafe_b64encode(bytes(range(0x20, 0x40))).decode().rstrip("="); node = Node(id=1, name="smoke", address="1.2.3.4", port=443, uuid="00000000-0000-0000-0000-000000000000", sni="www.microsoft.com", public_key=pub, short_id="0123abcd"); json.dump(build_config(node, Settings(data_dir="/smoke")), open("/smoke/xray.json", "w"))'
 
 docker run --rm "${platform_args[@]}" \
   --volume "$tmp_dir:/smoke:ro" \

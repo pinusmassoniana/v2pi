@@ -8,6 +8,11 @@ import pytest
 from pi_gw_panel.subs import fetcher
 from pi_gw_panel.subs.fetcher import fetch
 
+# Placeholder addresses here must stay globally routable: the SSRF guard rejects anything
+# `ipaddress` calls private, and that includes the RFC5737 documentation ranges. So these
+# stand in for "some public host" and cannot be swapped for 203.0.113.x without inverting
+# what the guard tests assert.
+
 
 def test_fetch_direct_builds_request_and_no_proxy(monkeypatch):
     calls = {}
@@ -50,7 +55,7 @@ def test_fetch_rejects_non_http_scheme(monkeypatch):
 class _CookieChallengeHandler(http.server.BaseHTTPRequestHandler):
     """First GET with no cookie → 302 + Set-Cookie, redirecting to the same path
     (the anti-bot challenge v2rayA-style providers use). Second GET that echoes the
-    cookie → 200 + body. Mirrors subs.eu-fffast.com's __hash_ gate."""
+    cookie → 200 + body. Mirrors the one-shot hash-cookie gate such providers ship."""
 
     def do_GET(self):
         if "pass=1" not in (self.headers.get("Cookie") or ""):
@@ -90,10 +95,10 @@ def test_http_get_follows_cookie_challenge_redirect(monkeypatch):
 
 def test_resolve_public_returns_pinned_ip_and_rejects_mixed_answer(monkeypatch):
     infos = [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 443)),
     ]
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: infos)
-    assert fetcher._resolve_public("example.com", 443, time.monotonic() + 1) == "93.184.216.34"
+    assert fetcher._resolve_public("example.com", 443, time.monotonic() + 1) == "1.2.3.4"
 
     infos.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)))
     with pytest.raises(ValueError, match="non-public"):
@@ -106,7 +111,7 @@ def test_http_get_repins_every_redirect_and_preserves_host(monkeypatch):
 
     def resolve(host, port, deadline):
         resolved.append((host, port))
-        return {"one.example": "93.184.216.34", "two.example": "93.184.216.35"}[host]
+        return {"one.example": "1.2.3.4", "two.example": "1.2.3.5"}[host]
 
     def request(parts, pinned_ip, headers, proxy, deadline):
         calls.append((parts.hostname, pinned_ip, headers.get("Host")))
@@ -120,8 +125,8 @@ def test_http_get_repins_every_redirect_and_preserves_host(monkeypatch):
     assert body == "ok"
     assert resolved == [("one.example", 443), ("two.example", 443)]
     assert calls == [
-        ("one.example", "93.184.216.34", "one.example"),
-        ("two.example", "93.184.216.35", "two.example"),
+        ("one.example", "1.2.3.4", "one.example"),
+        ("two.example", "1.2.3.5", "two.example"),
     ]
 
 

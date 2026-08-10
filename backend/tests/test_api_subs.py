@@ -5,8 +5,8 @@ from conftest import _client, _login
 def test_subscription_crud(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
-    assert c.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/x"}).status_code == 403  # no csrf
-    r = c.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/x", "interval_sec": 3600}, headers=h)
+    assert c.post("/api/subs", json={"name": "s", "url": "https://1.2.3.4/x"}).status_code == 403  # no csrf
+    r = c.post("/api/subs", json={"name": "s", "url": "https://1.2.3.4/x", "interval_sec": 3600}, headers=h)
     assert r.status_code == 200
     sid = r.json()["id"]
     assert r.json()["injection"]["headers"]["x-hwid"] == "{machine_id}"   # default injection
@@ -47,7 +47,7 @@ def test_settings_get_put(settings, stub_xray):
 def test_subs_refresh_creates_nodes(settings, stub_xray, monkeypatch):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
-    sid = c.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/x"}, headers=h).json()["id"]
+    sid = c.post("/api/subs", json={"name": "s", "url": "https://1.2.3.4/x"}, headers=h).json()["id"]
     monkeypatch.setattr(
         service, "fetch",
         lambda url, inj, tok, *, proxy: (
@@ -61,16 +61,16 @@ def test_subs_preview_no_network(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
     r = c.post("/api/subs/preview",
-               json={"url": "https://93.184.216.34/x", "injection": {"headers": {"x-hwid": "{machine_id}"}}}, headers=h)
+               json={"url": "https://1.2.3.4/x", "injection": {"headers": {"x-hwid": "{machine_id}"}}}, headers=h)
     assert r.status_code == 200
-    assert r.json()["method"] == "GET" and r.json()["url"] == "https://93.184.216.34/x"
+    assert r.json()["method"] == "GET" and r.json()["url"] == "https://1.2.3.4/x"
     assert r.json()["headers"]["x-hwid"]   # token substituted to a non-empty machine id
 
 
 def test_sub_interval_clamped_and_lifecycle_fields(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
-    r = c.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/x", "interval_sec": 5}, headers=h).json()
+    r = c.post("/api/subs", json={"name": "s", "url": "https://1.2.3.4/x", "interval_sec": 5}, headers=h).json()
     assert r["interval_sec"] == 60                  # R3: floored from 5 → 60
     assert r["enabled"] is True and r["last_error"] is None and r["default_profile_id"] is None
     sid = r["id"]
@@ -104,7 +104,7 @@ def test_preview_nodes_dry_run(settings, stub_xray, monkeypatch):
     h = {"X-CSRF-Token": _login(c)}
     monkeypatch.setattr(routes, "fetch", lambda url, inj, tok, *, proxy: (
         '[{"name": "a", "address": "9.9.9.9", "port": 443, "uuid": "u"}]', "direct", {}))
-    r = c.post("/api/subs/preview-nodes", json={"url": "https://93.184.216.34/x"}, headers=h)
+    r = c.post("/api/subs/preview-nodes", json={"url": "https://1.2.3.4/x"}, headers=h)
     assert r.status_code == 200
     assert r.json()["format"] == "json" and r.json()["count"] == 1
     assert r.json()["returned_count"] == 1 and r.json()["truncated"] is False
@@ -123,7 +123,7 @@ def test_preview_nodes_discloses_partial_table(settings, stub_xray, monkeypatch)
         for i in range(250)
     ])
     monkeypatch.setattr(routes, "fetch", lambda *a, **k: (body, "direct", {}))
-    payload = c.post("/api/subs/preview-nodes", json={"url": "https://93.184.216.34/x"}, headers=h).json()
+    payload = c.post("/api/subs/preview-nodes", json={"url": "https://1.2.3.4/x"}, headers=h).json()
     assert payload["count"] == 250
     assert payload["returned_count"] == 200 and payload["truncated"] is True
 
@@ -131,8 +131,8 @@ def test_preview_nodes_discloses_partial_table(settings, stub_xray, monkeypatch)
 def test_refresh_all_reports_attempted_successes_and_failures(settings, stub_xray, monkeypatch):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
-    first = c.post("/api/subs", json={"name": "good", "url": "https://93.184.216.34/good"}, headers=h).json()
-    second = c.post("/api/subs", json={"name": "bad", "url": "https://93.184.216.34/bad"}, headers=h).json()
+    first = c.post("/api/subs", json={"name": "good", "url": "https://1.2.3.4/good"}, headers=h).json()
+    second = c.post("/api/subs", json={"name": "bad", "url": "https://1.2.3.4/bad"}, headers=h).json()
 
     def fake_refresh(_state, sub):
         if sub.id == first["id"]:
