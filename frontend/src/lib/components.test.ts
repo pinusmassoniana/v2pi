@@ -531,6 +531,84 @@ describe("mounted frontend regressions", () => {
     expect(document.body.textContent).toContain("xray stopped");
   });
 
+  // A completed-but-not-reloaded revocation ("cleaned") and a revocation that found nothing to
+  // cut ("not-live") used to share one backend value and therefore one line of copy — the one
+  // that says nothing was cut. An operator who has just lost a phone reads that as "the panel
+  // did not do it". The two must read as opposites.
+  async function removeOnlyClient(revocation: Rw["revocation"]) {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ has_private_key: true, clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    vi.spyOn(api, "deleteRwClient").mockImplementation(async () =>
+      rw({ has_private_key: true, clients: [], revocation }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    mounted.push(mount(ConfirmModal, { target: document.body }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>(".client-acts button")]
+      .find((b) => b.textContent === "Remove")!.click();
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Confirm")!.click();
+    await flush();
+    return document.body.textContent ?? "";
+  }
+
+  it("says a cleaned revocation was written to the stored config, not that nothing was cut", async () => {
+    const text = await removeOnlyClient("cleaned");
+    expect(text).toContain("cannot come back on the next start");
+    expect(text).not.toContain("no live access to cut");
+  });
+
+  it("still says nothing was cut when nothing was actually serving the inbound", async () => {
+    const text = await removeOnlyClient("not-live");
+    expect(text).toContain("no live access to cut");
+    expect(text).not.toContain("cannot come back on the next start");
+  });
+
+  // A stop that FAILED used to come back as "stopped", so the operator who had just removed a
+  // lost phone read "xray stopped — remote access is down for everyone" about a process that
+  // survived SIGKILL and is still serving that phone's credential. It is the one outcome on this
+  // screen that has to read as a warning rather than a status line.
+  it("warns that a revoked device may still be live when xray could not be stopped", async () => {
+    const text = await removeOnlyClient("stop-failed");
+    expect(text).toContain("SECURITY WARNING");
+    expect(text).toContain("may still be able to connect");
+    expect(text).not.toContain("remote access is down for everyone");
+    const alert = document.querySelector(".msg")!;
+    expect(alert.classList.contains("err")).toBe(true);   // never presented as a success
+    expect(alert.getAttribute("role")).toBe("alert");
+  });
+
+  it("warns the same way when a narrowing save could not stop xray", async () => {
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true,
+           clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    vi.spyOn(api, "putRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true, clients: [], revocation: "stop-failed" }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLButtonElement>("button.btn-primary")!.click();
+    await flush();
+    expect(document.body.textContent).toContain("SECURITY WARNING");
+    expect(document.body.textContent).toContain("may still be live");
+    expect(document.querySelector(".msg")!.classList.contains("err")).toBe(true);
+  });
+
+  it("distinguishes the same two outcomes on a save that narrowed access", async () => {
+    // The save path has its own copy (a narrowing save removes no named client, so "without it"
+    // has no antecedent) — and therefore its own way of conflating the two outcomes.
+    vi.spyOn(api, "getRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true,
+           clients: [{ id: "cid", email: "iphone", enabled: true }] }));
+    vi.spyOn(api, "putRw").mockImplementation(async () =>
+      rw({ enabled: true, has_private_key: true, clients: [], revocation: "cleaned" }));
+    mounted.push(mount(RoadWarrior, { target: document.body }));
+    await flush();
+    document.querySelector<HTMLButtonElement>("button.btn-primary")!.click();
+    await flush();
+    expect(document.body.textContent).toContain("cannot come back on the next start");
+    expect(document.body.textContent).not.toContain("nothing live to narrow");
+  });
+
   it("does not delete a node until the confirm dialog is confirmed (T2)", async () => {
     vi.spyOn(api, "listNodes").mockResolvedValue([node(1, "n1")]);
     const del = vi.spyOn(api, "deleteNode").mockResolvedValue(undefined as any);

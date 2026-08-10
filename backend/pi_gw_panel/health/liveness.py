@@ -32,6 +32,14 @@ log = logging.getLogger("pi_gw_panel")
 DEFAULT_INTERVAL = 20.0        # watchdog + failover-eval cadence
 DEFAULT_PROBE_INTERVAL = 60.0  # active-node real-probe cadence (a throwaway xray each time)
 DEFAULT_PROBE_URL6 = "https://api6.ipify.org?format=json"
+RW_PENDING_KEY = "rw_reconcile_pending"
+
+
+def _reconcile_revocation(state) -> bool:
+    """Default reconciler for `LivenessLoop`. Imported lazily: `api.routes` imports this
+    package's siblings, so a module-level import here closes the cycle."""
+    from pi_gw_panel.api.routes import rw_reconcile_pending
+    return rw_reconcile_pending(state)
 
 
 class LivenessLoop:
@@ -42,11 +50,16 @@ class LivenessLoop:
     WATCHDOG_BASE_BACKOFF = DEFAULT_INTERVAL
     WATCHDOG_MAX_BACKOFF = 600.0
     WATCHDOG_STABLE_SEC = 300.0    # stayed up this long → the next crash is a fresh episode
+    # Pacing for the interrupted-revocation recovery. Same shape as the watchdog's and for the
+    # same reason: a marker that cannot be cleared (an xray that survives SIGKILL) would
+    # otherwise rebuild the config every 20 s forever and file an event each time.
+    RECONCILE_BASE_BACKOFF = DEFAULT_INTERVAL
+    RECONCILE_MAX_BACKOFF = 600.0
 
     def __init__(self, state, interval_sec: float = DEFAULT_INTERVAL,
                  probe_interval: float | None = None,
                  real_through=probe.real_through_node, failover_run=failover.run,
-                 restart=None, now=None, now_iso=None):
+                 restart=None, now=None, now_iso=None, reconcile=None):
         self._state = state
         self._interval = interval_sec
         # None → read `health_active_interval` from the store each tick, so an operator can
@@ -55,6 +68,7 @@ class LivenessLoop:
         self._real_through = real_through
         self._failover_run = failover_run
         self._restart = restart or (lambda st: st.supervisor.start())
+        self._reconcile = reconcile or _reconcile_revocation
         self._now = now or time.time
         self._now_iso = now_iso or (lambda: datetime.now(timezone.utc).isoformat())
         self._last_probe = 0.0
@@ -68,6 +82,9 @@ class LivenessLoop:
         self._last_ready_at = 0.0
         self._next_restart_at = 0.0
         self._backoff_reported = False
+        self._reconcile_attempts = 0
+        self._next_reconcile_at = 0.0
+        self._reconcile_reported = False
 
     # --- B1: restart a crashed xray ---
     def _probe_interval(self) -> float:
@@ -138,6 +155,65 @@ class LivenessLoop:
                 log.warning("watchdog: xray was down — restart attempt %d (ready=%s, "
                             "next attempt in %ds)", self._restart_attempts, ready, int(delay))
 
+    # --- finish a revocation the panel was interrupted in the middle of ---
+    def _reconcile_backoff(self) -> float:
+        return min(self.RECONCILE_MAX_BACKOFF,
+                   self.RECONCILE_BASE_BACKOFF * (2 ** max(0, self._reconcile_attempts - 1)))
+
+    def _reconcile_tick(self, stop_event: threading.Event | None = None) -> None:
+        """Push a committed-but-unapplied revocation into the runtime.
+
+        RUNS WHATEVER THE SUPERVISOR IS DOING, and that is the whole reason it exists. A
+        revocation commits the credential change before it does the runtime work; if the panel
+        dies in between, the already-running xray keeps serving the credential off the config it
+        loaded before. Nothing else in this loop sees that: `_watchdog` returns immediately
+        unless `state()` is 'error', and a process happily serving a revoked device is 'working'.
+        The supervisor's start guard is no help either — it gates a spawn, and no spawn is
+        needed.
+
+        The marker is the only evidence, so it is the only trigger: read it every tick, and hand
+        the work to `rw_reconcile_pending`, which is idempotent (it rebuilds the config from the
+        store) and never starts a process that is down.
+
+        Paced and reported like the watchdog. A marker that cannot be cleared — an xray that
+        survives SIGKILL is exactly that case — must degrade into a 10-minute retry with one
+        event on the record, not a rebuild every 20 s that flushes the event ring.
+        """
+        st = self._state
+        if stop_event is not None and stop_event.is_set():
+            return
+        try:
+            pending = bool(st.store.get_setting(RW_PENDING_KEY))
+        except Exception:
+            log.warning("liveness: could not read the pending-revocation marker", exc_info=True)
+            return
+        if not pending:
+            self._reconcile_attempts = 0
+            self._reconcile_reported = False
+            return
+        now = self._now()
+        if now < self._next_reconcile_at:
+            return
+        self._reconcile_attempts += 1
+        self._next_reconcile_at = now + self._reconcile_backoff()
+        if not self._reconcile_reported:
+            self._reconcile_reported = True
+            with self._write_lock:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                events.record(st.store, "rw-revoke",
+                              "a remote-access revocation did not reach the running xray — "
+                              "retrying until it does", now=now)
+        # OUTSIDE `_write_lock`: this can rebuild a config and re-apply the net rules, and
+        # `stop()` takes that same lock on the event loop. The probe path splits the same way.
+        done = self._reconcile(st)
+        log.warning("liveness: pending remote-access revocation — reconcile attempt %d (%s)",
+                    self._reconcile_attempts, "done" if done else "still pending")
+        if done:
+            self._reconcile_attempts = 0
+            self._reconcile_reported = False
+            self._next_reconcile_at = 0.0
+
     # --- B2: real-probe the active node so fail_count is responsive (SEPARATE xray) ---
     def _probe_active(self, stop_event: threading.Event | None = None) -> None:
         st = self._state
@@ -158,8 +234,11 @@ class LivenessLoop:
                 if (store.get_setting("ipv6_enabled") or "0") == "1" else None)
         # Throwaway xray, NOT the live tunnel — isolating the probe keeps the user's active
         # connection undisturbed during the check (and tunneled_fetch no longer matters here).
-        real_ok, real_ms, egress, egress6 = self._real_through(node, st.xray_bin, probe_url,
-                                                               probe_url6=url6)
+        real_ok, real_ms, egress, egress6 = self._real_through(
+            node, st.xray_bin, probe_url, probe_url6=url6,
+            # the active node may be the operator's own box on the LAN; refused here it would
+            # accrue fail_count every cycle and get failed away from while perfectly healthy
+            allow_private=probe.operator_added(node))
         # a manual switch may have moved the active node while this (seconds-long) probe ran — don't
         # attribute the result or advance fail_count on a node that is no longer active.
         with apply_lock:
@@ -183,6 +262,13 @@ class LivenessLoop:
                         store.record_latency(aid, real_ms)
 
     def _tick(self, stop_event: threading.Event | None = None) -> None:
+        # BEFORE the watchdog: with xray down, finishing the revocation rewrites the config it
+        # would come up on, so the restart below lands on a file that already agrees with the
+        # store rather than one the start guard has to sanitize under the supervisor's lock.
+        try:
+            self._reconcile_tick(stop_event)
+        except Exception:
+            log.warning("liveness revocation reconcile failed", exc_info=True)
         try:
             self._watchdog(stop_event)
         except Exception:

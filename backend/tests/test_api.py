@@ -179,6 +179,12 @@ def test_rollback_reload_failure_installs_disconnected_guard(
     h = {"X-CSRF-Token": _login(c)}
     state = c.app.state.app_state
     state.store.set_setting("prev_active_node_id", "1")
+    # The route asks for the CANDIDATE first and promotes it only once it has been checked
+    # against what the store grants, so a stub rollback() alone no longer gets past the gate:
+    # with no promotable target the route now answers {"ok": false} without touching anything.
+    # An empty-inbounds candidate grants no remote access, so it takes the plain promotion path.
+    monkeypatch.setattr("pi_gw_panel.api.routes.ConfigManager.rollback_target",
+                        lambda _self, *, log=False: {"inbounds": [], "outbounds": []})
     monkeypatch.setattr(
         "pi_gw_panel.api.routes.ConfigManager.rollback", lambda _self: True)
     monkeypatch.setattr(state.supervisor, "reload", lambda: False)

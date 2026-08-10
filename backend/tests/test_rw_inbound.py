@@ -5,6 +5,7 @@ key must never reach the API, an empty client list must never emit an inbound (x
 the generated Shadowrocket .conf must never bypass private ranges, and with the feature off the
 config must be byte-identical to what ships today.
 """
+import base64
 import json
 import os
 import threading
@@ -20,11 +21,13 @@ from pi_gw_panel.xray_config.builder import build_config
 from pi_gw_panel import rw_inbound as rw
 from conftest import _client, _login
 
-# Shaped like real `xray x25519` output — 32 raw bytes, base64url, 43 chars. Not a real
-# keypair, but the API now refuses anything that isn't an x25519 key, so a "looks-like-base64"
-# placeholder no longer stands in for one.
-PRIV = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-PUB = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
+# Shaped like real `xray x25519` output — 32 raw bytes, base64url, 43 chars — because the API
+# refuses anything that isn't an x25519 key, so a "looks-like-base64" placeholder no longer
+# stands in for one. Built from sequential byte ramps rather than written out as literals: a
+# pasted-in live key is indistinguishable from a random literal, and that is precisely how one
+# survives review. Here the bytes are 0x00…0x1F and 0x20…0x3F, fake on inspection.
+PRIV = base64.urlsafe_b64encode(bytes(range(0x20))).decode().rstrip("=")
+PUB = base64.urlsafe_b64encode(bytes(range(0x20, 0x40))).decode().rstrip("=")
 
 
 def _node():
@@ -518,12 +521,18 @@ def test_short_id_generator_endpoint(settings, stub_xray):
     assert c.post("/api/rw/short-id", headers=h).json()["short_id"] != sid   # fresh each time
 
 
-def test_backup_carries_remote_access_but_never_the_private_key(settings, stub_xray, tmp_path):
-    """A restore onto a fresh host must bring remote access back — minus the one secret that
-    must not travel in a document the browser downloads."""
+def test_backup_carries_remote_access_but_never_a_credential(settings, stub_xray, tmp_path):
+    """A restore onto a fresh host must bring the inbound's SHAPE back — minus both credentials,
+    neither of which may travel in a document the browser downloads and hands around.
+
+    The client uuids used to. That made the roster restorable, and a restorable roster is an
+    un-revocable one: a backup taken before a device was cut off puts it back. Both halves are
+    re-established by hand on a fresh host, which is the same work the private key already
+    required.
+    """
     from pi_gw_panel.backup import _SETTINGS_SET, _SETTINGS_NEVER_BACKED_UP
     assert _SETTINGS_NEVER_BACKED_UP.isdisjoint(_SETTINGS_SET)
-    assert "rw_private_key" not in _SETTINGS_SET
+    assert not {"rw_private_key", "rw_clients"} & _SETTINGS_SET
 
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
@@ -531,16 +540,18 @@ def test_backup_carries_remote_access_but_never_the_private_key(settings, stub_x
                            "short_ids": "ab12cd34",
                            "hosts": {"nas.v2pi": "192.168.1.88"}}, headers=h)
     c.post("/api/rw/clients", json={"email": "iphone"}, headers=h)
+    uuid_of_iphone = c.get("/api/rw").json()["clients"][0]["id"]
 
     doc = c.get("/api/backup").json()
     assert PRIV not in json.dumps(doc)
+    assert uuid_of_iphone not in json.dumps(doc)     # the other credential, equally bearer
+    assert "rw_clients" not in doc["settings"]
     assert doc["settings"]["rw_endpoint"] == "home.example.org"
-    assert "iphone" in doc["settings"]["rw_clients"]
     assert json.loads(doc["settings"]["rw_hosts"]) == {"nas.v2pi": "192.168.1.88"}
 
     # Restore onto a genuinely FRESH host (its own data dir + DB) — the migration case, which is
-    # the one that used to lose remote access silently. A same-host restore proves nothing here:
-    # rw_* aren't in the delete list, so they'd survive by accident.
+    # the one that used to lose remote access silently. A same-host restore proves nothing about
+    # the shape keys: they'd be rewritten with the identical values they already held.
     other = tmp_path / "host2"
     other.mkdir()
     settings2 = Settings(data_dir=str(other), db_path=str(other / "test.sqlite"),
@@ -551,9 +562,11 @@ def test_backup_carries_remote_access_but_never_the_private_key(settings, stub_x
     assert fresh.get("/api/rw").json()["clients"] == []           # nothing there yet
     assert fresh.post("/api/restore", json=doc, headers=h2).status_code == 200
     restored = fresh.get("/api/rw").json()
-    assert [x["email"] for x in restored["clients"]] == ["iphone"]
     assert restored["endpoint"] == "home.example.org"
+    assert restored["short_ids"] == "ab12cd34"
+    assert restored["hosts"] == {"nas.v2pi": "192.168.1.88"}
     assert restored["has_private_key"] is False      # re-enter by hand, as documented
+    assert restored["clients"] == []                 # re-enrolled by hand, for the same reason
 
 
 # --- controller: a broken stored setting must not keep the tunnel down ------------------
@@ -677,7 +690,10 @@ def test_a_revocation_with_no_node_left_survives_the_next_bare_start(settings, s
     assert lost in _live_client_ids(settings)            # the file still names the lost device
 
     body = c.delete(f"/api/rw/clients/{lost}", headers=h).json()
-    assert body["revocation"] == "not-live"
+    # `cleaned`, not `not-live`: the file DID carry the inbound and was rewritten without the
+    # credential. Reporting a durable revocation with the value that means "there was nothing
+    # to cut" is the one message on this screen that must not be wrong.
+    assert body["revocation"] == "cleaned"
     assert c.get("/api/status").json()["running"] is False, \
         "a revocation started an xray the operator had deliberately stopped"
     assert lost not in _live_client_ids(settings)
@@ -1041,7 +1057,8 @@ def test_a_revocation_while_xray_is_stopped_cleans_the_config_without_starting_i
     assert lost not in _live_client_ids(settings), \
         "the revoked uuid is still in the config xray would come up on"
     assert kept in _live_client_ids(settings)             # the other device is untouched
-    assert body["revocation"] == "not-live"
+    # The config carried the inbound and was rewritten: a completed revocation, reported as one.
+    assert body["revocation"] == "cleaned"
 
 
 def test_a_revocation_while_stopped_survives_the_next_start(settings, stub_xray):
@@ -1056,7 +1073,9 @@ def test_a_revocation_while_stopped_survives_the_next_start(settings, stub_xray)
     assert c.get("/api/status").json()["active_node_id"] is None
 
     body = c.delete(f"/api/rw/clients/{lost}", headers=h).json()
-    assert body["revocation"] == "not-live"
+    # xray affirmatively down and the stored config rewritten: `cleaned`, which is what makes
+    # the assertion below — that the next start stays clean — a promise and not a coincidence.
+    assert body["revocation"] == "cleaned"
     assert c.get("/api/status").json()["running"] is False
 
     c.post("/api/xray/start", headers=h)                  # the bare-start path, no active node
@@ -1769,7 +1788,8 @@ def test_a_newline_in_the_endpoint_can_never_reach_a_generated_profile(settings,
 
 
 def test_a_malformed_client_id_never_reaches_a_generated_profile(settings, stub_xray):
-    """`rw_clients` is restorable too, and the uuid is interpolated into both artifacts."""
+    """A hand-edited DB can put anything in `rw_clients`, and the uuid is interpolated into both
+    artifacts."""
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
     c.put("/api/rw", json={"private_key": PRIV, "public_key": PUB,

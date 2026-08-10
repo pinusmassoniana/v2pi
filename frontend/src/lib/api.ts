@@ -131,6 +131,20 @@ export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
 // --- road-warrior inbound (reach the gateway + its LAN from outside) ---
 export interface RwClient { id: string; email: string; enabled: boolean; }
+// How a revocation reached the running xray. "cleaned" and "not-live" are NOT interchangeable:
+// "cleaned" means xray is down and the stored config was rewritten, so the credential cannot
+// come back on the next start; "not-live" means the config carried no inbound at all and
+// nothing was written. Reporting the first as the second told operators that a completed
+// revocation had cut nothing.
+//
+// "stopped" and "stop-failed" split the same way and matter more. "stopped" is a confirmed
+// shutdown — nothing is being served. "stop-failed" means the fail-safe stop ran and could not
+// be confirmed (xray survived SIGKILL): the process is still up on the config it loaded, and the
+// REVOKED CREDENTIAL MAY STILL BE LIVE. It reported as "stopped", so the screen told an operator
+// who had just lost a phone that remote access was down while the device could still connect.
+// Anything rendering this value must treat "stop-failed" as a security warning.
+export type RwRevocation =
+  "" | "reapplied" | "rebuilt" | "cleaned" | "stopped" | "stop-failed" | "not-live";
 export interface Rw {
   enabled: boolean; port: number; dest: string; server_names: string; short_ids: string;
   public_key: string; endpoint: string;
@@ -145,9 +159,8 @@ export interface Rw {
   clients: RwClient[];
   live: boolean;                 // the running xray config reflects these settings
   // How a revocation (client suspended/deleted, feature switched off, key rotated) reached the
-  // running xray: "" for anything that isn't a revocation, else "reapplied" | "rebuilt" |
-  // "stopped" | "not-live". Never empty on a revocation — see backend RwOut for the full contract.
-  revocation: string;
+  // running xray. Never empty on a revocation — see backend RwOut for the full contract.
+  revocation: RwRevocation;
 }
 export interface RwPatch {
   enabled?: boolean; port?: number; dest?: string; server_names?: string; short_ids?: string;

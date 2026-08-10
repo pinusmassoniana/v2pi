@@ -127,8 +127,22 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
             return _record_enforcement(
                 net, NetResult(ok=False, error="network backend cannot install fail-closed guard"),
                 wan_blocked=None)
-        return _call_net(net, "apply_guard", NetPlan.from_store(store, settings),
-                         wan_blocked=True)
+        # Rendering the plan is INSIDE the guard, not an argument expression. `_call_net` only
+        # wraps the backend call, so `NetPlan.from_store(...)` evaluated as an argument raised
+        # straight out of stop_net — past every caller, all of which treat this as a function
+        # that reports failure by returning a NetResult. A revocation calls it after the
+        # credential has already been taken out of the store and the config, inside one DB
+        # transaction, so a raise here rolled the revocation itself back: the operator got an
+        # error, the device stayed granted, and xray was left in whatever state the stop had
+        # reached. Malformed stored net settings (hand-edited DB, foreign backup) are exactly
+        # what can make the render raise, and they must not be able to veto a revocation.
+        try:
+            plan = NetPlan.from_store(store, settings)
+        except Exception as exc:
+            return _record_enforcement(
+                net, NetResult(ok=False, error=f"could not render the net plan: {exc}"),
+                wan_blocked=None)
+        return _call_net(net, "apply_guard", plan, wan_blocked=True)
     return _call_net(net, "teardown", wan_blocked=False)
 
 
@@ -279,7 +293,12 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
                 # No verified prior tunnel remains. Stop any uncertain candidate process, then
                 # install the kill-switch-aware guard. Never call raw teardown on this path.
                 try:
-                    supervisor.stop()
+                    # False = the child outlived SIGKILL and is still up on the candidate
+                    # config. Recorded, not retried: the fail-closed net guard below is what
+                    # keeps clients off it, and starting anything on top of a process we could
+                    # not stop only adds a second xray to the same port.
+                    if supervisor.stop() is False:
+                        recovery.append("xray could not be stopped (it survived SIGKILL)")
                 except Exception as stop_exc:
                     recovery.append(f"xray stop raised: {stop_exc}")
                 guard = stop_net(settings, net, store)

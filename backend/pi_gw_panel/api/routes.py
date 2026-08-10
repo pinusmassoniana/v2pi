@@ -31,8 +31,8 @@ from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.auth import tokens
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
 from pi_gw_panel.controller import (
-    apply_node, apply_net, reapply_active_node, build_node_config, apply_lock, stop_net, sync_net,
-    restore_backup)
+    ApplyResult, apply_node, apply_net, reapply_active_node, build_node_config, apply_lock,
+    stop_net, sync_net, restore_backup)
 from pi_gw_panel.net_control import netcheck, events as conn_events
 from pi_gw_panel.net_control.plan import NetPlan, net24
 from pi_gw_panel import rw_inbound as rw_mod
@@ -659,10 +659,17 @@ def xray_stop(request: Request,
     selection is kept."""
     state = get_state(request)
     with apply_lock:
-        state.supervisor.stop()
+        # The stop is bounded now, so it can come back having NOT stopped anything (a child that
+        # outlived SIGKILL). The net rules still come down — a process we cannot kill is exactly
+        # when the fail-closed guard matters — but the answer says so rather than reporting a
+        # stop that did not happen.
+        stopped = state.supervisor.stop() is not False
         result = stop_net(state.settings, state.net, state.store)
         if not result.ok:
             raise HTTPException(status_code=502, detail=result.error or "network stop failed")
+        if not stopped:
+            raise HTTPException(status_code=502,
+                                detail="xray did not stop (it survived SIGKILL)")
     conn_events.record(state.store, "xray-stop", "xray-core stopped")
     return {"ok": True}
 
@@ -670,22 +677,53 @@ def xray_stop(request: Request,
 @router.post("/rollback")
 def rollback(request: Request,
              _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """Promote the last-good config back to live, then make the runtime match it.
+
+    The promoted config is by definition OLDER than the store, and remote-access credentials
+    are the one thing where older means MORE access: a snapshot taken before a revocation still
+    names the device that was cut off. A revocation drops the rollback target for exactly that
+    reason, but the drop is a separate durable write that can fail — and on the paths that
+    write no config at all it is the only guard there is. A failure there left a valid pairing
+    behind, and this route would then reinstall the revoked credential and reload xray onto it.
+
+    So the candidate is checked against the store BEFORE it is promoted, not after: it is
+    rewritten to what the store actually grants and that is what gets installed, or the rollback
+    is refused (409) with the live config never touched and the process still serving what it
+    already had. Checking after the promotion was not a guard but a report — the 409 left the
+    credential-bearing file installed as the live config, and the next start (the watchdog's
+    included) came up on it. A rollback the operator asked for may cost them a config; it may
+    never hand a revoked device its access back.
+    """
     state = get_state(request)
     with apply_lock:
-        ok = ConfigManager(state.settings, xray_bin=state.xray_bin).rollback()
+        mgr = ConfigManager(state.settings, xray_bin=state.xray_bin)
+        candidate = mgr.rollback_target(log=True)
+        ok = candidate is not None
         if ok:
+            # Promotion happens in here, and only for a candidate proven serveable — BEFORE the
+            # reload below, and before the stop/net branch too.
+            _rw_guard_promotion(state, mgr, candidate)
             prev = state.store.get_setting("prev_active_node_id")
+            # Both recovery stops below are BOUNDED now, so either can come back having stopped
+            # nothing (a child that outlived SIGKILL). Their answers used to be discarded, which
+            # on the no-previous-node branch meant the route went on to clear the active state
+            # and answer {"ok": true} while xray was still running — a rollback reported as
+            # complete with the old process still serving the config it had loaded.
+            stopped = True
             if prev:
                 if not state.supervisor.reload():
-                    state.supervisor.stop()
+                    stopped = state.supervisor.stop() is not False
                     guard = stop_net(state.settings, state.net, state.store)
                     detail = "rolled-back Xray did not become ready"
                     if not guard.ok:
                         detail += f"; fail-closed recovery failed: {guard.error}"
+                    if not stopped:
+                        detail += ("; xray survived SIGKILL and is still running on the config "
+                                   "it had loaded")
                     raise HTTPException(status_code=502, detail=detail)
                 net_result = apply_net(state.settings, state.net, state.store)
             else:
-                state.supervisor.stop()
+                stopped = state.supervisor.stop() is not False
                 net_result = stop_net(state.settings, state.net, state.store)
             if not net_result.ok:
                 # Ensure the least permissive available state even when restoring the previous
@@ -695,6 +733,15 @@ def rollback(request: Request,
                 if not guard.ok:
                     detail += f"; fail-closed recovery failed: {guard.error}"
                 raise HTTPException(status_code=502, detail=detail)
+            if not stopped:
+                # AFTER `stop_net` — the fail-closed guard is exactly what a process we cannot
+                # kill calls for, so it is completed first — and BEFORE the store write, because
+                # clearing the active selection would record a tunnel that is demonstrably still
+                # up. The operator is told what survived rather than shown a success.
+                raise HTTPException(
+                    status_code=502,
+                    detail="rolled back, but xray did not stop (it survived SIGKILL) and is "
+                           "still running on the config it had loaded")
             with state.store.transaction():
                 state.store.set_setting("active_node_id", prev if prev else "")
                 state.store.set_setting(
@@ -1744,6 +1791,26 @@ def _rw_rebuild_node(state):
     return None
 
 
+def _rw_config_shape(cfg) -> bool:
+    """Whether `cfg` is shaped like an xray config we can reason about — an object whose
+    `inbounds` is a list of objects. Anything else cannot be reconciled or compared, because we
+    cannot tell what removing the remote-access inbound from it would leave behind."""
+    inbounds = cfg.get("inbounds") if isinstance(cfg, dict) else None
+    return isinstance(inbounds, list) and all(isinstance(i, dict) for i in inbounds)
+
+
+def _rw_config_from_disk(state) -> dict | None:
+    """The live config parsed, or None when it cannot be read as an xray config. The one reader
+    behind both the sanitize and the excess check, so they cannot disagree about what the file
+    says; they differ only in what they make of None, and deliberately (see each)."""
+    try:
+        with open(state.settings.config_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        return None
+    return cfg if _rw_config_shape(cfg) else None
+
+
 def _rw_sanitized_config(state) -> dict | None:
     """The config ON DISK with its remote-access inbound brought in line with what the store
     says AFTER the revocation — or None when the live file cannot be read as an xray config.
@@ -1779,21 +1846,28 @@ def _rw_sanitized_config(state) -> dict | None:
     removing the inbound would leave behind. `_rw_write_config` falls back to a node rebuild for
     exactly that case — a file we cannot read is the one thing a rebuild is still better at.
     """
-    try:
-        with open(state.settings.config_path) as f:
-            cfg = json.load(f)
-        if not isinstance(cfg, dict):
-            return None
-        inbounds = cfg["inbounds"]
-        if not isinstance(inbounds, list) or not all(isinstance(i, dict) for i in inbounds):
-            return None
-    except Exception:
-        return None
+    cfg = _rw_config_from_disk(state)
+    return None if cfg is None else _rw_reconciled(state, cfg)
+
+
+def _rw_reconciled(state, cfg: dict) -> dict:
+    """`cfg`, edited in place, with every remote-access fragment brought in line with what the
+    store grants now. Returns the same object.
+
+    Split out of `_rw_sanitized_config` because the live file is not the only config that has to
+    pass this test before it is served: `POST /rollback` promotes one that is by definition older
+    than the store, and it has to be reconciled BEFORE it is installed rather than after — a
+    credential-bearing file that is already live is not made harmless by the fact that we noticed.
+    Same edit, same guarantee, applied to a config in hand instead of one on disk.
+
+    Callers must have checked `_rw_config_shape` (both entry points do): the reconcile edits
+    `inbounds` and cannot invent a shape it did not get.
+    """
     try:
         rw = rw_mod.resolve(state.store)
     except ValueError:
         rw = None
-    kept = [i for i in inbounds if i.get("tag") != RW_TAG]
+    kept = [i for i in cfg["inbounds"] if i.get("tag") != RW_TAG]
     if rw is not None:
         kept.append(rw_inbound_block(rw))
     else:
@@ -1905,9 +1979,26 @@ def _rw_write_config(state) -> bool:
     rebuild from, a full disk, an `xray -test` that rejects the result). It fails safe rather
     than raising: the file may still carry the credential, and the caller has to take that as a
     failed revocation — not as a 500, and not as a success.
+
+    That promise covers the SETUP as well as the two producers. Constructing the ConfigManager
+    and looking the rebuild node up used to sit outside the per-producer `try`, so a raise there
+    left the function through the one exit its callers do not handle: `_rw_revoke_apply` runs
+    inside the handler's DB transaction, so it took the client deletion down with it, and
+    `_rw_guard_start` turned it into a 500 out of `/xray/start`. The node lookup failing is not
+    even fatal — sanitizing the file on disk needs no node — so it degrades to None instead of
+    ending the write.
     """
-    mgr = ConfigManager(state.settings, xray_bin=state.xray_bin)
-    node = _rw_rebuild_node(state)
+    try:
+        mgr = ConfigManager(state.settings, xray_bin=state.xray_bin)
+    except Exception:
+        logger.exception("a remote-access revocation could not open the config manager")
+        return False
+    try:
+        node = _rw_rebuild_node(state)
+    except Exception:
+        logger.exception("a remote-access revocation could not read the node to rebuild from; "
+                         "sanitizing the config on disk instead")
+        node = None
 
     def _sanitize():
         return _rw_sanitized_config(state)
@@ -1953,13 +2044,14 @@ def _rw_live_excess(state) -> bool:
     it cannot parse — a config that cannot be served grants nothing, and refusing to start on it
     would only take away the operator's ability to see the process fail.
     """
-    try:
-        with open(state.settings.config_path) as f:
-            cfg = json.load(f)
-        inbounds = cfg["inbounds"] if isinstance(cfg, dict) else None
-        if not isinstance(inbounds, list):
-            return False
-    except Exception:
+    cfg = _rw_config_from_disk(state)
+    return False if cfg is None else _rw_excess(state, cfg)
+
+
+def _rw_excess(state, cfg: dict) -> bool:
+    """`_rw_live_excess` for a config in hand — the rollback candidate, before it is promoted."""
+    inbounds = cfg.get("inbounds") if isinstance(cfg, dict) else None
+    if not isinstance(inbounds, list):
         return False
     live = frozenset().union(*[rw_grants(i) for i in inbounds
                                if isinstance(i, dict) and i.get("tag") == RW_TAG] or [frozenset()])
@@ -1973,9 +2065,10 @@ def _rw_live_excess(state) -> bool:
     return bool(live - granted)
 
 
-def _rw_guard_start(state) -> None:
-    """Refuse to start xray on a config that grants more remote access than the store does —
-    after one attempt to bring the file into line, which is all a revocation ever needed.
+def _rw_reconcile_before_serving(state) -> bool:
+    """Whether the config on disk may be served — after one attempt to bring it into line, which
+    is all a revocation ever needed. False means it still grants revoked access and could not be
+    rewritten, and nothing may load it.
 
     Fails CLOSED. Not starting costs the operator a tunnel they can restore by fixing whatever
     stopped the sanitize from landing; starting hands a lost device its access back, minutes
@@ -1983,16 +2076,91 @@ def _rw_guard_start(state) -> None:
     path takes the outage.
     """
     if not _rw_live_excess(state):
-        return
+        return True
     if _rw_write_config(state):
         conn_events.record(state.store, "rw-revoke",
                            "cleaned a remote-access grant the store no longer makes out of the "
-                           "config before starting xray")
+                           "config before serving it")
+        return True
+    return False
+
+
+def rw_start_guard(state) -> bool:
+    """The credential guard as the SUPERVISOR's start hook (wired in `state.build_state`).
+
+    The route-level calls below cover the two starts a request can ask for. They cannot cover the
+    one nobody asks for: the liveness watchdog restarts a crashed xray with a plain
+    `supervisor.start()`, on whatever config is on disk, with no request and no route in sight —
+    so a revocation that could not rewrite the file (a full disk, a rejected `xray -test`) ends
+    at the stop, and twenty seconds later the watchdog undoes the stop and serves the revoked
+    credential again. Guarding the callers one at a time leaves that door and every future one
+    open; the guard belongs where the process is actually spawned.
+
+    Returns a bool and never raises: this runs inside the supervisor's own lock, on a background
+    thread, where an exception would be swallowed by the watchdog's best-effort handler and read
+    as "start attempted". False = do not spawn — which the supervisor reports as a failed start,
+    so the watchdog backs off and the panel shows why instead of looping.
+    """
+    try:
+        return _rw_reconcile_before_serving(state)
+    except Exception:
+        logger.exception("the remote-access start guard failed; refusing to start xray")
+        return False
+
+
+def _rw_guard_start(state) -> None:
+    """`_rw_reconcile_before_serving` for a request, refusing with 409.
+
+    The bare `/xray/start` — no active node, so nothing is rebuilt and the file is served as
+    found — is what needs an answer with a status code on it. Called BEFORE anything is started,
+    which is the only position where refusing still costs nothing. The other config the store did
+    not produce goes through `_rw_guard_promotion` (a rollback candidate has to be reconciled
+    before it is installed, not after), and the start nobody requests through `rw_start_guard`.
+    """
+    if not _rw_reconcile_before_serving(state):
+        raise HTTPException(
+            status_code=409,
+            detail="refusing to serve this config: it still grants remote access that has been "
+                   "revoked, and it could not be rewritten. Reconnect a node to rebuild it.")
+
+
+def _rw_guard_promotion(state, mgr, candidate: dict) -> None:
+    """Install `candidate` — the config `POST /rollback` wants to promote — only in a form the
+    store actually grants. Raises 409 without touching the live config when that is impossible.
+
+    The order is the whole point, and it was wrong: the candidate used to be promoted first and
+    checked afterwards, so a sanitize that could not land left the credential-bearing file
+    installed as the live config and returned 409 about it. Nothing rolled that back, and the
+    file is what the next start comes up on — including the watchdog's, which asks no route for
+    permission. "We refused" has to mean the file was never installed, not that we disapproved of
+    installing it.
+
+    A candidate that grants nothing the store does not is promoted by `rollback()` itself, which
+    keeps the provenance pairing honest (a repeated rollback stays a provable no-op). One that
+    does is rewritten and written through `apply_irreversible`, which validates it and publishes
+    no pairing at all — a cleaned rollback must not leave a fresh target for a second attempt to
+    promote back to the version we just refused.
+    """
+    if not _rw_excess(state, candidate):
+        if not mgr.rollback():
+            raise HTTPException(status_code=409, detail="no promotable rollback target")
         return
-    raise HTTPException(
-        status_code=409,
-        detail="refusing to start: the stored config still grants remote access that has been "
-               "revoked, and it could not be rewritten. Reconnect a node to rebuild it.")
+    clean = _rw_reconciled(state, candidate) if _rw_config_shape(candidate) else None
+    written = False
+    if clean is not None and not _rw_excess(state, clean):
+        try:
+            written = mgr.apply_irreversible(clean)[0]
+        except Exception:
+            logger.exception("the rollback candidate could not be rewritten")
+            written = False
+    if not written:
+        raise HTTPException(
+            status_code=409,
+            detail="refusing to roll back: the last-good config still grants remote access that "
+                   "has been revoked, and it could not be rewritten. Nothing was promoted.")
+    conn_events.record(state.store, "rw-revoke",
+                       "cleaned a remote-access grant the store no longer makes out of the "
+                       "rollback target before promoting it")
 
 
 def _rw_live_inbound(state) -> bool:
@@ -2063,8 +2231,145 @@ def _rw_serving(state) -> bool:
     return _rw_supervisor_running(state) is not False and _rw_live_inbound(state)
 
 
+RW_PENDING_KEY = "rw_reconcile_pending"
+
+# The outcomes that PROVE the runtime no longer serves what the store stopped granting: the
+# config was rebuilt and reloaded, or rewritten while xray was down, or provably never carried
+# the inbound, or xray was confirmed stopped. Only these clear the marker. Anything else — an
+# outcome that could not confirm the stop, or no outcome at all because the process died
+# mid-revocation — leaves it set, and the recovery below retries.
+_RW_RECONCILED = frozenset({"reapplied", "rebuilt", "cleaned", "not-live", "stopped"})
+
+
+def _rw_mark_reconcile_pending(store) -> None:
+    """Record, IN THE CALLER'S TRANSACTION, that a narrowing mutation has not yet been pushed
+    into the running xray.
+
+    A revocation commits its store half before it touches the runtime — it has to, because the
+    runtime work opens transactions of its own and a failure in one used to discard the whole
+    unit (see `_rw_revoke`). That ordering is right and it leaves a window: between the commit
+    and the reconcile, the store grants less than the config an ALREADY-RUNNING xray is serving.
+    Nothing else closes that window. `apply_lock` serializes requests, not process death. The
+    supervisor's start guard only gates a spawn, and the running process needs none. The liveness
+    watchdog only acts on an xray in 'error' state, and a healthy process serving a revoked
+    credential looks exactly like a healthy process.
+
+    So the fact that the runtime is behind is made DURABLE, atomically with the mutation that put
+    it behind. Deliberately NOT guarded: it goes in with the narrowing or the narrowing does not
+    go in at all. A commit that silently dropped the marker would be the original hole with no
+    record that it exists.
+    """
+    store.set_setting(RW_PENDING_KEY, "1")
+
+
+def _rw_reconcile_is_pending(state) -> bool:
+    """Whether a committed narrowing is still waiting for its runtime half.
+
+    A store read that FAILS answers False — "do not act now", not "nothing to do". The marker is
+    durable, so nothing is lost by waiting for the next tick, whereas treating an unreadable
+    store as pending would run a full config rebuild on every pass while the database is broken.
+    """
+    try:
+        return bool(state.store.get_setting(RW_PENDING_KEY))
+    except Exception:
+        logger.warning("could not read the pending-revocation marker", exc_info=True)
+        return False
+
+
+def _rw_clear_reconcile_pending(state) -> None:
+    """Drop the marker. Guarded: failing to clear it costs one redundant reconcile later (the
+    revocation is idempotent — it rebuilds the config from the store either way), while raising
+    here would turn a COMPLETED revocation into a 500."""
+    try:
+        state.store.set_setting(RW_PENDING_KEY, "")
+    except Exception:
+        logger.warning("could not clear the pending-revocation marker; the reconcile will be "
+                       "retried", exc_info=True)
+
+
+def rw_reconcile_pending(state) -> bool:
+    """Finish a revocation whose store half committed and whose runtime half did not. Returns
+    whether nothing is pending any more.
+
+    Wired into BOTH ends of the panel's own lifecycle — the lifespan startup (`app.py`) and every
+    liveness tick (`health/liveness.py`) — and neither asks whether xray is running first. That
+    is the entire point: the case this exists for is a HEALTHY process still serving a credential
+    the store gave up. The start guard cannot see it (nothing is spawning), the watchdog will not
+    touch it (`state()` reads 'working'), and no request is coming.
+
+    The reconcile is just the revocation again: `_rw_revoke` rebuilds the config from the store,
+    reloads a process it can confirm is running, and stops one it cannot — idempotent, so running
+    it against an already-reconciled runtime is a no-op that clears the marker.
+
+    IT CANNOT WEDGE THE PANEL, by construction:
+      * No request handler reads the marker. A marker that never clears refuses nothing, blocks
+        nothing, and changes no response.
+      * It never STARTS xray. `_rw_revoke` reconnects only a supervisor it affirmatively observes
+        running and reloads through `reload_if_running`, so a stuck marker cannot become a
+        restart loop — the failure mode a naive "pending → restart" recovery would have.
+      * The caller paces the retries (the liveness loop backs off to 10 minutes) and reports the
+        episode once, so a permanently stuck marker cannot flush the connection-event ring.
+      * Startup logs and continues. A panel that refused to boot on an unreconcilable marker
+        would take away the one screen the operator could fix it from.
+
+    Never raises: it runs on a background thread and in the lifespan, where an exception is
+    either swallowed or takes the boot down.
+    """
+    if not _rw_reconcile_is_pending(state):
+        return True
+    try:
+        with apply_lock:                     # RLock: nesting under a caller that holds it is fine
+            # Re-check under the lock — a request may have finished the same revocation between
+            # the read above and here, and re-running it would rebuild the config for nothing.
+            if not _rw_reconcile_is_pending(state):
+                return True
+            how = _rw_revoke(state)
+    except Exception:
+        logger.exception("a pending remote-access reconciliation could not be finished")
+        return False
+    resolved = how in _RW_RECONCILED
+    logger.warning("a remote-access revocation had not reached the running xray; reconciling it "
+                   "%s (%s)", "completed" if resolved else "is still pending", how or "no outcome")
+    return resolved
+
+
 def _rw_revoke(state) -> str:
     """Push a REVOCATION into the running xray, failing safe. Returns HOW it was applied.
+
+    CALLED WITH THE CREDENTIAL CHANGE ALREADY COMMITTED, and with `apply_lock` still held. The
+    handlers used to run this inside their own `store.transaction()`, on the theory that a
+    revocation is one unit; it cannot be. Every runtime step here can open a transaction of its
+    own — `apply_node` persists the active-node bookkeeping in one — and `_SafeConn` nests by
+    DEPTH: a failure in an inner block marks the whole unit rollback-only, so the outer exit
+    discarded the credential removal and the incident event no matter how carefully the call that
+    contained it was guarded. The operator got a 500, the device stayed granted in the store, and
+    xray had often already been stopped. A revocation that fails open is not a revocation.
+
+    So the store is committed first and the runtime work happens after. `apply_lock` is what
+    keeps that pair atomic against other requests — every other mutator of the config, the
+    supervisor and the net rules takes it too — and it is the only thing that ever could: a DB
+    transaction cannot roll back a stopped process or a rewritten config file, which is precisely
+    the state a failed revocation leaves behind.
+
+    The window this opens is "committed, not yet applied", and it is the safe direction: the
+    store already grants less than the config, and every path that can make that config live
+    reconciles it against the store first — an apply/connect rebuilds from the store, and the
+    two that serve a file as found (`/xray/start`, `POST /rollback`) plus the supervisor's own
+    start guard sanitize or refuse. A crash inside the window therefore ends with the credential
+    gone and the file cleaned by whoever next tries to serve it, never with it quietly restored.
+
+    THAT COVERS EVERY WAY THE FILE BECOMES LIVE, AND ONE WAY NEEDS NO SPAWN AT ALL: the xray that
+    is already up. It loaded the pre-revocation config minutes ago and keeps serving it; the
+    start guard gates `Popen` and nothing else, and the watchdog only touches a supervisor in
+    'error' state, so a healthy process holding a revoked credential is precisely what every
+    guard above is blind to. `apply_lock` does not help either — it excludes competing requests,
+    not the thread or the process dying mid-revocation.
+
+    So the caller records the gap durably, in the same transaction as the mutation that opened it
+    (`_rw_mark_reconcile_pending`), and this function clears it only when the runtime work
+    actually reached one of the outcomes that PROVE the credential is no longer served
+    (`_RW_RECONCILED`). Startup and every liveness tick finish whatever is still marked, running
+    xray or not — see `rw_reconcile_pending`.
 
     A rollback may not undo it, so the rollback target is dropped on the way out — see
     `_rw_revoke_apply` for the mechanics and `ConfigManager.invalidate_rollback` for why the
@@ -2084,7 +2389,7 @@ def _rw_revoke(state) -> str:
     logged as an error and written into the connection log rather than swallowed.
     """
     try:
-        return _rw_revoke_apply(state)
+        how = _rw_revoke_apply(state)
     finally:
         if not ConfigManager(state.settings, xray_bin=state.xray_bin).invalidate_rollback():
             logger.error("a remote-access revocation could not invalidate the rollback target; "
@@ -2093,6 +2398,12 @@ def _rw_revoke(state) -> str:
                 state.store, "rw-revoke",
                 "could not drop the rollback target after a remote-access revocation — "
                 "rolling back may reinstate the revoked device")
+    # AFTER the sweep and outside its `finally`, so an outcome that never arrived — the runtime
+    # half raised, or the process died before this line — leaves the marker exactly where the
+    # transaction put it and the recovery picks it up.
+    if how in _RW_RECONCILED:
+        _rw_clear_reconcile_pending(state)
+    return how
 
 
 def _rw_revoke_apply(state) -> str:
@@ -2119,9 +2430,15 @@ def _rw_revoke_apply(state) -> str:
         revocation that survives only until the next start is not a revocation.
       * Making the RUNNING process pick that file up is a reload, and reload() is an
         unconditional stop→start. Only a supervisor we affirmatively know is running may be
-        told to do it. The same goes for reapply_active_node, which starts xray AND re-applies
-        the net rules: `/xray/stop` keeps the node selection, so a revocation issued while xray
-        was deliberately down used to bring the whole tunnel back UP in order to revoke.
+        told to do it — and "know" cannot mean the sample taken at the top of this function.
+        That sample and the reload are two separate holds of the supervisor's lock, so a child
+        that exits in between turns the reload into a plain START of an xray that was down, on
+        the config that happens to be on disk. The reload therefore goes through
+        `reload_if_running`, which re-checks and restarts under one lock hold and reports which
+        of the two it did. The same goes for reapply_active_node, which starts xray AND
+        re-applies the net rules: `/xray/stop` keeps the node selection, so a revocation issued
+        while xray was deliberately down used to bring the whole tunnel back UP in order to
+        revoke.
 
     A revocation may take access away. It may never give any back — least of all by starting a
     process the operator stopped.
@@ -2130,6 +2447,18 @@ def _rw_revoke_apply(state) -> str:
     fails is not one — it falls through to the write-only path and, failing that, to the stop,
     because the alternatives are reporting a revocation that did not happen or raising out of
     the transaction the whole handler runs in and rolling the revocation itself back.
+
+    IT HAS NO OTHER EXIT AT ALL. Every call here is guarded, because the caller removed the
+    credential from the store BEFORE calling: an exception escaping this function is a revocation
+    whose runtime half stopped halfway with nothing to say for itself. It no longer un-commits
+    the deletion (the transaction closes before this runs — see `_rw_revoke`), and that is
+    exactly why the guards stay: the store is already the truth, so the operator must be told
+    what the box did to match it, not handed a 500 that describes neither. A supervisor that
+    throws on stop, a network backend that throws instead of reporting, a config manager that
+    cannot even be constructed: all of them are recorded and returned, never raised. The
+    connection log carries the detail of a failed stop; the OUTCOME carries the fact of it —
+    `stopped` only when xray is confirmed down, `stop-failed` when the fail-safe stop ran and
+    could not be confirmed, which is the case where the revoked credential may still be live.
     """
     running = _rw_supervisor_running(state)
 
@@ -2145,18 +2474,25 @@ def _rw_revoke_apply(state) -> str:
         # running afterwards, in a `finally`, whose failure was logged and then reported as a
         # successful revocation. The pairing is now never written on this path either, and the
         # sweep is a backstop instead of the guard.
-        res = reapply_active_node(state, irreversible=True)
+        try:
+            res = reapply_active_node(state, irreversible=True)
+        except Exception as exc:
+            # It documents that it never raises, and every runtime call inside it is guarded —
+            # but this is the one call site where being wrong about that costs the revocation
+            # itself rather than a boot, so the claim is not taken on trust. A rebuild that
+            # raised is a rebuild that failed: same fall-through, same event.
+            logger.exception("a remote-access revocation's rebuild raised")
+            res = ApplyResult(ok=False, error=f"rebuild raised: {exc}")
         if res is not None and res.ok:
             return "reapplied"
         if res is not None:
             # A failed REBUILD is not a finished revocation, and it may not be reported as one —
-            # nor as a 502. Raising out of here aborts the whole handler, and the handler is one
-            # DB transaction: the client deletion, the settings write and every event recorded on
-            # the way roll back with it, leaving the operator a 500-shaped error, a device still
-            # granted in the store, and an xray still serving it. Everything below this point is
-            # already the answer to "no clean config could be produced or made live" — sanitize
-            # the file instead of re-rendering it, and take xray down if even that fails — so a
-            # failed rebuild continues down it rather than ending the revocation.
+            # nor as a 502. Raising out of here abandons the runtime half of a revocation whose
+            # store half is already committed: the operator is left a 500-shaped error about a
+            # device the store no longer grants but xray may still be serving. Everything below
+            # this point is already the answer to "no clean config could be produced or made
+            # live" — sanitize the file instead of re-rendering it, and take xray down if even
+            # that fails — so a failed rebuild continues down it rather than ending here.
             logger.error("a remote-access revocation could not rebuild the active node's config "
                          "(%s); falling back to rewriting the live config", res.error)
             conn_events.record(
@@ -2175,6 +2511,11 @@ def _rw_revoke_apply(state) -> str:
     # carries, and the write below is precisely what stops the answer being true. A config that
     # provably holds no rw-in cannot hold the revoked credential either, so there is nothing to
     # cut, nothing to clean, and no reason to disturb the process to prove it.
+    #
+    # `not-live` means THIS and only this — the one exit that changed nothing because there was
+    # nothing to change. It used to be shared with the branch below, which rewrites the config
+    # and is a completed revocation; one string cannot carry both, and the screen was telling
+    # operators "nothing was cut" about a revocation that had just been made durable.
     if not _rw_live_inbound(state):
         return "not-live"
 
@@ -2182,40 +2523,94 @@ def _rw_revoke_apply(state) -> str:
 
     if running is True and written:
         try:
-            # The reload is guarded: a supervisor that throws on the way back up is a failed
-            # rebuild, not a reason to abandon the revocation with a 500 and leave the old
-            # config serving. Anything short of a confirmed reload falls through to the stop.
-            if state.supervisor.reload():
-                return "rebuilt"
+            # `reload_if_running`, not `reload`: `running` was sampled at the top of this
+            # function and the supervisor's lock has been released and retaken several times
+            # since. A child that exited in between would be STARTED by a bare reload — on the
+            # config it happens to find — which is the one thing a revocation may never do.
+            #
+            # Still guarded: a supervisor that throws on the way back up is a failed rebuild,
+            # not a reason to abandon the revocation with a 500 and leave the old config
+            # serving. Anything short of a confirmed reload falls through to the stop.
+            reloaded = state.supervisor.reload_if_running()
         except Exception:
-            pass
-    elif running is False and written:
+            reloaded = False
+        if reloaded is True:
+            return "rebuilt"
+        if reloaded is None:
+            # It was not running after all, and nothing was started to find that out. The file
+            # it would come up on no longer names the revoked client, so this is the same
+            # completed revocation the affirmatively-down branch below reports — reached through
+            # a process that went away rather than one the operator had already stopped.
+            running = False
+    if running is False and written:
         # Affirmatively down, and now the file it would come up on no longer names the revoked
         # client. Nothing is being served and nothing will be on a later start — which is the
         # whole of what this revocation had to achieve. Starting xray to "apply" it would be
         # the one outcome worse than doing nothing, and stopping an already-stopped process
-        # proves nothing, so `not-live` here is a completed revocation, not a no-op.
-        return "not-live"
+        # proves nothing.
+        #
+        # `cleaned`, NOT `not-live`. The config DID carry the inbound (checked above) and was
+        # rewritten to strip the credential; that is a completed, durable revocation, and
+        # reporting it with the string that means "there was nothing to cut" told the operator
+        # the opposite of what happened — the one message on this screen that has to be right,
+        # because the next thing they decide is whether the lost device is still a problem.
+        return "cleaned"
 
     # Unknown state (stopping is correct if xray was running and a no-op if it was not, so it
     # is the one action that is safe under both readings), or no clean config could be produced
     # or made live. Stop xray: remote access is gone for everyone, which is the safe direction —
     # the alternative is a revoked device keeping its access. Bring the net rules to their
     # tunnel-down state as /xray/stop does.
-    state.supervisor.stop()
-    guard = stop_net(state.settings, state.net, state.store)
+    #
+    # Both are guarded, and the reason is not tidiness. `supervisor.stop()` shells out to
+    # terminate/wait/kill; `stop_net` runs host commands that are now bounded by a timeout and
+    # surface as an ordinary command failure. Either can raise, and by this point the credential
+    # is already out of the store — and, when `written`, out of the config — so a raise here
+    # discards the revocation with the transaction instead of merely losing a log line.
+    stop_detail = ""
+    try:
+        # A bounded stop can now report failure by RETURNING False (a child that outlived
+        # SIGKILL) as well as by raising. Both mean the same thing here — xray may still be
+        # serving the credential — and both have to be said out loud rather than folded into
+        # "stopped xray". What neither may become is a restart: the process is still up and
+        # still holds the port, so there is nothing to start and nothing that starting fixes.
+        if state.supervisor.stop() is False:
+            stop_detail = " (the stop itself failed: xray survived SIGKILL)"
+            logger.error("a remote-access revocation could not stop xray: it survived SIGKILL")
+    except Exception as exc:
+        stop_detail = f" (the stop itself failed: {exc})"
+        logger.error("a remote-access revocation could not stop xray: %s", exc)
+    try:
+        guard = stop_net(state.settings, state.net, state.store)
+        net_detail = "" if guard.ok else f" (network stop failed: {guard.error})"
+    except Exception as exc:
+        # stop_net reports failure by RETURNING a NetResult; a raise means a backend that does
+        # not honour that contract. Still telemetry, still not grounds to un-revoke.
+        net_detail = f" (network stop raised: {exc})"
+        logger.error("a remote-access revocation's network stop raised: %s", exc)
     # Say what actually happened. `stop()` on an xray that was already down changes nothing, and
     # recording it as "stopped xray" writes an action into the incident record that was never
     # taken — the one record an operator reads afterwards to work out what the box did with a
     # lost device. The three supervisor states earned three different outcomes; the event says
-    # which, and does not claim observation it did not have.
-    did = {True: "stopped xray",
-           False: "ensured xray remained stopped",
-           None: "issued a stop to an xray whose state could not be observed"}[running]
+    # which, and does not claim observation it did not have — including the fourth outcome, a
+    # stop that was attempted and did not happen.
+    did = ("tried and failed to stop xray" if stop_detail else
+           {True: "stopped xray",
+            False: "ensured xray remained stopped",
+            None: "issued a stop to an xray whose state could not be observed"}[running])
     conn_events.record(state.store, "rw-revoke",
-                       f"{did} to apply a remote-access revocation"
-                       + ("" if guard.ok else f" (network stop failed: {guard.error})"))
-    return "stopped"
+                       f"{did} to apply a remote-access revocation{stop_detail}{net_detail}")
+    # The RETURNED value has to carry that distinction too, and it did not. Everything above
+    # already knew the stop had failed — the log line said so, the event said so — and then the
+    # answer handed back was `stopped`, so the screen told the operator remote access was down
+    # while the credential they had just revoked may still be listening. `stop_net` does not
+    # close that gap: it governs forwarded client-to-WAN traffic, and the remote-access inbound
+    # accepts connections TO the gateway. Nothing here proves that listener is gone.
+    #
+    # `stop-failed` is therefore its own outcome, and deliberately NOT in `_RW_RECONCILED`: the
+    # marker stays set and the liveness recovery keeps retrying until xray is confirmed stopped
+    # or rebuilt on a clean config.
+    return "stopped" if not stop_detail else "stop-failed"
 
 
 @router.get("/rw", response_model=RwOut)
@@ -2262,26 +2657,38 @@ def put_rw(body: RwIn, request: Request,
     # a revocation (cutting every device off), and a save that drops the short id the other
     # request had just installed reads as a widening, leaving it live on the running inbound.
     # Classification only means anything against what is live at decision time.
-    with apply_lock, state.store.transaction():
-        before = _rw_credentials(state.store)
-        s = state.store.set_setting
-        s("rw_enabled", "1" if body.enabled else "0")
-        s("rw_port", str(body.port))
-        s("rw_dest", body.dest.strip())
-        s("rw_server_names", ",".join(rw_mod.parse_csv(body.server_names)))
-        s("rw_short_ids", ",".join(short_ids))
-        s("rw_public_key", body.public_key.strip())
-        s("rw_endpoint", body.endpoint.strip())
-        s("rw_hosts", json.dumps(hosts))
-        s("rw_routed_nets", ",".join(nets))
-        # "" means keep — the UI never receives the key, so a plain round-trip must not blank it.
-        if body.private_key.strip():
-            s("rw_private_key", body.private_key.strip())
-        if _rw_narrows(before, _rw_credentials(state.store)):
-            how = _rw_revoke(state)
-        else:
-            _rw_apply(state)
-            how = ""
+    #
+    # The transaction ends BEFORE the revocation runs (see `_rw_revoke`), and `apply_lock` is
+    # what keeps the pair atomic against other requests — it is held across both halves, and no
+    # other mutator of the live config or the supervisor can run without it.
+    with apply_lock:
+        with state.store.transaction():
+            before = _rw_credentials(state.store)
+            s = state.store.set_setting
+            s("rw_enabled", "1" if body.enabled else "0")
+            s("rw_port", str(body.port))
+            s("rw_dest", body.dest.strip())
+            s("rw_server_names", ",".join(rw_mod.parse_csv(body.server_names)))
+            s("rw_short_ids", ",".join(short_ids))
+            s("rw_public_key", body.public_key.strip())
+            s("rw_endpoint", body.endpoint.strip())
+            s("rw_hosts", json.dumps(hosts))
+            s("rw_routed_nets", ",".join(nets))
+            # "" means keep — the UI never receives the key, so a plain round-trip must not
+            # blank it.
+            if body.private_key.strip():
+                s("rw_private_key", body.private_key.strip())
+            narrows = _rw_narrows(before, _rw_credentials(state.store))
+            if narrows:
+                # Committed WITH the narrowing: from here on the store grants less than the
+                # config the running xray loaded, and that gap has to outlive this process.
+                _rw_mark_reconcile_pending(state.store)
+            else:
+                # A widening save is the opposite case: nothing has been taken away yet, so an
+                # apply that fails SHOULD take the stored settings back down with it, and this
+                # stays inside the transaction to do exactly that.
+                _rw_apply(state)
+        how = _rw_revoke(state) if narrows else ""
     return _rw_out(state, revocation=how)
 
 
@@ -2304,15 +2711,17 @@ def patch_rw_client(client_id: str, body: RwClientPatch, request: Request,
     """Suspend or resume one client. Suspending the last enabled one drops the whole inbound
     (xray will not start on an empty client list) — that is the documented behaviour, not a bug."""
     state = get_state(request)
-    with apply_lock, state.store.transaction():
-        if not rw_mod.set_client_enabled(state.store, client_id, body.enabled):
-            raise HTTPException(status_code=404, detail="client not found")
-        # Suspending is a revocation; resuming only grants, so it can wait for the next apply.
-        if body.enabled:
-            _rw_apply(state)
-            how = ""
-        else:
-            how = _rw_revoke(state)
+    with apply_lock:
+        with state.store.transaction():
+            if not rw_mod.set_client_enabled(state.store, client_id, body.enabled):
+                raise HTTPException(status_code=404, detail="client not found")
+            # Suspending is a revocation; resuming only grants, so it can wait for the next
+            # apply — and an apply that fails may still take a mere grant back down with it.
+            if body.enabled:
+                _rw_apply(state)
+            else:
+                _rw_mark_reconcile_pending(state.store)   # committed with the suspension
+        how = "" if body.enabled else _rw_revoke(state)
     return _rw_out(state, revocation=how)
 
 
@@ -2328,10 +2737,12 @@ def rw_new_short_id(request: Request,
 def delete_rw_client(client_id: str, request: Request,
                      _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RwOut:
     state = get_state(request)
-    with apply_lock, state.store.transaction():
-        if not rw_mod.delete_client(state.store, client_id):
-            raise HTTPException(status_code=404, detail="client not found")
-        how = _rw_revoke(state)
+    with apply_lock:
+        with state.store.transaction():
+            if not rw_mod.delete_client(state.store, client_id):
+                raise HTTPException(status_code=404, detail="client not found")
+            _rw_mark_reconcile_pending(state.store)       # committed with the deletion
+        how = _rw_revoke(state)          # committed above; see `_rw_revoke` for why the order
     return _rw_out(state, revocation=how)
 
 

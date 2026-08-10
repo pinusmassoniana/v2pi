@@ -637,11 +637,29 @@ class RwOut(BaseModel):
     # running config; a save with no active node is stored and applied on the next connect.
     live: bool
     # How a REVOCATION (client suspended/deleted, feature switched off, key rotated) reached the
-    # running xray. "" for anything that isn't a revocation; otherwise "reapplied" (the active
-    # node was rebuilt), "rebuilt" (no active node — the config was rebuilt from the previous one
-    # and reloaded), "stopped" (nothing to rebuild from, so xray was stopped), or "not-live"
-    # (nothing was serving the inbound, so there was no live access to cut). Never empty on a
-    # revocation: a revocation that could not be applied must say so, not look like a success.
+    # running xray. "" for anything that isn't a revocation; otherwise one of:
+    #   "reapplied" — the active node was rebuilt and reloaded.
+    #   "rebuilt"   — no active node: the config was rebuilt from the previous one and reloaded.
+    #   "cleaned"   — xray is affirmatively DOWN, and the stored config it would come up on was
+    #                 rewritten to drop the credential. A completed, durable revocation: nothing
+    #                 is being served now and nothing will be on the next start.
+    #   "stopped"   — no clean config could be produced or made live, so the fail-safe stop ran
+    #                 and xray is CONFIRMED down. Nothing is being served.
+    #   "stop-failed" — the same fail-safe stop ran and could not be confirmed: xray survived
+    #                 SIGKILL, or the stop raised. THE REVOKED CREDENTIAL MAY STILL BE LIVE —
+    #                 the process is still up on the config it loaded, and stop_net only governs
+    #                 forwarded client-to-WAN traffic, not connections to the gateway's own
+    #                 inbound. Clients of this field must present it as a security warning, not
+    #                 as a status line. The reconciliation stays pending and is retried until
+    #                 xray is confirmed stopped or rebuilt.
+    #   "not-live"  — the config provably carried no remote-access inbound, so there was nothing
+    #                 to cut and nothing was written.
+    # "cleaned" and "not-live" are deliberately separate: they differ in whether the stored
+    # config was rewritten, which is the difference between "the credential cannot come back on
+    # the next start" and "there was never anything there". "stopped" and "stop-failed" are
+    # separate for the sharper version of the same reason: one says the access is gone, the
+    # other says we could not make it go. Never empty on a revocation: a revocation that could
+    # not be applied must say so, not look like a success.
     revocation: str = ""
 
 

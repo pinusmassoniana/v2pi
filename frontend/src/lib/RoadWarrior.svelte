@@ -61,7 +61,7 @@
       // back live: true off a config an earlier connect already built. The honest signals are
       // r.revocation (set when this save narrowed access and had to push that into the running
       // xray) and, otherwise, whether there is an active node right now to actually rebuild from.
-      if (r.revocation === "stopped") fail(null, `saved · ${saveRevocationNote(r.revocation)}`);
+      if (revocationFailed(r.revocation)) fail(null, `saved · ${saveRevocationNote(r.revocation)}`);
       else if (r.revocation) ok(`saved · ${saveRevocationNote(r.revocation)}`);
       else ok(statusStore.value?.active_node_id != null
         ? "saved · rebuilt into the live config"
@@ -82,14 +82,33 @@
   // How a revocation actually reached the running xray — surfaced next to the delete/suspend
   // outcome so "stopped" (remote access is down for everyone, not just this client) or "not-live"
   // (nothing was serving the inbound, so nothing was actually cut) aren't invisible to the operator.
+  //
+  // "cleaned" and "not-live" are separate outcomes and must read as opposites. "cleaned" means
+  // xray was down and the STORED config was rewritten, so the credential cannot come back on the
+  // next start — a finished revocation. "not-live" means there was no inbound in the config at
+  // all, so nothing was cut and nothing was written. They shared one string, which told operators
+  // that a completed, durable revocation had done nothing.
+  //
+  // "stop-failed" is not a status line, it is a security warning. The fail-safe stop ran and
+  // could not be confirmed, so the process is still up on the config it loaded and the revoked
+  // device may still be able to connect. It used to be reported as "stopped", which told an
+  // operator who had just lost a phone the opposite of the truth.
   function revocationNote(revocation: string): string {
     switch (revocation) {
       case "reapplied": return "live tunnel rebuilt without it";
       case "rebuilt": return "previous config rebuilt and reloaded";
+      case "cleaned": return "xray was down — the stored config was rewritten without it, so it cannot come back on the next start";
       case "stopped": return "xray stopped — remote access is down for everyone until you reconnect";
+      case "stop-failed": return "SECURITY WARNING: xray could not be stopped (it survived SIGKILL), so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.";
       case "not-live": return "nothing was serving the inbound — no live access to cut";
       default: return "";
     }
+  }
+
+  // A revocation whose outcome the operator must not read as success. "stopped" is a real
+  // outage; "stop-failed" is worse than an outage — the access we tried to cut may still be up.
+  function revocationFailed(revocation: string): boolean {
+    return revocation === "stopped" || revocation === "stop-failed";
   }
 
   // Same HOW-values as revocationNote, phrased for a save that narrowed access rather than a
@@ -98,7 +117,9 @@
     switch (revocation) {
       case "reapplied": return "live tunnel rebuilt with the narrowed settings";
       case "rebuilt": return "previous config rebuilt and reloaded with the narrowed settings";
+      case "cleaned": return "xray was down — the stored config was rewritten with the narrowed settings, so the old ones cannot come back on the next start";
       case "stopped": return "xray stopped — remote access is down for everyone until you reconnect";
+      case "stop-failed": return "SECURITY WARNING: xray could not be stopped (it survived SIGKILL), so the settings you just narrowed may still be live. The panel keeps retrying; reboot the gateway if this does not clear.";
       case "not-live": return "nothing was serving the inbound — nothing live to narrow";
       default: return "";
     }
@@ -111,7 +132,7 @@
       const r = await api.deleteRwClient(id);
       adopt(r);
       const note = revocationNote(r.revocation);
-      if (r.revocation === "stopped") fail(null, `removed ${email} — ${note}`);
+      if (revocationFailed(r.revocation)) fail(null, `removed ${email} — ${note}`);
       else ok(`removed ${email}${note ? ` — ${note}` : ""}`);
     }
     catch (err) { fail(err, "remove failed"); }
@@ -126,7 +147,7 @@
       if (enabled) { ok("client resumed"); return; }
       const note = revocationNote(r.revocation);
       const base = "client suspended — its uuid is kept";
-      if (r.revocation === "stopped") fail(null, `${base} — ${note}`);
+      if (revocationFailed(r.revocation)) fail(null, `${base} — ${note}`);
       else ok(note ? `${base} — ${note}` : base);
     } catch (err) { fail(err, "update failed"); }
     finally { busy = ""; }

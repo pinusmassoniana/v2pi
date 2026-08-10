@@ -158,6 +158,17 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
                     owned.append(resource)
             host_provision(app_state)
             boot_guard(app_state)
+            # A revocation commits the credential change before it can touch the runtime, so a
+            # process that died in between left a store granting less than the config on disk —
+            # and, if the previous xray outlived the panel, less than what is being served right
+            # now. Finish it BEFORE anything is (re)started, so the reapply below comes up on a
+            # config that already agrees with the store. Never fatal: an unreconcilable marker
+            # must not cost the operator the screen they would fix it from.
+            from pi_gw_panel.api.routes import rw_reconcile_pending
+            if not rw_reconcile_pending(app_state):
+                logging.getLogger("pi_gw_panel").error(
+                    "a remote-access revocation is still not reconciled with the config on "
+                    "disk; the liveness loop will keep retrying")
             res = reapply_active_node(app_state)
             if res is not None and not res.ok:
                 logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)

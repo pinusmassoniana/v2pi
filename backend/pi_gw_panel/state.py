@@ -130,7 +130,7 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         # the total together (audit FIX-E-1) instead of as two independent writes.
         transaction=store.transaction,
     )
-    return AppState(
+    state = AppState(
         settings=settings,
         store=store,
         supervisor=supervisor,
@@ -143,3 +143,11 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         dnsmasq=dnsmasq,
         pd_client=pd_client,
     )
+    # No xray may be spawned on a config that grants remote access the store has revoked — not
+    # by a route, and not by the liveness watchdog, which respawns a crashed process with a plain
+    # supervisor.start() and answers to no request handler. Wired here (imported lazily: routes
+    # imports this module) because the guard needs the finished state, and the supervisor is the
+    # one place every start goes through.
+    from pi_gw_panel.api.routes import rw_start_guard
+    state.supervisor.set_start_guard(lambda: rw_start_guard(state))
+    return state
