@@ -3,6 +3,7 @@
 Each test here pins one way it used to accept what the interactive API refuses — up to and
 including a value that becomes a root-run dnsmasq directive.
 """
+import base64
 import json
 import os
 import stat
@@ -214,6 +215,151 @@ def test_restore_keeps_remote_access_on_for_the_matching_pair(settings, stub_xra
 
     assert client.post("/api/restore", json=document, headers=headers).status_code == 200
     assert state.store.get_setting("rw_enabled") == "1"
+
+
+def test_restore_will_not_adopt_a_public_key_it_cannot_check_against_the_private_one(
+        settings, stub_xray):
+    """No stored public key is not permission to take the document's — it is the one case where
+    the pair CANNOT be checked, so adopting it puts a foreign public half next to the surviving
+    private half with `rw_enabled=1`: the exact split state the match check exists to refuse,
+    reached by skipping the check."""
+    client, state, headers = _client(settings, stub_xray)
+    state.store.set_setting("rw_private_key", "A" * 43)
+    state.store.set_setting("rw_public_key", "")
+    document = client.get("/api/backup").json()
+    document["settings"]["rw_enabled"] = "1"
+    document["settings"]["rw_public_key"] = "C" * 43      # another gateway's half
+
+    response = client.post("/api/restore", json=document, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["restored"]["rw_disabled"]
+    assert state.store.get_setting("rw_enabled") == "0"
+    assert not (state.store.get_setting("rw_public_key") or ""), \
+        "the unverifiable public key was stored anyway"
+
+
+@pytest.mark.parametrize("local_public, expected", [("B" * 43, "B" * 43), ("", "")])
+def test_a_disabled_document_cannot_replace_the_local_public_key_either(
+        settings, stub_xray, local_public, expected):
+    """The pair check used to run only when the document said `rw_enabled=1` — and that flag is
+    exactly the value a stale or hostile file controls, while saying nothing about whether the
+    halves match. With it off, a foreign public key was written straight over the local one (or
+    into the empty slot beside a surviving private key), leaving the split pair sitting there
+    armed for whenever the operator next enables the inbound, off a screen showing them the wrong
+    key to hand out. Whether the pair can be proven has nothing to do with the document's flag:
+    the mismatched key is refused and the local value is left exactly as it was.
+    """
+    client, state, headers = _client(settings, stub_xray)
+    state.store.set_setting("rw_private_key", "A" * 43)     # survives the restore
+    state.store.set_setting("rw_public_key", local_public)
+    document = client.get("/api/backup").json()
+    document["settings"]["rw_enabled"] = "0"                # the document claims nothing is on
+    document["settings"]["rw_public_key"] = "C" * 43        # another gateway's half
+
+    assert client.post("/api/restore", json=document, headers=headers).status_code == 200
+
+    assert (state.store.get_setting("rw_public_key") or "") == expected
+    assert state.store.get_setting("rw_private_key") == "A" * 43
+    assert state.store.get_setting("rw_enabled") == "0"
+
+
+def test_a_restore_onto_a_box_holding_no_reality_key_still_carries_the_public_half(
+        settings, stub_xray):
+    """The other side of the same rule: with no private key and no public key on the box there is
+    nothing for a document's public half to contradict, and bringing the inbound's shape back onto
+    fresh hardware is why a backup carries it. It is adopted — with remote access still off until
+    the operator pastes the private half by hand."""
+    client, state, headers = _client(settings, stub_xray)
+    document = client.get("/api/backup").json()
+    document["settings"]["rw_enabled"] = "1"
+    document["settings"]["rw_public_key"] = "C" * 43
+
+    assert client.post("/api/restore", json=document, headers=headers).status_code == 200
+
+    assert state.store.get_setting("rw_public_key") == "C" * 43
+    assert state.store.get_setting("rw_enabled") == "0"
+
+
+# --- L1: a restore must not reinstate a revoked road-warrior client --------------------------
+
+# Shaped like real `xray x25519` output — 32 raw bytes, base64url, 43 chars (see
+# tests/test_rw_inbound.py, which builds its pair the same way). Not a real pair, but the API
+# refuses anything that is not an x25519-shaped key. Built from sequential byte ramps rather than
+# written out as literals: a pasted-in live key is indistinguishable from a random literal, and
+# that is precisely how one survives review. Here the bytes are 0x00…0x1F and 0x20…0x3F.
+_PRIV = base64.urlsafe_b64encode(bytes(range(0x20))).decode().rstrip("=")
+_PUB = base64.urlsafe_b64encode(bytes(range(0x20, 0x40))).decode().rstrip("=")
+
+
+def _arm_remote_access(client, headers):
+    assert client.put("/api/rw", json={
+        "enabled": True, "port": 443, "dest": "www.microsoft.com:443",
+        "server_names": "www.microsoft.com", "short_ids": "ab12cd34",
+        "private_key": _PRIV, "public_key": _PUB,
+        "endpoint": "home.example.org"}, headers=headers).status_code == 200
+
+
+def _uuid_of(client, email):
+    return next(c["id"] for c in client.get("/api/rw").json()["clients"] if c["email"] == email)
+
+
+def test_restore_cannot_reinstate_a_revoked_remote_access_client(settings, stub_xray):
+    """Revocation has to be one-way. `rw_clients` used to travel in the document and be written
+    back verbatim, so restoring a backup taken BEFORE a revocation put the cut-off device's uuid
+    straight back into the store — and from there into the next generated config, under the same
+    Reality keypair and short ids that survived the restore. The lost phone needed no
+    reconfiguration at all to be live again, and the roster showed nothing unusual.
+
+    The restore must leave the live roster alone: the client kept keeps working, the one revoked
+    stays revoked.
+    """
+    from pi_gw_panel import rw_inbound as rw
+    from pi_gw_panel.xray_config.builder import build_config
+
+    client, state, headers = _client(settings, stub_xray)
+    _arm_remote_access(client, headers)
+    for email in ("lostphone", "laptop"):
+        assert client.post("/api/rw/clients", json={"email": email},
+                           headers=headers).status_code == 201
+    revoked, kept = _uuid_of(client, "lostphone"), _uuid_of(client, "laptop")
+
+    document = client.get("/api/backup").json()               # taken while both are enrolled
+    assert revoked not in json.dumps(document)                # and it does not carry them at all
+
+    assert client.delete(f"/api/rw/clients/{revoked}", headers=headers).status_code == 200
+    assert client.post("/api/restore", json=document, headers=headers).status_code == 200
+
+    stored = state.store.get_setting("rw_clients") or ""
+    assert revoked not in stored, "the restore reinstated a revoked client uuid"
+    assert kept in stored, "the restore dropped a client that was never revoked"
+    assert [c["email"] for c in client.get("/api/rw").json()["clients"]] == ["laptop"]
+
+    node = Node(id=1, name="n1", address="1.2.3.4", port=47000, uuid="u-1",
+                sni="www.microsoft.com", public_key="PK", short_id="ab12")
+    config = json.dumps(build_config(node, settings, rw_inbound=rw.resolve(state.store)))
+    assert revoked not in config, "the revoked uuid came back in the generated xray config"
+    assert kept in config
+
+
+def test_restore_ignores_a_client_roster_carried_by_an_older_document(settings, stub_xray):
+    """Documents written before the roster became non-restorable still carry `rw_clients`, and a
+    recovery is the worst moment to refuse a file outright. It is accepted and ignored, never
+    written — including when the roster is hand-crafted rather than merely stale."""
+    client, state, headers = _client(settings, stub_xray)
+    _arm_remote_access(client, headers)
+    assert client.post("/api/rw/clients", json={"email": "laptop"},
+                       headers=headers).status_code == 201
+    kept = _uuid_of(client, "laptop")
+
+    document = client.get("/api/backup").json()
+    document["settings"]["rw_clients"] = json.dumps(
+        [{"id": "11111111-2222-3333-4444-555555555555", "email": "smuggled", "enabled": True}])
+
+    assert client.post("/api/restore", json=document, headers=headers).status_code == 200
+    assert "smuggled" not in (state.store.get_setting("rw_clients") or "")
+    assert [c["email"] for c in client.get("/api/rw").json()["clients"]] == ["laptop"]
+    assert kept in (state.store.get_setting("rw_clients") or "")
 
 
 # --- F5-4: what the API can store, a backup must be able to carry ----------------------------

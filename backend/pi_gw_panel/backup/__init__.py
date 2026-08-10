@@ -33,19 +33,32 @@ _PRE_RESTORE_RETAIN = 10
 # Complete config intent stored in SQLite. Explicit tuple prevents a hostile restore from
 # smuggling auth/session/transient keys simply because runtime code adds a new setting later.
 #
-# The road-warrior keys are carried so a restore onto a fresh host brings remote access back
-# instead of silently dropping it. `rw_private_key` is deliberately ABSENT: a backup document is
-# downloaded into the browser and handed around, and the Reality private key is the one secret
-# that lets anything impersonate this gateway's inbound. It is re-entered by hand after a restore.
+# The road-warrior *shape* keys are carried so a restore onto a fresh host brings the inbound
+# back instead of silently dropping it. The two keys that ARE the remote-access credentials are
+# deliberately ABSENT — see _SETTINGS_NEVER_BACKED_UP below.
 _SETTINGS_KEYS = tuple(dict.fromkeys((*SETTINGS_DEFAULTS,
     "segment_iface", "segment_ip", "dhcp_start", "dhcp_end", "dhcp_lease",
     "client_dns", "kill_switch_enabled", "lan_access_enabled", "default_profile_id",
     "ula_prefix6",
     "rw_enabled", "rw_port", "rw_dest", "rw_server_names", "rw_short_ids",
-    "rw_public_key", "rw_endpoint", "rw_clients", "rw_hosts", "rw_routed_nets")))
+    "rw_public_key", "rw_endpoint", "rw_hosts", "rw_routed_nets")))
 _SETTINGS_SET = frozenset(_SETTINGS_KEYS)
-# Never leaves the gateway in a backup — asserted by a test, not just by omission above.
-_SETTINGS_NEVER_BACKED_UP = frozenset({"rw_private_key"})
+# Neither exported nor written by a restore — asserted by a test, not just by omission above.
+# Because these keys are not in the DELETE list either, a restore leaves whatever the gateway
+# currently holds exactly as it is; the document's copy, if any, is ignored.
+#
+# `rw_private_key`: a backup document is downloaded into the browser and handed around, and the
+# Reality private key is the one secret that lets anything impersonate this gateway's inbound.
+# It is re-entered by hand after a restore.
+#
+# `rw_clients`: the client uuids ARE the credentials the inbound authenticates on, so the same
+# argument applies to the document leaving the box — and a second, worse one applies to it coming
+# back. Restoring the roster reinstates every client the operator has revoked since the backup
+# was taken: a lost phone cut off on Tuesday is live again the moment a Monday backup is
+# restored, under the same Reality keypair and short ids, with no trace in the roster that it
+# ever went away. Revocation has to be one-way, so the roster is never taken from a document —
+# the live one (which already has the revocation applied) simply survives the restore.
+_SETTINGS_NEVER_BACKED_UP = frozenset({"rw_private_key", "rw_clients"})
 
 _NODE_DUMP = ("id",) + _NODE_COLS
 _PROFILE_DUMP = ("id",) + _PROFILE_COLS + ("noises",)
@@ -210,7 +223,10 @@ class BackupDocument(_Strict):
             if identity in identities:
                 raise ValueError("duplicate node identity")
             identities.add(identity)
-        unknown = set(self.settings) - _SETTINGS_SET
+        # Documents written before `rw_clients` became non-restorable carry it, and a recovery is
+        # the worst possible moment to refuse a file outright over a key we are going to ignore
+        # anyway. Tolerated here, dropped in import_state — never written.
+        unknown = set(self.settings) - _SETTINGS_SET - _SETTINGS_NEVER_BACKED_UP
         if unknown:
             raise ValueError(f"unsupported setting keys: {', '.join(sorted(unknown))}")
         if any(len(str(value)) > 2048 for value in self.settings.values()):
@@ -283,9 +299,9 @@ def _validate_rw_settings(settings: dict) -> None:
     """Road-warrior settings, through rw_inbound's own validators.
 
     A backup used to be able to carry ANY string under 2048 chars into `realitySettings`, the
-    generated `.conf` and the `vless://` link. `rw_clients` is deliberately not checked here:
-    `rw_inbound.get_clients` already drops entries that don't have the shape `add_client`
-    produces, which errs toward less access rather than more.
+    generated `.conf` and the `vless://` link. `rw_clients` has no check here because it is not
+    restorable at all (see _SETTINGS_NEVER_BACKED_UP) — a document's copy never reaches the
+    store, so there is nothing here to validate.
     """
     def value(key: str) -> str:
         return str(settings.get(key) or "").strip()
@@ -496,9 +512,13 @@ def import_state(store, doc: dict | BackupDocument) -> dict:
     nodes = [_node_from(node) for node in validated.nodes]
     rules = [RoutingRule(id=None, position=index, **rule.model_dump())
              for index, rule in enumerate(validated.routing.rules)]
+    # The never-backed-up keys are dropped here as well as omitted from _SETTINGS_KEYS: the
+    # allowlist stops export and the DELETE below from touching them, this stops a hand-made or
+    # pre-existing document from writing one back. Both halves are load-bearing.
     settings = {
         key: ("1" if value else "0") if isinstance(value, bool) else str(value)
         for key, value in validated.settings.items()
+        if key not in _SETTINGS_NEVER_BACKED_UP
     }
     # The routing block owns the default action (see _reconcile_default_action); dropping the
     # settings copy here means the write order below can never decide it again.
@@ -507,8 +527,8 @@ def import_state(store, doc: dict | BackupDocument) -> dict:
     conn = store._conn
     with store.transaction():
         # Read before the settings DELETE below wipes the allowlisted keys. The private half of
-        # the Reality pair is never in a backup, so these two decide whether the restored
-        # `rw_enabled` can honestly be honoured.
+        # the Reality pair is never in a backup, so these two decide both whether a restored
+        # public key may be stored at all and whether `rw_enabled` can honestly be honoured.
         local_private = (store.get_setting("rw_private_key") or "").strip()
         local_public = (store.get_setting("rw_public_key") or "").strip()
         conn.execute("DELETE FROM node_health")
@@ -548,16 +568,56 @@ def import_state(store, doc: dict | BackupDocument) -> dict:
         conn.execute(
             "INSERT INTO settings(key,value) VALUES('routing_default_action',?)",
             (validated.routing.default_action,))
+        # The private half never travels in a document, so the one this box holds SURVIVES the
+        # restore. Any public half arriving in a document is therefore only storable if it is
+        # provably that private key's partner; anything else leaves the two halves of the stored
+        # pair belonging to two different gateways.
+        #
+        # The only proof available here is the public key this box already holds: the pair is made
+        # by hand with `xray x25519` and pasted in, so the stored public half IS this box's record
+        # of what the private half pairs with (deriving it would need a crypto dependency the
+        # panel deliberately does not carry — see rw_inbound's module docstring). Hence:
+        #   - equal to the local public key ⇒ verified, and storing it changes nothing;
+        #   - different from the local public key ⇒ refused, the local one is kept;
+        #   - no local public key to check it against, but a private key survives ⇒ unverifiable,
+        #     so it is not stored AT ALL and the operator pastes the matching half by hand;
+        #   - no local key material whatsoever (a fresh host) ⇒ nothing survives that it could
+        #     contradict, and carrying the public half is the reason a backup holds one: adopt it.
+        #
+        # None of that consults `rw_enabled`. The document's flag is precisely the value a stale
+        # or hostile file controls, and it says nothing about whether the pair checks out: gating
+        # the check on it let a document with `rw_enabled=0` overwrite the local public key with a
+        # foreign one and leave the split pair sitting there, armed for whenever the operator next
+        # turns the inbound on — from a screen that would show them the wrong key to hand out.
+        restored_public = settings.get("rw_public_key", "")
+        pair_verified = restored_public == local_public
+        no_local_keypair = not local_private and not local_public
+        if not pair_verified and not no_local_keypair:
+            if local_public:
+                settings["rw_public_key"] = local_public   # survives the DELETE above untouched
+            else:
+                settings.pop("rw_public_key", None)        # unverifiable ⇒ never written
+
         # Remote access cannot come back on a key this box does not hold. Restoring `rw_enabled=1`
         # without the matching private half leaves /api/rw reporting the inbound as enabled while
         # rw_inbound.resolve() returns None and nothing is actually served — a split state the API
         # itself refuses to create. A public key that belongs to a DIFFERENT pair than the private
-        # key that survived the restore is the same lie with a working-looking inbound behind it.
+        # key that survived the restore is the same lie with a working-looking inbound behind it;
+        # the document's key is not stored either way, but the claim that remote access is on must
+        # still be refused rather than carried over onto the surviving pair.
+        #
+        # No local public key is the same case, not an exemption from it: an inbound enabled with
+        # nothing to check the document's half against is enabled on an unverified pair. PUT
+        # /api/rw will not enable the inbound without a stored public key, so this state is never
+        # one the panel itself produced; it fails closed and the operator re-enables after pasting
+        # the matching half.
         rw_disabled = ""
         if settings.get("rw_enabled") == "1":
             if not local_private:
                 rw_disabled = "no local Reality private key"
-            elif local_public and settings.get("rw_public_key", "") != local_public:
+            elif not local_public:
+                rw_disabled = "no local Reality public key to check the restored one against"
+            elif not pair_verified:
                 rw_disabled = "the restored public key does not match the local private key"
             if rw_disabled:
                 settings["rw_enabled"] = "0"

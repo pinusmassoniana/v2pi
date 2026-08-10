@@ -248,8 +248,9 @@ def get_clients(store) -> list[dict]:
     """Every client we would put in the config or in a generated profile.
 
     Entries whose id/name don't have the shape `add_client` produces are DROPPED rather than
-    repaired: `rw_clients` is restorable from a backup, and both fields are interpolated into
-    the `[Proxy]` line and the `vless://` link. Dropping errs toward less access, never more.
+    repaired: a hand-edited DB can put anything here, and both fields are interpolated into the
+    `[Proxy]` line and the `vless://` link. Dropping errs toward less access, never more.
+    (A backup can no longer put anything here — the roster is never restored from a document.)
     """
     try:
         raw = json.loads(_get(store, "rw_clients"))
