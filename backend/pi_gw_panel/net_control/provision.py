@@ -4,7 +4,15 @@ Gated on the linux backend (a net backend carrying a `_run` seam) + the `manage_
 setting. Every side-effect goes through an injectable seam — `run` for shell-outs,
 `write_proc`/`write_file` for /proc + conf files — so the command/file emission is unit-tested
 with no root or Pi. The default runner/proc-writer ARE the LinuxBackend ones (imported, not
-re-declared) so both paths keep one contract; the real apply passes the backend's own seam."""
+re-declared) so both paths keep one contract; the real apply passes the backend's own seam.
+
+That shared runner is also where the per-command time limit lives, so every shell-out below is
+bounded (`linux.command_timeout`) — including the `nsenter`-into-pid-1 calls, which get the
+slower class. This matters more here than anywhere else: `host_provision` and the PD watcher
+callback run these under the controller apply-lock, which the DB transactions around them turn
+into a process-wide mutex, so an unbounded `nmcli` would stall every request in the panel.
+A command that exceeds its limit raises `CalledProcessError`, which the handlers below already
+catch — there is no separate timeout path to get wrong."""
 import ipaddress
 import logging
 import os
@@ -214,7 +222,12 @@ def clear_managed_addresses(store, run=_run) -> None:
 
 
 def _nm_reload(run, nm_active) -> None:
-    """Reload NetworkManager live via nsenter into pid 1, but only when it is running."""
+    """Reload NetworkManager live via nsenter into pid 1, but only when it is running.
+
+    Both shell-outs are in the runner's slow class: NM's own D-Bus timeouts are ~30s, so the
+    cap is there for a wedged nsenter/nmcli, not a slow one. A cap that does fire lands in the
+    `CalledProcessError` branch below, i.e. the same best-effort skip as an NM that refuses.
+    """
     nm_active = nm_active or (lambda: _nm_active(run))
     if nm_active():
         try:

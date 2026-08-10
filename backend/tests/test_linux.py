@@ -1,7 +1,10 @@
 import json
 import subprocess
+import sys
+import time
 import pytest
 from pi_gw_panel.config import Settings
+from pi_gw_panel.net_control import linux, provision
 from pi_gw_panel.net_control.plan import NetPlan
 from pi_gw_panel.net_control.linux import LinuxBackend
 from pi_gw_panel.net_control.factory import select_backend
@@ -236,3 +239,116 @@ def test_verify_accepts_the_real_fwmark_rule_and_local_route():
     fake = FakeRun()
     assert _backend(fake).apply_tproxy(NetPlan.from_settings(Settings())).ok is True
     assert ["ip", "-j", "rule", "show"] in fake.cmds()
+
+
+# --- no host command may run unbounded ----------------------------------------
+# These shell-outs run under the apply-lock, which the surrounding DB transaction turns into a
+# process-wide mutex: an unbounded command wedges every DB-touching request, not just the apply.
+
+class _FakeSubprocess:
+    """Stands in for `subprocess.run` *inside* linux.py, so the production `_run` — timeout
+    selection, failure translation and all — is what the test exercises.
+
+    Records the timeout every call was given; the given argv prefixes fail, either by hanging
+    past their limit (`mode="timeout"`) or with a plain non-zero exit (`mode="exit"`).
+    """
+
+    def __init__(self, *prefixes, mode="timeout", stderr="boom"):
+        self.prefixes = [list(p) for p in prefixes]
+        self.mode = mode
+        self.stderr = stderr
+        self.calls: list[tuple[list[str], str | None, float | None]] = []
+
+    def __call__(self, cmd, input=None, capture_output=False, text=False,
+                 check=False, timeout=None):
+        self.calls.append((cmd, input, timeout))
+        if any(cmd[:len(p)] == p for p in self.prefixes):
+            if self.mode == "timeout":
+                raise subprocess.TimeoutExpired(cmd, timeout, output="", stderr="")
+            raise subprocess.CalledProcessError(1, cmd, stderr=self.stderr)
+        stdout = ""
+        if cmd[-2:] == ["rule", "show"]:
+            stdout = _RULE_JSON
+        elif cmd[-4:] == ["route", "show", "table", "100"]:
+            stdout = _ROUTE_JSON
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    def timeouts_for(self, *prefix) -> list[float | None]:
+        return [t for c, _, t in self.calls if c[:len(prefix)] == list(prefix)]
+
+    def nft_scripts(self) -> list[str]:
+        return [i for c, i, _ in self.calls if c[:2] == ["nft", "-f"]]
+
+
+def _live_backend(monkeypatch, fake):
+    """A backend on the PRODUCTION runner — only the subprocess call itself is faked."""
+    monkeypatch.setattr(linux.subprocess, "run", fake)
+    return LinuxBackend(Settings(), write_proc=lambda path, value: True)
+
+
+def test_production_timeouts_are_chosen_per_command_class():
+    # netlink round-trips finish in milliseconds; 10s is ~100x the realistic worst case
+    assert linux.HOST_CMD_TIMEOUT == 10
+    for cmd in (["nft", "-f", "-"], ["ip", "rule", "add"], ["iptables", "-F", "PI_GW_PANEL"]):
+        assert linux.command_timeout(cmd) == 10
+    # nsenter-into-pid-1 + D-Bus to systemd/NM is legitimately slower (NM's own caps are ~30s)
+    assert linux.SLOW_CMD_TIMEOUT == 60
+    assert linux.command_timeout(
+        ["nsenter", "-t", "1", "-m", "-n", "--", "nmcli", "general", "reload"]) == 60
+    assert linux.command_timeout(
+        ["nsenter", "-t", "1", "-m", "-n", "--", "systemctl", "is-active"]) == 60
+
+
+def test_every_host_command_in_an_apply_is_bounded(monkeypatch):
+    fake = _FakeSubprocess()
+    assert _live_backend(monkeypatch, fake).apply_tproxy(
+        NetPlan.from_settings(Settings())).ok is True
+    assert fake.calls, "expected the apply to shell out"
+    unbounded = [c for c, _, t in fake.calls if not isinstance(t, (int, float)) or t <= 0]
+    assert unbounded == [], f"host commands ran without a time limit: {unbounded}"
+
+
+def test_a_hanging_command_fails_instead_of_blocking():
+    # a real child that outlives its limit: the runner must come back, as a command failure
+    started = time.monotonic()
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        linux._run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.2)
+    assert time.monotonic() - started < 5, "the runner blocked past the timeout"
+    assert caught.value.returncode == linux.TIMEOUT_RETURNCODE
+    assert "timed out" in caught.value.stderr
+
+
+@pytest.mark.parametrize("mode", ["timeout", "exit"])
+def test_a_timeout_fails_the_apply_exactly_like_a_non_zero_exit(monkeypatch, mode):
+    # `nft -f` loads the tproxy ruleset first, so a hang in the policy routing that follows must
+    # land on the same fail-closed path a non-zero exit does — never be treated as success.
+    fake = _FakeSubprocess(["ip", "rule", "add"], mode=mode)
+    plan = NetPlan.from_settings(Settings())
+    plan.kill_switch = True
+    res = _live_backend(monkeypatch, fake).apply_tproxy(plan)
+    assert res.ok is False
+    scripts = fake.nft_scripts()
+    assert len(scripts) == 2, "expected the guard ruleset to be reloaded after the failure"
+    assert "tproxy ip to" in scripts[0]
+    assert "tproxy ip to" not in scripts[1]   # no tproxy left pointing at a missing route
+    assert "chain forward" in scripts[1]      # kill-switch drop still enforced
+
+
+def test_a_timed_out_cleanup_is_not_read_as_an_already_absent_rule(monkeypatch):
+    # "already absent" is decided from stderr text. A command that hung must not inherit that
+    # verdict, or a teardown that removed nothing would report success.
+    fake = _FakeSubprocess(["ip", "rule", "del"])
+    res = _live_backend(monkeypatch, fake).teardown()
+    assert res.ok is False
+    assert "timed out" in res.error
+
+
+def test_provision_shell_outs_inherit_the_same_bound(monkeypatch):
+    # provision imports the runner rather than re-declaring it, so it is bounded too
+    assert provision._run is linux._run
+    fake = _FakeSubprocess()
+    monkeypatch.setattr(linux.subprocess, "run", fake)
+    provision.ensure_nm_unmanaged("eth0.2", write_file=lambda path, text: None)
+    nsenter = fake.timeouts_for("nsenter")
+    assert len(nsenter) == 2, "expected the systemctl probe and the nmcli reload"
+    assert nsenter == [60, 60]

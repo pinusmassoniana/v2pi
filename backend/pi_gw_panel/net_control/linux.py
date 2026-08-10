@@ -1,6 +1,9 @@
 import json
 import logging
+import os
 import subprocess
+
+from pi_gw_panel.config import safe_int
 from pi_gw_panel.net_control.plan import NetPlan, NetResult, net24
 from pi_gw_panel.net_control.render import render_nft, render_nft6
 
@@ -8,6 +11,35 @@ _log = logging.getLogger("pi_gw_panel")
 
 NFT_TABLE = "pi_gw_panel"
 IPTABLES_CHAIN = "PI_GW_PANEL"
+
+# --- host-command time limits --------------------------------------------------
+# Every shell-out here (and in `provision`, which imports this runner) happens while the
+# caller holds the apply-lock and, through the surrounding transaction, the process-wide DB
+# lock. A command that never returns therefore does not merely fail one apply — it wedges
+# every DB-touching request in the process (status, the health monitor, the traffic recorder)
+# for as long as it hangs. So no host command may run unbounded.
+#
+# nft / ip / iptables are netlink round-trips that complete in milliseconds even on a loaded
+# small gateway; 10s is ~100x the realistic worst case, so the cap only fires on a genuinely
+# stuck kernel/netlink operation and never on a slow-but-working apply.
+HOST_CMD_TIMEOUT = max(1, safe_int(os.environ.get("PI_GW_NET_CMD_TIMEOUT", "10"), 10,
+                                   "PI_GW_NET_CMD_TIMEOUT"))
+# `nsenter -t 1 -- systemctl is-active` / `nsenter -t 1 -- nmcli general reload` re-enter pid
+# 1's namespaces and then talk D-Bus to systemd/NetworkManager, which is legitimately slower
+# and whose own internal timeouts top out around 30s. 60s therefore only fires when the tool
+# is wedged rather than merely slow — a lower value would break real applies on small hardware.
+SLOW_CMD_TIMEOUT = max(1, safe_int(os.environ.get("PI_GW_NET_SLOW_CMD_TIMEOUT", "60"), 60,
+                                   "PI_GW_NET_SLOW_CMD_TIMEOUT"))
+_SLOW_PROGRAMS = frozenset({"nsenter", "systemctl", "nmcli"})
+# GNU `timeout(1)`'s exit status for "killed after the time limit" — a returncode no host tool
+# used here produces on its own, so a timeout stays identifiable in logs.
+TIMEOUT_RETURNCODE = 124
+
+
+def command_timeout(cmd: list[str]) -> int:
+    """Seconds allowed for `cmd`, chosen by command class (see the constants above)."""
+    program = os.path.basename(cmd[0]) if cmd else ""
+    return SLOW_CMD_TIMEOUT if program in _SLOW_PROGRAMS else HOST_CMD_TIMEOUT
 
 
 def _lan_forward_rules(seg_if: str, lan_if: str, lan_cidr: str) -> list[list[str]]:
@@ -23,9 +55,30 @@ def _lan_forward_rules(seg_if: str, lan_if: str, lan_cidr: str) -> list[list[str
     ]
 
 
-def _run(cmd: list[str], input: str | None = None) -> subprocess.CompletedProcess:
-    """Default runner: subprocess.run with check; raises CalledProcessError on non-zero."""
-    return subprocess.run(cmd, input=input, capture_output=True, text=True, check=True)
+def _run(cmd: list[str], input: str | None = None,
+         timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Default runner: subprocess.run with check; raises CalledProcessError on non-zero.
+
+    Bounded by `command_timeout(cmd)` unless a limit is passed explicitly. Exceeding it is
+    re-raised as a `CalledProcessError` rather than surfacing `TimeoutExpired`: every caller
+    here (and in `provision`) already handles exactly `CalledProcessError`/`OSError`, so a hung
+    command becomes the same *kind* of failure as a non-zero exit and travels the existing
+    paths — the recovery strings, and the fail-closed guard reinstated by `_failed_apply`.
+    Leaking a third exception type would instead escape those handlers.
+
+    The child's partial output is deliberately NOT carried into the synthetic stderr:
+    `_is_absent_error` classifies a failure from its stderr text, so a half-written
+    "No such file" from a command that then hung must never be read as "already absent".
+    """
+    limit = command_timeout(cmd) if timeout is None else timeout
+    try:
+        return subprocess.run(cmd, input=input, capture_output=True, text=True,
+                              check=True, timeout=limit)
+    except subprocess.TimeoutExpired as exc:
+        _log.error("host command timed out after %ss: %s", limit, " ".join(cmd))
+        raise subprocess.CalledProcessError(
+            TIMEOUT_RETURNCODE, cmd, output="",
+            stderr=f"command timed out after {limit}s: {' '.join(cmd)}") from exc
 
 
 def _write_proc(path: str, value: str) -> bool:

@@ -10,6 +10,8 @@ import shlex
 import subprocess
 import threading
 
+from pi_gw_panel.proc import stop_process
+
 
 _log = logging.getLogger("pi_gw_panel")
 _UNSEEN = object()
@@ -150,14 +152,18 @@ exit 0
         self._ensure_watcher()
 
     def stop(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait()
-        self._proc = None
+        """Stop the dhclient child and the prefix watcher, both bounded. Raises when the child
+        outlived SIGKILL.
+
+        Same discipline the watcher handle below already follows: only forget a child that
+        actually finished. A dhclient we could not kill still holds its DHCPv6 session on the
+        uplink and still drives the hook that writes the prefix file, so clearing `_proc` would
+        let the next `start()` run a second client next to it — and the wait after `kill()` was
+        unbounded, which is worse than either: it blocks the caller instead of reporting.
+        """
+        stopped = stop_process(self._proc, name="dhclient")
+        if stopped:
+            self._proc = None
         self._stop_event.set()
         thread = self._thread
         if thread is not None:
@@ -169,3 +175,6 @@ exit 0
                     if self._thread is thread:
                         self._thread = None
         self._last_prefix = _UNSEEN
+        if not stopped:
+            raise RuntimeError(
+                f"DHCPv6-PD client (pid {getattr(self._proc, 'pid', '?')}) did not stop")

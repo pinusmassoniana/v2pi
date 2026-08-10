@@ -1,4 +1,7 @@
+import subprocess
 import threading
+
+import pytest
 
 from pi_gw_panel.net_control import pd_client
 
@@ -86,3 +89,54 @@ def test_stop_keeps_a_stuck_watcher_so_start_never_runs_two(tmp_path):
     finally:
         release.set()
         cl.stop()
+
+
+# --- and the same shape in the PD client ---------------------------------------------------
+#
+# `stop()` repeated dnsmasq's sequence, including the unbounded wait after `kill()`. It runs on
+# the provisioning path (leaving auto mode, disabling segment management) and on shutdown, so a
+# dhclient that will not die used to hang whichever of those called it.
+
+
+class StuckProc:
+    """Survives SIGTERM and SIGKILL, and refuses to be waited on without a bound."""
+
+    def __init__(self):
+        self.waits = []
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if timeout is None:
+            raise AssertionError(
+                "wait() with no timeout — on a real unkillable dhclient this never returns")
+        raise subprocess.TimeoutExpired("dhclient", timeout)
+
+    @property
+    def pid(self):
+        return 99
+
+
+def test_stop_reports_a_dhclient_that_outlived_sigkill_and_keeps_the_handle():
+    spawned = []
+    stuck = StuckProc()
+    cl = pd_client.PdClient("eth0", "/tmp/pd.sh",
+                            popen=lambda cmd: spawned.append(cmd) or stuck)
+    cl.start()
+    with pytest.raises(RuntimeError, match="did not stop"):
+        cl.stop()
+    assert stuck.terminated is True and stuck.killed is True
+    assert stuck.waits and all(t is not None for t in stuck.waits), "a wait ran unbounded"
+    assert len(stuck.waits) == 2, "the post-kill reap was skipped, not bounded"
+    cl.start()
+    assert len(spawned) == 1, "a second dhclient was started next to the one still running"

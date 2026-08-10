@@ -8,6 +8,8 @@ import threading
 import time
 from typing import TypedDict
 
+from pi_gw_panel.proc import stop_process
+
 
 class SupervisorStatus(TypedDict):
     running: bool
@@ -49,6 +51,9 @@ class DnsmasqSupervisor:
 
                 previous_text = self._last_text
                 previous_running = self._running()
+                # Deliberately before `os.replace`: if the running child cannot be stopped this
+                # raises, and an apply that could not free the DHCP/DNS sockets must not go on
+                # to install the new config and spawn a second dnsmasq onto them.
                 self.stop()
                 os.replace(candidate, self.conf_path)
                 candidate = ""
@@ -58,15 +63,25 @@ class DnsmasqSupervisor:
                     if not self._running():
                         raise RuntimeError("dnsmasq exited during readiness check")
                 except Exception as exc:
-                    self.stop()
+                    detail = str(exc)
+                    try:
+                        self.stop()
+                        stopped = True
+                    except RuntimeError as stop_exc:
+                        # The rollback still has to happen — the config on disk must end up
+                        # being the one we mean to run — but a candidate we could not kill
+                        # rules out putting the previous one next to it, and leaves us unable
+                        # to say what text the surviving child is serving.
+                        stopped = False
+                        detail = f"{detail}; {stop_exc}"
                     self._restore_config(previous_text)
-                    self._last_text = previous_text
-                    if previous_running and previous_text is not None:
+                    self._last_text = previous_text if stopped else None
+                    if stopped and previous_running and previous_text is not None:
                         try:
                             self._spawn()
                         except Exception:
                             self._proc = None
-                    raise RuntimeError(f"dnsmasq candidate failed: {exc}") from exc
+                    raise RuntimeError(f"dnsmasq candidate failed: {detail}") from exc
                 self._last_text = text
             finally:
                 if candidate and os.path.exists(candidate):
@@ -97,14 +112,19 @@ class DnsmasqSupervisor:
                 os.unlink(tmp)
 
     def stop(self) -> None:
+        """Stop the child, bounded. Raises when it outlived SIGKILL.
+
+        Every call happens under the apply-lock (provisioning, a settings apply), so the wait
+        that used to follow `kill()` unbounded could hold that lock — and the process-wide DB
+        lock behind it — for as long as the child stayed unkillable. And a survivor must not be
+        forgotten: dropping the handle would make `status()` report "not running" while a
+        dnsmasq is still answering DHCP on the segment, and let the next `apply()` start a
+        second one beside it. So the handle is kept and the failure is raised.
+        """
         with self._lock:
-            if self._proc is not None and self._proc.poll() is None:
-                self._proc.terminate()
-                try:
-                    self._proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
-                    self._proc.wait()
+            if not stop_process(self._proc, name="dnsmasq"):
+                raise RuntimeError(
+                    f"dnsmasq (pid {getattr(self._proc, 'pid', '?')}) did not stop")
             self._proc = None
 
     def _running(self) -> bool:

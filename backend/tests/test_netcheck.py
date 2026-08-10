@@ -1,8 +1,12 @@
+import subprocess
+
+import pytest
+
 from pi_gw_panel.config import Settings
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.models import Node, NodeHealth
-from pi_gw_panel.net_control import netcheck
+from pi_gw_panel.net_control import linux, netcheck
 
 
 def _store():
@@ -122,3 +126,48 @@ def test_foreign_ra_none_on_error():
     def boom(cmd):
         raise OSError("no ip")
     assert netcheck.foreign_ra("eth0.2", run=boom) is None
+
+
+# --- no host command here runs unbounded either --------------------------------------------
+#
+# `iface_addresses` and `foreign_ra` shell out to `ip` through `_run_text`. That runner was
+# `subprocess.run(...)` with no timeout, so a wedged netlink call blocked the request thread
+# serving `/api/network` or `/api/ready` forever, next to the `nft`/`ip`/`iptables` runner in
+# `linux` that already had limits. One runner, one set of limits — and a timeout has to keep
+# arriving as `CalledProcessError(124, …)`, which is what both callers already catch.
+
+
+def _timing_out_run(recorded):
+    """Stand-in for `subprocess.run` that behaves like a command which never returns."""
+    def run(cmd, **kwargs):
+        recorded.append(kwargs.get("timeout", "UNBOUNDED"))
+        if kwargs.get("timeout") is None:
+            raise AssertionError(
+                f"{cmd[0]} was run without a timeout — on a wedged netlink call this blocks "
+                f"the thread serving the request forever")
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+    return run
+
+
+def test_a_hung_ip_command_cannot_block_the_readiness_reader(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(subprocess, "run", _timing_out_run(recorded))
+    assert netcheck.iface_addresses("eth0.2") == set()
+    assert recorded == [linux.HOST_CMD_TIMEOUT]
+
+
+def test_a_hung_ip_command_cannot_block_the_rogue_ra_check(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(subprocess, "run", _timing_out_run(recorded))
+    assert netcheck.foreign_ra("eth0.2", own_mac="88:a2:9e:3b:0f:66") is None
+    assert recorded == [linux.HOST_CMD_TIMEOUT]
+
+
+def test_a_timed_out_host_command_still_surfaces_as_a_124_exit(monkeypatch):
+    """The contract the two callers above are written against: a timeout is the same *kind* of
+    failure as a non-zero exit, not a third exception type that escapes their handlers."""
+    monkeypatch.setattr(subprocess, "run", _timing_out_run([]))
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        netcheck._run_text(["ip", "-o", "addr", "show", "dev", "eth0.2"])
+    assert caught.value.returncode == linux.TIMEOUT_RETURNCODE
+    assert "timed out" in caught.value.stderr

@@ -6,13 +6,23 @@ import subprocess
 import time
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
+from pi_gw_panel.net_control.linux import _run
 from pi_gw_panel.net_control.plan import NetPlan
 
 _log = logging.getLogger("pi_gw_panel")
 
 
 def _run_text(cmd: list[str]) -> str:
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    """Stdout of one host command, bounded by the same limits as every other shell-out.
+
+    These `ip` calls run on request paths (`/api/network`, `/api/ready`) rather than under the
+    apply-lock, so a hung one wedges the worker thread serving that request instead of the whole
+    process — but "only one worker at a time" is still unbounded, and readiness is polled. There
+    is one runner with one set of limits (`linux.command_timeout`); a second, unbounded one here
+    is how the class stayed open after it was closed for `nft`/`ip`/`iptables`. A timeout arrives
+    as `CalledProcessError(124, …)`, which is exactly what both callers below already catch.
+    """
+    return _run(cmd).stdout
 
 
 def iface_addresses(iface: str, run=_run_text) -> set[str]:
