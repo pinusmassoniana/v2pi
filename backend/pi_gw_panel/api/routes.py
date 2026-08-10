@@ -965,7 +965,8 @@ def probe_tcp(request: Request, scope: str | None = None,
     store = get_state(request).store
     def assign(h: NodeHealth, ok, ms): h.last_tcp_ok, h.last_tcp_ms = ok, ms
     return _probe_sweep(store, _scoped_nodes(store, scope),
-                        lambda n: probe.tcp_ping(n.address, n.port, timeout=2.0), assign)
+                        lambda n: probe.tcp_ping(n.address, n.port, timeout=2.0,
+                                                 allow_private=probe.operator_added(n)), assign)
 
 
 @router.post("/probe/http", response_model=list[NodeHealthOut])
@@ -976,7 +977,8 @@ def probe_http(request: Request, scope: str | None = None,
     store = get_state(request).store
     def assign(h: NodeHealth, ok, ms): h.last_http_ok, h.last_http_ms = ok, ms
     return _probe_sweep(store, _scoped_nodes(store, scope),
-                        lambda n: probe.http_ping(n.address, n.port, n.sni, timeout=3.0),
+                        lambda n: probe.http_ping(n.address, n.port, n.sni, timeout=3.0,
+                                                  allow_private=probe.operator_added(n)),
                         assign, record_http=True)
 
 
@@ -997,11 +999,17 @@ def probe_node(node_id: int, request: Request,
     # v6 egress: only when the IPv6 tunnel is on (a v6-only echo → the node's v6 egress, or None)
     url6 = (store.get_setting("health_probe_url6") or SETTINGS_DEFAULTS["health_probe_url6"]
             if (store.get_setting("ipv6_enabled") or "0") == "1" else None)
+    # All three probes get the node's provenance, like the background sweep: this button is how
+    # an operator checks their own LAN node, and a strict probe here would both refuse it and
+    # overwrite the sweep's honest result with a "dead" one. A feed node stays strict.
+    allow_private = probe.operator_added(node)
     real_ok, real_ms, egress, egress6 = probe.real_through_node(
-        node, state.xray_bin, probe_url, probe_url6=url6)
+        node, state.xray_bin, probe_url, probe_url6=url6, allow_private=allow_private)
     h = store.get_health(node_id) or NodeHealth(node_id=node_id)
-    h.last_tcp_ok, h.last_tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0)
-    h.last_http_ok, h.last_http_ms = probe.http_ping(node.address, node.port, node.sni, timeout=4.0)
+    h.last_tcp_ok, h.last_tcp_ms = probe.tcp_ping(node.address, node.port, timeout=3.0,
+                                                  allow_private=allow_private)
+    h.last_http_ok, h.last_http_ms = probe.http_ping(node.address, node.port, node.sni,
+                                                     timeout=4.0, allow_private=allow_private)
     h.last_real_ok, h.last_real_ms, h.egress_ip, h.egress_ip6 = real_ok, real_ms, egress, egress6
     h.checked_at = datetime.now(timezone.utc).isoformat()
     store.upsert_health(h)

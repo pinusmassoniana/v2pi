@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import socket
 import ssl
@@ -174,6 +175,7 @@ def test_real_through_node_pins_the_ip_into_the_throwaway_xray_config(monkeypatc
     spawned = []
 
     class _Proc:
+        def poll(self): return None
         def terminate(self): pass
         def wait(self, timeout=None): pass
 
@@ -536,7 +538,7 @@ def _lookup_costing(monkeypatch, seconds: float, *ips: str):
     Returns that clock, so the probe under test and the assertions share one timeline."""
     now = {"t": 0.0}
 
-    def fake_resolve(address, port=443, timeout=5.0):
+    def fake_resolve(address, port=443, timeout=5.0, allow_private=False):
         now["t"] += seconds
         return list(ips)
 
@@ -587,7 +589,7 @@ def test_the_probe_bound_is_the_wall_clock_for_both_phases(monkeypatch):
     host — both phases are local stubs that sleep."""
     budget = 0.2
 
-    def slow_lookup(address, port=443, timeout=5.0):
+    def slow_lookup(address, port=443, timeout=5.0, allow_private=False):
         time.sleep(budget)
         return ["1.2.3.7"]
 
@@ -646,3 +648,327 @@ def test_a_socket_that_cannot_be_duplicated_fails_the_probe(_no_proxy_bypass, mo
     assert result == (False, None, None, None), \
         "the probe ran on with a deadline it could not enforce"
     assert closed == [True], "the socket that could not be guarded was left open"
+
+
+# --- the throwaway-xray probe spends ONE deadline, not one per phase -----------------------
+#
+# `real_through_node` resolves the endpoint, waits for a slot on the process-wide probe gate,
+# waits for the throwaway instance to come up, makes one or two requests and tears it down.
+# Every phase used to carry a budget of its own — its own resolution timeout, an *indefinite*
+# wait on the gate, its own readiness wait, a full `timeout` per request — so an 8 s probe was
+# worth several times that to whoever was slow, and unbounded whenever the gate was busy. The
+# per-phase tests above cannot see that: each phase behaves, only the total is wrong. This is
+# the composed one.
+
+
+class _Clock:
+    """A clock the test moves by hand: every phase spends from it, so the whole probe runs on
+    one timeline with nothing left to real wall-clock scheduling."""
+
+    def __init__(self, t: float = 0.0):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def spend(self, seconds: float) -> None:
+        self.t += seconds
+
+
+class _RecordingProc:
+    def __init__(self, seen):
+        self._seen = seen
+
+    def poll(self):                                   # like Popen: None while it is running
+        return None
+
+    def terminate(self):
+        self._seen["terminated"] = True
+
+    def wait(self, timeout=None):
+        self._seen["teardown"] = timeout
+
+    def kill(self):                                   # pragma: no cover - the double exits
+        self._seen["killed"] = True
+
+
+def test_the_throwaway_probe_spends_one_deadline_across_every_phase(monkeypatch):
+    clock = _Clock()
+    seen: dict = {}
+
+    def fake_resolve(address, port=443, timeout=5.0, allow_private=False):
+        seen["resolve"] = timeout
+        clock.spend(2.0)
+        return "1.2.3.7"
+
+    class _BusyGate:
+        def acquire(self, timeout=None):
+            seen["gate"] = timeout
+            clock.spend(3.0)                  # every slot taken; one frees up three seconds in
+            return True
+
+        def release(self):
+            seen["released"] = True
+
+    def wait_ready(port):
+        clock.spend(1.0)
+
+    def fake_real_request(proxy, url, timeout=5.0):
+        seen.setdefault("requests", []).append(timeout)
+        clock.spend(timeout / 2)              # each request answers halfway into its budget
+        return True, 200, 10, "9.9.9.9" if url.endswith("v4") else "2606::5"
+
+    monkeypatch.setattr(probe, "resolve_endpoint", fake_resolve)
+    monkeypatch.setattr(probe, "real_request", fake_real_request)
+    node = Node(id=1, name="n", address="node.example", port=443, uuid="u")
+    ok, _ms, egress, egress6 = probe.real_through_node(
+        node, "xray", "https://v4", timeout=8.0, spawn=lambda _p: _RecordingProc(seen),
+        wait_ready=wait_ready, probe_url6="https://v6", clock=clock, sem=_BusyGate())
+
+    assert (ok, egress, egress6) == (True, "9.9.9.9", "2606::5")
+    # every phase was handed what was LEFT of the 8 s, never a fresh copy of it
+    assert seen["resolve"] == pytest.approx(8.0)
+    assert seen["gate"] == pytest.approx(6.0)                       # 8 − 2 s of resolution
+    assert seen["requests"] == [pytest.approx(2.0), pytest.approx(1.0)]   # …− 3 s gate − 1 s wait
+    assert seen["teardown"] == pytest.approx(0.5)                   # even the teardown is inside
+    assert seen["released"] is True
+    assert clock() <= 8.0, f"the 8 s bound is per phase, not end to end: spent {clock():.1f}s"
+
+
+def test_a_contended_probe_gate_fails_the_probe_instead_of_waiting_it_out(monkeypatch):
+    """The gate is process-wide and holds three slots. Waiting on it without a bound is how a
+    probe that advertises 8 s pins its caller for as long as three other probes take — and the
+    caller is the liveness worker, with the xray watchdog and auto-failover behind it. A probe
+    that never got a slot has to fail, not queue."""
+    clock = _Clock()
+    asked = []
+
+    class _Contended:
+        def acquire(self, timeout=None):
+            asked.append(timeout)
+            clock.spend(timeout)              # the whole budget goes on the wait, and no slot
+            return False
+
+        def release(self):                    # pragma: no cover - nothing was acquired
+            raise AssertionError("released a slot it never took")
+
+    monkeypatch.setattr(probe, "resolve_endpoint", lambda *_a, **_k: "1.2.3.7")
+    node = Node(id=1, name="n", address="node.example", port=443, uuid="u")
+    assert probe.real_through_node(
+        node, "xray", "https://v4", timeout=4.0, clock=clock, sem=_Contended(),
+        spawn=lambda _p: (_ for _ in ()).throw(AssertionError("must not spawn xray")),
+        wait_ready=lambda _p: None) == (False, None, None, None)
+    assert asked == [pytest.approx(4.0)], "the gate was waited on without a bound"
+    assert clock() <= 4.0
+
+
+def test_a_resolution_that_spends_the_budget_never_reaches_the_gate(monkeypatch):
+    """Not a shorter wait — none at all. A slow resolver must not still buy a full slot wait,
+    a spawn and a request on top of the budget it already spent."""
+    clock = _Clock()
+
+    def slow_resolve(address, port=443, timeout=5.0, allow_private=False):
+        clock.spend(2.5)
+        return "1.2.3.7"
+
+    class _Untouched:
+        def acquire(self, timeout=None):      # pragma: no cover - the point is it isn't reached
+            raise AssertionError("the budget was gone; the gate was waited on anyway")
+
+    monkeypatch.setattr(probe, "resolve_endpoint", slow_resolve)
+    node = Node(id=1, name="n", address="node.example", port=443, uuid="u")
+    assert probe.real_through_node(
+        node, "xray", "https://v4", timeout=2.0, clock=clock, sem=_Untouched(),
+        spawn=lambda _p: (_ for _ in ()).throw(AssertionError("must not spawn xray")),
+        wait_ready=lambda _p: None) == (False, None, None, None)
+
+
+# --- an operator's own node on the LAN is probed; a feed's "LAN node" still never is -------
+#
+# The guard above exists so a subscription feed cannot aim the probes at internal services, and
+# it was applied to every node whatever its origin — which also refused the one internal address
+# an operator is entitled to point the panel at: their own box on the same LAN. That node then
+# reads as permanently dead (both probes return (False, None) with nothing dialled) and
+# auto-failover, which only promotes a node something has marked alive, can never pick it.
+# `allow_private` is provenance, and it relaxes exactly the private/link-local half of the check.
+
+
+@pytest.mark.parametrize("address", ["192.168.1.10", "10.0.0.5", "172.16.4.4", "169.254.1.1",
+                                     "fd00::5", "fe80::1"])
+def test_a_private_endpoint_is_dialled_only_when_the_node_is_operator_added(address):
+    dialled = []
+
+    def connect(addr, to):
+        dialled.append(addr[0])
+        return _FakeConn()
+
+    # the security half, and the one that must never regress: without the flag — a feed-imported
+    # node, or any caller that simply forgot it — the address is refused and nothing is dialled
+    assert tcp_ping(address, 443, connect=connect) == (False, None)
+    assert probe.http_ping(address, 443, "sni", connect=connect) == (False, None)
+    assert probe.resolve_endpoints(address, 443) == []
+    assert dialled == []
+    # …and with it, the operator's own node is an ordinary probeable endpoint
+    assert tcp_ping(address, 443, connect=connect, allow_private=True)[0] is True
+    assert probe.http_ping(address, 443, "sni", connect=connect, allow_private=True)[0] is True
+    assert dialled == [address, address]
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "::1", "localhost", "224.0.0.1", "ff02::1",
+                                     "0.0.0.0", "::", "240.0.0.1", ""])
+def test_allow_private_still_refuses_what_no_node_may_be_probed_at(address):
+    """The relaxed check drops the private/link-local half and nothing else: loopback would aim
+    the probe at the panel host itself (its admin port, its local proxy inbound), and multicast,
+    the unspecified address and the reserved ranges are not node endpoints at all."""
+    def connect(addr, to):
+        raise AssertionError(f"must not dial {addr}")
+
+    assert tcp_ping(address, 443, connect=connect, allow_private=True) == (False, None)
+    assert probe.http_ping(address, 443, "sni", connect=connect,
+                           allow_private=True) == (False, None)
+    assert probe.resolve_endpoints(address, 443, allow_private=True) == []
+
+
+def test_a_relaxed_lookup_keeps_pinning_and_still_validates_the_whole_answer(monkeypatch):
+    """Relaxing *which* addresses are allowed must not relax *how* they are handled: the answer
+    is still resolved once and dialled by IP (a rebinding answer cannot slip loopback in behind
+    the check), and a single forbidden record still refuses the whole answer."""
+    _rebinding_dns(monkeypatch, first="192.168.1.10", later="127.0.0.1")
+    dialled = []
+    ok, _ms = tcp_ping("lan.example", 443, allow_private=True,
+                       connect=lambda addr, to: dialled.append(addr) or _FakeConn())
+    assert ok is True and dialled == [("192.168.1.10", 443)]
+
+    _mixed_dns(monkeypatch, public="192.168.1.10", private="127.0.0.1")
+    assert probe.resolve_endpoints("lan.example", 443, allow_private=True) == []
+
+
+@pytest.mark.parametrize("deadline, spent", [(0.4, 0.4), (30.0, 3.0)])
+def test_the_readiness_wait_stops_at_whichever_bound_runs_out_first(monkeypatch, deadline, spent):
+    """The readiness wait has a cap of its own (`_READY_WAIT`, 3 s) — fine while the probe still
+    has that much budget, a lie when it doesn't. Whichever bound runs out first has to win, and
+    no single attempt may dial for longer than what is left."""
+    assert probe._READY_WAIT == 3.0
+    clock = _Clock()
+    attempts = []
+
+    def refuse(addr, timeout):
+        attempts.append(timeout)
+        clock.spend(0.05)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    probe._wait_ready(9, deadline=deadline, clock=clock, sleep=clock.spend)
+    assert clock() == pytest.approx(spent), "the readiness wait outlived its bound"
+    assert 0 < min(attempts) and max(attempts) <= 0.2
+
+
+# --- …and the teardown is inside that one deadline, kill included ---------------------------
+#
+# The bounded wait after `terminate()` was followed by a bare `proc.wait()` after `kill()`. An
+# xray stuck in an uninterruptible syscall is not reaped by SIGKILL either, so the probe that
+# advertises ONE deadline could sit in its own `finally` forever — freezing the liveness worker
+# and, behind it, the xray watchdog and auto-failover. Bounding that second wait separately was
+# only half of it: an allowance of its own is still time the deadline does not have, so both
+# waits now spend what is left of the one budget and nothing on top of it.
+
+
+class _UnkillableProc:
+    """Ignores both signals, and refuses any wait that has no bound."""
+
+    def __init__(self):
+        self.waits = []
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if timeout is None:
+            raise AssertionError(
+                "wait() with no timeout — the probe is blocked in its own teardown, holding "
+                "the liveness worker")
+        raise subprocess.TimeoutExpired("xray", timeout)
+
+    @property
+    def pid(self):
+        return 4321
+
+
+def test_a_throwaway_xray_that_ignores_sigkill_never_blocks_the_teardown(monkeypatch, caplog):
+    clock = _Clock()
+    proc = _UnkillableProc()
+    monkeypatch.setattr(probe, "resolve_endpoint", lambda *_a, **_k: "1.2.3.7")
+    monkeypatch.setattr(probe, "real_request",
+                        lambda proxy, url, timeout=5.0: (True, 200, 7, "9.9.9.9"))
+
+    class _FreeGate:
+        def acquire(self, timeout=None):
+            return True
+
+        def release(self):
+            pass
+
+    node = Node(id=1, name="n", address="node.example", port=443, uuid="u")
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        ok, _ms, egress, _egress6 = probe.real_through_node(
+            node, "xray", "https://v4", timeout=8.0, spawn=lambda _p: proc,
+            wait_ready=lambda _p: None, clock=clock, sem=_FreeGate())
+
+    assert proc.terminated is True and proc.killed is True
+    assert proc.waits and all(t is not None for t in proc.waits), "a wait ran unbounded"
+    assert len(proc.waits) == 2, "the post-kill reap was skipped, not bounded"
+    assert proc.waits[1] <= probe._REAP_WAIT
+    # the failed stop is reported, not swallowed…
+    assert any("leaked an xray" in r.getMessage() for r in caplog.records), \
+        "a leaked xray was torn down in silence"
+    # …and the measurement that did happen is still what the probe returns: a node that answered
+    # is not unhealthy because our own teardown failed.
+    assert (ok, egress) == (True, "9.9.9.9")
+
+
+def test_a_teardown_at_the_deadline_gets_no_allowance_past_it(monkeypatch, caplog):
+    """Both teardown waits come out of what is LEFT of the one deadline, and at the deadline
+    that is zero — for the reap as much as for the SIGTERM grace.
+
+    A `_REAP_WAIT` granted *in addition to* an exhausted budget is not a bound on the probe, it
+    is a second of overrun per stuck probe charged to the liveness worker that drives failover.
+    Zero is not the unbounded wait by another name: `wait(0)` returns or raises at once, and a
+    child that is still there is still reported as a survivor — which is what the caller needs
+    to know, and all this last wait was ever for."""
+    clock = _Clock()
+    proc = _UnkillableProc()
+    monkeypatch.setattr(probe, "resolve_endpoint", lambda *_a, **_k: "1.2.3.7")
+
+    def spend_it_all(proxy, url, timeout=5.0):
+        clock.spend(timeout)                       # the request uses every second of the budget
+        return False, None, None, None
+
+    monkeypatch.setattr(probe, "real_request", spend_it_all)
+
+    class _FreeGate:
+        def acquire(self, timeout=None):
+            return True
+
+        def release(self):
+            pass
+
+    node = Node(id=1, name="n", address="node.example", port=443, uuid="u")
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        assert probe.real_through_node(
+            node, "xray", "https://v4", timeout=4.0, spawn=lambda _p: proc,
+            wait_ready=lambda _p: None, clock=clock, sem=_FreeGate()) == (False, None, None, None)
+    assert proc.waits == [0.0, 0.0], "the teardown bought time the deadline no longer had"
+    assert proc.killed is True, "the reap was skipped rather than bounded at zero"
+    assert clock() <= 4.0, f"the 4 s bound was overrun by the teardown: spent {clock():.1f}s"
+    # …and a survivor is still never reported as stopped, however little budget was left to try.
+    assert any("leaked an xray" in r.getMessage() for r in caplog.records), \
+        "a leaked xray was torn down in silence"

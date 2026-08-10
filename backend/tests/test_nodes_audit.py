@@ -29,7 +29,7 @@ def test_monitor_skips_real_probe_when_tunnel_off(settings):
     st.store.set_setting("active_node_id", str(a))
     st.store.set_setting("tunneled_fetch", "0")
     called = []
-    mon = HealthMonitor(st, tcp_ping=lambda *_: (True, 5), http_ping=lambda *_: (True, 9),
+    mon = HealthMonitor(st, tcp_ping=lambda *_a, **_k: (True, 5), http_ping=lambda *_a, **_k: (True, 9),
                         real_request=lambda *a, **k: called.append(1) or (False, None, None, None),
                         now_iso=lambda: "t")
     mon.run_once()
@@ -44,7 +44,7 @@ def test_monitor_preserves_real_egress_for_non_active(settings):
     b = st.store.add_node(Node(id=None, name="b", address="2.2.2.2", port=443, uuid="ub"))
     st.store.set_setting("active_node_id", str(a))
     st.store.upsert_health(NodeHealth(node_id=b, last_real_ok=True, last_real_ms=42, egress_ip="9.9.9.9"))
-    mon = HealthMonitor(st, tcp_ping=lambda *_: (True, 5), http_ping=lambda *_: (True, 9),
+    mon = HealthMonitor(st, tcp_ping=lambda *_a, **_k: (True, 5), http_ping=lambda *_a, **_k: (True, 9),
                         real_request=lambda *_: (True, 200, 1, "x"), now_iso=lambda: "t")
     mon.run_once()
     hb = st.store.get_health(b)
@@ -110,7 +110,7 @@ def test_validate_node_ok(settings, stub_xray):
 def test_detach_endpoint(settings, stub_xray):
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
-    sid = c.post("/api/subs", json={"name": "s", "url": "https://93.184.216.34/x"}, headers=h).json()["id"]
+    c.post("/api/subs", json={"name": "s", "url": "https://1.2.3.4/x"}, headers=h)
     nid = c.post("/api/nodes", json={"name": "n", "address": "1.1.1.1", "port": 443, "uuid": "u"},
                  headers=h).json()["id"]
     # manually attach via a refresh would be heavy; just detach an already-manual node is a no-op,

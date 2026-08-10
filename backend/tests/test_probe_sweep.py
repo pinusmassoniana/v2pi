@@ -1,4 +1,13 @@
-from pi_gw_panel.health import probe
+import socket
+import ssl
+from datetime import UTC, datetime
+
+from pi_gw_panel.controller import ApplyResult
+from pi_gw_panel.db import connect, init_schema
+from pi_gw_panel.health import failover, probe, selection
+from pi_gw_panel.health.monitor import HealthMonitor
+from pi_gw_panel.models import Node, NodeHealth, Subscription
+from pi_gw_panel.nodes.store import NodeStore
 from conftest import _client, _login
 
 
@@ -76,6 +85,7 @@ def test_real_through_node_spawns_and_probes(monkeypatch):
              network="tcp", security="reality", sni="s", public_key="PK", short_id="x")
     spawned = []
     class _Proc:
+        def poll(self): return None
         def terminate(self): pass
         def wait(self, timeout=None): pass
     def fake_spawn(path):
@@ -104,3 +114,177 @@ def test_probe_node_endpoint_runs_all_three(settings, stub_xray, monkeypatch):
 def test_probe_needs_csrf(settings, stub_xray):
     c = _client(settings, stub_xray); _login(c)
     assert c.post("/api/probe/tcp").status_code == 403
+
+
+# --- the sweep and a node the operator hosts on their own LAN ------------------------------
+#
+# The SSRF guard on the probes is there so a subscription feed cannot aim them at internal
+# services. Applied to every node regardless of origin it also refused the operator's own
+# same-LAN node, which then never got a probe result at all — and `selection._alive` needs one
+# of the three, so auto-failover (which asks for an alive candidate) could never pick it.
+# Provenance is the discriminator, and it already exists: a feed-imported node carries a
+# `subscription_id`, a hand-added one does not.
+
+
+class _SweepState:
+    def __init__(self, store, settings):
+        self.store = store
+        self.settings = settings
+        self.xray_bin = settings.xray_bin
+
+
+class _NoTls:
+    """The default `http_ping` connect path, with the TLS layer stubbed out — the socket still
+    goes through `socket.create_connection`, which is what the assertions watch."""
+    check_hostname = True
+    verify_mode = None
+
+    def wrap_socket(self, sock, server_hostname=None):
+        return sock
+
+
+def test_the_sweep_probes_an_operator_added_lan_node_but_never_a_feed_one(settings, monkeypatch):
+    """Nothing here is stubbed above the socket: the production `tcp_ping`/`http_ping` do the
+    work, so what is under test is the whole chain — monitor → probe → resolver → dial.
+    (`tcp_ping` takes its dialler as a default argument, so it is handed one explicitly rather
+    than through the module: patching `socket` alone would leave it dialling the real LAN.)"""
+    conn = connect(settings.db_path, check_same_thread=False)
+    init_schema(conn)
+    store = NodeStore(conn)
+    sub = store.add_subscription(Subscription(id=None, name="feed", url="https://feed.example/s"))
+    mine = store.add_node(Node(id=None, name="lan", address="192.168.1.10", port=443, uuid="u1"))
+    theirs = store.add_node(Node(id=None, name="feed-lan", address="192.168.1.11", port=443,
+                                 uuid="u2", subscription_id=sub))
+
+    class _Conn:
+        def close(self): pass
+
+    dialled = []
+
+    def dial(addr, to):
+        dialled.append(addr[0])
+        return _Conn()
+
+    def tcp_ping(address, port, allow_private=False):
+        return probe.tcp_ping(address, port, connect=dial, allow_private=allow_private)
+
+    monkeypatch.setattr(socket, "create_connection", dial)      # the handshake probe's dialler
+    monkeypatch.setattr(ssl, "create_default_context", lambda: _NoTls())
+
+    HealthMonitor(_SweepState(store, settings), tcp_ping=tcp_ping,
+                  real_request=lambda *_a, **_k: (False, None, None, None)).run_once()
+
+    # the operator's node answered both direct probes; the feed's identical-looking one was
+    # never dialled at all — that half is the SSRF guard and must never regress
+    assert dialled == ["192.168.1.10", "192.168.1.10"]      # tcp probe, then the handshake
+    assert (store.get_health(mine).last_tcp_ok, store.get_health(mine).last_http_ok) == (True, True)
+    assert (store.get_health(theirs).last_tcp_ok,
+            store.get_health(theirs).last_http_ok) == (False, False)
+
+    # …and being probed at all is what makes it selectable: failover asks for an alive candidate
+    health = {h.node_id: h for h in store.list_health()}
+    nodes = store.list_nodes()
+    assert [n.id for n in selection.ranked_nodes(nodes, health, require_alive=True)] == [mine]
+    assert selection.best_node(nodes, health, require_alive=True).id == mine
+
+
+# --- …and selectable is not promotable: the preflight had the last word --------------------
+#
+# `failover.run` promotes nothing whose real-request preflight failed, and that preflight
+# resolves the candidate's endpoint before it stands anything up. While it resolved strictly,
+# the operator's own LAN node was swept, marked alive and ranked (above) — and then refused on
+# every evaluation, so the panel offered a candidate it could never switch to. That is the
+# defect, and it is about the OUTCOME, so these assert the promotion rather than the probe.
+#
+# Both drive the PRODUCTION `real_through_node`: only the xray process and the request through
+# it are stubbed, so the guard is the only thing deciding, and the adapter forwards `**k`
+# verbatim — stop passing provenance in `failover.run` and the promotion test goes red.
+
+
+def _ts(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
+class _NoProc:
+    """A throwaway xray that never runs; the preflight decides before spawn either way."""
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        pass
+
+
+class _FailoverState(_SweepState):
+    supervisor = None       # only ever handed to the stubbed apply_fn
+    net = None
+
+
+def _preflight(spawned, monkeypatch):
+    monkeypatch.setattr(probe, "real_request",
+                        lambda proxy, url, timeout=None: (True, 200, 7, "203.0.113.9"))
+
+    def real_through(node, xray_bin, probe_url, **k):
+        return probe.real_through_node(
+            node, xray_bin, probe_url, wait_ready=lambda _port: None,
+            spawn=lambda _path: spawned.append(node.address) or _NoProc(), **k)
+
+    return real_through
+
+
+def _one_lan_standby(store, address, subscription_id=None):
+    """An active node that has failed its way past the hysteresis, and one standby on the LAN."""
+    now = 100_000.0
+    active = store.add_node(Node(id=None, name="wan", address="1.1.1.1", port=443, uuid="u1"))
+    standby = store.add_node(Node(id=None, name="lan", address=address, port=443, uuid="u2",
+                                  subscription_id=subscription_id))
+    store.set_setting("active_node_id", str(active))
+    store.upsert_health(NodeHealth(node_id=active, last_real_ok=False, fail_count=3,
+                                   checked_at=_ts(now)))
+    store.upsert_health(NodeHealth(node_id=standby, last_tcp_ok=True, checked_at=_ts(now)))
+    return now, standby
+
+
+def _failover_store(settings):
+    conn = connect(settings.db_path, check_same_thread=False)
+    init_schema(conn)
+    return NodeStore(conn)
+
+
+def test_failover_promotes_an_operator_added_node_on_the_lan(settings, monkeypatch):
+    store = _failover_store(settings)
+    now, standby = _one_lan_standby(store, "192.168.1.10")
+    applied, spawned = [], []
+
+    def fake_apply(node, *_a, store=None, **_k):
+        applied.append(node.id)
+        store.set_setting("active_node_id", str(node.id))
+        return ApplyResult(ok=True)
+
+    assert failover.run(_FailoverState(store, settings), now, apply_fn=fake_apply,
+                        real_through=_preflight(spawned, monkeypatch)) == standby
+    assert applied == [standby] and spawned == ["192.168.1.10"]
+    assert store.get_health(standby).last_real_ok is True
+
+
+def test_failover_still_refuses_to_preflight_a_feed_imported_lan_node(settings, monkeypatch):
+    """The direction that must never regress. Identical to the promotion above but for one
+    field — the node carries a `subscription_id`, so a feed put it there. The preflight refuses
+    the address, no xray is stood up pointing at it, and nothing is promoted."""
+    store = _failover_store(settings)
+    sub = store.add_subscription(Subscription(id=None, name="f", url="https://feed.example/s"))
+    now, standby = _one_lan_standby(store, "192.168.1.10", subscription_id=sub)
+    applied, spawned = [], []
+
+    def fake_apply(node, *_a, **_k):
+        applied.append(node.id)
+        return ApplyResult(ok=True)
+
+    assert failover.run(_FailoverState(store, settings), now, apply_fn=fake_apply,
+                        real_through=_preflight(spawned, monkeypatch)) is None
+    assert applied == [] and spawned == []
+    assert store.get_health(standby).last_real_ok is False
+    assert store.get_setting("active_node_id") != str(standby)

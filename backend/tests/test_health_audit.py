@@ -22,7 +22,7 @@ from pi_gw_panel.health.selection import (
     DEFAULT_FRESHNESS_TTL, active_freshness_ttl, standby_freshness_ttl,
 )
 from pi_gw_panel.health.snapshot import active_health, health_status
-from pi_gw_panel.models import Node, NodeHealth
+from pi_gw_panel.models import Node, NodeHealth, Subscription
 from pi_gw_panel.net_control import events as conn_events
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.nodes.store import NodeStore
@@ -319,26 +319,42 @@ def test_probes_still_allow_public_addresses():
     assert seen == [("1.2.3.10", 443)]
 
 
-def test_health_sweep_does_not_dial_a_private_node(settings):
+def test_the_sweep_dials_an_operator_added_lan_node_and_never_a_feed_one(settings):
+    """Provenance decides which LAN address is dialled, so both directions are asserted here.
+
+    This was called "the sweep does not dial a private node" — a claim about every node
+    whatever its origin, which the sweep stopped making once provenance reached the probe. It
+    kept passing only because the double it injected took `(address, port)` and so silently
+    held the strict default: the operator half of the rule went uncovered, and the name said
+    otherwise.
+    """
     store = _store(settings)
-    private = store.add_node(Node(id=None, name="lan", address="192.168.1.1", port=443, uuid="u1"))
-    public = store.add_node(Node(id=None, name="pub", address="1.2.3.4", port=443, uuid="u2"))
+    feed = store.add_subscription(Subscription(id=None, name="f", url="https://feed.example/s"))
+    theirs = store.add_node(Node(id=None, name="feed-lan", address="192.168.1.1", port=443,
+                                 uuid="u1", subscription_id=feed))
+    mine = store.add_node(Node(id=None, name="my-lan", address="192.168.1.2", port=443, uuid="u2"))
+    public = store.add_node(Node(id=None, name="pub", address="1.2.3.4", port=443, uuid="u3"))
     dialled = []
 
-    def tcp_ping(address, port):
-        return probe.tcp_ping(address, port,
-                              connect=lambda addr, timeout: dialled.append(addr) or _raise())
+    class _Conn:
+        def close(self):
+            pass
 
-    def _raise():
-        raise OSError("refused")
+    def tcp_ping(address, port, allow_private=False):
+        return probe.tcp_ping(address, port, allow_private=allow_private,
+                              connect=lambda addr, timeout: dialled.append(addr[0]) or _Conn())
 
     monitor = HealthMonitor(_State(store, settings), tcp_ping=tcp_ping,
                             http_ping=lambda *_a, **_k: (False, None),
                             real_request=lambda *_a, **_k: (False, None, None, None),
                             now_iso=lambda: _ts(1000))
     monitor.run_once()
-    assert [addr[0] for addr in dialled] == ["1.2.3.4"]
-    assert store.get_health(private).last_tcp_ok is False
+    # the feed's LAN node was never dialled at all — that half is the SSRF guard and must never
+    # regress; the operator's own was dialled at its LAN address, like any public node
+    assert sorted(dialled) == ["1.2.3.4", "192.168.1.2"]
+    assert store.get_health(theirs).last_tcp_ok is False
+    assert store.get_health(mine).last_tcp_ok is True
+    assert store.get_health(public).last_tcp_ok is True
 
 
 # --- 5. a crash between the xray reload and the active_node_id write converges FORWARD ----

@@ -137,8 +137,16 @@ class HealthMonitor:
             # costs one full probe timeout per remaining node while shutdown waits.
             if stop_event is not None and stop_event.is_set():
                 return None
-            tcp_ok, tcp_ms = self._tcp_ping(node.address, node.port)
-            http_ok, http_ms = self._http_ping(node.address, node.port, node.sni)
+            # Provenance, not address: an operator's own node may sit on the LAN and has to be
+            # probed there — refused, it reads as permanently dead and failover can never pick
+            # it. A feed-imported node is refused there as before (see `probe.operator_added`).
+            # The flag goes to the probe seam unconditionally: a double that cannot take it is a
+            # double that has drifted from the function it stands in for, and the sweep should
+            # say so rather than quietly probing with a different rule than production does.
+            origin = probe.operator_added(node)
+            tcp_ok, tcp_ms = self._tcp_ping(node.address, node.port, allow_private=origin)
+            http_ok, http_ms = self._http_ping(node.address, node.port, node.sni,
+                                               allow_private=origin)
             return node, tcp_ok, tcp_ms, http_ok, http_ms
 
         if not due:

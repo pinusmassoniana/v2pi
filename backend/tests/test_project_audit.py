@@ -324,8 +324,8 @@ def test_monitor_backoff_skips_dead_nodes(settings):
     nid = st.store.add_node(Node(id=None, name="dead", address="1.1.1.1", port=443, uuid="u"))
     probes = []
     mon = HealthMonitor(st, now_iso=lambda: "t",
-                        tcp_ping=lambda a, p: (probes.append(1), (False, None))[1],
-                        http_ping=lambda a, p, s: (False, None),
+                        tcp_ping=lambda a, p, allow_private=False: (probes.append(1), (False, None))[1],
+                        http_ping=lambda a, p, s, allow_private=False: (False, None),
                         real_request=lambda *_: (False, None, None, None))
     mon.run_once()                  # probed, streak 1 → skip next 1 sweep
     assert len(probes) == 1
@@ -347,8 +347,8 @@ def test_monitor_backoff_resets_on_success(settings):
     alive = {"v": False}
     probes = []
     mon = HealthMonitor(st, now_iso=lambda: "t",
-                        tcp_ping=lambda a, p: (probes.append(1), (alive["v"], 5 if alive["v"] else None))[1],
-                        http_ping=lambda a, p, s: (alive["v"], 9 if alive["v"] else None),
+                        tcp_ping=lambda a, p, allow_private=False: (probes.append(1), (alive["v"], 5 if alive["v"] else None))[1],
+                        http_ping=lambda a, p, s, allow_private=False: (alive["v"], 9 if alive["v"] else None),
                         real_request=lambda *_: (False, None, None, None))
     mon.run_once()                  # dead → backoff starts
     mon.run_once()                  # skipped
@@ -366,8 +366,8 @@ def test_monitor_never_skips_active_node(settings):
     st.store.set_setting("tunneled_fetch", "0")        # skip the real probe path
     probes = []
     mon = HealthMonitor(st, now_iso=lambda: "t",
-                        tcp_ping=lambda a, p: (probes.append(1), (False, None))[1],
-                        http_ping=lambda a, p, s: (False, None),
+                        tcp_ping=lambda a, p, allow_private=False: (probes.append(1), (False, None))[1],
+                        http_ping=lambda a, p, s, allow_private=False: (False, None),
                         real_request=lambda *_: (False, None, None, None))
     for _ in range(4):
         mon.run_once()

@@ -150,8 +150,13 @@ def run(state, now: float, apply_fn=apply_node, real_through=probe.real_through_
             if (int(cur_v) if cur_v else None) != active_id:
                 return None
         try:
+            # Same provenance the health sweep probes by: an operator's own node on the LAN is
+            # marked alive by that sweep and ranked here, but a strict preflight refuses its
+            # address and `not real_ok` drops it — so without this it is selectable in theory
+            # and unpromotable in practice. A feed-imported candidate stays strict.
             real_ok, real_ms, egress, egress6 = real_through(
                 node, state.xray_bin, probe_url, timeout=PREFLIGHT_TIMEOUT,
+                allow_private=probe.operator_added(node),
             )
         except Exception:
             real_ok, real_ms, egress, egress6 = False, None, None, None

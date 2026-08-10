@@ -28,8 +28,8 @@ def test_run_once_writes_tcp_for_all_and_real_for_active(settings):
     a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
     b = st.store.add_node(Node(id=None, name="b", address="2.2.2.2", port=443, uuid="u2"))
     st.store.set_setting("active_node_id", str(a))
-    mon = _monitor(st, tcp_ping=lambda addr, port: (True, 12),
-                   http_ping=lambda addr, port, sni: (True, 50),
+    mon = _monitor(st, tcp_ping=lambda addr, port, allow_private=False: (True, 12),
+                   http_ping=lambda addr, port, sni, allow_private=False: (True, 50),
                    real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
     mon.run_once()
     ha = st.store.get_health(a)
@@ -47,13 +47,13 @@ def test_consecutive_real_failures_increment_then_reset(settings):
     st = _state(settings)
     a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
     st.store.set_setting("active_node_id", str(a))
-    fail = _monitor(st, tcp_ping=lambda *_: (True, 5), http_ping=lambda *_: (True, 1),
+    fail = _monitor(st, tcp_ping=lambda *_a, **_k: (True, 5), http_ping=lambda *_a, **_k: (True, 1),
                     real_request=lambda *_: (False, None, None, None))
     fail.run_once()
     assert st.store.get_health(a).fail_count == 1
     fail.run_once()
     assert st.store.get_health(a).fail_count == 2
-    ok = _monitor(st, tcp_ping=lambda *_: (True, 5), http_ping=lambda *_: (True, 1),
+    ok = _monitor(st, tcp_ping=lambda *_a, **_k: (True, 5), http_ping=lambda *_a, **_k: (True, 1),
                   real_request=lambda *_: (True, 200, 9, "1.2.3.4"))
     ok.run_once()
     assert st.store.get_health(a).fail_count == 0
@@ -121,14 +121,14 @@ def test_monitor_rechecks_active_before_real_probe_and_keeps_direct_result(setti
     st.store.set_setting("active_node_id", str(first))
     real_calls = []
 
-    def http_ping(address, *_args):
+    def http_ping(address, *_args, **_kwargs):
         if address == "1.1.1.1":
             st.store.set_setting("active_node_id", str(second))
         return True, 22
 
     mon = _monitor(
         st,
-        tcp_ping=lambda *_: (True, 11),
+        tcp_ping=lambda *_a, **_k: (True, 11),
         http_ping=http_ping,
         real_request=lambda *_: real_calls.append(1) or (False, None, None, None),
     )
@@ -153,8 +153,8 @@ def test_monitor_discards_real_result_if_active_switches_during_probe(settings):
 
     mon = _monitor(
         st,
-        tcp_ping=lambda *_: (True, 11),
-        http_ping=lambda *_: (True, 22),
+        tcp_ping=lambda *_a, **_k: (True, 11),
+        http_ping=lambda *_a, **_k: (True, 22),
         real_request=switch_during_probe,
     )
     mon.run_once()
@@ -175,7 +175,7 @@ def test_active_direct_probe_does_not_refresh_old_real_health(settings):
     ))
 
     _monitor(
-        st, tcp_ping=lambda *_: (True, 11), http_ping=lambda *_: (True, 22),
+        st, tcp_ping=lambda *_a, **_k: (True, 11), http_ping=lambda *_a, **_k: (True, 22),
     ).run_once()
 
     health = st.store.get_health(node_id)
@@ -187,7 +187,7 @@ def test_disabled_monitor_is_noop(settings):
     st = _state(settings)
     a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
     st.store.set_setting("health_enabled", "0")
-    mon = _monitor(st, tcp_ping=lambda *_: (True, 5), http_ping=lambda *_: (True, 1),
+    mon = _monitor(st, tcp_ping=lambda *_a, **_k: (True, 5), http_ping=lambda *_a, **_k: (True, 1),
                    real_request=lambda *_: (True, 200, 9, "x"))
     mon.run_once()
     assert st.store.get_health(a) is None
@@ -202,8 +202,8 @@ def test_after_tick_called_and_loop_cancellable(settings):
     ticked = threading.Event()
 
     async def drive():
-        mon = _monitor(st, tick_sec=0.001, tcp_ping=lambda *_: (True, 5),
-                       http_ping=lambda *_: (True, 6),
+        mon = _monitor(st, tick_sec=0.001, tcp_ping=lambda *_a, **_k: (True, 5),
+                       http_ping=lambda *_a, **_k: (True, 6),
                        real_request=lambda *_: (True, 200, 9, "x"),
                        after_tick=ticked.set)
         mon.start()
@@ -220,7 +220,7 @@ def test_stop_waits_for_current_sweep_and_blocks_late_health_writes(settings):
     started = threading.Event()
     release = threading.Event()
 
-    def slow_tcp(*_args):
+    def slow_tcp(*_args, **_kwargs):
         started.set()
         release.wait(timeout=1)
         return True, 11
@@ -230,7 +230,7 @@ def test_stop_waits_for_current_sweep_and_blocks_late_health_writes(settings):
             st,
             tick_sec=60,
             tcp_ping=slow_tcp,
-            http_ping=lambda *_: (True, 22),
+            http_ping=lambda *_a, **_k: (True, 22),
             real_request=lambda *_: (True, 200, 33, "203.0.113.9"),
         )
         mon.start()
@@ -258,8 +258,8 @@ def test_sweep_switch_stops_the_all_nodes_sweep_on_its_own(settings):
     st.store.set_setting("active_node_id", str(a))
     st.store.set_setting("health_sweep_enabled", "0")
     probed = []
-    mon = _monitor(st, tcp_ping=lambda addr, port: (probed.append(addr), (True, 12))[1],
-                   http_ping=lambda addr, port, sni: (True, 50),
+    mon = _monitor(st, tcp_ping=lambda addr, port, allow_private=False: (probed.append(addr), (True, 12))[1],
+                   http_ping=lambda addr, port, sni, allow_private=False: (True, 50),
                    real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
     mon.run_once()
     assert probed == [] and st.store.get_health(a) is None
@@ -267,12 +267,12 @@ def test_sweep_switch_stops_the_all_nodes_sweep_on_its_own(settings):
 
 def test_master_switch_still_stops_the_sweep_even_with_the_sweep_switch_on(settings):
     st = _state(settings)
-    a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
+    st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
     st.store.set_setting("health_enabled", "0")
     st.store.set_setting("health_sweep_enabled", "1")
     probed = []
-    mon = _monitor(st, tcp_ping=lambda addr, port: (probed.append(addr), (True, 12))[1],
-                   http_ping=lambda addr, port, sni: (True, 50),
+    mon = _monitor(st, tcp_ping=lambda addr, port, allow_private=False: (probed.append(addr), (True, 12))[1],
+                   http_ping=lambda addr, port, sni, allow_private=False: (True, 50),
                    real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
     mon.run_once()
     assert probed == []
@@ -283,8 +283,8 @@ def test_sweep_runs_by_default_so_an_upgrade_changes_nothing(settings):
     st = _state(settings)
     a = st.store.add_node(Node(id=None, name="a", address="1.1.1.1", port=443, uuid="u1"))
     assert st.store.get_setting("health_sweep_enabled") is None
-    mon = _monitor(st, tcp_ping=lambda addr, port: (True, 12),
-                   http_ping=lambda addr, port, sni: (True, 50),
+    mon = _monitor(st, tcp_ping=lambda addr, port, allow_private=False: (True, 12),
+                   http_ping=lambda addr, port, sni, allow_private=False: (True, 50),
                    real_request=lambda proxy, url: (True, 200, 34, "203.0.113.5"))
     mon.run_once()
     assert st.store.get_health(a) is not None

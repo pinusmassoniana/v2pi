@@ -236,6 +236,7 @@ def test_network_payload_uplink6_none_on_dryrun(settings, stub_xray):
 # --- N4: per-node IPv6 egress (dashboard + Nodes tab) -----------------------
 
 class _FakeProc:
+    def poll(self): return None
     def terminate(self): pass
     def wait(self, timeout=None): pass
 

@@ -29,8 +29,8 @@ def test_stubbed_probe_failover_switches_active(settings, stub_xray):
         # every node TCP-alive; the active node's real request always fails
         monitor = HealthMonitor(
             state,
-            tcp_ping=lambda addr, port: (True, 5),
-            http_ping=lambda addr, port, sni: (True, 6),
+            tcp_ping=lambda addr, port, allow_private=False: (True, 5),
+            http_ping=lambda addr, port, sni, allow_private=False: (True, 6),
             real_request=lambda proxy, url: (False, None, None, None),
             now_iso=lambda: "2026-06-03T00:00:00Z",
             after_tick=lambda: failover.run(
