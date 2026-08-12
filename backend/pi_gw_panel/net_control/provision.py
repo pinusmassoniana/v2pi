@@ -311,21 +311,22 @@ def _retire_links(store, links: list[str], owned: list[str], run, probe) -> list
     return failed
 
 
-def ensure_segment_link(store, plan: NetPlan, run=_run, link_exists=None) -> list[str]:
-    """Create the configured VLAN when needed, bring the segment link up, and retire the
-    panel-created links the current plan no longer wants.
+def ensure_segment_link(store, plan: NetPlan, run=_run, link_exists=None) -> None:
+    """Create the configured VLAN when needed and bring the segment link up. RETIRES NOTHING.
 
     A VLAN the panel creates is appended to the ownership ledger BEFORE the kernel call, so
     disabling `manage_segment` can delete exactly the links this panel added (and never a
     pre-existing one) even if the process dies between the record and the creation. The ledger
     is a list for the same reason the stale-address one is: retargeting the segment
     (`eth0.2` -> `eth0.9`) must not overwrite the record of the link still on the host, or
-    nothing would ever delete it. Each superseded link is dropped from the ledger only once its
-    removal is proven, and every link that could not be retired is returned as a reason string
-    so the caller reports a provisioning failure rather than success over a link it owns and
-    left running.
+    nothing would ever delete it.
+
+    This is only the CREATE half of a retarget, and the split is the point (see
+    `retire_superseded_links`): the addresses the plan names need an interface to land on, so
+    the new link has to exist before they are reconciled — but nothing about the OLD link has to
+    go before that, and retiring it there is what turned a rejected `ip addr replace` into a
+    segment with no network at all.
     """
-    probe = _probe_seam(link_exists, run)
     link_exists = link_exists or (lambda i: _link_exists(i, run))
     seg = plan.segment_iface
     parent, vid = parse_vlan(seg)
@@ -337,7 +338,36 @@ def ensure_segment_link(store, plan: NetPlan, run=_run, link_exists=None) -> lis
         run(["ip", "link", "add", "link", parent, "name", seg,
              "type", "vlan", "id", str(vid)])
     run(["ip", "link", "set", seg, "up"])
-    return _retire_links(store, [name for name in owned if name != seg], owned, run, probe)
+
+
+def retire_superseded_links(store, plan: NetPlan, run=_run, link_exists=None) -> list[str]:
+    """Delete the panel-created VLANs the current plan no longer wants. Call this ONLY once the
+    plan's addresses are on the interface.
+
+    A link is "superseded" the moment the segment it carried has been replaced by one that
+    WORKS, and not one step earlier. It used to be retired inside `ensure_segment_link`, before
+    the addresses were reconciled, and that ordering is the defect this function exists to end:
+    a retarget whose `ip addr replace` is then rejected — EPERM, a bad prefix, a busy address,
+    a kernel that will not take it — had already lost the old VLAN and everything on it, and the
+    `applied=False` gates downstream have nothing left to preserve. The operator's gateway is
+    left with the old link deleted and the new one unaddressed: no segment network at all.
+
+    So the caller runs this after the reconcile reports `applied`, and a failed retarget simply
+    does not reach it. What that leaves behind is exactly right: the OLD link is still the live
+    one, still carrying its address, and it is still in the ledger — which therefore still
+    describes the host, now naming both links, both of which really are on it and really were
+    created by this panel. The next pass retries the addresses and retires the old link the
+    moment they land.
+
+    Each superseded link is dropped from the ledger only once its removal is proven, and every
+    link that could not be retired is returned as a reason string so the caller reports a
+    provisioning failure rather than success over a link it owns and left running.
+    """
+    owned = _parse_links(store)
+    superseded = [name for name in owned if name != plan.segment_iface]
+    if not superseded:
+        return []
+    return _retire_links(store, superseded, owned, run, _probe_seam(link_exists, run))
 
 
 def clear_managed_link(store, run=_run, link_exists=None) -> list[str]:
@@ -392,22 +422,34 @@ def _retire_owned_addr(iface: str, addr: str, run=_run) -> str | None:
 
 STALE_KEY = "managed_segment_stale"
 
-# The ledger is a retry list, and a retry list that only ever grows is its own failure mode. Every
-# DISTINCT address whose removal is refused stays on it, and nothing about that needs an operator:
-# a DHCPv6-PD prefix can renew repeatedly on its own, and each renewal that cannot retire the
-# address it supersedes adds an entry. Unbounded, that grows the persisted state and the
-# delete-plus-probe loop that runs under the apply lock on every pass, forever.
+# The ledger is a retry list, and every DISTINCT address whose removal is refused stays on it.
+# Nothing about that needs an operator: a DHCPv6-PD prefix can renew repeatedly on its own, and each
+# renewal that cannot retire the address it supersedes adds an entry. Left alone it grows the
+# persisted state and the delete-plus-probe loop that runs under the apply lock on every pass.
 #
-# So the ledger is capped, and what the cap refuses is the ROTATION — the change that would need a
-# new entry — before anything is written or any address is touched. Never a record: dropping the
-# oldest entry to make room would forget an address the panel installed and left on the host, which
-# is precisely the stranding this ledger exists to prevent, and it would do it silently. Refusing
-# costs the operator a configuration change they can retry once the backlog drains, and the reason
-# says so through the pass result. A pass that is NOT rotating still runs in full, so it installs
-# the desired address and retries the whole backlog: that is how the limit is escaped rather than
-# wedged. `clear_managed_addresses` never rotates either — it adds at most the two addresses it
-# already owns and only shrinks after that — so the persisted ledger cannot exceed LIMIT + 2 pairs.
-STALE_LIMIT = 16
+# That growth used to be CAPPED, and the cap worked by REFUSING the operator's change once the panel
+# owned too much. It is gone, deliberately. A refusal is a "do nothing" branch in the middle of a
+# multi-step host reconfiguration, so every other step has to be ordered correctly against it — and
+# twice it was not, both times in the direction the cap existed to prevent. `ensure_segment_link`
+# retired the superseded VLAN before the addresses were reconciled (it no longer does; that is what
+# `retire_superseded_links` is for), so an interface retarget at the cap deleted the old link and
+# its address and then declined to install the new one, leaving the segment with neither — a refusal
+# was only ONE way to reach that state, a rejected `ip addr replace` was another, and the ordering
+# itself was the defect; and the refusal's own preflight rewrote the ledger from a list the desired
+# pairs had already been subtracted from, dropping an address on the host out of both the stale
+# record and the current-address keys. Weighed honestly, a backlog costs rows in a settings table
+# and a slow loop, and needs repeated FAILED deletions to reach; a half-applied pass costs a live
+# gateway its network. A pass may never decline to apply the operator's change on these grounds.
+#
+# So growth is made VISIBLE instead of fatal. Past `BACKLOG_WARN` retained pairs the pass names the
+# count through the same result that fails `/api/ready`'s `provisioning` check, and otherwise
+# behaves exactly as it does at one entry: it applies the change, retries every entry, and forgets
+# none. The number is a diagnostic and not a limit — one rotation supersedes at most two addresses
+# (v4 + v6), so a backlog this size is four rotations' worth of removals that ALL failed, which is a
+# host problem the panel cannot fix by itself and an operator has to be told about. It is chosen to
+# sit above anything normal operation produces and far below anything that hurts; nothing whatsoever
+# behaves differently at the boundary, which is the point.
+BACKLOG_WARN = 8
 
 
 def _parse_stale(store) -> list[tuple[str, str]]:
@@ -461,7 +503,7 @@ def _distinct(pairs, drop=frozenset()) -> list[tuple[str, str]]:
 
 
 def _retire_owned(pairs: list[tuple[str, str]], run,
-                  desired=frozenset()) -> tuple[list[tuple[str, str]], list[str]]:
+                  protected=frozenset()) -> tuple[list[tuple[str, str]], list[str]]:
     """Remove each panel-owned address in turn; return `(pairs to keep recorded, reasons)`.
 
     A pair whose removal is not proven stays in the ledger, so the next pass retries it, and its
@@ -469,14 +511,15 @@ def _retire_owned(pairs: list[tuple[str, str]], run,
     forgotten on a failure: that is how a refused delete used to become an address on the host
     with no record of it anywhere.
 
-    This is the module's only address-deletion site, which is why `desired` is enforced here too
-    and not only where the ledger is written (see `_desired_pairs`): a pair the pass is installing
-    is skipped, whatever the ledger or the caller says. The clear path passes none, correctly — it
-    runs only with segment management off, where the panel desires no address at all.
+    This is the module's only address-deletion site, which is why `protected` is enforced here too
+    and not only where the ledger is written (see `_desired_pairs`): a pair the segment is required
+    to have is skipped, whatever the ledger or the caller says. That is the pair the pass installs
+    on the path that applies a plan. The clear path passes none, correctly — it runs only with
+    segment management off, where the panel desires no address at all.
     """
     keep: list[tuple[str, str]] = []
     reasons: list[str] = []
-    for iface, addr in _distinct(pairs, desired):
+    for iface, addr in _distinct(pairs, protected):
         reason = _retire_owned_addr(iface, addr, run)
         if reason is not None:
             _log.warning("could not remove the panel-owned address %s", reason)
@@ -485,26 +528,68 @@ def _retire_owned(pairs: list[tuple[str, str]], run,
     return keep, reasons
 
 
-def _rotation_refused(recorded: list[tuple[str, str]],
-                      rotating: list[tuple[str, str]]) -> str:
-    """The reason a rotation was declined at `STALE_LIMIT`, phrased for the operator.
+def _backlog_warning(kept: list[tuple[str, str]]) -> list[str]:
+    """A reason naming an unusually large stale ledger, or nothing at all. Never a decision.
 
-    It travels the ordinary address-failure channel (`_provision_result` -> `ok=False` -> the
-    caller's rollback and `/api/ready`'s `provisioning` check), because that is exactly what it is:
-    an address the panel owns that it has not removed, and now also a change it has not applied.
-    Both halves are named — what stayed put, and what has to happen before the change can land.
+    The one thing this does is TELL, and it is deliberately the weakest mechanism that still
+    reaches a human: no branch of the pass reads it, no record is dropped for it, and no change is
+    declined because of it (see `BACKLOG_WARN` for why the cap it replaced was worse than the
+    growth it bounded). It is appended to the reasons the pass already returns, so it travels the
+    ordinary address-failure channel — `_provision_result` -> `ok=False` -> the caller's rollback
+    and `/api/ready`'s `provisioning` check — alongside the individual failures that built it.
+
+    Returned as a list so a caller can concatenate it without testing anything, which is what keeps
+    it impossible for this to grow a branch later.
     """
-    reason = (", ".join(f"{a} on {i}" for i, a in rotating)
-              + f": left in place and the change refused before the kernel was touched — "
-                f"{len(recorded)} panel-owned addresses are already awaiting removal, the most "
-                f"this panel will track ({STALE_LIMIT}), and forgetting one to make room would "
-                "strand it on the host; the segment keeps its current address until the backlog "
-                "drains")
-    _log.error("refusing to rotate the segment address: %s", reason)
-    return reason
+    if len(kept) < BACKLOG_WARN:
+        return []
+    reason = (f"{len(kept)} panel-owned segment addresses are awaiting removal, far more than a "
+              f"rotating segment produces ({BACKLOG_WARN} is already four rotations' worth); every "
+              "one of them was retried on this pass and would not go, and the panel will keep "
+              "retrying them and forget none, but a backlog that does not drain by itself has to "
+              "be cleared on the host by hand (ip addr del <address> dev <interface>) — the "
+              "individual removal failures are reported alongside this")
+    _log.error("the panel-owned address backlog is not draining: %s", reason)
+    return [reason]
 
 
-def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> list[str]:
+@dataclass(frozen=True)
+class AddressOutcome:
+    """What a segment-address pass did, which is TWO facts and cannot be one.
+
+    `applied` — the plan's addresses are on the interface now. `reasons` — what the pass could not
+    settle, whether or not it applied anything.
+
+    They were one list of reasons, and that is the defect this type exists to end: "installed, but
+    a superseded address would not go" and "not installed, so the interface still has the OLD
+    address" both came back as a non-empty `list[str]`, indistinguishable. Every caller read a list
+    as a warning and carried on to configure what depends on the plan — dnsmasq above all, whose
+    DHCP range, router option and listen address are all derived from `plan.segment_ip` — against
+    an address the interface does not have. A segment served DHCP for a subnet that was not on it.
+
+    So the two facts are separate fields, and a caller must name `applied` before it configures
+    anything keyed to the plan. `reasons` cannot be reached without naming it either, and the
+    object deliberately refuses to be a truth value at all (see `__bool__`), so the older `if
+    reasons:` habit fails loudly instead of reading "not installed" as "applied with warnings".
+
+    `applied` is False for exactly one reason now: the kernel would not take the addresses. It used
+    to be False for a second one — a change the ownership ceiling declined — and that ceiling is
+    gone, so nothing here ever means "the panel chose not to try".
+    """
+    applied: bool
+    reasons: list[str] = field(default_factory=list)
+
+    def __bool__(self):
+        """Never a truth value: the two outcomes it distinguishes are both truthy and both falsey.
+
+        A pass that applied the plan and could not retire one superseded address is a success with
+        a warning; a pass whose addresses never landed is a failure. Under `if outcome:` they are
+        identical, which is the confusion this type replaced, so asking is an error, not a guess.
+        """
+        raise TypeError("an address outcome is two facts: read .applied and .reasons")
+
+
+def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcome:
     """Atomically replace the desired addresses, then delete only addresses the panel owns.
 
     Ownership is recorded BEFORE the kernel is touched, and an address that is being replaced
@@ -524,13 +609,15 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> list[str]:
     deletion site rejects it a second time (see `_desired_pairs`). Dropping the entry is not
     forgetting: the same address is being recorded as the segment's current one on the line below.
 
-    A rotation that would push the ledger past `STALE_LIMIT` is REFUSED here instead, before the
-    record is written and before the kernel is touched, and the refusal is returned as the reason.
-    The interface keeps the address it already has, every ownership record stays exactly as it was,
-    and the caller — whose surrounding transaction rolls back on a failed pass — is left describing
-    the configuration the host actually has.
+    No size of backlog makes this pass decline the operator's change: the plan is applied, every
+    recorded pair is retried, and an unusually large ledger is REPORTED rather than enforced (see
+    `BACKLOG_WARN`). The refusal that used to live here had to be ordered correctly against every
+    other step of a host reconfiguration, and twice was not — a retarget could lose the old link and
+    address and then decline to install the new one.
 
-    Returns a reason per address whose removal is not proven, for the caller to report.
+    Returns an `AddressOutcome`: whether the plan's addresses are ON the interface, and a reason per
+    thing the pass could not settle. The two are separate because they are separate facts, and a
+    caller must not configure anything keyed to this plan when nothing was applied.
     """
     old_iface = store.get_setting("managed_segment_iface") or plan.segment_iface
     old4 = store.get_setting("managed_segment_addr4") or ""
@@ -547,19 +634,39 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> list[str]:
     if old6 and (old6 != new6 or old_iface != new_iface):
         superseded.append((old_iface, old6))
     rotating = _distinct(superseded, desired | frozenset(recorded))
-    if rotating and len(recorded) + len(rotating) > STALE_LIMIT:
-        return [_rotation_refused(recorded, rotating)]
     stale = recorded + rotating
 
     _record_ownership(store, new_iface, new4, new6 or "", stale)
 
-    run(["ip", "addr", "replace", new4, "dev", new_iface])
-    if new6:
-        run(["ip", "-6", "addr", "replace", new6, "dev", new_iface])
+    # Each command is carried alongside THE ADDRESS IT INSTALLS, because the reason has to name
+    # the one that was actually rejected. Both used to run under one `try` that blamed `new4`
+    # whatever failed, so a refused IPv6 replacement reported the IPv4 address — which is on the
+    # interface and working — as the failure, and never printed the IPv6 target at all. That is
+    # precisely backwards for the case it matters most in: a delegated prefix the kernel will not
+    # take is diagnosed by the address the kernel named, and the operator was shown another one.
+    for addr, cmd in [(new4, ["ip", "addr", "replace", new4, "dev", new_iface])] + (
+            [(new6, ["ip", "-6", "addr", "replace", new6, "dev", new_iface])] if new6 else []):
+        try:
+            run(cmd)
+        except subprocess.CalledProcessError as exc:
+            # The only remaining way the plan's addresses are not on the interface: the kernel
+            # would not take them. Nothing is retired here — the interface may still be carrying
+            # the address this pass meant to supersede, and deleting it after a failed install is
+            # how a half-applied pass becomes a segment with no address at all. The record written
+            # above stays as it is, a superset of everything either address may now be, so the next
+            # pass finds all of it. The same holds for the link: `applied=False` is what stops the
+            # caller retiring the VLAN this one supersedes (see `retire_superseded_links`).
+            # `OSError` is deliberately not caught, exactly as in `_retire_owned_addr`: no `ip`
+            # binary at all is not one address failing, and travels out to the caller's own handler.
+            why = ((exc.stderr or "").strip() or str(exc)
+                   or f"ip addr replace exited {exc.returncode}")
+            _log.error("the segment address %s could not be installed on %s: %s",
+                       addr, new_iface, why)
+            return AddressOutcome(False, [f"{addr} on {new_iface}: {why}"])
 
     keep, reasons = _retire_owned(stale, run, desired)
     _record_ownership(store, new_iface, new4, new6 or "", keep)
-    return reasons
+    return AddressOutcome(True, reasons + _backlog_warning(keep))
 
 
 def clear_managed_addresses(store, run=_run) -> list[str]:
@@ -571,13 +678,18 @@ def clear_managed_addresses(store, run=_run) -> list[str]:
     later pass while segment management is off, so it retries. Reporting matters more here than
     anywhere else: with management off, readiness skips the segment-address check entirely, so the
     pass result is the only place a leftover the panel owns can be seen.
+
+    Which is also why the backlog warning is raised from here and not only from the reconcile path:
+    this path moves the current pairs ONTO the backlog and blanks the current-address keys, so a
+    host that refuses every removal reaches its largest ledger here, in the one mode where nothing
+    else is looking (see `BACKLOG_WARN`).
     """
     iface = store.get_setting("managed_segment_iface") or ""
     keep, reasons = _retire_owned(
         _parse_stale(store) + [(iface, store.get_setting("managed_segment_addr4") or ""),
                                (iface, store.get_setting("managed_segment_addr6") or "")], run)
     _record_ownership(store, "", "", "", keep)
-    return reasons
+    return reasons + _backlog_warning(keep)
 
 
 def _nm_reload(run, nm_active) -> None:
@@ -629,18 +741,26 @@ def ensure_segment_prefix6(store, settings, rand=secrets.token_bytes) -> str:
     return ula
 
 
-def effective_segment_prefix6(store, settings, rand=secrets.token_bytes) -> str:
+def effective_segment_prefix6(store, settings, rand=secrets.token_bytes, delegated=None) -> str:
     """Return the /64 to install without mutating the configured ``auto`` intent.
 
     Auto mode prefers a currently delegated /64 and otherwise uses a persistent ULA fallback,
     so client IPv6 remains deterministic while the upstream PD lease is absent or renewing.
+
+    `delegated` names the /64 to treat as the current delegation instead of reading the recorded
+    one. That is what lets the PD watcher resolve a NEW delegation into a plan without persisting
+    it first: a prefix written before the reconcile that installs it is a prefix a failure — or an
+    exception on any line between — leaves recorded over a segment the host does not have. `None`
+    means "read the record", which is every other caller (see `_pd_callback`).
     """
     if (store.get_setting("ipv6_enabled") or "0") != "1":
         return ""
     intent = (store.get_setting("segment_ip6") or settings.segment_ip6 or "").strip()
     if intent.lower() != "auto":
         return ensure_segment_prefix6(store, settings, rand=rand)
-    delegated = (store.get_setting("pd_segment_prefix6") or "").strip()
+    if delegated is None:
+        delegated = store.get_setting("pd_segment_prefix6") or ""
+    delegated = delegated.strip()
     if host_addr6(delegated):
         return delegated
     ula = (store.get_setting("ula_prefix6") or "").strip()
@@ -1020,8 +1140,14 @@ def _set_result(state, result: NetResult) -> NetResult:
     return result
 
 
-def _provision_result(links: list[str], addrs: list[str] = ()) -> NetResult:
+def _provision_result(links: list[str], addrs: list[str] = (), applied: bool = True) -> NetResult:
     """The pass result, given the host state the panel OWNS and could not remove.
+
+    `applied=False` says the segment addresses in the plan were never installed, and it is reported
+    as its own thing, because "the panel owns an address it did not remove" and "the interface does
+    not have the address this configuration names" are different failures with different remedies.
+    Both fail the pass; only the second means the running host is still on the previous
+    configuration.
 
     A leftover the panel owns is not a debug detail: it is host state the pass intended to remove
     and did not, so the pass did not reach the state it is reporting. Both kinds travel the same
@@ -1038,7 +1164,10 @@ def _provision_result(links: list[str], addrs: list[str] = ()) -> NetResult:
     parts = []
     if links:
         parts.append("panel-created VLAN link not removed: " + "; ".join(links))
-    if addrs:
+    if not applied:
+        parts.append("segment addresses not applied: "
+                     + ("; ".join(addrs) or "no reason given"))
+    elif addrs:
         parts.append("panel-owned address not removed: " + "; ".join(addrs))
     if not parts:
         return NetResult(ok=True)
@@ -1065,16 +1194,34 @@ def _pd_callback(state, run):
                 _log.warning("ignoring unusable delegated IPv6 prefix: %s", delegated)
                 return
             try:
-                store.set_setting("pd_segment_prefix6", selected or "")
+                # THE PREFIX IS RESOLVED INTO THE PLAN, NOT INTO THE STORE. Only the reconcile
+                # below can make it true of the host, so only its success may record it: a write
+                # placed before that line survives every way this block can end early — a plan that
+                # will not build, a reconcile that raises, a store that rejects the next write —
+                # and each of those leaves `pd_segment_prefix6` naming a /64 the segment does not
+                # have, reported as a failure while persisted as a fact. Restoring it in an
+                # `except` is not the same guarantee: the restore is itself a line that can be
+                # skipped. Persisting after the fact needs no restore, because nothing was written.
+                # The delegation is not lost either way — the watcher re-reports it on renewal.
                 plan = NetPlan.from_store(store, settings)
-                plan.segment_ip6 = effective_segment_prefix6(store, settings)
-                addr_failures = reconcile_segment_addresses(store, plan, run=run)
+                plan.segment_ip6 = effective_segment_prefix6(store, settings,
+                                                             delegated=selected or "")
+                addrs = reconcile_segment_addresses(store, plan, run=run)
+                if not addrs.applied:
+                    _log.error("the delegated prefix was not applied to the segment, so it was not "
+                               "recorded and nothing keyed to it was configured: %s",
+                               "; ".join(addrs.reasons))
+                    _set_result(state, _provision_result([], addrs.reasons, applied=False))
+                    return
+                # It is on the interface, so it is now a fact about the host and is recorded as
+                # one. Anything below that fails leaves it correctly recorded.
+                store.set_setting("pd_segment_prefix6", selected or "")
                 dnsmasq = getattr(state, "dnsmasq", None)
                 if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
                     dnsmasq.apply(render_dnsmasq(plan))
                 # A superseded address this could not remove is reported here too: the watcher is
                 # the one caller with no request to fail, so its result is the only surface.
-                _set_result(state, _provision_result([], addr_failures))
+                _set_result(state, _provision_result([], addrs.reasons))
             except Exception as exc:
                 _set_result(state, NetResult(ok=False, error=f"PD prefix apply failed: {exc}"))
                 raise
@@ -1120,28 +1267,52 @@ def host_provision(state) -> NetResult:
                 ensure_segment_prefix6(store, settings)
                 plan = NetPlan.from_store(store, settings)
                 plan.segment_ip6 = effective_segment_prefix6(store, settings)
-                link_failures = ensure_segment_link(store, plan, run=run)
-                addr_failures = reconcile_segment_addresses(store, plan, run=run)
-                ensure_nm_unmanaged(plan.segment_iface, run=run)
-                auto_pd = (plan.ipv6_enabled
-                           and (store.get_setting("segment_ip6") or "").strip().lower() == "auto")
-                if pd is not None:
-                    if auto_pd:
-                        set_callback = getattr(pd, "set_callback", None)
-                        if set_callback is not None:
-                            set_callback(_pd_callback(state, run))
-                        pd.start()
-                    else:
-                        stop_pd = True
-                        store.set_setting("pd_segment_prefix6", "")
-                if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
-                    dnsmasq.apply(render_dnsmasq(plan))
-                elif dnsmasq is not None:
-                    dnsmasq.stop()
+                # CREATE the new link, then address it, and only then retire what it supersedes.
+                # The addresses need an interface to land on, so the creation goes first; the
+                # RETIREMENT is the step that must not, because a link deleted before the
+                # replacement that supersedes it is a link the failure path cannot give back.
+                ensure_segment_link(store, plan, run=run)
+                addrs = reconcile_segment_addresses(store, plan, run=run)
+                link_failures: list[str] = []
+                # EVERYTHING BELOW IS KEYED TO THE ADDRESSES THIS PLAN NAMES, so none of it runs
+                # when they were not installed. dnsmasq is the reason the distinction exists: its
+                # DHCP range, router option and listen address all come from `plan.segment_ip`, so
+                # applying it over addresses that never landed serves a subnet the interface does
+                # not have — and the NetworkManager drop-in would likewise hand the interface the
+                # panel still holds an address on back to NM. Such a pass leaves the working
+                # configuration of the previous one alone and reports; the caller rolls back.
+                if addrs.applied:
+                    # The addresses are on the new interface, so the old link has genuinely been
+                    # superseded and may go. Not applied means it has NOT: the previous link is
+                    # still the live one, it keeps its address, and the ledger keeps both names —
+                    # a true description of the host, which the next pass acts on.
+                    link_failures = retire_superseded_links(store, plan, run=run)
+                    ensure_nm_unmanaged(plan.segment_iface, run=run)
+                    auto_pd = (plan.ipv6_enabled
+                               and (store.get_setting("segment_ip6") or "").strip().lower()
+                               == "auto")
+                    if pd is not None:
+                        if auto_pd:
+                            set_callback = getattr(pd, "set_callback", None)
+                            if set_callback is not None:
+                                set_callback(_pd_callback(state, run))
+                            pd.start()
+                        else:
+                            stop_pd = True
+                            store.set_setting("pd_segment_prefix6", "")
+                    if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
+                        dnsmasq.apply(render_dnsmasq(plan))
+                    elif dnsmasq is not None:
+                        dnsmasq.stop()
+                else:
+                    _log.error("the segment addresses this configuration names are not on the "
+                               "interface, so nothing keyed to them was configured: %s",
+                               "; ".join(addrs.reasons))
                 # The rest of the pass still runs: the new segment must come up even when a
                 # superseded link or address refuses to go, and the pass then reports that
                 # leftover — a config the host does not match must not commit as a success.
-                result = _set_result(state, _provision_result(link_failures, addr_failures))
+                result = _set_result(state, _provision_result(link_failures, addrs.reasons,
+                                                              applied=addrs.applied))
         except Exception as exc:    # never crash boot on a provisioning hiccup
             _log.warning("host_provision failed: %s", exc)
             result = _set_result(state, NetResult(ok=False, error=str(exc)))
