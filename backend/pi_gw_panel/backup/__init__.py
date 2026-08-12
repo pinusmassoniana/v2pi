@@ -84,19 +84,20 @@ class _ExportedState(dict):
 
 
 def _live_mgmt() -> Settings | None:
-    """The panel's own configuration — for the management leg — or None when it cannot be read.
+    """The management leg read back from the process environment — a LAST RESORT, or None.
 
     A backup document never carries the management leg: `mgmt_iface`/`mgmt_ip` are process
     configuration, deliberately absent from `_SETTINGS_KEYS` and not store-overridable, so the
     values a proposed document has to be compared against can only come from the panel itself.
 
-    `Settings.from_env()` is where the live ones come from: `__main__.main()` builds the running
-    `Settings` with that exact call and afterwards rewrites only the session/TLS fields, and no
-    code path assigns `mgmt_iface`/`mgmt_ip`. Reading it again here therefore yields the same
-    management leg `state.settings` holds, rather than a second copy of the env-var mapping that
-    can drift from it. (It has to be read here and not taken as an argument: the restore path
-    calls `validate_document` with the document alone, before it touches anything, and that is
-    the only point in a restore where a refusal costs nothing.)
+    The authority on that is the `Settings` object the panel is RUNNING under, and every caller
+    holding one passes it to `validate_document` instead of reaching here. The environment is not
+    a substitute for it: `create_app(settings, state=...)` is a supported entry point and takes a
+    `Settings` built any way at all, so `PI_GW_MGMT_IFACE` can name a different interface than the
+    one this panel is actually reached on — and a guard comparing a document against the wrong
+    management leg waves through exactly the collision it exists to refuse. This exists only for a
+    caller that has no running `Settings` at hand at all; better than nothing, worse than the
+    real one.
 
     An environment that no longer parses is *unknown*, not unsafe: None then skips the check that
     needs the management leg, which is `check_change_safe`'s own rule — a panel that cannot see
@@ -560,14 +561,22 @@ def validate_document(doc: dict | BackupDocument, live: Settings | None = None) 
     """Full preflight for a document, before a single row or host command is touched.
 
     A document that came from outside is a proposal to reconfigure this gateway, so it is also
-    checked against the gateway's own management leg (`_validate_network_settings`); `live` lets
-    a caller that already holds the running `Settings` hand it over instead of it being read.
-    This box's own export describes what is already running and is checked without it — see
-    `_ExportedState` for why that distinction has to exist.
+    checked against the gateway's own management leg (`_validate_network_settings`). `live` is
+    that leg, and it is the RUNNING `Settings` — the object the panel was actually built with —
+    from every caller that holds one. Only a caller with none falls back to the environment
+    (`_live_mgmt`), which can name a different management interface than the panel is reached on.
+
+    This box's own export describes what is already running and proposes nothing, so it is checked
+    WITHOUT that comparison. The exception is forced here, from the marker itself, and not left to
+    a caller remembering to pass `live=None`: now that callers do hand over their `Settings`, an
+    omitted argument no longer distinguishes an export from a proposal — the marker is the only
+    thing that does. See `_ExportedState` for why the distinction has to exist at all.
     """
     if isinstance(doc, BackupDocument):
         return doc
-    if live is None and not isinstance(doc, _ExportedState):
+    if isinstance(doc, _ExportedState):
+        live = None
+    elif live is None:
         live = _live_mgmt()
     try:
         return BackupDocument.model_validate(doc, context={"live": live})

@@ -99,14 +99,28 @@ def _segment_address_detail(iface: str, expected: list[str | None], actual: set[
 
 # --- what the live xray LOADED, against what the config file now says -----------------
 #
-# Single-slot memo of the on-disk config's digest, keyed by the file's identity: reading and
-# hashing config.json on every `/api/status` would be a re-read every 3s per open dashboard tab
-# (`subscribeStatus(3000)`), for a file that changes only when an apply/revocation rewrites it.
-# The key is (inode, mtime_ns, size): every panel write goes through tempfile + `os.replace`
-# (`ConfigManager._write_atomic`), so the inode changes on each one, and a hand-edit over SSH moves
-# mtime_ns and usually size too. Concurrent readers may both recompute — the slot is replaced
-# with one immutable tuple, never mutated in place — which is wasted work, never a wrong answer.
-_disk_digest_memo: tuple[str, tuple[int, int, int], str | None] | None = None
+# Single-slot memo of the on-disk config's digest, keyed by the identity of the file the digest
+# was actually read from: reading and hashing config.json on every `/api/status` would be a
+# re-read every 3s per open dashboard tab (`subscribeStatus(3000)`), for a file that changes only
+# when an apply/revocation rewrites it.
+#
+# The key is (st_dev, st_ino, st_mtime_ns, st_ctime_ns, st_size), taken with `fstat` on the SAME
+# descriptor the bytes come from. Both halves of that carry weight:
+#   * st_ctime_ns is the field userspace cannot set. (inode, mtime_ns, size) alone cannot tell two
+#     configs apart after an in-place rewrite of equal length whose mtime is put back — `touch -r`,
+#     an editor or a restore that preserves timestamps, rsync --times, or simply two writes inside
+#     one filesystem timestamp tick. A memo that survives a rewrite answers with the previous
+#     digest for the life of the process, so `/api/status` reports "no drift" forever while xray
+#     serves something else: exactly the silence this comparison exists to remove. Every write
+#     moves ctime and no `utime` moves it back. st_dev keeps the key unambiguous when inode
+#     numbers repeat across filesystems (a remounted or bind-mounted data dir).
+#   * `fstat` on the open descriptor rather than `stat` on the path leaves no window: statting a
+#     path and then opening it are two lookups, and a replace landing between them files the
+#     digest of one file under the identity of another — which is then served back for as long as
+#     that identity is at the path.
+# Concurrent readers may both recompute — the slot is replaced with one immutable tuple, never
+# mutated in place — which is wasted work, never a wrong answer.
+_disk_digest_memo: tuple[str, tuple[int, int, int, int, int], str | None] | None = None
 
 
 def disk_config_digest(path: str) -> str | None:
@@ -119,20 +133,22 @@ def disk_config_digest(path: str) -> str | None:
     if not path:
         return None
     try:
-        info = os.stat(path)
+        # Open FIRST, then identify what was opened: the descriptor is the only handle that
+        # cannot be swapped underneath us between deciding what the file is and reading it.
+        with open(path) as f:
+            info = os.fstat(f.fileno())
+            key = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+            memo = _disk_digest_memo
+            if memo is not None and memo[0] == path and memo[1] == key:
+                return memo[2]
+            try:
+                cfg = json.load(f)
+            except ValueError:
+                digest = None
+            else:
+                digest = config_digest(cfg) if isinstance(cfg, dict) else None
     except OSError:
         return None
-    key = (info.st_ino, info.st_mtime_ns, info.st_size)
-    memo = _disk_digest_memo
-    if memo is not None and memo[0] == path and memo[1] == key:
-        return memo[2]
-    try:
-        with open(path) as f:
-            cfg = json.load(f)
-    except (OSError, ValueError):
-        digest = None
-    else:
-        digest = config_digest(cfg) if isinstance(cfg, dict) else None
     _disk_digest_memo = (path, key, digest)
     return digest
 
@@ -140,22 +156,36 @@ def disk_config_digest(path: str) -> str | None:
 def config_drift(supervisor, config_path: str = "") -> tuple[str, str]:
     """Is the running xray serving the config that is on disk? → (verdict, one-line detail).
 
-    "drift"   — proven divergence: the process loaded one config and the file now hashes to
+    "drift"   — proven divergence: a LIVE process loaded one config and the file now hashes to
                 another. Nothing reloaded it, so a credential the operator revoked minutes ago
                 is still being admitted; this is the state the whole comparison exists for.
-    "ok"      — both digests are known and equal.
-    "unknown" — either digest is missing: nothing has been started yet (the normal state at
-                boot), the config could not be parsed when it was loaded, or it cannot be read
-                now. Deliberately NOT folded into "ok": an absent digest is not evidence of a
-                match, and reporting it as one is exactly the silence this replaces.
+    "ok"      — a live process, and both digests are known and equal.
+    "unknown" — nothing is running, or either digest is missing: nothing has been started yet
+                (the normal state at boot), the config could not be parsed when it was loaded,
+                or it cannot be read now. Deliberately NOT folded into "ok": an absent digest is
+                not evidence of a match, and reporting it as one is exactly the silence this
+                replaces.
 
     The comparison is `config_digest`-to-`config_digest` on both sides — the supervisor records
     the loaded one with that same function — so it is stable under reformatting and comparable
     to the digests used for apply provenance.
     """
     try:
-        loaded = supervisor.status().get("loaded_config_digest")
+        # ONE sample for both fields: "what is the live process serving" is a question about one
+        # process, and reading `running` and the digest from two calls can answer it about two.
+        sample = supervisor.status()
+        running = bool(sample.get("running"))
+        loaded = sample.get("loaded_config_digest")
     except Exception:
+        return "unknown", ""
+    # A child that merely exited keeps its fingerprint: only a stop the supervisor could CONFIRM
+    # clears `_loaded_digest` (`_stop_child`), because a child that outlived SIGKILL is still
+    # serving what it loaded and that is precisely when the digest is needed. So between a crash,
+    # an OOM kill or a `kill` over SSH and the watchdog's restart, that digest names a process
+    # that is gone — comparing it to the file would report drift for a dead xray, and the
+    # dashboard would raise STALE CONFIG next to a process that is not running at all. Nothing is
+    # loaded, so nothing can have diverged: unknown, which never reads as a match either.
+    if not running:
         return "unknown", ""
     path = config_path or getattr(supervisor, "config_path", "") or ""
     on_disk = disk_config_digest(path)
@@ -163,10 +193,15 @@ def config_drift(supervisor, config_path: str = "") -> tuple[str, str]:
         return "unknown", ""
     if loaded == on_disk:
         return "ok", ""
+    # Unequal digests prove DIFFERENCE, never order. Restoring an older backup over config.json
+    # drifts exactly as a forgotten reload does, and there the OLDER config is the one on disk —
+    # so a message calling the running config "older" is wrong half the time and sends the
+    # operator looking for a change nobody made. The remedy does not depend on the direction:
+    # the file is what the panel and the operator edit, so xray is restarted onto it either way.
     return "drift", (
-        f"{path} was rewritten after the running xray loaded it "
-        f"(loaded {loaded[:12]}, on disk {on_disk[:12]}) — the live process is still serving "
-        "the older config; restart or reload xray to apply it")
+        "the running xray is serving a configuration different from the configuration on disk "
+        f"({path}: loaded {loaded[:12]}, on disk {on_disk[:12]}) — restart or reload xray to "
+        "serve the file")
 
 
 def readiness_checks(state, address_reader=iface_addresses,
@@ -239,16 +274,30 @@ def readiness_checks(state, address_reader=iface_addresses,
     # A process that is up is not the same as a process that is serving the current config: a
     # rewrite nobody reloaded (hand-edit, restored backup, an apply whose reload threw) leaves
     # `xray: true` while the old config — and the credential it still admits — stays live.
-    # Only a PROVEN divergence fails: "unknown" is the normal state before anything has been
-    # started, and failing closed on it would pin /api/ready at 503 on a healthy boot and make
-    # the migration script roll a good cutover back (the same reasoning as `manage_segment=0`
-    # above). Unknown is still reported as unknown on /api/status — it is never called a match.
+    #
+    # The check passes on exactly two grounds, and "unknown" alone is not one of them:
+    #   * nothing is running. "unknown" is then the normal answer — before the first start, and
+    #     after a child died, where the `xray` check above already carries that failure. Failing
+    #     closed here would pin /api/ready at 503 on a healthy boot and make the migration script
+    #     roll a good cutover back (the same reasoning as `manage_segment=0` above), and it would
+    #     report one dead process as two separate failures.
+    #   * a LIVE process whose loaded digest equals the file's: the comparison actually ran.
+    # A live process whose configuration cannot be established — nothing recorded for what it
+    # loaded, or a file that cannot be read or parsed now — is the case that must not be waved
+    # through. Passing it says "ready" about a configuration nobody verified, and the migration
+    # script then commits on a check that proved nothing. It fails with a detail naming what is
+    # unverified, kept distinct from the "drift" detail: only "drift" claims a PROVEN divergence.
+    # The three-valued verdict itself is untouched — "unknown" is still reported as unknown on
+    # /api/status, and is never called a match anywhere.
     # No try here on purpose: `config_drift` answers "unknown" for every failure it can meet
     # (a supervisor that raises, an unreadable/unparseable file), so it cannot raise out.
     drift, drift_detail = config_drift(state.supervisor)
-    xray_config = drift != "drift"
+    xray_config = (not xray) or drift == "ok"
     if details is not None and not xray_config:
-        details["xray_config"] = drift_detail
+        details["xray_config"] = drift_detail or (
+            "xray is running and the configuration it loaded could not be verified against the "
+            "config on disk (nothing is recorded for what it loaded, or the file cannot be read "
+            "or parsed now) — restart xray onto a readable config so the two can be compared")
     try:
         health = active_health(store)
     except Exception:

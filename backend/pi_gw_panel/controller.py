@@ -503,20 +503,64 @@ def reapply_active_node(state, irreversible: bool = False) -> ApplyResult | None
         return ApplyResult(ok=False, error=f"boot reapply failed: {exc}")
 
 
-_CANDIDATE_NET_KEYS = ("segment_iface", "segment_ip", "segment_ip6", "ipv6_enabled",
-                       "manage_segment")
+# The candidate keys, split by where each one lands once the document is in. Every reader resolves
+# these as `store.get_setting(k) or <fallback>`, and `import_state` DELETEs the whole allowlisted
+# settings snapshot before it writes — so a key the document omits does NOT keep the override the
+# box is running now; it falls all the way through to that fallback.
+#   segment_iface/segment_ip/segment_ip6 — `NetPlan._EDITABLE`: `store.get_setting(k) or
+#     getattr(settings, k)`, i.e. the attribute of the same name on the running `Settings`.
+#   ipv6_enabled/manage_segment — k/v flags read as `store.get_setting(k) or "0"` / `... or "1"`,
+#     and those literals are what `SETTINGS_DEFAULTS` holds.
+_CANDIDATE_FROM_SETTINGS = ("segment_iface", "segment_ip", "segment_ip6")
+_CANDIDATE_FROM_DEFAULTS = ("ipv6_enabled", "manage_segment")
+_CANDIDATE_NET_KEYS = _CANDIDATE_FROM_SETTINGS + _CANDIDATE_FROM_DEFAULTS
 
 
-def _restore_candidate_data(validated) -> dict:
-    """The net values a restore document is about to import, as the candidate helper reads them.
+def _as_imported(value) -> str:
+    """A document value exactly as `import_state` will write it into the settings table.
+
+    Booleans have to go through the same `True → '1'` mapping the importer uses, or a document
+    saying `ipv6_enabled: false` would read back as blank here and be projected as "omitted" —
+    silently adopting the default instead of the "off" it actually asked for.
+    """
+    if value is None:
+        return ""
+    return ("1" if value else "0") if isinstance(value, bool) else str(value)
+
+
+def _restore_candidate_data(state, validated) -> dict:
+    """The net values this box will RUN once the document is in — projected, not quoted.
 
     `segment_iface` is in the restorable allowlist, so a restore can retarget the segment exactly
     like `PUT /api/network` does — and its `host_provision` runs inside the same DB transaction,
     so a failure afterwards leaves the same orphan on the same host with the same nothing looking
     at it. Same candidate ledger, then, and the same undo.
+
+    Which makes *what* the ledger names the whole point, and quoting the document is not it. A
+    backup is routinely sparse — `export_state` only carries the settings rows that exist, so a box
+    that never overrode the segment exports no `segment_iface` at all — while a restore is not
+    sparse at all: it deletes the allowlisted settings and every reader falls back to the runtime
+    default. Handing the helper only the keys the document mentions let it fill the rest from
+    `NetPlan.from_store`, which is the state we are LEAVING. With a segment override in place and a
+    document that omits it, the ledger recorded the old interface while `host_provision` went and
+    created the default one: the interface that actually got made was named nowhere, so a crash or
+    a rollback left it on the host, outside the nft guard and invisible to every later pass.
+
+    So every key is resolved here, through the same fallback chain the import itself uses, and
+    handed over complete — the helper's own `or plan.<field>` fallbacks then never fire.
     """
-    settings = getattr(validated, "settings", None) or {}
-    return {key: str(settings[key]) for key in _CANDIDATE_NET_KEYS if key in settings}
+    document = getattr(validated, "settings", None) or {}
+
+    def projected(key: str, fallback) -> str:
+        # `or`, deliberately: a document that stores an empty string is not setting the value —
+        # every reader treats a blank setting as absent and falls through to the same default.
+        return _as_imported(document.get(key)).strip() or str(fallback or "")
+
+    data = {key: projected(key, getattr(state.settings, key, ""))
+            for key in _CANDIDATE_FROM_SETTINGS}
+    data.update({key: projected(key, SETTINGS_DEFAULTS.get(key, ""))
+                 for key in _CANDIDATE_FROM_DEFAULTS})
+    return data
 
 
 def restore_backup(state, document) -> RestoreResult:
@@ -524,7 +568,15 @@ def restore_backup(state, document) -> RestoreResult:
     from pi_gw_panel import backup as backup_mod
     from pi_gw_panel.net_control import provision
 
-    validated = backup_mod.validate_document(document)  # pure preflight before stopping anything
+    # Pure preflight, before anything is stopped or written — and checked against THIS panel's own
+    # `Settings`, not a second reading of the process environment. `create_app(settings, state=...)`
+    # builds a panel from a `Settings` that need not have come from the env at all, so the
+    # environment is not a reliable copy of the management leg the operator is actually reached on;
+    # a lockout guard comparing against the wrong `mgmt_iface` accepts the collision it exists to
+    # refuse. `state.settings` IS the one every other consumer on this path uses (`stop_net`,
+    # `NetPlan.from_store`, `host_provision`), so the guard now judges the same configuration the
+    # restore is about to reconfigure.
+    validated = backup_mod.validate_document(document, state.settings)
     with apply_lock:
         # Snapshot AND restore are one serialized operation (audit FIX-E-2): taking the snapshot
         # before the lock let a concurrent mutation (e.g. a manual Connect) commit in the gap and
@@ -550,7 +602,8 @@ def restore_backup(state, document) -> RestoreResult:
         # a record that rolls back with the transaction it exists to clean up after would never be
         # readable when it is needed, and a crash in between would strand the candidate interface.
         try:
-            candidate = provision.provision_candidate(state, _restore_candidate_data(validated))
+            candidate = provision.provision_candidate(
+                state, _restore_candidate_data(state, validated))
         except Exception as exc:
             # Rendering the candidate reads the CURRENT stored net settings, which are only
             # validated at the API boundary and so can raise on hand-edited state. That must not

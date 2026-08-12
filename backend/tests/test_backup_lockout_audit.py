@@ -12,6 +12,10 @@ and no visible cause. So it is refused, with the SAME function the route uses, a
 a refusal still costs nothing: before the pre-restore snapshot, before xray is stopped, before a
 row is written.
 
+The leg it is compared against is the `Settings` the panel is RUNNING under. That is not the same
+thing as the process environment — `create_app(settings, state=...)` takes a `Settings` built any
+way at all — and a guard reading the wrong `mgmt_iface` accepts the collision it exists to refuse.
+
 The other half of the requirement gets tests too: a restore that refuses a legitimate document,
 or refuses everything on a gateway whose management leg cannot be read, is its own lockout.
 
@@ -19,9 +23,11 @@ Defaults these tests lean on: mgmt eth0 / 192.168.1.120, segment eth0.2 / 192.16
 """
 import os
 
+import pytest
 from conftest import _build_dryrun_state, _login
 from fastapi.testclient import TestClient
 
+from pi_gw_panel import backup as backup_mod
 from pi_gw_panel.app import create_app
 from pi_gw_panel.backup import backups_dir, validate_document, write_pre_restore_snapshot
 from pi_gw_panel.config import Settings
@@ -130,34 +136,61 @@ def test_a_legitimate_document_still_restores_end_to_end(settings, stub_xray):
     assert os.listdir(backups_dir(state.settings)) != [], "the pre-restore snapshot was skipped"
 
 
-def test_the_document_is_checked_against_this_gateways_own_management_leg(settings, stub_xray,
-                                                                         monkeypatch):
-    """Against THIS gateway's leg, not a hardcoded one: the same document is refused or accepted
-    according to what the panel's own configuration says the management interface is."""
-    monkeypatch.setenv("PI_GW_MGMT_IFACE", "enp1s0")
+def test_the_document_is_checked_against_the_settings_this_panel_actually_runs_under(
+        settings, stub_xray, monkeypatch):
+    """The leg compared against is the RUNNING `Settings`, not a second reading of the process
+    environment.
+
+    `create_app(settings, state=...)` is a supported entry point and takes a `Settings` built any
+    way at all, so `PI_GW_MGMT_IFACE` is not a reliable copy of the interface this panel is reached
+    on. Here the two deliberately disagree — the panel runs on `enp1s0`, the environment still says
+    `eth0` — and a document proposing the panel's REAL management interface has to be refused.
+    Judged by the environment it reads as a harmless move onto an unrelated NIC, and the restore
+    installs the kill-switch drop, the tproxy redirect and the segment's DHCP server on the leg the
+    operator is holding.
+    """
+    monkeypatch.setenv("PI_GW_MGMT_IFACE", "eth0")
+    monkeypatch.setenv("PI_GW_MGMT_IP", "192.168.1.120")
+    settings.mgmt_iface, settings.mgmt_ip = "enp1s0", "10.9.0.5"
+    client, headers, state = _client(settings, stub_xray)
+    node_id = _node(client, headers)
+
+    response = client.post("/api/restore", json=_uploaded(client, segment_iface="enp1s0"),
+                           headers=headers)
+
+    assert response.status_code == 400, \
+        "the document was judged against the environment, not the panel's own settings"
+    assert "enp1s0" in response.json()["detail"]
+    # ...and refused before anything moved, exactly as when the two agree.
+    assert state.store.get_setting("segment_iface") in (None, "")
+    assert [n["id"] for n in client.get("/api/nodes").json()] == [node_id]
+    assert os.listdir(backups_dir(state.settings)) == []
+
+
+def test_a_collision_with_only_the_environment_is_not_a_collision(settings, stub_xray,
+                                                                  monkeypatch):
+    """The other half of the same mistake, and the one that costs a recovery: an interface the
+    environment happens to name but the panel does not run on is a perfectly good segment leg, and
+    refusing it turns a stale env-var into an unrestorable backup."""
+    monkeypatch.setenv("PI_GW_MGMT_IFACE", "eth0")
+    settings.mgmt_iface, settings.mgmt_ip = "enp1s0", "10.9.0.5"
     client, headers, state = _client(settings, stub_xray)
 
-    refused = client.post("/api/restore", json=_uploaded(client, segment_iface="enp1s0"),
-                          headers=headers)
-    assert refused.status_code == 400 and "enp1s0" in refused.json()["detail"]
-
-    # ...and the interface that WOULD have collided on the default configuration is fine here.
     assert client.post("/api/restore", json=_uploaded(client, segment_iface="eth0"),
                        headers=headers).status_code == 200
     assert state.store.get_setting("segment_iface") == "eth0"
 
 
-def test_an_unreadable_management_leg_skips_the_check_instead_of_refusing(settings, stub_xray,
-                                                                         monkeypatch):
+def test_an_unreadable_management_leg_skips_the_check_instead_of_refusing(settings, stub_xray):
     """Same rule as the route's: a panel that cannot see its own management path must not answer
     every document with a refusal — that is the same lockout by another route."""
-    monkeypatch.setenv("PI_GW_MGMT_IFACE", "not a valid interface")
+    settings.mgmt_iface, settings.mgmt_ip = "", ""
     client, headers, state = _client(settings, stub_xray)
     document = _uploaded(client, segment_iface="eth0")
 
     assert client.post("/api/restore", json=document, headers=headers).status_code == 200
     assert state.store.get_setting("segment_iface") == "eth0"
-    # ...and the explicit form of "no management leg", as the route's own guard defines it.
+    # ...and the same thing said directly to the validator, as the route's own guard defines it.
     validate_document(dict(document), Settings(mgmt_iface="", mgmt_ip=""))      # must not raise
 
 
@@ -175,3 +208,26 @@ def test_a_gateway_already_in_a_colliding_state_can_still_back_up_and_restore(se
     document = _uploaded(client, segment_iface="eth0.2")
     assert client.post("/api/restore", json=document, headers=headers).status_code == 200
     assert state.store.get_setting("segment_iface") == "eth0.2"
+
+
+def test_the_exported_record_keeps_its_exemption_when_a_caller_supplies_the_live_settings(
+        settings, stub_xray):
+    """The exemption is forced INSIDE the validator, off the marker — not inferred from a caller
+    having omitted `live`.
+
+    Now that every caller hands over the `Settings` it is running under, "no `live` argument" no
+    longer means "this is our own export"; if the exemption still hung off that, one caller passing
+    its settings would start refusing the box's own export and take away the auto-backup and the
+    pre-restore snapshot on precisely the gateway that needs them. The same document, minus the
+    marker, is still refused — the exemption is the marker's, not the document's.
+    """
+    state = _build_dryrun_state(settings, stub_xray)
+    state.store.set_setting("segment_iface", settings.mgmt_iface)   # already colliding
+    record = backup_mod.export_state(state.store)
+    assert record["settings"]["segment_iface"] == settings.mgmt_iface
+
+    validate_document(record, settings)                 # colliding `live`, must not raise
+
+    with pytest.raises(ValueError, match="mgmt_iface"):
+        validate_document(dict(record), settings)       # ...and the same content, unmarked, is not
+    state.close()

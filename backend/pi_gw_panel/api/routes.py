@@ -246,6 +246,12 @@ def _validate_net_fields(data: dict, state) -> None:
     # a refusal leaves nothing persisted and nothing applied. It is given the EFFECTIVE values (the
     # request merged over what is stored) — a partial edit collides just as well with a field it
     # does not mention, and the ONLY thing that matters is the config that would result.
+    #
+    # CALL THIS WITH `apply_lock` HELD. The stored half of that merge is read right here, and a
+    # read taken outside the lock describes a plan a concurrent PUT is already committing over:
+    # two partial edits would each merge safely against the same stale plan and land a combination
+    # neither of them ever validated. The lock is what makes "what is stored" mean the state this
+    # request's own write will see.
     plan = NetPlan.from_store(state.store, state.settings)
     problems = check_change_safe(
         {f: (data.get(f) or getattr(plan, f, "")) for f in NET_CROSS_FIELD_KEYS}, state.settings)
@@ -1485,16 +1491,27 @@ def put_network(body: NetworkIn, request: Request,
                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> NetworkOut:
     state = get_state(request)
     data = body.model_dump(exclude_none=True)
-    # These values are interpolated verbatim into the nft ruleset and dnsmasq.conf; a newline/quote
-    # would inject arbitrary nft rules or dnsmasq directives (DNS-leak `server=`, kill-switch removal),
-    # and a merely malformed value silently breaks the live segment. Validate strictly at the boundary
-    # — including the cross-field collisions that would move the segment onto the management leg,
-    # which are refused here, outside the lock and before a single value is written.
-    _validate_net_fields(data, state)
     from pi_gw_panel.net_control import provision
     ipv6_changed = False
     running_active = False
     with apply_lock:
+        # These values are interpolated verbatim into the nft ruleset and dnsmasq.conf; a newline
+        # or quote would inject arbitrary nft rules or dnsmasq directives (DNS-leak `server=`,
+        # kill-switch removal), and a merely malformed value silently breaks the live segment.
+        # Validate strictly at the boundary — including the cross-field collisions that would move
+        # the segment onto the management leg.
+        #
+        # INSIDE the lock and first, not on arrival: the cross-field half of this is checked
+        # against the EFFECTIVE config — the request merged over the stored plan, which it reads
+        # itself — so running it outside meant two concurrent partial edits could each validate
+        # against the same pre-change plan and commit a combination neither had seen. One moving
+        # `client_dns`, another moving `segment_ip` onto that resolver's subnet is a config the
+        # panel applies happily and is then locked out of. Only the writer's own lock makes the
+        # merge honest. It is still the FIRST thing here — before the candidate record, before the
+        # transaction, before any host command — so a refusal (422) stores nothing and applies
+        # nothing, and it adds no host work to the critical section, only local store reads the
+        # next line already makes.
+        _validate_net_fields(data, state)
         # Committed OUTSIDE the transaction on purpose: a record that rolls back with the
         # transaction it is meant to clean up after would never be readable when it is needed.
         candidate = provision.provision_candidate(state, data)

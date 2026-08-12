@@ -239,12 +239,15 @@
 </script>
 
 <!-- config drift: the process is up, but not on the config on disk. Not dismissible — unlike the
-     failover notice this is a live condition, and it stops the moment xray is restarted. -->
+     failover notice this is a live condition, and it stops the moment xray is restarted.
+     The wording claims difference only, never chronology: the two digests prove the process and
+     the file disagree, not which one came first — after a restored backup the file is the older
+     side — and the fix (restart onto the file) is the same in both directions. -->
 {#if configDrift}
   <div class="banner bad" role="alert">
-    <span>⚠ Xray is running on an older configuration than the one on disk — the last change was
-      written but never loaded. Restart Xray to serve it; until then a revoked client may still be
-      admitted.</span>
+    <span>⚠ Xray is running on a configuration different from the configuration on disk — the live
+      process and the file disagree. Restart Xray to serve the file; until then a revoked client
+      may still be admitted.</span>
   </div>
 {/if}
 
@@ -273,7 +276,7 @@
         {status?.running ? "RUNNING" : xrayError ? "RECONNECTING" : status?.running === false ? "STOPPED" : "—"}
       </span>
       {#if configDrift}
-        <span class="cell-sub err" title="The config file was rewritten after this process loaded it — restart Xray to serve it">STALE CONFIG</span>
+        <span class="cell-sub err" title="The configuration on disk is different from the one this process loaded — restart Xray to serve the file">STALE CONFIG</span>
       {/if}
     </div>
   </div>

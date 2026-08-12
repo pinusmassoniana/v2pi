@@ -1,6 +1,8 @@
 import ipaddress
 import subprocess
 
+import pytest
+
 from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
@@ -70,6 +72,42 @@ class RefusingHost(FakeHost):
             raise subprocess.CalledProcessError(self.returncode, cmd, output="",
                                                 stderr=self.stderr)
         return super().__call__(cmd, input)
+
+
+class AddrHost:
+    """A runner that models the ADDRESSES on an interface, the way `FakeHost` models the links.
+
+    `ip addr replace/del` mutate the set, `ip -o addr show` answers from it, and a delete named in
+    `refuse` fails while leaving the address exactly where it was — which is what EPERM and the
+    runner's time limit both do, and the state the reconcile/clear paths have to survive.
+    """
+
+    def __init__(self, addrs=(), refuse=(), returncode=1,
+                 stderr="RTNETLINK answers: Operation not permitted"):
+        self.addrs = set(addrs)
+        self.refuse = set(refuse)
+        self.returncode, self.stderr = returncode, stderr
+        self.calls = []
+
+    def __call__(self, cmd, input=None):
+        self.calls.append(cmd)
+        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+        if rest[:2] == ["addr", "del"]:
+            if rest[2] in self.refuse:
+                raise subprocess.CalledProcessError(self.returncode, cmd, output="",
+                                                    stderr=self.stderr)
+            self.addrs.discard(rest[2])
+        elif rest[:2] == ["addr", "replace"]:
+            self.addrs.add(rest[2])
+        elif rest[:2] == ["addr", "show"]:
+            ipv6 = "-6" in cmd
+            return subprocess.CompletedProcess(cmd, 0, "".join(
+                f"2: {rest[-1]}    {'inet6' if ':' in a else 'inet'} {a} scope global\n"
+                for a in sorted(self.addrs) if (":" in a) == ipv6), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def cmds(self):
+        return list(self.calls)
 
 
 class UnansweringHost(FakeHost):
@@ -442,6 +480,46 @@ def test_the_default_probe_calls_only_an_explicit_not_found_absent():
         assert reason, f"{run.__name__} reported an unknown with no reason"
 
 
+# --- ...and what "absent" is allowed to mean for an ADDRESS ---------------------------------
+# `ADDR_ABSENT` is asked exactly once: after an `ip addr del` the panel issued against an address
+# it owns failed. It is the one answer that says the removal has nothing left to do, and so the one
+# answer that licenses forgetting the record that would otherwise retry it. It may therefore only
+# ever come from an answer the probe actually READ.
+
+@pytest.mark.parametrize("unreadable", [
+    None,                                                   # the seam returned nothing at all
+    subprocess.CompletedProcess(["ip"], 0, None, ""),        # ran, but captured no stdout
+    object(),                                               # a mock: no `stdout` attribute
+    b"192.168.10.2/24",                                     # bytes: `text=True` was not in force
+])
+def test_a_probe_whose_output_cannot_be_read_is_unknown_and_never_absence(unreadable):
+    # "No output" and "the output says nothing is there" are different facts. Reading the first as
+    # the second retires the ownership record of an address that is still on the host, leaving it
+    # with nothing to retry the removal and — with segment management off — nothing to report it.
+    state, reason = provision._probe_addr("eth0.2", "192.168.10.2/24",
+                                          run=lambda cmd, input=None: unreadable)
+    assert state == provision.ADDR_UNKNOWN, f"{unreadable!r} was read as an answer"
+    assert reason, "an unknown was reported with no reason"
+
+
+def test_a_probe_that_really_listed_nothing_is_still_absence():
+    # The other direction: a readable listing that does not contain the address IS absence, and a
+    # readable one that does is presence. Neither may be lost to the rule above.
+    listed = ("2: eth0.2    inet 192.168.10.2/24 scope global eth0.2\n"
+              "       valid_lft forever preferred_lft forever\n")
+    assert provision._probe_addr(
+        "eth0.2", "192.168.10.2/24",
+        run=lambda cmd, input=None: subprocess.CompletedProcess(cmd, 0, "", ""))[0] \
+        == provision.ADDR_ABSENT
+    assert provision._probe_addr(
+        "eth0.2", "192.168.10.2/24",
+        run=lambda cmd, input=None: subprocess.CompletedProcess(cmd, 0, listed, ""))[0] \
+        == provision.ADDR_PRESENT
+    # a seam that hands the text back directly (a backend's own `_run`) still reads as an answer
+    assert provision._probe_addr("eth0.2", "192.168.10.2/24",
+                                 run=lambda cmd, input=None: listed)[0] == provision.ADDR_PRESENT
+
+
 def test_a_delete_and_a_probe_that_both_time_out_leave_the_link_owned():
     # The production shape of the bug: the runner's time limit fires on the delete AND on the
     # `ip link show` that would have proven the link gone. Neither says anything about the
@@ -567,6 +645,114 @@ def test_reconcile_keeps_a_replaced_address_recorded_until_it_is_deleted():
     assert store.get_setting(provision.STALE_KEY) == ""      # drained once the delete ran
 
 
+# --- a removal that did not happen may not clear the record that would retry it --------------
+# The reconcile and clear paths DO delete: those addresses are the panel's own, recorded before it
+# installed them, and replacing or dropping them is the whole job. What they used to do wrong is
+# discard the `CalledProcessError` and clear the ownership record anyway, so a refused or timed-out
+# `ip addr del` left the address on the interface with nothing recording it, nothing to retry it,
+# and — with segment management off, where readiness skips the address check — nothing reporting it.
+
+REFUSALS = [
+    ((1, "RTNETLINK answers: Operation not permitted"), "Operation not permitted"),
+    ((TIMEOUT_RETURNCODE, "command timed out after 10s: ip addr del 192.168.9.2/24 dev eth0.2"),
+     "timed out"),
+]
+
+
+@pytest.mark.parametrize("refused_as, expected", REFUSALS)
+def test_reconcile_retains_a_replaced_address_whose_deletion_was_refused(refused_as, expected):
+    host = AddrHost(addrs=["192.168.9.2/24"], refuse=["192.168.9.2/24"],
+                    returncode=refused_as[0], stderr=refused_as[1])
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+
+    reasons = provision.reconcile_segment_addresses(
+        store, NetPlan.from_settings(Settings()), run=host)
+
+    assert ["ip", "addr", "del", "192.168.9.2/24", "dev", "eth0.2"] in host.cmds()  # it was tried
+    assert host.addrs == {"192.168.9.2/24", "192.168.10.2/24"}                      # ...and stayed
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2 192.168.9.2/24"    # still owned
+    assert len(reasons) == 1 and expected in reasons[0]
+    assert "192.168.9.2/24" in reasons[0] and "eth0.2" in reasons[0]
+
+
+def test_reconcile_forgets_an_address_a_failed_delete_proves_is_already_gone():
+    # The other direction, and why the record may ever be dropped on a failure at all: the kernel
+    # lost the address (a reboot), so the delete fails and the probe afterwards says it is not
+    # there. Keeping it would grow a ledger entry nothing can ever retire.
+    host = AddrHost(refuse=["192.168.9.2/24"], stderr="RTNETLINK answers: Cannot assign requested address")
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+
+    reasons = provision.reconcile_segment_addresses(
+        store, NetPlan.from_settings(Settings()), run=host)
+
+    assert reasons == []
+    assert store.get_setting(provision.STALE_KEY) == ""
+
+
+def test_reconcile_keeps_the_record_when_the_probe_after_a_refusal_cannot_answer():
+    # A delete that failed AND a probe that says nothing about the interface is the state most
+    # likely to be sitting on an address that is still there, so the record survives and the
+    # reason names both halves.
+    def run(cmd, input=None):
+        if cmd[:3] == ["ip", "addr", "del"]:
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="RTNETLINK: refused")
+        if "show" in cmd:
+            raise subprocess.CalledProcessError(TIMEOUT_RETURNCODE, cmd, output="",
+                                                stderr="command timed out after 10s")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+
+    reasons = provision.reconcile_segment_addresses(
+        store, NetPlan.from_settings(Settings()), run=run)
+
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2 192.168.9.2/24"
+    assert len(reasons) == 1 and "could not be probed" in reasons[0]
+
+
+def test_host_provision_reports_an_address_the_clear_path_could_not_remove():
+    # The whole chain, with segment management off — the one case where `clear_managed_addresses`
+    # runs, and the one where readiness deliberately skips the segment-address check. The pass
+    # result is therefore the only surface a leftover can appear on, and `/api/ready`'s
+    # `provisioning` check reads exactly this object.
+    host = AddrHost(addrs=["192.168.10.2/24"], refuse=["192.168.10.2/24"])
+    store = _store()
+    store.set_setting("manage_segment", "0")
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert not result.ok and state.provision_result is result
+    assert "192.168.10.2/24" in result.error and "not removed" in result.error
+    assert host.addrs == {"192.168.10.2/24"}                       # still on the host
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2 192.168.10.2/24"   # still owned
+    assert store.get_setting("managed_segment_addr4") in (None, "")
+
+
+def test_the_clear_path_retries_a_retained_address_on_the_next_pass():
+    # What retaining it buys: the same path runs on every later pass while management is off, and
+    # the entry it kept is what makes the second attempt happen at all.
+    host = AddrHost(addrs=["192.168.10.2/24"], refuse=["192.168.10.2/24"])
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+
+    assert provision.clear_managed_addresses(store, run=host)      # refused, so retained
+    host.refuse.clear()                                            # the next pass gets through
+    assert provision.clear_managed_addresses(store, run=host) == []
+
+    assert host.addrs == set()
+    assert store.get_setting(provision.STALE_KEY) == ""
+
+
 def test_clear_managed_addresses_also_drains_a_stranded_stale_entry():
     fake = FakeRun()
     store = _store()
@@ -581,6 +767,193 @@ def test_clear_managed_addresses_also_drains_a_stranded_stale_entry():
     assert ["ip", "-6", "addr", "del", "fd00:1:2:9::1/64", "dev", "eth0.2"] in cmds
     assert ["ip", "addr", "del", "192.168.10.2/24", "dev", "eth0.2"] in cmds
     assert store.get_setting(provision.STALE_KEY) == ""
+
+
+# --- the ledger may never name an address the pass is INSTALLING -----------------------------
+# Retaining a pair whose removal was refused is what gets the removal retried. But the retained
+# thing is an ADDRESS, and a later change can make that same address the desired one again: A -> B
+# with A's removal refused, then B -> A. The pass installs A (correctly — A is desired), and a
+# retention mechanism that does not check then dutifully deletes A, because A is still on the stale
+# ledger, clears the record, and reports no failure. That leaves the segment interface with NO
+# address, silently, which is the operator's network down. So the desired pairs are excluded from
+# the stale set in both places it is handled: where it is recorded, and where it is retired.
+
+
+def _plan_with(ip4: str, ip6: str = "") -> NetPlan:
+    plan = NetPlan.from_settings(Settings())
+    plan.segment_ip = ip4
+    if ip6:
+        plan.ipv6_enabled, plan.segment_ip6 = True, ip6
+    return plan
+
+
+def test_coming_back_to_a_retained_address_keeps_it_on_the_interface():
+    # The reproduction, end to end, against the host model: A retained by a refused delete, the
+    # config moved to B, then back to A. What must be true afterwards is about the INTERFACE, not
+    # about the absence of an exception: the segment still carries the address it is configured for.
+    host = AddrHost(addrs=["192.168.9.2/24"], refuse=["192.168.9.2/24"])
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+
+    # A -> B: the removal of A is refused, so A stays recorded and the pass says so.
+    assert provision.reconcile_segment_addresses(store, _plan_with("192.168.10.2"), run=host)
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2 192.168.9.2/24"
+
+    # B -> A: A is the desired address again, and whatever refused its removal has cleared.
+    host.refuse.clear()
+    mark = len(host.calls)
+    reasons = provision.reconcile_segment_addresses(store, _plan_with("192.168.9.2"), run=host)
+
+    later = host.cmds()[mark:]
+    assert ["ip", "addr", "replace", "192.168.9.2/24", "dev", "eth0.2"] in later
+    assert not any(cmd[:3] == ["ip", "addr", "del"] and cmd[3] == "192.168.9.2/24"
+                   for cmd in later)                     # never deleted while it is the desired one
+    assert host.addrs == {"192.168.9.2/24"}              # ON the interface; B correctly retired
+    assert store.get_setting("managed_segment_addr4") == "192.168.9.2/24"
+    assert store.get_setting(provision.STALE_KEY) == ""
+    assert reasons == []
+
+
+def test_the_recorded_ledger_never_repeats_a_pair_or_names_a_desired_one():
+    # The ledger is written BEFORE the kernel is touched, deliberately, so what it says at that
+    # instant is what a pass dying there leaves for the next one to act on. Two things it may never
+    # say: that the panel owes a removal of the address it is installing, and the same pair twice.
+    old, desired = "eth0.2 192.168.9.2/24", "eth0.2 192.168.10.2/24"
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+    store.set_setting(provision.STALE_KEY, f"{old}\n{old}\n{desired}")
+    seen: list[str] = []
+
+    def run(cmd, input=None):
+        if cmd[:3] == ["ip", "addr", "replace"]:
+            seen.append(store.get_setting(provision.STALE_KEY) or "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provision.reconcile_segment_addresses(store, _plan_with("192.168.10.2"), run=run)
+
+    assert seen == [old]        # the desired pair is not owed a removal; the repeat collapsed
+
+
+def test_retire_owned_never_deletes_a_pair_the_pass_is_installing():
+    # The second half of the exclusion, at the module's only address-deletion site: whatever a
+    # caller assembles, a pair the pass is installing is not deleted. Excluding it forgets nothing
+    # — a desired address is recorded as the segment's current one, not as one owed a removal.
+    host = AddrHost(addrs=["192.168.10.2/24", "192.168.9.2/24"])
+
+    keep, reasons = provision._retire_owned(
+        [("eth0.2", "192.168.10.2/24"), ("eth0.2", "192.168.9.2/24")], host,
+        provision._desired_pairs("eth0.2", "192.168.10.2/24"))
+
+    assert keep == [] and reasons == []
+    assert host.addrs == {"192.168.10.2/24"}                    # the desired one is untouched
+    assert not any(cmd[:3] == ["ip", "addr", "del"] and cmd[3] == "192.168.10.2/24"
+                   for cmd in host.cmds())
+
+
+def test_a_genuine_move_still_deletes_the_address_it_replaced():
+    # The behaviour that is NOT being changed: a segment that genuinely moves has its old address
+    # removed, because the panel owns it and it is no longer desired.
+    host = AddrHost(addrs=["192.168.9.2/24", "fd00:1:2:9::1/64"])
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+    store.set_setting("managed_segment_addr6", "fd00:1:2:9::1/64")
+
+    reasons = provision.reconcile_segment_addresses(
+        store, _plan_with("192.168.10.2", "fd00:1:2:3::/64"), run=host)
+
+    assert reasons == []
+    assert host.addrs == {"192.168.10.2/24", "fd00:1:2:3::1/64"}
+    assert store.get_setting(provision.STALE_KEY) == ""
+
+
+# --- the retry ledger is bounded, and the bound refuses rotation, never a record --------------
+# Every distinct address whose removal is refused stays on the ledger, and a DHCPv6-PD prefix can
+# renew over and over with no operator action, so the backlog is reachable in normal operation. It
+# grows the persisted state and the delete-plus-probe loop that runs under the apply lock. At the
+# limit the rotation is what gets refused — before any mutation — because dropping the oldest record
+# to make room would forget an address the panel put on the host, which is the exact stranding this
+# ledger exists to prevent.
+
+
+def _backlog(count: int, first: int = 20) -> list[str]:
+    return [f"eth0.2 192.168.{n}.2/24" for n in range(first, first + count)]
+
+
+def test_a_rotation_at_the_ledger_limit_is_refused_before_any_mutation():
+    backlog = _backlog(provision.STALE_LIMIT)
+    owed = {line.split()[1] for line in backlog}
+    host = AddrHost(addrs=owed | {"192.168.9.2/24"}, refuse=owed)
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+    store.set_setting(provision.STALE_KEY, "\n".join(backlog))
+
+    reasons = provision.reconcile_segment_addresses(store, _plan_with("192.168.10.2"), run=host)
+
+    assert len(reasons) == 1                                  # and the caller reports it
+    assert "refused" in reasons[0] and str(provision.STALE_LIMIT) in reasons[0]
+    assert "192.168.9.2/24" in reasons[0]
+    assert host.cmds() == []                                  # nothing replaced, nothing deleted
+    assert host.addrs == owed | {"192.168.9.2/24"}            # the segment keeps its address
+    assert store.get_setting(provision.STALE_KEY) == "\n".join(backlog)   # every record intact
+    assert store.get_setting("managed_segment_addr4") == "192.168.9.2/24"
+
+
+def test_host_provision_reports_a_rotation_refused_at_the_ledger_limit():
+    # The refusal is not quieter than any other provisioning failure: it fails the pass, so the
+    # caller rolls its candidate settings back and `/api/ready`'s `provisioning` check reads it.
+    backlog = _backlog(provision.STALE_LIMIT)
+    owed = {line.split()[1] for line in backlog}
+    host = AddrHost(addrs=owed | {"192.168.9.2/24"}, refuse=owed)
+    store = _store()
+    store.set_setting("segment_ip", "192.168.10.2")
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+    store.set_setting(provision.STALE_KEY, "\n".join(backlog))
+
+    result = provision.host_provision(_State(store, LinuxBackend(host), _Dnsmasq()))
+
+    assert not result.ok
+    assert "192.168.9.2/24" in result.error and "refused" in result.error
+    assert store.get_setting("managed_segment_addr4") == "192.168.9.2/24"
+
+
+def test_a_pass_that_does_not_rotate_still_drains_the_ledger_at_the_limit():
+    # The refusal may not become a wedge: with the config unchanged the same path still installs
+    # the desired address and still retries the whole backlog, which is how the limit is escaped.
+    backlog = _backlog(provision.STALE_LIMIT)
+    owed = {line.split()[1] for line in backlog}
+    host = AddrHost(addrs=owed | {"192.168.10.2/24"})
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+    store.set_setting(provision.STALE_KEY, "\n".join(backlog))
+
+    assert provision.reconcile_segment_addresses(store, _plan_with("192.168.10.2"), run=host) == []
+
+    assert store.get_setting(provision.STALE_KEY) == ""
+    assert host.addrs == {"192.168.10.2/24"}
+
+
+def test_repeated_failed_removals_cannot_grow_the_stale_ledger_without_bound():
+    # Rotate again and again, refusing every removal — the backlog rises to the limit and stops.
+    ips = [f"192.168.{n}.2" for n in range(20, 20 + provision.STALE_LIMIT + 4)]
+    host = AddrHost(addrs=[f"{ips[0]}/24"], refuse=[f"{ip}/24" for ip in ips])
+    store = _store()
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", f"{ips[0]}/24")
+
+    sizes = []
+    for ip in ips[1:]:
+        provision.reconcile_segment_addresses(store, _plan_with(ip), run=host)
+        sizes.append(len(provision._parse_stale(store)))
+
+    assert max(sizes) == provision.STALE_LIMIT               # bounded, not merely finite
+    assert sizes[-3:] == [provision.STALE_LIMIT] * 3         # and it stopped growing
+    assert len(set(provision._parse_stale(store))) == provision.STALE_LIMIT   # no repeats either
 
 
 def test_ensure_nm_unmanaged_writes_conf_and_reloads():

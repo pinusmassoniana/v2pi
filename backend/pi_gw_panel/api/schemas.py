@@ -607,9 +607,13 @@ class ReadinessChecksOut(BaseModel):
     enforcement: bool
     active_node: bool
     xray: bool
-    # False only for a PROVEN divergence between the config the live process loaded and the one
-    # on disk. Unknown (nothing started yet, unparseable config) passes: readiness must not fail
-    # a healthy boot. `details["xray_config"]` names the two digests when it does fail.
+    # False for a PROVEN divergence between the config the live process loaded and the one on
+    # disk, and also whenever xray is RUNNING but the comparison cannot be made at all — a
+    # running process serving something nobody verified must not read as ready.
+    # Unknown passes only while nothing is running (before the first start, or after an
+    # unparseable load): readiness must not fail a healthy boot or roll back a good migration.
+    # `details["xray_config"]` names the two digests on a divergence, or says what could not be
+    # verified when it is running and unknown.
     xray_config: bool
     tunnel: bool
 

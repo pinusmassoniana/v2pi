@@ -762,6 +762,21 @@ describe("mounted frontend regressions", () => {
     expect(document.body.textContent).toContain("RUNNING");
   });
 
+  it("does not tell the operator which configuration is the older one", async () => {
+    // Two unequal digests prove the live process and the file DIFFER; they prove nothing about
+    // which came first. Restore an older backup over config.json and the older side is the file,
+    // so "Xray is running on an older configuration" is wrong exactly there — and it sends the
+    // operator hunting for a change nobody made instead of restarting onto the file.
+    vi.spyOn(api, "getStatus").mockResolvedValue({ ...STATUS, config_drift: "drift" });
+    mounted.push(mount(Dashboard, { target: document.body }));
+    await flush();
+    const banner = document.querySelector('[role="alert"]')!;
+    expect(banner.textContent).toContain("different from the configuration on disk");
+    expect(document.body.textContent ?? "").not.toMatch(/older|newer|out of date/i);
+    expect(document.querySelector('[title*="different from the one this process loaded"]'))
+      .not.toBeNull();       // the STALE CONFIG cell tooltip says it the same way
+  });
+
   it("stays quiet on a boot that has not started xray yet (config_drift unknown)", async () => {
     // Unknown is the normal state before the first start, and on any backend too old to answer.
     // Rendering it as a problem would make every healthy boot look like a broken gateway.
