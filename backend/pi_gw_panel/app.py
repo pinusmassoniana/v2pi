@@ -144,7 +144,9 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         # Boot/restart persistence: re-establish the active node's tunnel before serving,
         # so a reboot or container restart self-heals with no manual Connect (Plan 9c).
         # First close the boot leak window: with the kill-switch on, install the leak-guard
-        # BEFORE the tunnel comes up so a reboot never leaks client→WAN (A1).
+        # BEFORE ANYTHING ELSE TOUCHES THE PACKET PATH — before the host is provisioned, which is
+        # what turns forwarding on, and so before the tunnel — so a reboot never leaks client→WAN
+        # (A1).
         owned = []
         log_handler = None
         try:
@@ -157,52 +159,74 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
                              getattr(app_state, "pd_client", None)):
                 if resource is not None:
                     owned.append(resource)
-            # A network change that died between provisioning its candidate interface and undoing
-            # it left host state nothing else will ever look at — the ownership metadata rolled
-            # back with the transaction and names the interface we went back to. Reclaim it BEFORE
-            # the pass below, never after: `host_provision` re-asserts the whole configured segment
-            # straight afterwards, so an undo that reaches too far is repaired within this boot,
-            # while an undo running after it would be deleting what that pass had just created and
-            # recorded as its own. Never fatal — it cannot raise, and it must not cost the operator
-            # the screen they would fix the gateway from.
-            resume_pending_provision_undo(app_state)
-            host_provision(app_state)
-            # THE LEAK-GUARD'S FAILURE IS A PACKET-PATH FACT, NOT A STATUS. `boot_guard` refuses to
-            # install a ruleset it cannot prove covers every interface the segment may be on, which
-            # is right — a ruleset is replaced, so a short one uncovers a live interface. But on a
-            # panel restart that refusal inherits the previous, correct ruleset, while on a HOST
-            # reboot it inherits NO TABLE AT ALL, and `host_provision` above has just turned
-            # forwarding on. Nothing then stops a forwarded client packet: `/api/ready` going red is
-            # observability, and no packet consults it. So the refusal is not discarded — the forward
-            # path is held closed by something that needs no interface knowledge, which is the whole
-            # reason the normal ruleset could not be rendered (see `enforcement_fallback`).
+            # THE FORWARD PATH IS ACCOUNTED FOR BEFORE ANYTHING CAN OPEN IT, and the ordering is the
+            # substance of it, not a tidiness. `boot_guard` refuses to install a ruleset it cannot
+            # prove covers every interface the segment may be on, which is right — a ruleset is
+            # replaced, so a short one uncovers a live interface. On a panel restart that refusal
+            # inherits the previous, correct ruleset and costs nothing; on a HOST reboot it inherits
+            # NO TABLE AT ALL. What used to run above this line was `host_provision`, whose first act
+            # is `ensure_sysctls` — forwarding on. So the window the guard exists to close was open
+            # for the length of a whole provisioning pass before anything had even asked whether the
+            # guard went on, and the check that followed could not shut it again: `/api/ready` going
+            # red is observability, and no packet consults it. The guard, and the interface-
+            # independent deny that stands in when the guard cannot be rendered, therefore both
+            # resolve FIRST, while forwarding is still whatever the host booted with.
+            #
+            # THIS RUNS ON A FIRST-EVER BOOT WITH NOTHING PROVISIONED, and cannot fail for that
+            # reason. The guard is rendered from the store — `NetPlan.from_store` resolves every
+            # editable field as store-override-or-config, so an empty store is the configured
+            # default, not a missing answer — and it names interfaces rather than probing for them:
+            # nft matches `iifname` by name, so a rule naming a VLAN this boot has not created yet
+            # simply never matches, and `apply_guard` touches no link and no address. The cover's
+            # five records are all absent on such a boot, which is an ANSWERED empty cover, so the
+            # guard installs and this reads "". And if the render fails anyway, the deny stands in
+            # and boot still serves: neither branch below refuses to come up.
             unguarded = enforcement_fallback(app_state, boot_guard(app_state))
-            # A revocation commits the credential change before it can touch the runtime, so a
-            # process that died in between left a store granting less than the config on disk —
-            # and, if the previous xray outlived the panel, less than what is being served right
-            # now. Finish it BEFORE anything is (re)started, so the reapply below comes up on a
-            # config that already agrees with the store. Never fatal: an unreconcilable marker
-            # must not cost the operator the screen they would fix it from.
-            from pi_gw_panel.api.routes import rw_reconcile_pending
-            if not rw_reconcile_pending(app_state):
-                logging.getLogger("pi_gw_panel").error(
-                    "a remote-access revocation is still not reconciled with the config on "
-                    "disk; the liveness loop will keep retrying")
             # "DO NOT CONTINUE UNTIL FAIL-CLOSED ENFORCEMENT IS CONFIRMED", concretely: boot does
             # not refuse to start — this is the machine's own gateway and the panel is the screen the
             # operator would fix it from, so an unreachable panel is not the safe end of this — and
-            # it does not start the traffic machinery either. Below this line are the two things that
-            # drive packets: the tunnel reapply, and the loops that restart xray and fail nodes over
-            # unattended. Neither may run while nothing can be shown to be holding the forward path,
-            # because nothing here would make it safer and the watchdog would keep re-asserting a
-            # gateway the panel cannot enforce. The management API, the audit log and `/api/ready`
-            # come up regardless, which is what the operator needs.
+            # it does not touch the packet path either. EVERYTHING inside the branch below can:
+            # provisioning turns forwarding on and raises the segment interface, the pending-undo
+            # resume mutates host state, the reapply brings a tunnel up, and the loops restart xray
+            # and fail nodes over unattended. None of it may run while nothing can be shown to be
+            # holding the forward path, because none of it makes that safer and the watchdog would
+            # keep re-asserting a gateway the panel cannot enforce. The management API, the audit log
+            # and `/api/ready` come up regardless, which is what the operator needs.
             if unguarded:
                 logging.getLogger("pi_gw_panel").critical(
-                    "the gateway's forward path cannot be shown to be closed, so no tunnel and no "
-                    "background loop were started; the panel is serving the management API only: %s",
-                    unguarded)
+                    "the gateway's forward path cannot be shown to be closed, so the host was not "
+                    "provisioned and no tunnel and no background loop were started; the panel is "
+                    "serving the management API only: %s", unguarded)
             else:
+                # A network change that died between provisioning its candidate interface and undoing
+                # it left host state nothing else will ever look at — the ownership metadata rolled
+                # back with the transaction and names the interface we went back to. Reclaim it
+                # BEFORE the pass below, never after: `host_provision` re-asserts the whole
+                # configured segment straight afterwards, so an undo that reaches too far is repaired
+                # within this boot, while an undo running after it would be deleting what that pass
+                # had just created and recorded as its own. Never fatal — it cannot raise, and it
+                # must not cost the operator the screen they would fix the gateway from.
+                #
+                # It is below the guard for a reason of the same kind: the pending record is one of
+                # the cover's sources, so a guard rendered before the undo covers the candidate the
+                # undo may decide to leave up, while one rendered after it may have been licensed to
+                # narrow off it.
+                resume_pending_provision_undo(app_state)
+                # Also where a deny that IS in force is handed back: this is the pass that can prove
+                # a complete cover, so a transient fault that cleared between the render above and
+                # here ends the deny inside the same boot (see `_hand_back_from_emergency_deny`).
+                host_provision(app_state)
+                # A revocation commits the credential change before it can touch the runtime, so a
+                # process that died in between left a store granting less than the config on disk —
+                # and, if the previous xray outlived the panel, less than what is being served right
+                # now. Finish it BEFORE anything is (re)started, so the reapply below comes up on a
+                # config that already agrees with the store. Never fatal: an unreconcilable marker
+                # must not cost the operator the screen they would fix it from.
+                from pi_gw_panel.api.routes import rw_reconcile_pending
+                if not rw_reconcile_pending(app_state):
+                    logging.getLogger("pi_gw_panel").error(
+                        "a remote-access revocation is still not reconciled with the config on "
+                        "disk; the liveness loop will keep retrying")
                 res = reapply_active_node(app_state)
                 if res is not None and not res.ok:
                     logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)

@@ -185,14 +185,87 @@ class Record:
         return out
 
 
-def read_record(store, key: str) -> Record:
-    """What `key` holds, or UNKNOWN with the reason the store could not say. Never raises."""
+def _store_get(store, key: str) -> tuple[object, str]:
+    """The raw value at `key`, or the reason THE STORE could not say. `(value, reason)`. Never raises.
+
+    The one place a read calls `get_setting`, so the two ways a read fails stay TELLABLE APART above
+    it: a non-empty `reason` is the store refusing to answer, and an empty one means the store DID
+    answer — with `None`, its own "no such key", with text, or with a value of a type no record may
+    hold. Which of those two a reader may act on differs (see `_read_scalar`), and a reader handed one
+    collapsed answer cannot make the distinction at all.
+    """
     try:
-        return Record(store.get_setting(key) or "")
+        return store.get_setting(key), ""
     except Exception as exc:            # any store fault: it is one answer, "we cannot tell"
-        reason = str(exc) or exc.__class__.__name__
-        _log.error("the durable record %s could not be read: %s", key, reason)
-        return Record(None, reason)
+        return None, (str(exc) or exc.__class__.__name__)
+
+
+def _unreadable(key: str, reason: str) -> Record:
+    """An UNKNOWN record, reported where it is read."""
+    _log.error("the durable record %s could not be read: %s", key, reason)
+    return Record(None, reason)
+
+
+def read_record(store, key: str) -> Record:
+    """What `key` holds, or UNKNOWN with the reason the store could not say. Never raises.
+
+    An unset record is EMPTY (`None` is how this store says "no such key"), and anything that is not
+    text is UNKNOWN rather than something coerced into text: `Record` promises its content is a string
+    and every reader below builds on that, so a store handing back another type is a store that could
+    not tell us what the record holds.
+
+    THE TWO UNKNOWNS ARE ONE ANSWER HERE, DELIBERATELY, and this is the right reader for every record
+    whose content the panel cannot write again from scratch — a LEDGER above all, whose entries may be
+    the only record of something that is on the host. There the two cost the same: nothing may be
+    narrowed, nothing deleted, and nothing healed either. A SCALAR the panel rewrites IN FULL on every
+    pass is the case where the collapse costs a durable wedge, and it has its own reader
+    (`_read_scalar`).
+    """
+    raw, why = _store_get(store, key)
+    if why:
+        return _unreadable(key, why)
+    if raw is None:
+        return Record("")
+    if not isinstance(raw, str):
+        return _unreadable(key, f"it holds {raw!r}, which is not text")
+    return Record(raw)
+
+
+def _read_scalar(store, key: str) -> tuple[Record, str]:
+    """One scalar the panel writes IN FULL: `(record, invalid)` — the record, and the reason it holds
+    something that is not a value at all. Never raises.
+
+    THE DISTINCTION `read_record` COLLAPSES, and the reason this reader exists. "The store would not
+    answer" and "the store answered with something that is not text" are two different facts about a
+    read, and only the first justifies refusing: a store fault says nothing about the host, so nothing
+    may be concluded; returned-invalid data is BAD DATA IN A RECORD THIS PASS REWRITES, so the pass
+    that reads it is also the repair.
+
+    Read through `read_record`, a non-text `managed_segment_iface` made the whole `Ownership`
+    unreadable, `_ownership_cover` raise and `_provision_segment` decline before it configured
+    anything — on that pass and on every later one, because nothing that far up the pass ever rewrites
+    the scalar. That is the permanent provisioning wedge the invalid-versus-blank distinction was built
+    to rule out (see `Ownership`), reached through the TYPE check rather than the shape check, and one
+    hand-edited row or one foreign writer is all it takes.
+
+    So the two answers separate here. A store fault is UNKNOWN with `invalid` empty, exactly as before.
+    A value that is not text is UNKNOWN TOO — so no reader can take `.text` off it and get a plausible
+    blank — and its reason travels back in `invalid`, where it authorises no comparison and no
+    deletion, is reported to the operator, and is overwritten by the pass on its way past. It is
+    deliberately NOT logged here: it is reported once, where the pass reports it
+    (`_invalid_ownership_reasons`), and a boundary that is read five times a pass may not narrate the
+    same value five times.
+    """
+    raw, why = _store_get(store, key)
+    if why:
+        return _unreadable(key, why), ""
+    if raw is None:
+        return Record(""), ""
+    if not isinstance(raw, str):
+        reason = (f"{key} holds {raw!r}, which is not text, so what the panel claims there cannot be "
+                  "read as anything it wrote")
+        return Record(None, reason), reason
+    return Record(raw), ""
 
 
 def _verified_write(store, key: str, text: str, expect: list[str] | None) -> str:
@@ -472,6 +545,30 @@ def _run_stdout(result) -> str | None:
     return text if isinstance(text, str) else None
 
 
+def _addr_token(token: str):
+    """`token` as the ADDRESS AND PREFIX LENGTH it spells, or None when it spells no such thing.
+
+    THE ONE PLACE A TOKEN BECOMES AN ADDRESS, and it is a comparison primitive, not a validator: it
+    answers questions about two strings by asking them of the two addresses instead. `ip addr show`
+    prints the kernel's own canonical spelling, a record may hold any spelling of the same address,
+    and comparing the two as TEXT reads a live address as absent — which for the survivor ledger is
+    the one answer that takes an interface out of the enforcement cover (see `drain_enforcement_cover`).
+
+    A missing prefix is no answer at all rather than a `/32`: the whole-token contract below is what
+    keeps a `192.168.10.2/24` from being answered for by a `192.168.10.2/16` some other owner put
+    there, and a bare address would silently mean `/32` and match neither. A SCOPE is refused for the
+    other direction — `fe80::1%eth0` and `fe80::1%eth1` are different addresses on the host and
+    `ipaddress` drops the scope from the canonical spelling, so a scoped token compared canonically
+    would answer about whichever interface asked.
+    """
+    if "/" not in token or "%" in token:
+        return None
+    try:
+        return ipaddress.ip_interface(token)
+    except ValueError:
+        return None
+
+
 def _probe_addr(iface: str, addr: str, run=_run) -> tuple[str, str]:
     """Ask the host whether `addr` is on `iface`. `(state, reason)`; `reason` explains an unknown.
 
@@ -479,11 +576,28 @@ def _probe_addr(iface: str, addr: str, run=_run) -> tuple[str, str]:
     prefix length — so a `192.168.10.2/24` whose record this would drop is never answered for by
     a `192.168.10.2/16` some other owner put there.
 
+    MATCHED AS AN ADDRESS AND NOT AS TEXT, though, and that is what this comparison had wrong. The
+    kernel prints one spelling; a record can hold any of the spellings that mean the same address —
+    `192.168.10.2/255.255.255.0`, an expanded or upper-case IPv6 — and `_checked_addr_text` accepted
+    every one of them while handing the ORIGINAL token back. String equality against `ip addr show`
+    then answered `ADDR_ABSENT` for an address that is on the interface: the survivor drained, the
+    interface left the enforcement cover, and a real segment address was still on it. So both sides
+    are parsed (see `_addr_token`) and the answer is about the addresses. A token this cannot read at
+    all is `ADDR_UNKNOWN` — never absence, for the reason below.
+
     A device that is not on the host carries no addresses, so an explicit not-found answers
     `ADDR_ABSENT`. Everything else — refused, a netlink error, the runner's time limit (whose
     synthetic stderr describes the command it killed and says nothing about the interface), or a
     command that exited cleanly and produced no readable output at all — is `ADDR_UNKNOWN`.
     Never absence: absence is the one answer that lets an ownership record be forgotten.
+
+    THE INTERFACE IS NOT CHECKED FOR ITS SHAPE HERE, and it no longer has to be: every caller proves
+    its own entries before it asks — `_checked_survivors` for the survivor ledger, `_read_ownership`
+    for the four ownership records — so a name that is not a name never reaches this at all. Which is
+    the only place it can be stopped: a device the host does not have is an explicit not-found, and
+    this reads that as `ADDR_ABSENT` — the one answer that lets an ownership record be forgotten. So
+    the shape is checked where the record is READ, while the value can still be reported instead of
+    spent as absence.
     """
     if not iface or not addr:
         return ADDR_UNKNOWN, "no interface or address"
@@ -500,7 +614,11 @@ def _probe_addr(iface: str, addr: str, run=_run) -> tuple[str, str]:
         return ADDR_UNKNOWN, str(exc) or exc.__class__.__name__
     if out is None:                     # it exited fine and said nothing we can read
         return ADDR_UNKNOWN, "ip addr show produced no readable output"
-    return (ADDR_PRESENT if addr in out.split() else ADDR_ABSENT), ""
+    want = _addr_token(addr)
+    if want is None:                    # not an address and a prefix: the probe cannot ask about it
+        return ADDR_UNKNOWN, f"{addr[:80]!r} is not one address with a prefix length"
+    return (ADDR_PRESENT if any(_addr_token(tok) == want for tok in out.split())
+            else ADDR_ABSENT), ""
 
 
 def _nm_active(run=_run) -> bool:
@@ -513,13 +631,21 @@ def _nm_active(run=_run) -> bool:
         return False
 
 
-def ensure_sysctls(settings, write_proc=_write_proc) -> None:
+def ensure_sysctls(settings, write_proc=None) -> None:
     """Forwarding (v4 + v6) and accept_ra=2 on the uplink (so the Pi keeps its own v6 default
     route even with forwarding on). Best-effort; the privileged container has writable
-    /proc/sys."""
-    write_proc("/proc/sys/net/ipv4/ip_forward", "1")
-    write_proc("/proc/sys/net/ipv6/conf/all/forwarding", "1")
-    write_proc(f"/proc/sys/net/ipv6/conf/{settings.mgmt_iface}/accept_ra", "2")
+    /proc/sys.
+
+    THIS IS THE STEP THAT OPENS THE FORWARD PATH, which is why boot resolves the leak-guard and its
+    fallback before the pass that calls it (see `app.create_app`) and why the writer is resolved at
+    CALL time, exactly as `_disable_forwarding` resolves it: bound as a default, it is the module's
+    real `/proc` writer, so a suite running as root would turn the host's own forwarding ON while
+    testing that boot does not.
+    """
+    write = write_proc or _write_proc
+    write("/proc/sys/net/ipv4/ip_forward", "1")
+    write("/proc/sys/net/ipv6/conf/all/forwarding", "1")
+    write(f"/proc/sys/net/ipv6/conf/{settings.mgmt_iface}/accept_ra", "2")
 
 
 LINK_KEY = "managed_segment_link"
@@ -801,7 +927,14 @@ def _checked_names(values) -> list[str]:
     """
     out: list[str] = []
     for value in values:
-        name = (value or "").strip()
+        if not isinstance(value, str):
+            # NOT `str(value)`, and that is the whole point of this line: coercion is what makes a
+            # value of the wrong type look like a name. `str(0.9)` is `"0.9"`, which matches the
+            # expression below, parses as VLAN 9, and reaches `ip link delete 0.9`.
+            raise RecordUnknown(
+                f"the panel's records name {value!r} as an interface that may be carrying the "
+                "segment, which is not text, so what they name cannot be read in full")
+        name = value.strip()
         if not name:
             continue
         if not _IFACE_RE.fullmatch(name):
@@ -810,6 +943,354 @@ def _checked_names(values) -> list[str]:
                 "segment, which is not an interface name, so what they name cannot be read in full")
         out.append(name)
     return out
+
+
+# --- the SHAPE of a durable record, checked once, where the record is read ----------------------
+#
+# Every field below arrives out of the store: JSON out of the pending undo, a text entry out of a
+# ledger. Four rounds of hardening the readers have each ended in the same place — a value of the
+# wrong TYPE was made to look like a value of the right one — and the last round's own fix is the
+# clearest case of it. It resolved a type confusion by COERCING the value to text, and coercion
+# makes malformed data look valid: `str(0.9)` is `"0.9"`, an interface name that passes
+# `_checked_names`, parses as VLAN 9 and reaches `ip link delete 0.9`; `str([1])` is `"[1]"`, an
+# address that goes into the survivor ledger as a survivor, is proven absent by the first probe, and
+# takes the interface out of the enforcement cover while a real segment address may still be on it.
+#
+# So NOTHING here coerces. Each field is checked for the TYPE and the FORM the panel writes there,
+# at the one boundary where the record is read, and a field that is neither makes the whole record
+# unreadable — which everywhere below means unknown: covered, refusing, retained, and never a licence
+# to act. Fields the panel does NOT write are not consulted at all, because a pending record written
+# by an earlier release carries some and reading it has to keep working across the upgrade.
+
+
+def _checked_text(record: dict, field: str) -> str:
+    """`field` as the TEXT the panel wrote there, stripped. An absent field reads as "".
+
+    Raises `RecordUnknown` for anything that is not a string — a JSON number, a list, an object,
+    `null`, a bool. Each of those is a record no writer here produces, and the one thing that may
+    never be done with it is to turn it into the string it is not.
+    """
+    if field not in record:
+        return ""
+    value = record[field]
+    if not isinstance(value, str):
+        raise RecordUnknown(f"{field} is recorded as {value!r}, which is not text, so the record "
+                            "cannot be read as one the panel wrote")
+    return value.strip()
+
+
+def _checked_addr_text(addr: str, where: str) -> str:
+    """`addr` as THE ONE CANONICAL SPELLING of an address with a prefix length, or `RecordUnknown`
+    saying it is not one.
+
+    ONE TOKEN AND A PREFIX, which is exactly what every writer here records (`f"{ip}/24"`,
+    `host_addr6`) and exactly what the drain compares: `_probe_addr` matches the whole CIDR token
+    against `ip addr show`, so a value the host can never print — `[1]`, a bare address whose prefix
+    is missing, two tokens with a space between them — is a pair the FIRST probe reports as absent.
+    That is the shape that took an interface out of the cover while the real segment address was
+    still on it, so it is refused here instead: nothing is written and nothing is drained.
+
+    AND ONE SPELLING, which is the half that was missing. The check accepted every spelling
+    `ipaddress` accepts — `192.168.10.2/255.255.255.0`, an expanded or upper-case IPv6 — and then
+    returned the ORIGINAL token, which was recorded and later compared, as text, against the one
+    spelling the kernel prints. So a validated record could name an address that IS on the interface
+    and be answered "absent" by the very first probe: the survivor drained, the interface left the
+    enforcement cover, and the segment address was still on it. Exactly the defect the type check was
+    added to prevent, reached through the value the check handed back.
+
+    So what comes back is `parsed.with_prefixlen` — the spelling `ip addr show` prints — and it is
+    what every caller records and compares. A SCOPED address is the one spelling that may not be
+    canonicalised: `with_prefixlen` drops the scope, and `fe80::1%eth0` and `fe80::1%eth1` are
+    different addresses on the host, so it is refused rather than silently turned into a question
+    about whichever interface is asked. The panel writes no scoped address anywhere.
+    """
+    if addr.split() != [addr] or "/" not in addr:
+        raise RecordUnknown(f"{where} is recorded as {addr[:80]!r}, which is not one address with a "
+                            "prefix length")
+    if "%" in addr:
+        raise RecordUnknown(f"{where} is recorded as {addr[:80]!r}, which names a scope, so which "
+                            "interface it is an address on cannot be read from the address alone")
+    try:
+        parsed = ipaddress.ip_interface(addr)
+    except ValueError as exc:
+        raise RecordUnknown(f"{where} is recorded as {addr[:80]!r}, which is not an address "
+                            f"({exc})") from exc
+    return parsed.with_prefixlen
+
+
+def _checked_addr(record: dict, field: str) -> str:
+    """`field` as an address, or "" when the record claims none there. Raises otherwise."""
+    addr = _checked_text(record, field)
+    return _checked_addr_text(addr, field) if addr else ""
+
+
+def _checked_family_addr(addr: str, family: int, where: str) -> str:
+    """`addr` in the one canonical spelling AND of the family the record it came out of NAMES.
+
+    The canonical half is `_checked_addr_text`; this adds the half a key like
+    `managed_segment_addr6` asserts by existing. A record is read for exactly one comparison — is
+    the address the panel owns the one the plan wants — and that comparison is answered against the
+    plan's value FOR THAT FAMILY. So a v4 value recorded under the v6 key is never equal to the v6
+    address the plan names, which made it "superseded": the pass appended it to the stale ledger and
+    `ip addr del`'d it off the segment interface. On a live gateway the value under the v6 key that
+    is a v4 address is the v4 address the operator reaches the gateway on.
+
+    Neither direction is a shape the panel writes — the two keys are written from `f"{ip}/24"` and
+    `host_addr6` — so a crossed pair is a hand-edited database or a write that landed on the wrong
+    key, and the one thing that may not be done with it is to compare it with an address of the
+    other family and spend the inequality as a licence to delete.
+    """
+    canonical = _checked_addr_text(addr, where)
+    version = ipaddress.ip_interface(canonical).version
+    if version != family:
+        raise RecordUnknown(
+            f"{where} is recorded as {canonical[:80]!r}, which is an IPv{version} address under the "
+            f"record that names the panel's IPv{family} one, so what it claims cannot be read")
+    return canonical
+
+
+def _canonical_addr(addr: str) -> str:
+    """`addr` in the one canonical spelling, or unchanged when it is not an address at all.
+
+    FOR THE PLAN'S SIDE OF EVERY COMPARISON. The record's side is canonicalised where the record is
+    read (`_read_ownership`), and one canonicalised side is worse than neither: the whole point is
+    that both sides are the same spelling of the same address. The plan's values already are —
+    `f"{ip}/24"` and `host_addr6` both produce it — so this normally changes nothing and exists so
+    that it cannot come to matter which of the two writers produced the value being compared.
+
+    A value this cannot parse is handed back untouched rather than refused: it is the plan's, not a
+    record's, and `ip addr replace` is about to reject it and say so with the kernel's own words.
+    """
+    token = _addr_token(addr)
+    return addr if token is None else token.with_prefixlen
+
+
+def _checked_flag(record: dict, field: str) -> bool | None:
+    """`field` as the BOOL the panel wrote there, or `None` when the record makes no claim.
+
+    A real bool or `null`, and nothing else. `"false"` is a non-empty string, so truthiness read it
+    as a yes — and the two fields this guards, `vlan` and `link_existed`, are the two halves of the
+    authorisation to delete a link (see `_vlan_claim`, `_checked_prior_link_state`).
+    """
+    if field not in record:
+        return None
+    value = record[field]
+    if value is None or isinstance(value, bool):
+        return value
+    raise RecordUnknown(f"{field} is recorded as {value!r}, which is not an answer either way")
+
+
+def _checked_link_state(record: dict) -> str:
+    """`link_state` as one of the three answers a probe gives, or "" when it carries none."""
+    state = _checked_text(record, "link_state")
+    if state and state not in (LINK_PRESENT, LINK_ABSENT, LINK_UNKNOWN):
+        raise RecordUnknown(f"link_state is recorded as {state[:80]!r}, which is not one of the "
+                            "three answers a probe gives")
+    return state
+
+
+def _checked_candidate_iface(record: dict) -> str:
+    """The interface a candidate record names, or "" when it names none.
+
+    Raises `RecordUnknown` when the value is not text, or is text that is not one interface name —
+    the same gate every cover source goes through, reached before any normalisation of the value.
+    """
+    iface = _checked_text(record, "iface")
+    return _checked_names([iface])[0] if iface else ""
+
+
+# --- the pending provisioning-undo record, as a TYPE ------------------------------------------
+#
+# Five rounds hardened the readers of this one record FIELD BY FIELD, and the class outlived all five,
+# because the defects left are not about a field: they are about the record. A JSON object with a
+# repeated key had already lost one of the two values before any field check ran. `link_state` and
+# `link_existed` each passed on their own while contradicting each other, and the reader preferred the
+# one that authorises a delete. `resolved` was reserved for the clear and consulted by nobody
+# validating a live candidate. A blank `iface` was spent as "there is no candidate" before the rest of
+# the record was looked at, so a record that does not conform was discarded as known-empty.
+#
+# None of those can be expressed as a check on one field, so the record stops being a dict at the
+# boundary. It is DECODED once (duplicate-aware), CANONICALISED once (addresses in the one spelling
+# the kernel prints), checked as A WHOLE, and handed to its readers as a `Candidate` — which has no
+# fields but the five the panel means, and no way to reach a raw one. Everything below reads that
+# object; nothing below reads the dict.
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """WHAT A PENDING PROVISIONING-UNDO RECORD SAYS, decoded once and true of the record as a whole.
+
+    Five values, and they are the only five: the interface a pass may have put the segment on, the
+    two addresses it was headed for, whether the panel created that interface as a VLAN, and the
+    prior-link observation — which is one answer, whichever of the two spellings the record used
+    (`link_state`, or the superseded `link_existed` bool it folds through `LINK_PRESENT`/
+    `LINK_UNKNOWN` and never `LINK_ABSENT`).
+
+    IT IS A TYPE AND NOT A DICT BECAUSE THE DICT IS WHAT KEPT GOING WRONG. Every defect in this
+    record's history is a reader reaching a raw field and deriving a poorer answer from it:
+    `candidate.get("vlan")` over JSON made `"false"` an authorisation to delete an interface,
+    `str(candidate.get("iface") or "")` turned the number `0.9` into a name `ip link delete` accepted,
+    `candidate.get("resolved")` made a record still naming a live interface read as settled. So there
+    is nothing here to reach: `vlan` is a real bool because only a real bool could construct it,
+    `iface` is one interface name or "", the addresses are canonical or the record did not decode, and
+    `__getitem__`/`get` refuse rather than let a future reader re-derive any of it. `__bool__` refuses
+    for the reason `Record`'s and `Cover`'s do — "there is no candidate" is `None`, not a falsey
+    record, and the two must not be one value.
+    """
+    iface: str
+    addr4: str
+    addr6: str
+    vlan: bool
+    prior: str
+
+    def __bool__(self):
+        """Never a truth value: "there is no candidate" is `None`, and this is a record that exists."""
+        raise TypeError("a candidate either exists or is None; ask .names_candidate for what it says")
+
+    def __getitem__(self, field):
+        raise TypeError(f"a candidate is a decoded record, not the dict it came from; {field!r} is "
+                        "not reachable and re-deriving it from the raw record is the defect")
+
+    def get(self, *_args, **_kwargs):
+        raise TypeError("a candidate is a decoded record, not the dict it came from; read its fields")
+
+    @property
+    def names_candidate(self) -> bool:
+        """Does this record name an interface a pass may have put the segment on?
+
+        FALSE ONLY IN AN OTHERWISE CONFORMING RECORD, which is the whole reason it is a property of
+        the decoded object and not a test on the raw one. A blank or absent `iface` is a legitimate
+        "this change puts nothing anywhere" — what a pass that provisions nothing records — and the
+        reader that discards such a record on that basis (see `_pending_candidate`) may only do so
+        once everything else about the record has been proven. Asked of the raw dict, the discard ran
+        FIRST: `{"iface": "", "addr4": [1]}` was cleared as known-empty while not conforming at all.
+        """
+        return bool(self.iface)
+
+
+def _decoded_record(raw: str) -> dict:
+    """`raw` as the JSON object it holds, with NOTHING LOST ON THE WAY IN. Raises.
+
+    `RecordUnknown` for an object with a REPEATED KEY, `ValueError`/`TypeError` for text that is not
+    JSON at all — two different answers, because the second names no interface and never did while
+    the first may well be naming one that is up (see `_pending_candidate` for what each costs).
+
+    THE DEFAULT DECODER SILENTLY KEEPS THE LAST VALUE, and that is a richer state flattened into a
+    poorer one before a single field check can see it. `{"iface": "eth0.9", "iface": "eth0.2"}` is not
+    a record about eth0.2: it is a record about two interfaces, one of which the enforcement would
+    then never name. `{"link_state": "present", "link_state": "absent"}` becomes the answer that
+    LICENSES `ip link delete` on an interface whose recorded prior state also says the panel did not
+    create it. A duplicate key is how a hand-edited database, a merged backup document or a truncated
+    concatenation presents, and no writer here can produce one — so it is not a record, and the safe
+    answer is the one the read side already gives: no answer, retained, still covered.
+    """
+    def one_value_per_key(pairs):
+        seen: set[str] = set()
+        for key, _ in pairs:
+            if key in seen:
+                raise RecordUnknown(
+                    f"the record names {key!r} more than once, so what it says about it cannot be "
+                    "read in full")
+            seen.add(key)
+        return dict(pairs)
+
+    return json.loads(raw, object_pairs_hook=one_value_per_key)
+
+
+def _checked_prior_link_state(record: dict) -> str:
+    """THE ONE prior-link observation the record makes, folded into a probe answer. Raises.
+
+    A RECORD-LEVEL RULE, not two field checks, and that is the finding. `link_state` and the
+    superseded `link_existed` are two spellings of the same observation and were validated
+    independently, so `{"link_state": "absent", "link_existed": true}` passed both — while saying two
+    contradictory things about the only question that can authorise `ip link delete`. The reader then
+    preferred `link_state`, which is to say it preferred the spelling that authorises the delete over
+    the one that says the link was already there. So a record carrying BOTH says it twice and is not
+    one the panel wrote (each release wrote exactly one), which here means unknown: nothing acts on
+    it, it is retained, and the interface it names stays covered.
+
+    The fold itself is unchanged and is the reason the legacy spelling can never authorise anything:
+    that bool had already collapsed "could not tell" into False, so False reads as `LINK_UNKNOWN` and
+    only `True` reads as `LINK_PRESENT`. Neither is `LINK_ABSENT`, and `LINK_ABSENT` is the only
+    answer that proves the pass created the link. One upgrade loses one cleanup opportunity; the
+    other direction loses an interface.
+    """
+    state = _checked_link_state(record)
+    legacy = _checked_flag(record, "link_existed")
+    if "link_state" in record and "link_existed" in record:
+        raise RecordUnknown(
+            f"the record says the link's state before the change was {state or 'blank'!r} and also "
+            f"records the superseded link_existed={legacy!r}, so which observation was taken cannot "
+            "be read")
+    if state:
+        return state
+    if legacy is True:
+        return LINK_PRESENT
+    return LINK_UNKNOWN
+
+
+def _refuse_resolved(record: dict) -> None:
+    """`resolved` is the CLEAR's word and no live candidate may carry it. Raises if one does.
+
+    Reserved for the terminal form `clear_provision_candidate` writes (see `_settled_undo`) and,
+    until now, ignored by the validator every writer and every direct reader shares. So
+    `record_provision_candidate` would accept `{"resolved": true}` as a pending record — written and
+    proven, looking to its caller like a successful arm, and read by every reader below as ALREADY
+    SETTLED: no cover, no undo, and an interface a pass is about to create named nowhere. A mixed
+    record is the other half of the same gap: the boot reader refuses it, while the two in-process
+    rollbacks hand their dict straight to the undo, which never looked at the key at all.
+
+    One word, one meaning, one writer.
+    """
+    if "resolved" in record:
+        raise RecordUnknown(
+            f"the record claims to be a settled undo (resolved={record['resolved']!r}) and is being "
+            "read as a live candidate; only a clear may write that word")
+
+
+def _checked_candidate_fields(record: dict, iface: str) -> Candidate:
+    """The record as a `Candidate`: everything but `iface` proven, and the RECORD-LEVEL INVARIANTS
+    checked together. Raises naming the first thing that is not what the panel writes.
+
+    `iface` is passed in already proven, because the two halves are worth different things: an
+    interface that reads is COVERAGE and is kept even when the rest of the record cannot be read,
+    while the rest of the record is what an undo would act on and is worth nothing without all of it.
+
+    THE THREE INVARIANTS ARE HERE AND NOWHERE ELSE, so every reader and the writer get all three:
+    no `resolved` on a live candidate, one prior-link observation rather than two contradictory
+    spellings, and — through `Candidate.names_candidate`, which its caller may only consult
+    afterwards — a blank `iface` read as "no candidate" only in a record that otherwise conforms.
+    """
+    _refuse_resolved(record)
+    return Candidate(iface=iface,
+                     addr4=_checked_addr(record, "addr4"),
+                     addr6=_checked_addr(record, "addr6"),
+                     # Only a real `True` is a claim; `_checked_flag` has already refused everything
+                     # that is neither a bool nor `null`, so the fold cannot invent one.
+                     vlan=_checked_flag(record, "vlan") is True,
+                     prior=_checked_prior_link_state(record))
+
+
+def _checked_candidate(record: dict) -> Candidate:
+    """The whole candidate record proven and decoded into the one type its readers use."""
+    return _checked_candidate_fields(record, _checked_candidate_iface(record))
+
+
+def _as_candidate(record) -> Candidate | None:
+    """Whatever a caller hands over, as a `Candidate` or as no candidate at all. Raises.
+
+    THE ONE DOOR INTO THE TYPE for the paths that do not read the store: the two in-process rollbacks
+    pass the dict they built, the boot path passes the object it already decoded, and `{}`/`None` is
+    the settled "this pass puts nothing anywhere". Anything else goes through the same decode every
+    reader shares, so no path can act on a record a different path would refuse.
+    """
+    if record is None or isinstance(record, Candidate):
+        return record
+    if not record:
+        return None
+    if not isinstance(record, dict):
+        raise RecordUnknown(f"it is {record!r}, which is not a record")
+    return _checked_candidate(record)
 
 
 def _merge_cover(exclude: str, sources) -> Cover:
@@ -833,6 +1314,47 @@ def _merge_cover(exclude: str, sources) -> Cover:
     return Cover(_other_ifaces(names, exclude), unknown)
 
 
+def _ownership_cover(store) -> list[str]:
+    """The interfaces the OWNERSHIP RECORDS name as possibly holding a segment address, read through
+    the boundary that decodes them. Raises `RecordUnknown` only when they could not be READ.
+
+    THE SAME `Ownership` EVERY OTHER OWNERSHIP READER GETS, and that is the whole reason this source
+    exists rather than the two raw reads it replaces. Read as raw text — `managed_segment_iface`
+    straight out of the record and the stale ledger straight out of `_parse_stale` — this source
+    answered "no answer at all" to two states the boundary answers precisely: a SCALAR the panel did
+    not write, and a ledger entry it must keep VERBATIM. Both are durable, neither can be healed by a
+    pass that trips over it before it starts, and an unknown cover is what `_provision_segment`
+    declines on — so one hand-edited value, or one retained entry, refused every provisioning pass for
+    ever. That is the outage the invalid-versus-blank distinction exists to prevent (see `Ownership`),
+    reached through the one reader that was still re-deriving the records for itself.
+
+    So each of the three states contributes what it actually knows:
+
+      * `unreadable` — the store would not answer, or a ledger entry could not be read IN FULL. It is
+        PROPAGATED, and it is the only thing here that makes the cover short: the set of interfaces
+        this would name has something already dropped out of it, and narrowing on that is the bypass.
+      * `invalid` — a scalar holding something that is not an interface name. It names no interface, so
+        it contributes no name; it can also enforce on nothing, so it blocks nothing. The pass goes on,
+        rewrites the scalar and heals it, exactly as `reconcile_segment_addresses` already relies on.
+      * `retained` — a ledger entry the panel keeps as it came. Its interface is validated on its OWN,
+        so a pair retained because its ADDRESS could not be read still keeps its interface covered —
+        which is the entry's whole purpose — while one whose interface is the unusable half contributes
+        nothing and stops nothing. Either way the entry itself is untouched and still reported where it
+        is read.
+    """
+    own = _read_ownership(store)
+    if not own.known:
+        raise RecordUnknown("the panel's record of what it owns on the segment could not be read in "
+                            "full: " + "; ".join(own.unreadable))
+    names = [own.iface] + [iface for iface, _ in own.stale]
+    for iface, _ in own.retained:
+        try:
+            names.extend(_checked_names([iface]))
+        except RecordUnknown:
+            continue            # text nothing can be enforced on, and not a reason to refuse a pass
+    return names
+
+
 def superseded_state(store, new_iface: str) -> Cover:
     """Every interface OTHER than `new_iface` on which the panel still holds a segment address, and
     whether that is the WHOLE answer.
@@ -854,6 +1376,15 @@ def superseded_state(store, new_iface: str) -> Cover:
     (see `enforcement_cover`) — naming an interface in a rule costs nothing, while un-managing one
     the panel never addressed takes it away from the thing whose job it is.
 
+    TWO OF THE THREE ARE READ THROUGH `_read_ownership`, and never again out of the scalar and the
+    ledger themselves. A typed boundary only protects the readers that use it, and this one used to
+    re-derive its half: the interface scalar was read raw, so a value the panel did not write made the
+    whole cover UNKNOWN, and the stale ledger was read all-or-nothing, so one entry the boundary would
+    have retained discarded the valid pairs beside it. Unknown here is what the pass declines on, and
+    both of those states survive the pass that reads them — which turned "one refused change, then a
+    heal" into provisioning refused for ever. So they arrive already decoded, and only "the record
+    could not be READ" is short (see `_ownership_cover`).
+
     Read BEFORE `reconcile_segment_addresses` when the answer is "what is this pass moving off":
     afterwards the record names where it is moving TO. Read again after, to ask what is left.
 
@@ -868,9 +1399,8 @@ def superseded_state(store, new_iface: str) -> Cover:
     by a store read. So `.known` travels with the names and the callers read it (see `Cover`).
     """
     return _merge_cover(new_iface, [
-        lambda: [read_record(store, "managed_segment_iface").text],
+        lambda: _ownership_cover(store),
         lambda: _parse_links(store),
-        lambda: [iface for iface, _ in _parse_stale(store)],
     ])
 
 
@@ -1342,9 +1872,59 @@ def _parse_stale(store) -> list[tuple[str, str]]:
 SURVIVOR_KEY = "provision_candidate_survivors"
 
 
+def _checked_survivors(pairs: list[tuple[str, str]], where: str) -> list[tuple[str, str]]:
+    """Every survivor proven to be an interface name and an address, and returned in the ONE spelling
+    the host prints. Raises `RecordUnknown` otherwise.
+
+    `Record.pairs()` proves an entry is two tokens; this proves what the two tokens SAY, and it is
+    the half that decides coverage. A bogus entry is not an interface the ruleset over-covers: it
+    names a device that cannot exist and an address the host can never print, so the very first
+    drain gets an explicit not-found for it and the interface LEAVES the enforcement — which is how
+    a real segment address still on that interface ends up outside the ruleset. So a ledger holding
+    one is not read as a ledger at all (nothing is drained from it, nothing is shrunk) and a pair
+    that is not one never goes in (see `remember_survivors`, `drain_enforcement_cover`).
+
+    IT RETURNS THE CANONICAL PAIRS and its callers use them, which is the other half of the same
+    property: an entry the drain cannot match against `ip addr show` drains itself on the first probe
+    just as surely as a bogus one, so the entries this ledger keeps are the spelling the comparison
+    speaks (see `_checked_addr_text`). What the probe compares and what the record carries are then
+    the same value by construction.
+    """
+    out: list[tuple[str, str]] = []
+    for iface, addr in pairs:
+        _checked_names([iface])
+        out.append((iface, _checked_addr_text(addr, f"{where} on {iface}")))
+    return out
+
+
+def _survivor_pairs(store) -> tuple[list[tuple[str, str]] | None, str]:
+    """The ledger's pairs, proven to be interface names and canonical addresses, or `(None, reason)`.
+
+    `_read_pairs` with the entries' CONTENT checked as well as their shape — one answer for the three
+    callers that may neither raise nor narrow, for the reason `_read_pairs` gives: a set they would
+    compute from this is a set with something already dropped out of it.
+    """
+    pairs, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    if pairs is None:
+        return None, unreadable
+    try:
+        return _checked_survivors(pairs, "the address a rolled-back change may have left"), ""
+    except RecordUnknown as exc:
+        return None, str(exc)
+
+
 def _parse_survivors(store) -> list[tuple[str, str]]:
-    """`(iface, addr)` pairs a rolled-back change may have left live on a candidate interface."""
-    return _parse_pairs(store, SURVIVOR_KEY)
+    """`(iface, addr)` pairs a rolled-back change may have left live on a candidate interface.
+
+    Raises `RecordUnknown` when the ledger cannot be read IN FULL — the store would not answer, an
+    entry is not a pair, or a pair is not an interface and an address. For the cover source this
+    feeds that is the reason that forbids narrowing (`_merge_cover`), which is the answer every one
+    of those three deserves.
+    """
+    pairs, unreadable = _survivor_pairs(store)
+    if pairs is None:
+        raise RecordUnknown(unreadable)
+    return pairs
 
 
 def _record_survivors(store, pairs: list[tuple[str, str]]) -> str:
@@ -1385,7 +1965,20 @@ def remember_survivors(store, pairs: list[tuple[str, str]]) -> bool:
     want = _distinct(list(pairs))
     if not want:
         return True
-    held, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    try:
+        # NOTHING BOGUS GOES IN, whatever a caller hands over, and what does go in is the one
+        # spelling the drain compares. The entries here become the names the enforcement carries and
+        # the tokens the drain proves gone, so a pair that cannot be either — or one the host can
+        # never print back in the same letters — is a survivor that drains itself on the first probe
+        # and takes a live interface's coverage with it. Refused the same way an unprovable write is:
+        # `False`, so the undo stays pending and the cover names the candidate from that record
+        # instead (`pending_candidate_ifaces`).
+        want = _checked_survivors(want, "the address a rolled-back change may have left")
+    except RecordUnknown as exc:
+        _log.error("the interfaces a rolled-back change may have left carrying the segment were not "
+                   "recorded, because what was offered is not an interface and an address: %s", exc)
+        return False
+    held, unreadable = _survivor_pairs(store)
     if held is None:
         _log.error("the surviving-candidate ledger could not be read in full, so it was not "
                    "replaced — replacing a record that cannot be read is how an older survivor is "
@@ -1412,7 +2005,7 @@ def forget_survivors(store, iface: str) -> None:
     """
     if not iface:
         return
-    pairs, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    pairs, unreadable = _survivor_pairs(store)
     if pairs is None:
         _log.warning("could not read the surviving-candidate ledger in full to drop %s, so every "
                      "pair in it stays covered: %s", iface, unreadable)
@@ -1441,9 +2034,12 @@ def drain_enforcement_cover(store, run=_run) -> list[tuple[str, str]]:
     Never raises: it runs at the top of every pass, and a probe that will not answer must not cost
     the operator the pass that brings their segment up. An exception leaves the ledger untouched,
     which keeps everything covered — the safe direction. A LEDGER THAT CANNOT BE READ IN FULL is the
-    same answer reached earlier: nothing is dropped, because nothing was proven gone.
+    same answer reached earlier: nothing is dropped, because nothing was proven gone. So is one
+    holding an entry that is not an interface and an address: the probe would answer not-found for a
+    device and a token the host can never have, and that answer is about the entry, not about
+    whatever the entry was meant to name (see `_checked_survivors`).
     """
-    pairs, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    pairs, unreadable = _survivor_pairs(store)
     if pairs is None:
         _log.warning("could not read the interfaces a rolled-back change left behind, so they stay "
                      "covered: %s", unreadable)
@@ -1486,8 +2082,150 @@ def drain_enforcement_cover(store, run=_run) -> list[tuple[str, str]]:
 OWNERSHIP_KEYS = ("managed_segment_iface", "managed_segment_addr4", "managed_segment_addr6")
 
 
+# --- what the panel owns on the segment, as a TYPE -------------------------------------------
+#
+# The four ownership records are the pending undo's SIBLING, and every defect the undo record grew a
+# type to end lived here too, unfixed: a reader reaching a raw scalar and deriving a poorer answer
+# from it. The addresses were compared as TEXT, so an expanded or upper-case IPv6 semantically equal
+# to the one the pass was installing was "different", was appended to the stale ledger, escaped the
+# desired-address protection — which is also a text comparison — and was `ip addr del`'d moments
+# after its canonical spelling went on. The interface scalar was not checked at all, so a
+# space-bearing value became an `ip addr del … dev <two names>` target and a THREE-TOKEN stale entry,
+# which every later read of the ledger refuses — provisioning and clearing both blocked until
+# someone edits the database.
+#
+# A previous round declined to validate the interface here for exactly that second reason, and the
+# reasoning was sound as far as it went: retaining an invalid value writes an unparseable ledger and
+# wedges the gateway, so it chose not to look. The option it did not consider is to DISTINGUISH
+# INVALID FROM BLANK and act on neither. Blank is a legitimate "the panel claims nothing"; invalid
+# means do not compare it, do not derive a pair from it, do not delete on its authority, report it,
+# and leave what is on the host alone — while the pass itself carries on and installs the operator's
+# addresses, so nothing is wedged. And the write side refuses a ledger it could not read back, which
+# is what makes the unparseable state unreachable rather than merely tolerated.
+#
+# So the records stop being four raw scalars at the boundary. They are read once, canonicalised once
+# (the same `parsed.with_prefixlen` the survivor ledger and `Candidate` use), family-checked against
+# the key that names the family, and handed to their readers as an `Ownership` — which has no raw
+# scalar to reach and answers the blank-versus-invalid question as a method, so no reader can
+# re-derive the flattening.
+
+
+@dataclass(frozen=True)
+class Ownership:
+    """WHAT THE PANEL OWNS ON THE SEGMENT, decoded once and true of the four records together.
+
+    `iface`/`addr4`/`addr6` — the segment the panel currently claims, in the one canonical spelling
+    and of the family their keys name, or "" where the record claims nothing USABLE. `stale` — the
+    pairs owed a removal, every one of them a real interface name and a canonical address.
+
+    And three facts about the reading itself, because "the store would not answer", "it answered with
+    something the panel never wrote" and "it answered" are three different things and were one:
+
+    `unreadable` — the store could not tell us, or a set record could not be read IN FULL. Nothing
+    may be installed or removed on that basis; the ledger a pass would rewrite is one the unread
+    entries have already dropped out of.
+
+    `invalid` — a SCALAR is there and is not what the panel writes, in SHAPE or in TYPE. It authorises
+    nothing: the action it would have licensed does not happen. The pass still applies the operator's
+    change and then rewrites all three scalars, so the record HEALS — which is why this one may travel
+    the pass's ordinary failure channel: what it costs is one refused change plus the heal that comes
+    with it, not provisioning refused for ever. The type half of that arrives through `_read_scalar`;
+    a store that would not answer at all is `unreadable` above, and always was.
+
+    `retained` — ledger entries in that same state, held verbatim so the rewrite does not drop the
+    only record of an address that may be on the host. They are never compared, never deleted, and
+    never rebuilt from parts; they go back exactly as they came — and precisely because they go back,
+    they are NOT in `invalid`. The panel cannot heal an entry it must preserve, so failing the pass on
+    one would fail every later pass too, and refusing the operator's change for ever until someone
+    edits the database is the outage this whole distinction exists to avoid. They are reported ONCE PER
+    PASS, at its boundary and not at each of the five reads inside it (see
+    `_report_retained_ownership`).
+
+    `iface_unusable` distinguishes the two ways `iface` is "": see `iface_or`, which is the only
+    place the difference is spent.
+    """
+    iface: str = ""
+    addr4: str = ""
+    addr6: str = ""
+    stale: tuple[tuple[str, str], ...] = ()
+    retained: tuple[tuple[str, str], ...] = ()
+    unreadable: tuple[str, ...] = ()
+    invalid: tuple[str, ...] = ()
+    iface_unusable: bool = False
+
+    def __bool__(self):
+        """Never a truth value: a record that reads and claims nothing, and one that would not read
+        at all, are both falsey and mean opposite things (the same rule as `Record` and `Cover`)."""
+        raise TypeError("an ownership record is several facts: read .known, .iface, .stale, "
+                        ".unreadable and .invalid")
+
+    def __getitem__(self, field):
+        raise TypeError(f"ownership is a decoded record, not the scalars it came from; {field!r} is "
+                        "not reachable and re-deriving it from them is the defect")
+
+    @property
+    def known(self) -> bool:
+        """Did every one of the four records answer, and answer in full?"""
+        return not self.unreadable
+
+    def iface_or(self, fallback: str) -> str:
+        """The interface the panel's addresses are recorded ON, or `fallback` when it claims NONE.
+
+        THE ONE PLACE BLANK AND INVALID PART WAYS, and the reason this is a method rather than
+        `own.iface or plan.segment_iface` at each call site. Blank is a first pass on a fresh host:
+        there is no recorded interface, the plan's is the only candidate, and substituting it is how
+        an address left by an earlier release still gets retired. A value that is not an interface
+        name is not that at all — it says the panel's addresses are on SOMETHING, and the one thing
+        that cannot be concluded is that they are on the interface the plan happens to name. Spending
+        the fallback there aims `ip addr del <recorded address>` at the interface the pass is
+        installing onto, which is the live segment.
+
+        So an unusable value answers "" and every pair derived from it is not formed: nothing is
+        compared, nothing is persisted, nothing is deleted, and the value travels to the operator
+        through `invalid` instead.
+        """
+        return "" if self.iface_unusable else (self.iface or fallback)
+
+
+def _ledger_entries(pairs) -> tuple[list[str], list[str]]:
+    """The stale ledger's text for `pairs`, and a reason per pair that would NOT READ BACK as one.
+
+    THE WRITE SIDE OF `_read_ownership`, and what makes the ledger that used to wedge the gateway
+    unreachable instead of tolerated. The ledger is one `<iface> <addr>` per line and is parsed by
+    splitting on whitespace, so a value carrying a space of its own — `eth0.2 eth0.9` as the
+    interface, the shape a hand-edited database or a truncated write produces — serialises to THREE
+    tokens. Every later read of the record then refuses it in full, correctly, and both paths that
+    read it are the paths that install and remove the segment's addresses: the segment could not be
+    provisioned or cleared again until someone edited the database by hand.
+
+    Reached only because the pass derived a pair from an unvalidated scalar; the boundary no longer
+    hands one over. This is the backstop that makes that structural rather than incidental — the
+    entry is checked against the parse that will read it, and a ledger that would not survive the
+    round trip is NOT WRITTEN AT ALL. Nothing is coerced on the way (`f"{iface} {addr}"` on a value
+    of the wrong type is exactly the coercion this module refuses everywhere else), and a pair with
+    a blank half is not a pair.
+    """
+    entries: list[str] = []
+    refused: list[str] = []
+    for iface, addr in pairs:
+        if not isinstance(iface, str) or not isinstance(addr, str):
+            refused.append(
+                f"{STALE_KEY} was not written: {(iface, addr)!r} is not an interface and an address "
+                "as text, so what the ledger would hold cannot be read back")
+            continue
+        entry = f"{iface} {addr}"
+        if entry.split() != [iface, addr]:
+            refused.append(
+                f"{STALE_KEY} was not written: {entry[:80]!r} is not one interface and one address, "
+                "so the ledger would not read back as one the panel wrote and every later pass "
+                "would refuse to install or remove a segment address")
+        elif entry not in entries:
+            entries.append(entry)
+    return entries, refused
+
+
 def _record_ownership(store, iface: str, addr4: str, addr6: str,
-                      stale: list[tuple[str, str]]) -> list[str]:
+                      stale: list[tuple[str, str]], retained=()) -> list[str]:
     """Record what the panel owns on the segment, and PROVE every part of it. A reason per part that
     could not be proven; empty when the record now says all four things.
 
@@ -1516,8 +2254,21 @@ def _record_ownership(store, iface: str, addr4: str, addr6: str,
     holds underneath, so a ledger the store half-replaced still reads complete. Every remaining
     failure is a scalar, and what it leaves behind is the over-recording direction: a pair named in
     both the ledger and the current-address keys costs a retried delete, not a lost address.
+
+    `retained` is the ledger's own unreadable-but-parseable entries, handed back by the boundary and
+    written through VERBATIM (see `Ownership`): the rewrite may not drop the only record of an address
+    that may be on the host, and it may not rebuild one out of parts it could not read either.
+
+    AND THE LEDGER IS REFUSED IF IT WOULD NOT READ BACK. Checked before the write-ahead step, so
+    nothing has changed when it fires, and it is what keeps a value carrying a space from becoming a
+    three-token entry that blocks provisioning for good (see `_ledger_entries`).
     """
-    why = write_set(store, STALE_KEY, [f"{i} {a}" for i, a in stale])
+    entries, refused = _ledger_entries(list(stale) + list(retained))
+    if refused:
+        _log.error("the ledger of panel-owned segment addresses was not written: %s",
+                   "; ".join(refused))
+        return refused
+    why = write_set(store, STALE_KEY, entries)
     if why:
         return [why]
     reasons: list[str] = []
@@ -1528,27 +2279,159 @@ def _record_ownership(store, iface: str, addr4: str, addr6: str,
     return reasons
 
 
-def _read_ownership(store) -> tuple[list[str], str, str, str, list[tuple[str, str]]]:
-    """The four ownership records, or the reasons they could not be read.
+def _read_ownership(store) -> Ownership:
+    """THE BOUNDARY: the four ownership records, decoded once, as an `Ownership`. Never raises.
 
-    `(unreadable, iface, addr4, addr6, stale)`. A caller with a non-empty `unreadable` has no
-    trustworthy picture of what the panel owns and must not touch addresses on that basis: the stale
-    ledger it would write is one the unread entries have already dropped out of.
+    A caller whose record is not `known` has no trustworthy picture of what the panel owns and must
+    not touch addresses on that basis: the stale ledger it would write is one the unread entries have
+    already dropped out of. That is unchanged, and so is which shapes reach it — a store that will
+    not answer, and a set record that cannot be read IN FULL, because the rewrite is computed from
+    what parsed and an entry that did not is an address on the host whose last record this pass would
+    drop.
 
-    A ledger entry that is not a pair is `unreadable` for exactly that reason and not a lesser one:
-    the rewrite below is computed from what parsed, so an entry that did not is an address on the
-    host that this pass would drop the last record of. It is reported instead, with the entry
-    quoted, because a malformed ledger is fixed on the host and not by guessing at it.
+    WHAT IS NO LONGER THERE is a scalar the store ANSWERED with and that is merely not text. The three
+    scalars are read through `_read_scalar`, which keeps a store fault apart from returned-invalid data,
+    so a `managed_segment_iface` holding a number no longer makes this whole record unreadable — which
+    made `_ownership_cover` raise and the pass decline above the only step that rewrites the scalar, on
+    every pass, until someone edited the database. It is `invalid` instead: no name, no pair, no
+    comparison, no delete, reported, and rewritten on the way past. The LEDGER is still read through
+    `read_record`, where the collapse is correct: its entries are kept verbatim, so the panel cannot
+    heal one and the two failures cost the same.
+
+    WHAT IS NEW IS EVERYTHING BELOW THAT LINE. Both scalar addresses are canonicalised into the one
+    spelling the kernel prints and checked against the family their key names, and every ledger pair
+    has its interface proven a name and its address canonicalised, BEFORE any of it is compared,
+    persisted or deleted. Read as raw text, an expanded or upper-case IPv6 semantically equal to the
+    address the pass is installing was not equal to it: it was classified as superseded, it escaped
+    the desired-address protection — a text comparison too — and it was deleted off the interface
+    moments after its canonical spelling was installed there. That is the segment's own address, on a
+    live gateway, and it is the whole reason both sides of every comparison here are now one spelling.
+
+    AND THE INTERFACE'S SHAPE IS PROVEN, which a previous round deliberately declined to do. Its
+    reasoning was that refusing would cost the segment its addresses — this read gates installing
+    them — and that a retained value carrying a space would make the ledger unparseable for ever. Both
+    were true of "validate and refuse" and of "validate and retain"; neither is true of what happens
+    now. An invalid value is not an answer AND not a refusal: `iface_or` hands back "" instead of
+    substituting the plan's interface, so no pair is formed from it, nothing is compared with it,
+    nothing is deleted on its authority and nothing derived from it is persisted — while the pass
+    carries on, installs the operator's addresses, rewrites the scalar and heals. The value travels to
+    the operator through `invalid` (see `_invalid_ownership_reasons`), and the write side refuses a
+    ledger it could not read back, so the unparseable state is unreachable rather than tolerated
+    (`_ledger_entries`).
+
+    A ledger pair in that state is RETAINED VERBATIM rather than dropped or rebuilt: it may be the
+    only record of an address on the host, and an entry that parses as a pair goes back as one.
     """
-    records = [read_record(store, key) for key in OWNERSHIP_KEYS]
+    scalars = [_read_scalar(store, key) for key in OWNERSHIP_KEYS]
     stale, why = _read_pairs(store, STALE_KEY)
-    unreadable = [record.reason for record in records if not record.known]
+    unreadable = [record.reason for record, returned in scalars
+                  if not record.known and not returned]
     if stale is None:
         unreadable.append(why)
     if unreadable:
-        return unreadable, "", "", "", []
-    iface, addr4, addr6 = records
-    return [], iface.text, addr4.text, addr6.text, stale
+        return Ownership(unreadable=tuple(unreadable))
+
+    # A scalar the store ANSWERED with and that is not text is `invalid`, not `unreadable`, for the
+    # same reason a value of the wrong shape is: the pass rewrites all three scalars, so refusing over
+    # one refuses the repair too — for ever, since nothing above the reconcile ever writes them (see
+    # `_read_scalar`). It authorises exactly nothing on the way past: no name, no pair, no comparison.
+    invalid: list[str] = [returned for _, returned in scalars if returned]
+    iface, iface_unusable = "", bool(scalars[0][1])
+    if not iface_unusable:
+        try:
+            named = _checked_names([scalars[0][0].text])
+            iface = named[0] if named else ""
+        except RecordUnknown as exc:
+            invalid.append(str(exc))
+            iface_unusable = True
+
+    addrs: list[str] = []
+    for (record, returned), key, family in zip(scalars[1:], OWNERSHIP_KEYS[1:], (4, 6)):
+        if returned:
+            addrs.append("")            # not an address: nothing to compare, nothing owed a removal
+            continue
+        try:
+            addrs.append(_checked_family_addr(record.text, family, key) if record.text else "")
+        except RecordUnknown as exc:
+            invalid.append(str(exc))
+            addrs.append("")
+
+    kept: list[tuple[str, str]] = []
+    retained: list[tuple[str, str]] = []
+    for entry_iface, addr in stale:
+        try:
+            named = _checked_names([entry_iface])
+            if not named:                   # a pair's halves are non-blank; belt and braces
+                raise RecordUnknown(f"{STALE_KEY} holds an entry naming no interface at all")
+            kept.append((named[0],
+                         _checked_addr_text(addr, f"the panel-owned address on {entry_iface}")))
+        except RecordUnknown:
+            # Kept, and NOT reported from here. This is the one thing the panel cannot heal — the entry
+            # goes back exactly as it came, so a pass that failed on it would fail every later pass
+            # too, which is the refusal-for-ever this design rules out — so it travels to the operator
+            # as a log rather than through the pass result. But this boundary is read about five times
+            # in a normal pass, and it was logging every entry on each read: five identical ERRORs for
+            # one durable fact. The decode is silent and the pass says it ONCE, at its own boundary
+            # (see `_report_retained_ownership`).
+            retained.append((entry_iface, addr))
+
+    return Ownership(iface=iface, addr4=addrs[0], addr6=addrs[1],
+                     stale=tuple(kept), retained=tuple(retained),
+                     invalid=tuple(invalid), iface_unusable=iface_unusable)
+
+
+def _invalid_ownership_reasons(own: Ownership) -> list[str]:
+    """The ownership SCALARS that hold something the panel did not write, phrased for the address
+    channel that carries them. Never the retained ledger entries — see `Ownership`.
+
+    REPORTING IS THE WHOLE ACTION HERE. Nothing was compared with these values, nothing was derived
+    from them and no address was removed on their authority; the pass applied the operator's change
+    and rewrote all three scalars on its way past, so the record is CLEAN afterwards. That is what
+    makes the ordinary channel — `_provision_result` -> `ok=False` -> `/api/ready`'s `provisioning`
+    check — the right one rather than a wedge: it costs one refused change, and the heal that comes
+    with it means the retry does not hit the same value. Silently self-healing is what let a value
+    like this sit in the database unnoticed until a refused replacement turned it into a ledger entry
+    nothing could read.
+
+    Returned as a list so a caller can concatenate it without testing anything, which is what keeps
+    this from growing a branch (the same shape as `_backlog_warning`).
+    """
+    if not own.invalid:
+        return []
+    reason = ("the panel's record of what it owns on the segment holds a value it did not write, so "
+              "nothing was compared with it, nothing was derived from it and no address was removed "
+              "on its authority; the record has been rewritten, and what the old value referred to "
+              "is still on the host and has to be checked there (ip addr show) and cleared by hand: "
+              + "; ".join(own.invalid))
+    _log.error("%s", reason)
+    return [reason]
+
+
+def _report_retained_ownership(store) -> None:
+    """Name the ledger entries the panel is KEEPING VERBATIM — once, at the pass boundary. Never
+    raises, and changes nothing.
+
+    THE ONE PLACE THEY ARE REPORTED. A retained entry is the one state here the panel cannot heal: it
+    goes back exactly as it came on every pass, so it cannot travel the pass's failure channel (that
+    would refuse the operator's change for ever) and it cannot be repaired into silence either. What is
+    left is telling the operator, and the boundary that decodes it is the wrong place to do that from
+    — `_read_ownership` is read about five times in one pass (the cover before the reconcile, the
+    reconcile, the cover after it, the drop-in decision, the narrowing decision), and it logged every
+    retained entry on each of them. Five identical ERRORs per normal pass, for a fact that has not
+    changed, which is how a durable one-line problem comes to look like a storm.
+
+    So the decode is silent and the PASS says it, exactly once, here. Read-only: the entry is untouched
+    and stays exactly where it is, which is the whole point of retaining it.
+    """
+    own = _read_ownership(store)
+    if not own.retained:
+        return
+    _log.error("the ledger of panel-owned segment addresses holds %d entr%s the panel did not write; "
+               "they are kept exactly as they are and nothing is compared with them, removed on their "
+               "authority or rebuilt from them, so they have to be checked on the host (ip addr show) "
+               "and cleared by hand: %s",
+               len(own.retained), "y" if len(own.retained) == 1 else "ies",
+               "; ".join(f"{iface} {addr}" for iface, addr in own.retained))
 
 
 def _desired_pairs(iface: str, *addrs: str) -> frozenset[tuple[str, str]]:
@@ -1622,6 +2505,10 @@ def _backlog_warning(kept: list[tuple[str, str]]) -> list[str]:
     Returned as a list so a caller can concatenate it without testing anything, which is what keeps
     it impossible for this to grow a branch later.
     """
+    # `kept` is what the pass RETRIED and could not remove, which is deliberately not the whole
+    # ledger: an entry the boundary could not read is preserved and never retried (see `Ownership`),
+    # so counting it here would both misdescribe this warning — "every one of them was retried on
+    # this pass" — and give an unhealable record a way to fail the pass once enough of them piled up.
     if len(kept) < BACKLOG_WARN:
         return []
     reason = (f"{len(kept)} panel-owned segment addresses are awaiting removal, far more than a "
@@ -1699,29 +2586,47 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcom
     Returns an `AddressOutcome`: whether the plan's addresses are ON the interface, and a reason per
     thing the pass could not settle. The two are separate because they are separate facts, and a
     caller must not configure anything keyed to this plan when nothing was applied.
+
+    EVERY COMPARISON BELOW IS BETWEEN TWO CANONICAL SPELLINGS. The record's side is canonicalised at
+    the boundary (`_read_ownership`) and the plan's here (`_canonical_addr`), because a record may
+    hold any spelling of an address and the pass decides what is superseded by asking whether it
+    differs from the one being installed. Compared as text, `FD00:1:2:3:0:0:0:1/64` was different from
+    `fd00:1:2:3::1/64`, so it was appended to the stale ledger, was not recognised by the
+    desired-address protection either, and was deleted off the interface immediately after the same
+    address was installed there.
     """
-    unreadable, recorded_iface, old4, old6, recorded_stale = _read_ownership(store)
-    if unreadable:
+    own = _read_ownership(store)
+    if not own.known:
         # NOTHING IS INSTALLED ON A RECORD THAT CANNOT BE READ. The ledger written below is computed
         # from the one read here, so an unreadable read would silently drop every entry it holds —
         # the addresses would go on and the record of what is owed a removal would be gone. Failing
         # here costs the pass; the caller rolls back and reports, and the host is untouched.
         reason = ("the panel's record of what it owns on the segment could not be read, so no "
-                  "address was installed: " + "; ".join(unreadable))
+                  "address was installed: " + "; ".join(own.unreadable))
         _log.error("%s", reason)
         return AddressOutcome(False, [reason])
-    old_iface = recorded_iface or plan.segment_iface
+    # A value the panel did not write blocks only the action it would have authorised: no pair is
+    # formed from it, so nothing is compared with it and nothing is deleted on its authority, and it
+    # travels to the operator through the reasons this pass already returns. The operator's change
+    # still goes on — refusing it here is the outage, not the fix (see `_read_ownership`).
+    reported = _invalid_ownership_reasons(own)
     new_iface = plan.segment_iface
-    new4 = f"{plan.segment_ip}/24"
+    new4 = _canonical_addr(f"{plan.segment_ip}/24")
     new6 = host_addr6(plan.segment_ip6) if plan.ipv6_enabled else None
+    new6 = _canonical_addr(new6) if new6 else None
+    # Blank means "nothing recorded yet", and the plan's interface is then the only candidate the
+    # recorded addresses could be on. An UNUSABLE value means the opposite — they are on something,
+    # and the one thing that cannot be concluded is that it is the interface being installed onto —
+    # so it answers "", and the two superseded pairs below are simply not formed (`iface_or`).
+    old_iface = own.iface_or(new_iface)
 
     desired = _desired_pairs(new_iface, new4, new6 or "")
-    recorded = _distinct(recorded_stale, desired)
+    recorded = _distinct(own.stale, desired)
     superseded = []
-    if old4 and (old4 != new4 or old_iface != new_iface):
-        superseded.append((old_iface, old4))
-    if old6 and (old6 != new6 or old_iface != new_iface):
-        superseded.append((old_iface, old6))
+    if old_iface and own.addr4 and (own.addr4 != new4 or old_iface != new_iface):
+        superseded.append((old_iface, own.addr4))
+    if old_iface and own.addr6 and (own.addr6 != (new6 or "") or old_iface != new_iface):
+        superseded.append((old_iface, own.addr6))
     rotating = _distinct(superseded, desired | frozenset(recorded))
     stale = recorded + rotating
 
@@ -1735,12 +2640,12 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcom
     # writes it FIRST and proves it: until it is on disk nothing may name the candidate, or a store
     # that took the scalars and refused the ledger would leave the old live pair recorded nowhere at
     # all (see `_record_ownership`).
-    unwritten = _record_ownership(store, new_iface, new4, new6 or "", stale)
+    unwritten = _record_ownership(store, new_iface, new4, new6 or "", stale, own.retained)
     if unwritten:
         reason = ("the panel could not record what it was about to install on the segment, so it "
                   "installed nothing: " + "; ".join(unwritten))
         _log.error("%s", reason)
-        return AddressOutcome(False, [reason])
+        return AddressOutcome(False, reported + [reason])
 
     # Each command is carried alongside THE ADDRESS IT INSTALLS, because the reason has to name
     # the one that was actually rejected. Both used to run under one `try` that blamed `new4`
@@ -1766,15 +2671,16 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcom
                    or f"ip addr replace exited {exc.returncode}")
             _log.error("the segment address %s could not be installed on %s: %s",
                        addr, new_iface, why)
-            return AddressOutcome(False, [f"{addr} on {new_iface}: {why}"])
+            return AddressOutcome(False, reported + [f"{addr} on {new_iface}: {why}"])
 
     keep, reasons = _retire_owned(stale, run, desired)
     # The addresses ARE on the interface now, so this shrink cannot un-apply the pass; an unprovable
     # write here leaves the ledger naming pairs already removed, which only costs a retried delete
     # and an over-covered interface. It is still a record that does not describe the host, so it
     # travels the reasons channel and fails the pass.
-    reasons += _ownership_reasons(_record_ownership(store, new_iface, new4, new6 or "", keep))
-    return AddressOutcome(True, reasons + _backlog_warning(keep))
+    reasons += _ownership_reasons(
+        _record_ownership(store, new_iface, new4, new6 or "", keep, own.retained))
+    return AddressOutcome(True, reported + reasons + _backlog_warning(keep))
 
 
 def _ownership_reasons(unwritten: list[str]) -> list[str]:
@@ -1797,17 +2703,26 @@ def clear_managed_addresses(store, run=_run) -> list[str]:
     this path moves the current pairs ONTO the backlog and blanks the current-address keys, so a
     host that refuses every removal reaches its largest ledger here, in the one mode where nothing
     else is looking (see `BACKLOG_WARN`).
+
+    A recorded value the panel did not write is reported and acted on in no other way, exactly as on
+    the reconcile path: with no usable interface there is no pair to aim a delete at, so the current
+    keys are still blanked — the panel no longer claims that segment — and what the value referred to
+    is left where it is, named to the operator (see `_invalid_ownership_reasons`).
     """
-    unreadable, iface, addr4, addr6, stale = _read_ownership(store)
-    if unreadable:
+    own = _read_ownership(store)
+    if not own.known:
         # Same rule as the reconcile path, and it matters more here: this path is the only thing that
         # ever retires these pairs, so a ledger rewritten from a read that failed strands them for
         # good — with segment management off, invisible to readiness too.
         return ["the panel's record of what it owns on the segment could not be read, so nothing "
-                "was removed: " + "; ".join(unreadable)]
-    keep, reasons = _retire_owned(stale + [(iface, addr4), (iface, addr6)], run)
-    reasons += _ownership_reasons(_record_ownership(store, "", "", "", keep))
-    return reasons + _backlog_warning(keep)
+                "was removed: " + "; ".join(own.unreadable)]
+    reported = _invalid_ownership_reasons(own)
+    # Written explicitly rather than leaning on `_distinct` dropping a blank half: with no usable
+    # interface there is no pair, and "there is no pair" is the decision, not a side effect.
+    current = [(own.iface, own.addr4), (own.iface, own.addr6)] if own.iface else []
+    keep, reasons = _retire_owned(list(own.stale) + current, run)
+    reasons += _ownership_reasons(_record_ownership(store, "", "", "", keep, own.retained))
+    return reported + reasons + _backlog_warning(keep)
 
 
 def _nm_reload(run, nm_active) -> None:
@@ -1968,12 +2883,38 @@ class UndoOutcome:
 
 
 def _read_managed_state(store) -> tuple[list[str], str, str, str]:
-    """`(unreadable, iface, addr4, addr6)` — the ownership keys, typed. Never raises."""
+    """`(unreadable, iface, addr4, addr6)` — the ownership keys, typed. Never raises.
+
+    THE INTERFACE IS CHECKED FOR ITS SHAPE, not merely for being text, and that check is what makes
+    the value usable by the one thing the undo does with it. This is the panel's record of the
+    segment it went BACK to, and the undo compares it with the candidate to answer "is the candidate
+    something other than the interface now in service". A value richer than one name —
+    `"eth0.9 eth0.2"`, the shape a hand-edited database or a truncated write produces — is not equal
+    to `eth0.9`, so that conjunct PASSED on it, the otherwise valid ownership checks passed too, and
+    the undo issued `ip link delete eth0.9` against the interface the operator's segment was on. An
+    inequality against a value whose shape cannot be confirmed is not evidence of anything.
+
+    So the value goes through the gate every cover source goes through (`_checked_names`, which is
+    `render._IFACE_RE` and not a second copy of it), and one that is not a single interface name is
+    UNREADABLE — the same answer, and the same cost, as a store that would not answer at all:
+    nothing is removed, nothing is recorded, the pending record stays, and the enforcement keeps
+    covering the candidate from it. What is refused is the undo's one ACTION, not the pass and not
+    the gateway (see `undo_provision_candidate`).
+
+    A non-text value never reaches the check: `read_record` already refuses to coerce one, so it
+    arrives here as unreadable for that reason instead. The addresses are deliberately NOT
+    canonicalised here — they gate nothing, they are compared in both spellings where they are used,
+    and a malformed one can only add an orphan to the report (see `_orphan_pairs`).
+    """
     records = [read_record(store, key) for key in OWNERSHIP_KEYS]
     unreadable = [record.reason for record in records if not record.known]
     if unreadable:
         return unreadable, "", "", ""
-    return [], records[0].text, records[1].text, records[2].text
+    try:
+        named = _checked_names([records[0].text])
+    except RecordUnknown as exc:
+        return [str(exc)], "", "", ""
+    return [], (named[0] if named else ""), records[1].text, records[2].text
 
 
 def managed_host_state(store) -> dict:
@@ -1983,10 +2924,24 @@ def managed_host_state(store) -> dict:
     handler for a store that will not answer, so this one keeps the raising contract it always had.
     The undo reads `_read_managed_state` instead, because there an unanswerable read decides whether
     a link may be deleted (see `undo_provision_candidate`).
+
+    NOR IS THE SHAPE PROVEN HERE, and it does not have to be: the dict goes to exactly one consumer,
+    as the undo's `installed`, and that consumer decodes it through `_as_candidate` before a field of
+    it is used — so a value that is not one interface name, or not one canonical address, makes the
+    whole undo unreadable there rather than being acted on here.
+
+    WHICH ONLY HOLDS IF THE VALUE ARRIVES THERE, and `or ""` is why it did not. It ran BEFORE the type
+    gate and flattened every FALSEY non-text value — `0`, `False`, `[]`, `{}` — into the one string
+    that means "the panel claims no address here". So the gate the paragraph above relies on was never
+    reached: the undo read a legitimate absence, left the address that IS installed out of the orphan
+    report and out of the survivor ledger, and settled the pending record over a record it had not
+    read. `None` is the store's own "no such key" and is the only value mapped, exactly as
+    `read_record` maps it; everything else is handed over UNCHANGED, so the decode sees what the store
+    holds and refuses it — the undo stays pending and the enforcement keeps covering the candidate.
     """
-    return {"iface": store.get_setting("managed_segment_iface") or "",
-            "addr4": store.get_setting("managed_segment_addr4") or "",
-            "addr6": store.get_setting("managed_segment_addr6") or ""}
+    raw = [store.get_setting(key) for key in OWNERSHIP_KEYS]
+    return dict(zip(("iface", "addr4", "addr6"),
+                    ["" if value is None else value for value in raw]))
 
 
 def candidate_link_probe(state, iface: str) -> tuple[str, str]:
@@ -2009,6 +2964,15 @@ def candidate_link_probe(state, iface: str) -> tuple[str, str]:
 
 
 def _truthy(value) -> bool:
+    """A settings FLAG as a yes or a no, and the one place text is still made of a stored value.
+
+    Deliberate, and safe for the reason nothing else on this path is: the answer is a bool, not a name
+    or an address, and every shape but the handful of yeses below reads as NO. So a malformed
+    `manage_segment` lands where `host_provision`'s own gate lands it — `!= "1"`, the clear path — and
+    the two readers agree that the pass installs nothing and records no candidate. It authorises
+    nothing, names nothing, and is never interpolated into a command (see `_checked_text` for the
+    fields where a coercion did all three).
+    """
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "yes", "on")
@@ -2088,10 +3052,35 @@ def record_provision_candidate(store, candidate: dict) -> None:
     store that raises; one that returns having kept nothing left the caller believing it had a
     recovery record and about to provision a candidate interface nothing would reclaim — the same
     end state as no record at all, reached without an exception to stop it.
+
+    And the SHAPE is proven before the write, by the same check the readers apply: a record they will
+    refuse to act on is a record with no recovery story either, and the only moment that can still be
+    reported to the operator instead of discovered on a later boot is before the pass runs. This
+    cannot fail on anything `provision_candidate` builds; what it catches is a segment interface that
+    is not an interface name arriving through a restore document, which the render would reject a
+    moment later anyway — with the candidate already on the host. It is also where `resolved` is
+    refused: the readers' shared check now knows that word belongs to the clear alone, so a live
+    candidate carrying it cannot be written as an apparently successful pending record
+    (`_refuse_resolved`).
+
+    WHAT IS WRITTEN IS THE CANONICAL RECORD, in the addresses' case: the decode hands back the one
+    spelling `ip addr show` prints, and storing that is what makes the value the drain compares and
+    the value the record carries the same value (see `_checked_addr_text`). Every other key the caller
+    put there is kept verbatim — a phase marker like `armed`, or a field from an older release — so
+    this normalises the two fields it understands and invents nothing.
     """
     if not candidate:
         return
-    why = write_record(store, PROVISION_UNDO_KEY, json.dumps(candidate))
+    try:
+        proven = _checked_candidate(candidate)
+    except RecordUnknown as exc:
+        raise RuntimeError("the host-provisioning undo record would not be readable as one the panel "
+                           "wrote, so the change was not applied: " + str(exc)) from exc
+    stored = dict(candidate)
+    for field_name, addr in (("addr4", proven.addr4), ("addr6", proven.addr6)):
+        if field_name in stored:
+            stored[field_name] = addr
+    why = write_record(store, PROVISION_UNDO_KEY, json.dumps(stored))
     if why:
         raise RuntimeError("the host-provisioning undo record could not be written, so the change "
                            "was not applied: " + why)
@@ -2104,6 +3093,38 @@ def record_provision_candidate(store, candidate: dict) -> None:
 # once the name is reused. So the resolution is written as its own value and PROVEN, and the blanking
 # is best effort on top of it (see `clear_record`).
 RESOLVED_UNDO = json.dumps({"resolved": True})
+
+# `RESOLVED_UNDO` as it reads back, which is the ONLY record a reader may treat as settled.
+_TERMINAL_UNDO = {"resolved": True}
+
+
+def _settled_undo(candidate: dict) -> tuple[bool, str]:
+    """Is this record the settled form — and if it only claims to be one, why it may not be read as
+    one. `(True, "")`, `(False, "")` for an ordinary pending record, or `(False, why)`.
+
+    THE EXACT SHAPE, by identity and by key set, never by truthiness. `resolved` used to be read as
+    `if candidate.get("resolved")`, so `{"resolved": "false", "iface": "eth0.9"}` — a hand-edited
+    database, a foreign backup document, a half-decoded write — was TERMINAL: a non-empty string is
+    truthy, so a record still naming a candidate interface became a KNOWN-EMPTY cover, and the pass
+    that read it concluded it had nothing left to cover and narrowed the ruleset off an interface that
+    may have been up carrying the segment. Which is the bypass this record exists to prevent.
+
+    Identity and not equality, because `1 == True` in Python: `{"resolved": 1}` compares equal to the
+    terminal record and is not one the panel wrote. And the key set, because a record that says BOTH
+    "settled" and "the candidate is eth0.9" is not settled on the strength of half of itself; the
+    terminal form the clear writes carries `resolved` and nothing else.
+
+    Everything else that mentions `resolved` is therefore INCONSISTENT, which here means unknown —
+    covered, refusing, retained for repair — exactly as an interface name that cannot be read is
+    (see `_pending_candidate`). Never terminal, and never a licence to act.
+    """
+    if candidate.get("resolved") is True and set(candidate) == set(_TERMINAL_UNDO):
+        return True, ""
+    if "resolved" not in candidate:
+        return False, ""
+    return False, ("the pending host-provisioning undo says it is settled and does not say it in the "
+                   f"settled form ({json.dumps(candidate, default=repr)[:200]}), so whether it is "
+                   "still naming a live candidate interface cannot be read")
 
 
 def clear_provision_candidate(store) -> str:
@@ -2128,17 +3149,23 @@ def clear_provision_candidate(store) -> str:
 class Pending:
     """What the pending undo record holds, in the answers its two readers need kept apart.
 
-    `candidate` — a record naming an interface a pass may have put the segment on: the undo acts on
-    it and the cover names it. `unusable` — why a value that IS there cannot be used, which is
-    discarded once and reported. Neither, and no reason, means settled: a blank record or one already
-    taken to its terminal form, which is not an error and not worth a word on every boot.
+    `candidate` — a DECODED record naming an interface a pass may have put the segment on: the undo
+    acts on it and the cover names it. It is a `Candidate` or `None`, never a dict and never an empty
+    one, so a reader cannot reach a raw field and re-derive what the decode ruled out. `unusable` —
+    why a value that IS there cannot be used, which is discarded once and reported. Neither, and no
+    reason, means settled: a blank record or one already taken to its terminal form, which is not an
+    error and not worth a word on every boot.
 
     `cover` is the same record as the enforcement sees it, and the one place where "the store could
     not answer" may not become "there is no candidate". Note that a record which cannot be READ is
     never `unusable`: it may be a perfectly good one naming a live interface, so nothing is discarded
-    and the cover keeps naming what it cannot rule out.
+    and the cover keeps naming what it cannot rule out. Neither is one whose `iface` is not an
+    interface name, nor one whose other fields are not the shapes the panel writes — the same fact one
+    level in, and discarding it would throw away exactly the coverage this record exists to provide.
+    `unusable` is reached from ONE verdict only: a record that conforms and says there is no candidate
+    (see `_pending_candidate`).
     """
-    candidate: dict = field(default_factory=dict)
+    candidate: "Candidate | None" = None
     unusable: str = ""
     cover: "Cover" = field(default_factory=lambda: Cover())
 
@@ -2153,22 +3180,86 @@ def _pending_candidate(store) -> Pending:
     if not raw:
         return Pending()
     try:
-        candidate = json.loads(raw)
+        decoded = _decoded_record(raw)
+    except RecordUnknown as exc:
+        # A DUPLICATE KEY, which is a record that has already lost half of what it said before any
+        # check could look at it — and possibly the half naming an interface that is up. So it lands
+        # on the same side of the line as an `iface` nothing can read: unknown, refusing, RETAINED for
+        # an operator to repair, and never `unusable`, because clearing it throws away the coverage it
+        # stands for (see `_decoded_record`).
+        return Pending(cover=Cover(unknown=[
+            "the pending host-provisioning undo could not be decoded: " + str(exc)]))
     except (ValueError, TypeError) as exc:
         # Unusable AND unknown: it names no interface the cover could add, and until it is discarded
         # it may have been one that did, so it does not license a narrow either.
         return Pending(unusable=f"it could not be parsed ({exc}): {raw[:200]!r}",
                        cover=Cover(unknown=[
                            f"the pending host-provisioning undo could not be parsed: {exc}"]))
-    if not isinstance(candidate, dict):
+    if not isinstance(decoded, dict):
         return Pending(unusable=f"it is not a record: {raw[:200]!r}",
                        cover=Cover(unknown=["the pending host-provisioning undo is not a record"]))
-    if candidate.get("resolved"):
+    settled, inconsistent = _settled_undo(decoded)
+    if settled:
         return Pending()                            # settled: the terminal form, and nothing to do
-    iface = str(candidate.get("iface") or "").strip()
-    if not iface:
+    # THE BOUNDARY. The record is decoded into the one type its readers use, checked for type, for
+    # form and for the invariants that are about the whole record, and nothing below normalises
+    # anything: the interface first, because a readable one is coverage whatever the rest of the
+    # record says, then everything else (see `_checked_candidate_fields`).
+    try:
+        iface = _checked_candidate_iface(decoded)
+    except RecordUnknown as exc:
+        # THE LAST COVER SOURCE THAT WAS TAKING ITS NAME ON TRUST, and this record's whole reason for
+        # existing is that it may be naming an interface that is UP carrying the segment. A value
+        # like `eth0.2 eth0.9` — what a hand-edited database, a foreign backup document or a
+        # truncated write produces — came back as ONE name, `known`: a rule naming it matches no
+        # packet, while `eth0.2` and `eth0.9`, the interfaces it stood for, were named in neither the
+        # kill-switch drop nor the tproxy redirect, and `may_narrow` let a pass conclude its cover was
+        # complete. So it is validated through the same gate every other source goes through
+        # (`_checked_names`, which is `render._IFACE_RE` and not a second copy of it), and the answer
+        # is the one the read side already gives: no answer.
+        #
+        # AND IT IS NOT `unusable`, which is the half that matters here. `unusable` is discarded and
+        # cleared by the boot resume, and clearing THIS record throws away the coverage it stands
+        # for — the one interface a rolled-back pass may have put the segment on, in the window
+        # before the survivor ledger can answer for it. A record whose interface cannot be read is
+        # exactly as likely to be naming a live interface as one the store would not read at all, so
+        # it is treated the same way: unknown, refusing, RETAINED, and left for the operator to
+        # repair. No candidate is decoded, because there is nothing here an undo could safely act on.
+        return Pending(cover=Cover(unknown=[
+            "the pending host-provisioning undo names a candidate interface that cannot be read: "
+            + str(exc)]))
+    names = [iface] if iface else []
+    if inconsistent:
+        # A record that says it is settled and does not say it in the settled form. The name it also
+        # carries is VALIDATED FIRST and kept as coverage, because that is the half a half-settled
+        # record still makes a claim about: an interface a rolled-back pass may have put the segment
+        # on. What it does not get is the other half — no candidate is decoded, so no undo acts on the
+        # strength of a record nothing here wrote, and the record is not `unusable`, so the boot
+        # resume keeps it rather than clearing away the coverage. Unknown, refusing, retained. Said in
+        # its own words rather than as "the record the panel writes" (`_refuse_resolved` would refuse
+        # it a line below) because this is the more specific fact about it.
+        return Pending(cover=Cover(names=names, unknown=[inconsistent]))
+    try:
+        candidate = _checked_candidate_fields(decoded, iface)
+    except RecordUnknown as exc:
+        # The other half of the boundary, and the same answer: a record whose addresses, VLAN claim or
+        # probe answer are not the shapes the panel writes is UNREADABLE, not partly readable. Its
+        # interface still reads, so the cover keeps naming it — coverage is the half that is worth
+        # keeping — while no candidate is decoded, so no undo acts on any of it: not the `vlan` claim
+        # that authorises `ip link delete`, and not the addresses that would go into the survivor
+        # ledger, where a bogus entry drains itself and takes the interface's coverage with it. Not
+        # `unusable` either, for the reason above: retained, for an operator to repair.
+        unreadable = (f"the pending host-provisioning undo names {iface or 'a candidate'} and is not "
+                      f"the record the panel writes, so nothing may act on it: {exc}")
+        return Pending(cover=Cover(names=names, unknown=[unreadable]))
+    if not candidate.names_candidate:
+        # A record that conforms IN FULL and says there is no candidate: no interface a pass could
+        # have put the segment on, so there is nothing to cover and nothing a later boot could do
+        # better with it. This is the ONE verdict that is `unusable`, and it is reached only from the
+        # decoded record — asked of the raw dict it ran BEFORE the remaining fields were checked, so
+        # `{"iface": "", "addr4": [1]}` was discarded as known-empty while not conforming at all.
         return Pending(unusable=f"it names no candidate interface: {raw[:200]!r}")
-    return Pending(candidate=candidate, cover=Cover(names=[iface]))
+    return Pending(candidate=candidate, cover=Cover(names=names))
 
 
 def pending_candidate_state(store) -> Cover:
@@ -2200,7 +3291,8 @@ def pending_candidate_ifaces(store) -> list[str]:
     install the names it has.
 
     THE NAMES ONLY, and that is why this is not what the narrowing decision reads. A record that
-    cannot be read or parsed names no interface — but it is not the same fact as a record that says
+    cannot be read or parsed, or whose `iface` is not an interface name, names no interface here —
+    but it is not the same fact as a record that says
     there is no candidate, and swallowing the difference here is what let "unknown" be spent as
     "candidate absent": the cover came back empty, the pass concluded it had nothing left to cover,
     and the ruleset narrowed off an interface this very record existed to keep named. So the
@@ -2210,29 +3302,78 @@ def pending_candidate_ifaces(store) -> list[str]:
     return pending_candidate_state(store).names
 
 
-def _prior_link_state(candidate: dict) -> str:
-    """The probe answer recorded when the candidate was written.
-
-    A record from a release that stored a bool `link_existed` reads back as PRESENT or UNKNOWN,
-    never ABSENT: that bool already folded "could not tell" into False, so treating False as
-    proven absence would license deleting a link on the strength of a probe that never answered.
-    One upgrade loses one cleanup opportunity; the other direction loses an interface.
-    """
-    state = str(candidate.get("link_state") or "")
-    if state in (LINK_PRESENT, LINK_ABSENT, LINK_UNKNOWN):
-        return state
-    if "link_existed" in candidate:
-        return LINK_PRESENT if candidate["link_existed"] else LINK_UNKNOWN
-    return LINK_UNKNOWN
-
-
 def _merge(into: UndoOutcome, other: UndoOutcome) -> UndoOutcome:
     into.actions.extend(other.actions)
     into.unresolved.extend(other.unresolved)
     return into
 
 
-def _undo_candidate_link(state, candidate: dict, restored: dict, run) -> tuple[UndoOutcome, bool]:
+def _vlan_claim(candidate: Candidate) -> tuple[bool, str]:
+    """Does this record claim the panel created its interface as a VLAN — and if the record
+    contradicts itself about it, why that is not an answer.
+
+    `(True, "")` is the only value that lets the delete's remaining checks even be asked. `(False, "")`
+    is a plain "no VLAN was created here": the key was absent, the answer was `null`, or it was
+    `False` — a dotless segment interface, or the unarmed record a restore writes before it has
+    touched the host. `(False, why)` is a record that disagrees with itself, which is reported and
+    RETAINED.
+
+    THIS IS AN AUTHORISATION, AND IT WAS TRUTHINESS. `candidate.get("vlan")` over a value out of JSON
+    meant `"false"` — a non-empty string — authorised `ip link delete`, and the value sits next to an
+    `iface` and a `link_state` in the same record: `{"iface": "eth0", "vlan": "false", "link_state":
+    "absent"}` deletes eth0, the operator's own uplink, on the strength of a claim nothing here wrote.
+
+    TWO OF THE THREE CHECKS THAT USED TO BE HERE ARE NOW THE TYPE'S. `candidate.vlan` is a real bool
+    because only a real bool could decode into one, and `candidate.iface` is one interface name or ""
+    for the same reason — a record spelling either of them any other way never becomes a `Candidate`
+    at all, so it reaches no undo and is retained by its reader (see `_checked_candidate_fields`,
+    `_pending_candidate`). What is left is the check that needs BOTH fields: the panel creates a VLAN
+    and only a VLAN (`ensure_segment_link`), so `vlan: true` over a dotless name cannot have come from
+    a pass here, and a record that contradicts itself authorises nothing.
+
+    Anything refused is left on the host and reported. That direction costs one orphan the operator
+    is told about; the other costs an interface the panel cannot put back.
+    """
+    if not candidate.vlan:
+        return False, ""                        # no VLAN was created for this candidate
+    if parse_vlan(candidate.iface)[1] is None:
+        return False, (f"the candidate link {candidate.iface} was left on the host: the record says "
+                       f"the panel created it as a VLAN and {candidate.iface!r} is not a VLAN "
+                       "interface name, so the two halves of the record disagree")
+    return True, ""
+
+
+def _is_other_than_restored(iface: str, restored: dict) -> tuple[bool, str]:
+    """Is `iface` PROVABLY not the interface the panel went back to? `(answer, why it cannot be
+    asked)`.
+
+    The conjunct that used to be written `iface != restored["iface"]`, and the reason it is a function
+    now. A bare inequality answers YES for every value that is not a name — the one class of value it
+    should never answer for at all — so `"eth0.9 eth0.2"` in the ownership record read as "the
+    candidate is not the interface in service", and the delete's remaining checks, all of them
+    legitimately true, took it from there to `ip link delete eth0.9`. The danger was never that the
+    malformed value would be USED as a name; it was that it compared unequal to a real one.
+
+    So the answer is only `True` when both sides are one interface name and the two names differ, and
+    a restored value whose shape cannot be confirmed comes back as an unanswerable question, never as
+    a difference. Blank is not that: an unrecorded scalar is a legitimate "the panel claims no segment
+    interface" — what a host with segment management off records — and it differs from any candidate,
+    exactly as it always did.
+
+    `_read_managed_state` refuses such a value before an undo starts, so on the live path this cannot
+    fire. It is checked here as well because THIS is where the value licenses a deletion, and the
+    other rule this module keeps learning is that a precondition belongs at the site that acts on it:
+    a later caller assembling `restored` from somewhere else inherits the guard instead of the defect.
+    """
+    try:
+        names = _checked_names([restored.get("iface", "")])
+    except RecordUnknown as exc:
+        return False, str(exc)
+    return iface != (names[0] if names else ""), ""
+
+
+def _undo_candidate_link(state, candidate: Candidate, restored: dict,
+                         run) -> tuple[UndoOutcome, bool]:
     """Remove the VLAN link a rolled-back pass created, or say why it was left alone.
 
     Returns what to report and whether the link was actually DELETED. Only a delete settles the
@@ -2242,15 +3383,50 @@ def _undo_candidate_link(state, candidate: dict, restored: dict, run) -> tuple[U
     ownership ledger and invisible to every later pass; returning early on that would leave the
     operator with no mention of exactly the orphan this ledger exists to surface.
 
-    Three separate things must be true before an `ip link delete` is issued: the candidate is a
-    VLAN, the probe taken BEFORE the pass proved the link was not there (so the pass created it),
-    and the link is not the one the restored state is using. A probe that cannot answer — then or
-    now — is not one of them.
+    Everything below must be true before an `ip link delete` is issued: the record NAMES the link as
+    an interface name, it claims a VLAN in the one form that is a claim, the name it claims that about
+    is VLAN-shaped, the link is PROVABLY not the one the restored state is using, and the probe taken
+    BEFORE the pass proved the link was not there (so the pass created it) while the one taken now
+    proves it still is. A probe that cannot answer — then or now — is not one of them, and neither is
+    a record whose halves disagree (see `_vlan_claim`).
+
+    "PROVABLY not the one the restored state is using" is the fourth of those, and it used to be a
+    bare `!=` against a value nothing had checked the shape of, which is the one comparison that
+    answers "different" for a value that names no interface at all (see `_is_other_than_restored`).
+    An unanswerable one is reported and RETAINED, like every other unreadable record here.
+
+    THE FIRST TWO OF THOSE ARE NOW TRUE BY CONSTRUCTION, not by a check on this path: `candidate` is a
+    decoded record, so its `iface` is one interface name (or "", handled on the first line) and its
+    `vlan` is a real bool. The name is never re-derived from a raw field here — it used to be
+    `str(candidate.get("iface") or "")`, and that coercion is what turned the JSON number `0.9` into a
+    name that passes every check below and reaches `ip link delete 0.9`. There is no raw field left to
+    reach: `Candidate` refuses subscripting and `.get` outright.
     """
-    iface = candidate.get("iface") or ""
-    if not (iface and candidate.get("vlan")) or iface == restored["iface"]:
+    iface = candidate.iface
+    if not iface:
         return UndoOutcome(), False
-    prior = _prior_link_state(candidate)
+    other, unaskable = _is_other_than_restored(iface, restored)
+    if unaskable:
+        # Retained for the same reason as every other unreadable record on this path, and it is the
+        # candidate interface itself that the retention keeps covered: the record that cannot be read
+        # is the one naming the segment in service, so nothing here can rule out that the candidate IS
+        # that segment. Refusing the delete leaves an interface the operator is told about; acting on
+        # the inequality removed the one the panel cannot put back.
+        reason = (f"the candidate link {iface} was left on the host: the panel's record of the segment "
+                  f"it went back to is not an interface name, so nothing can show {iface} is not the "
+                  f"interface now in service ({unaskable})")
+        return UndoOutcome(actions=[reason], unresolved=[reason]), False
+    if not other:
+        return UndoOutcome(), False
+    claimed, unreadable = _vlan_claim(candidate)
+    if unreadable:
+        # Retained, not discarded: a record that cannot be read in full may be naming an interface
+        # that is up carrying the segment, so it stays pending — which keeps the cover naming it
+        # (`pending_candidate_ifaces`) — and the operator is told what is wrong with it.
+        return UndoOutcome(actions=[unreadable], unresolved=[unreadable]), False
+    if not claimed:
+        return UndoOutcome(), False
+    prior = candidate.prior
     now, why = candidate_link_probe(state, iface)
     if now == LINK_ABSENT:              # already gone (reboot / a previous pass) — nothing to do
         return UndoOutcome(), False
@@ -2283,7 +3459,7 @@ _ORPHAN_ADDRS = (
     "Check `ip addr show dev {iface}` and remove by hand any this change added.")
 
 
-def _orphan_pairs(candidate: dict, installed: dict,
+def _orphan_pairs(candidate: Candidate, installed: "Candidate | None",
                   restored: dict) -> list[tuple[str, str]]:
     """The `(iface, addr)` pairs a rolled-back pass may have left on the host.
 
@@ -2298,13 +3474,34 @@ def _orphan_pairs(candidate: dict, installed: dict,
     weaker claim is the right one, because an address that was never installed is proven absent by
     the first probe (see `drain_enforcement_cover`) and costs one pass of over-covering, while one
     that was installed and left out would be the bypass.
+
+    EVERY VALUE IS DECODED BEFORE IT GETS HERE, NEVER COERCED, and this is where coercion did its
+    damage. The values were read as `str(record.get(field) or "")` because a record's may not be text —
+    so `addr4: [1]` became the address `"[1]"`, which was reported to the operator, written into the
+    survivor ledger as a survivor, and then proven absent by the ledger's very first probe: the
+    interface left the enforcement cover while a real segment address may still have been on it, and
+    the pending record that was covering it had been cleared as settled. Both arguments are therefore
+    `Candidate`s and not dicts: a record that is not the shape the panel writes never decoded into one,
+    so the undo stayed pending and the cover went on naming the candidate (see
+    `undo_provision_candidate`). There is no field here left to read the other way.
+
+    THE RESTORED PAIRS ARE EXCLUDED IN BOTH SPELLINGS, because they are the one source that is not
+    decoded: they come out of the ownership records as text, while the candidates' addresses arrive
+    canonicalised. Excluding only the literal text would let a differently-spelled ownership record
+    turn the address the recovery pass is USING into a reported orphan and a survivor entry. That is
+    the harmless direction — over-covering, and a line the operator can ignore — but it is still
+    wrong, and comparing both forms costs nothing.
     """
-    keep = {(restored["iface"], restored["addr4"]), (restored["iface"], restored["addr6"])}
-    return _distinct([(installed.get("iface") or "", installed.get("addr4") or ""),
-                      (installed.get("iface") or "", installed.get("addr6") or ""),
-                      (candidate.get("iface") or "", candidate.get("addr4") or ""),
-                      (candidate.get("iface") or "", candidate.get("addr6") or "")],
-                     frozenset(keep))
+    keep: set[tuple[str, str]] = set()
+    for addr in (restored["addr4"], restored["addr6"]):
+        keep.add((restored["iface"], addr))
+        spelled = _addr_token(addr)
+        if spelled is not None:
+            keep.add((restored["iface"], spelled.with_prefixlen))
+    named = [] if installed is None else [(installed.iface, installed.addr4),
+                                          (installed.iface, installed.addr6)]
+    return _distinct(named + [(candidate.iface, candidate.addr4),
+                              (candidate.iface, candidate.addr6)], frozenset(keep))
 
 
 def _report_orphan_addrs(pairs: list[tuple[str, str]]) -> UndoOutcome:
@@ -2339,7 +3536,8 @@ def _report_orphan_addrs(pairs: list[tuple[str, str]]) -> UndoOutcome:
                                 for iface, addrs in by_iface.items()])
 
 
-def undo_provision_candidate(state, candidate: dict, installed: dict | None = None) -> UndoOutcome:
+def undo_provision_candidate(state, candidate: "dict | Candidate | None",
+                             installed: "dict | Candidate | None" = None) -> UndoOutcome:
     """Remove host state a rolled-back provisioning pass left behind.
 
     Called from three places, and the point of hoisting it here is that they are the three the
@@ -2389,8 +3587,27 @@ def undo_provision_candidate(state, candidate: dict, installed: dict | None = No
     it lands (`pending_candidate_ifaces`).
     """
     run = getattr(state.net, "_run", None)
-    if run is None or not candidate:
+    if run is None:
         return UndoOutcome()
+    # THE BOUNDARY FOR THE DIRECT PATH. The boot path hands in the record it already decoded
+    # (`_pending_candidate`); the two in-process rollbacks hand their dicts straight in, so the same
+    # decode runs here, before a single value is used for anything — and from here down there are no
+    # dicts left, only `Candidate`s, so no reader on this path can reach a raw field. Both records go
+    # through it: the candidate authorises the delete, and `installed` is the other source of the pairs
+    # that go into the survivor ledger. A record that fails is unknown, not partly usable: nothing is
+    # removed, nothing is recorded, the undo stays PENDING and the enforcement keeps covering what that
+    # record names, exactly as an unreadable ownership read below does.
+    try:
+        decoded = _as_candidate(candidate)
+        if decoded is None:                 # the pass put nothing anywhere; there is nothing to undo
+            return UndoOutcome()
+        supplied = _as_candidate(installed)
+    except RecordUnknown as exc:
+        reason = ("the record of what a rolled-back change may have put on the host is not the record "
+                  "the panel writes, so nothing was removed and nothing was recorded; the undo stays "
+                  "pending and the enforcement keeps covering what it names: " + str(exc))
+        _log.error("%s", reason)
+        return UndoOutcome(actions=[reason], unresolved=[reason])
     unreadable, iface, addr4, addr6 = _read_managed_state(state.store)
     if unreadable:
         # WHAT IT KEEPS is whatever the ownership metadata names, so an unreadable one is not a
@@ -2400,17 +3617,17 @@ def undo_provision_candidate(state, candidate: dict, installed: dict | None = No
         reason = ("the panel's record of the segment it went back to could not be read, so the host "
                   "state a rolled-back change left behind was neither removed nor recorded; the undo "
                   "stays pending and the enforcement keeps covering "
-                  f"{candidate.get('iface') or 'the candidate'}: " + "; ".join(unreadable))
+                  f"{decoded.iface or 'the candidate'}: " + "; ".join(unreadable))
         _log.error("%s", reason)
         return UndoOutcome(actions=[reason], unresolved=[reason])
     restored = {"iface": iface, "addr4": addr4, "addr6": addr6}
-    outcome, link_deleted = _undo_candidate_link(state, candidate, restored, run)
+    outcome, link_deleted = _undo_candidate_link(state, decoded, restored, run)
     if link_deleted:
         # The link went and took every address on it with it; there is nothing left to report,
         # and nothing left for the enforcement to cover.
-        forget_survivors(state.store, candidate.get("iface") or "")
+        forget_survivors(state.store, decoded.iface)
         return outcome
-    surviving = _orphan_pairs(candidate, installed or {}, restored)
+    surviving = _orphan_pairs(decoded, supplied, restored)
     outcome = _merge(outcome, _report_orphan_addrs(surviving))
     if not remember_survivors(state.store, surviving):
         # The one thing in the address half a later pass CAN still finish, and the reason this
@@ -2445,11 +3662,17 @@ def resume_pending_provision_undo(state) -> UndoOutcome:
     names no interface, so there is nothing it could safely remove and nothing a later boot could
     do better. A record whose work is not finished is KEPT, so the next pass retries it. A record
     already in its TERMINAL form is nothing at all — the same answer as a blank one, quietly, so a
-    clear whose blanking did not land does not report a settled undo on every boot.
+    clear whose blanking did not land does not report a settled undo on every boot. One that merely
+    CLAIMS to be settled, in any shape but the exact one the clear writes, is not that: it may still
+    be naming an interface a pass put the segment on, so it is retained, not acted on and not cleared
+    (see `_settled_undo`).
 
     A store that cannot be READ is distinguished from one holding an unusable value, and only the
     second is discarded: the first may be holding a perfectly good record naming an interface that is
-    up, so nothing is cleared and the enforcement keeps covering it from that record meanwhile.
+    up, so nothing is cleared and the enforcement keeps covering it from that record meanwhile. A
+    record whose `iface` is not an interface name is on the FIRST side of that line, not the second:
+    it says an interface may be live and then says it in something nothing can enforce on, so it is
+    kept for the operator to repair rather than cleared (see `_pending_candidate`).
     """
     store = state.store
     pending = _pending_candidate(store)
@@ -2458,10 +3681,17 @@ def resume_pending_provision_undo(state) -> UndoOutcome:
         clear_provision_candidate(store)
         return UndoOutcome()
     candidate = pending.candidate
-    if not candidate:            # settled, or a record the store would not read (already logged)
+    if candidate is None:
+        # Settled, a record the store would not read, one that only CLAIMS to be settled, or one whose
+        # fields are not the shapes the panel writes. Nothing here may act on any of them and none of
+        # them is cleared — but the last three are why the enforcement is refusing to narrow off the
+        # interface the record names, and this is where an operator looks for that. Said once per boot.
+        if pending.cover.unknown:
+            _log.error("the pending host-provisioning undo was neither acted on nor cleared, and the "
+                       "enforcement keeps covering what it names: %s", "; ".join(pending.cover.unknown))
         return UndoOutcome()
     _log.warning("a network change was interrupted before its host state could be reclaimed; "
-                 "undoing candidate %s", candidate.get("iface"))
+                 "undoing candidate %s", ", ".join(pending.cover.names) or "(unnamed)")
     try:
         outcome = undo_provision_candidate(state, candidate)
     except Exception as exc:
@@ -2891,6 +4121,12 @@ def host_provision(state) -> NetResult:
         except Exception as exc:    # never crash boot on a provisioning hiccup
             _log.warning("host_provision failed: %s", exc)
             result = _set_result(state, NetResult(ok=False, error=str(exc)))
+        # ONE report per pass of what the pass is keeping verbatim and cannot heal, said here rather
+        # than at each of the five reads of the record that holds it. After the pass, deliberately:
+        # what is left in the ledger now is what the operator has to go and look at, and a read that
+        # decides nothing may not be the one that spends a transient store fault the decisions below
+        # would have declined on (see `_report_retained_ownership`).
+        _report_retained_ownership(store)
         # Attempted whatever the pass above did, and reported through the same `ok=False` channel as
         # every other host state the pass intended to reach and did not: while the deny is in force
         # the segment has no network at all, so a pass that leaves it there has not reached the

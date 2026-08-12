@@ -74,6 +74,49 @@ class RestoreResult:
     snapshot: str = ""     # the pre-restore copy of the state this replaced
 
 
+@dataclass
+class _EmergencyDenyScope:
+    """The only thing `provision`'s emergency-deny helpers read off a state: the net backend.
+
+    The release has to happen where the enforcement outcome is RECORDED, and that funnel is handed
+    a backend rather than an `AppState` — `apply_net(settings, net, store)` has no state to pass and
+    neither does `stop_net`. So the one attribute those helpers touch is handed over on its own.
+    """
+    net: object
+
+
+def _release_emergency_deny(net) -> str:
+    """Drop the interface-independent emergency deny, now that host enforcement is CONFIRMED.
+
+    "" when nothing is recorded as standing in for the panel's own enforcement any more; otherwise
+    the sentence saying why every forwarded packet may still be being dropped.
+
+    UNCONDITIONAL on a confirmed enforcement, and never attempted without one. The deny exists for
+    the state in which the panel cannot say which interfaces to name (see
+    `provision.install_emergency_forward_deny`), it names none itself, and so nothing narrows it and
+    nothing drains it: the only thing that can end it is enforcement the host has taken. It is also
+    not gated on the in-memory note, because the note is in this process and the table is in the
+    kernel — a panel that installed the deny and was restarted arrives with nothing recorded and a
+    table that would drop forwarded traffic for ever, which is why `release_emergency_forward_deny`
+    reads "no such table" as its success answer.
+
+    THE NOTE, NOT THE RETURN VALUE, IS THE AUTHORITY on whether anything is still holding the
+    forward path. A release that reports success while something is still recorded as in force must
+    not be able to produce a healthy-looking gateway, so both are consulted and either one is enough
+    to withhold "ok". A raise is treated the same way: an undropped deny is a silent blackhole, so
+    "we could not find out" is reported, never assumed away.
+    """
+    from pi_gw_panel.net_control import provision
+    try:
+        why = provision.release_emergency_forward_deny(_EmergencyDenyScope(net))
+    except Exception as exc:
+        why = ("the segment enforcement is installed, but the emergency deny on forwarded traffic "
+               "could not be removed, so segment clients may still have no network: "
+               + (str(exc) or exc.__class__.__name__))
+        logger.exception("%s", why)
+    return why or provision.enforcement_fallback_note(net)
+
+
 def _record_enforcement(net, result: NetResult, *, wan_blocked: bool | None,
                         store=None) -> NetResult:
     """Keep the last *confirmed* host-enforcement outcome on the backend instance.
@@ -88,7 +131,36 @@ def _record_enforcement(net, result: NetResult, *, wan_blocked: bool | None,
     the store — the one long-lived object `netcheck.network_status` is handed — and is always
     overwritten, never appended: it describes the LAST apply, and a failed apply reports
     through `enforcement_error` instead, so it must not leave a stale warning behind.
+
+    IT IS ALSO THE ONE PLACE THE EMERGENCY DENY IS RELEASED, because it is the one place a
+    confirmed host enforcement is recognised — every apply, every guard and every teardown reaches
+    it, from `apply_net`, `stop_net` and `sync_net_plan` alike. The release used to live only in the
+    tail of `provision.host_provision`, so a recovery that runs no provisioning pass — a failover
+    tick, a reapply, a subscription refresh — installed correct enforcement over a deny that stayed
+    in force: every forwarded packet dropped indefinitely, reported as `enforcement_status="ok"`,
+    with nothing that would ever come back to it. Doing it per-caller instead was the same defect
+    one level up: it covers the callers somebody remembered.
+
+    A RELEASE THAT DID NOT TAKE TURNS THE SUCCESS INTO A FAILURE, and that is deliberate. The
+    enforcement is on the host, but the gateway carries nothing — the same fact `host_provision`
+    already refuses to report as an applied configuration. Swallowing it is the reported-healthy
+    blackhole this exists to end, so it goes back to the caller through the channel every one of
+    them already handles (`apply_node` rolls back and fails closed, the routes answer 502) and into
+    the snapshot as `error` plus the reason. `enforcement_status` therefore cannot say "ok" while
+    anything is holding the forward path, which is also what makes `/api/ready` honest: its
+    `enforcement` check is that status, and the note is already in its `details`.
+
+    NOTHING SHORT OF CONFIRMED RELEASES IT. A failed or refused enforcement (`_refuse_enforcement`,
+    a backend that cannot guard, a render that raised) arrives here with `ok=False` and is recorded
+    without the deny being touched — releasing on an unproven render would reopen the exact hole the
+    deny plugs.
     """
+    if result.ok:
+        held = _release_emergency_deny(net)
+        if held:
+            # `rendered` is kept (it is what went on the host); `warning` is not — it is a
+            # success-only channel, and this is now a failure that reports through `error`.
+            result = NetResult(ok=False, rendered=result.rendered, error=held)
     net.enforcement_status = "ok" if result.ok else "error"
     net.wan_blocked = wan_blocked if result.ok else None
     net.enforcement_error = "" if result.ok else (result.error or "network operation failed")
@@ -218,6 +290,17 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
     cannot complete means the guard is NOT installed and this returns failure, leaving whatever is
     on the host in place. A teardown renders no plan and is unaffected — it names no interface, and
     with the kill-switch off falling back to direct IS the configured intent.
+
+    A CONFIRMED TEARDOWN RELEASES THE EMERGENCY DENY, for the same reason it cannot be refused. The
+    deny stands in for enforcement the panel could not render, and the hazard it plugs is a render
+    that names one interface fewer than the host has — a teardown names none, so there is no
+    interface for it to be short of and no bypass to reopen by ending it. What is left if it stays is
+    a bare forward drop that nothing narrows and nothing drains, holding the segment at no network at
+    all, against a configuration whose whole content is "let these clients out directly". That is the
+    panel enforcing a policy nobody asked for, indefinitely; the operator asked for direct and the
+    cost of honouring it is bounded by their own choice. The release still happens only once the
+    backend CONFIRMS the teardown — `_record_enforcement` is reached with `ok` — never on the
+    intention to attempt one.
     """
     if _kill_switch_on(store):
         if not hasattr(net, "apply_guard"):

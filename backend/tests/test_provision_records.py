@@ -149,8 +149,8 @@ def test_a_truncated_survivor_ledger_is_neither_drained_nor_replaced():
     provision.forget_survivors(store, "eth1")
 
     assert store.values[provision.SURVIVOR_KEY] == "eth1 192.168.9.2/24\neth0.2\n"
-    unreadable, *_ = provision._read_ownership(store)
-    assert unreadable == [], "only the ledger that is malformed may be reported unreadable"
+    assert provision._read_ownership(store).known, \
+        "only the ledger that is malformed may be reported unreadable"
 
 
 def test_a_truncated_stale_entry_stops_the_pass_installing_over_the_record_it_cannot_read():
@@ -160,10 +160,10 @@ def test_a_truncated_stale_entry_stops_the_pass_installing_over_the_record_it_ca
     store = _Store()
     store.set_setting(provision.STALE_KEY, "eth0.2 192.168.9.2/24\neth0.7\n")
 
-    unreadable, iface, addr4, addr6, stale = provision._read_ownership(store)
+    own = provision._read_ownership(store)
 
-    assert unreadable and "eth0.7" in unreadable[0]
-    assert (iface, addr4, addr6, stale) == ("", "", "", [])
+    assert not own.known and "eth0.7" in own.unreadable[0]
+    assert (own.iface, own.addr4, own.addr6, own.stale, own.retained) == ("", "", "", (), ())
 
 
 # --- write: proven by the read-back, never by the absence of an exception ----------------------
@@ -314,8 +314,8 @@ def test_an_aborted_ownership_write_still_records_the_old_live_pair():
                                        [("eth0.2", "192.168.9.2/24")])
 
     assert provision.superseded_state(store, "eth0.9").names == ["eth0.2"]
-    unreadable, iface, addr4, _addr6, _stale = provision._read_ownership(store)
-    assert (unreadable, iface, addr4) == ([], "eth0.2", "192.168.9.2/24")
+    own = provision._read_ownership(store)
+    assert (own.known, own.iface, own.addr4) == (True, "eth0.2", "192.168.9.2/24")
 
 
 def test_a_no_op_on_the_stale_journal_leaves_the_whole_group_untouched():
@@ -353,10 +353,11 @@ def test_a_provable_group_write_records_all_four_and_reports_nothing():
                                        [("eth0.2", "192.168.9.2/24")]) == []
 
     assert provision.read_set(store, provision.STALE_KEY).pairs() == [("eth0.2", "192.168.9.2/24")]
-    unreadable, iface, addr4, addr6, stale = provision._read_ownership(store)
-    assert unreadable == [] and (iface, addr4, addr6) == ("eth0.9", "192.168.10.2/24",
-                                                         "fd00:1:2:3::1/64")
-    assert stale == [("eth0.2", "192.168.9.2/24")]
+    own = provision._read_ownership(store)
+    assert own.known and (own.iface, own.addr4, own.addr6) == ("eth0.9", "192.168.10.2/24",
+                                                              "fd00:1:2:3::1/64")
+    assert own.stale == (("eth0.2", "192.168.9.2/24"),)
+    assert own.invalid == () and own.retained == ()
 
 
 def test_a_scalar_that_will_not_write_is_reported_with_the_ledger_already_in_place():
@@ -371,6 +372,321 @@ def test_a_scalar_that_will_not_write_is_reported_with_the_ledger_already_in_pla
     assert reasons and "managed_segment_iface" in reasons[0]
     assert provision.read_set(store, provision.STALE_KEY).pairs() == [("eth0.2", "192.168.9.2/24")]
     assert provision.superseded_state(store, "eth0.9").names == ["eth0.2"]
+
+
+# --- ...and the SHAPE of the interface scalar, which is now proven on this path too --------------
+#
+# The same scalar the undo reads (`_read_managed_state`), and it used to be checked only there, on the
+# argument that here it merely becomes an `ip addr del … dev <name>` target and a ledger entry: a name
+# that is not a name matches no device, while refusing would cost the segment its addresses on every
+# later pass — this read gates installing them — and retaining the value would write a three-token
+# ledger entry that wedges the gateway for good.
+#
+# Both halves of that were true and the conclusion still did not follow, because there is a third
+# option: DISTINGUISH INVALID FROM BLANK and act on neither. Blank means the panel claims nothing and
+# the plan's interface may be substituted; invalid means the recorded addresses are on SOMETHING and
+# the one thing that cannot be concluded is that it is the interface being installed onto — so no pair
+# is formed, nothing is compared, nothing is deleted, the value is reported, and the pass carries on
+# and heals the scalar. Nothing is refused but the one action the value would have authorised, and
+# `_record_ownership` refuses to write a ledger it could not read back, so the unparseable state that
+# argument feared is unreachable rather than tolerated.
+
+class _Iproute2:
+    """A `run` seam that speaks iproute2 about the interfaces it has. Absence is an explicit
+    not-found on stderr, which is how the real one presents it and the only answer that proves an
+    address gone."""
+
+    def __init__(self, on=("eth0.2",), addrs=None):
+        self.on, self.cmds = set(on), []
+        self.addrs = {iface: set(cidrs) for iface, cidrs in (addrs or {}).items()}
+
+    def __call__(self, cmd, **kw):
+        import subprocess
+        self.cmds.append(list(cmd))
+        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+        dev = rest[-1]
+        if dev not in self.on:
+            raise subprocess.CalledProcessError(1, cmd, stderr=f'Device "{dev}" does not exist.')
+        if rest[:2] == ["addr", "show"]:
+            body = " ".join(f"inet {a} scope global" for a in sorted(self.addrs.get(dev, ())))
+            return subprocess.CompletedProcess(cmd, 0, f"2: {dev} {body}", "")
+        if rest[:2] == ["addr", "del"]:
+            self.addrs.setdefault(dev, set()).discard(rest[2])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+def test_an_ownership_interface_that_is_not_a_name_deletes_nothing_and_blocks_nothing():
+    """PRODUCT-CRITICAL both ways. No address comes off a real interface, no `ip addr del` is issued at
+    all now — the value never becomes a target — and the pass is not left refusing for ever: it reports
+    the value, rewrites the scalars, and the next pass reads a ledger it can parse. (What such a value
+    may NOT do is answer a question about a candidate link: see `_read_managed_state`.)"""
+    store = _Store()
+    store.values.update({"managed_segment_iface": "eth0.2 eth0.9",
+                         "managed_segment_addr4": "192.168.9.2/24", "managed_segment_addr6": ""})
+    run = _Iproute2(on=("eth0.2",), addrs={"eth0.2": ["192.168.9.2/24"]})
+
+    reasons = provision.clear_managed_addresses(store, run=run)
+
+    assert run.addrs["eth0.2"] == {"192.168.9.2/24"}, "an address was deleted off a real interface"
+    assert not [cmd for cmd in run.cmds if "del" in cmd], \
+        "a delete was aimed at a device token derived from a value the panel did not write"
+    assert reasons and "eth0.2 eth0.9" in reasons[0], "the value was not reported to the operator"
+    assert provision._read_ownership(store).known, \
+        "the pass left a record no later one can read, so no address can be installed again"
+    assert provision.read_set(store, provision.STALE_KEY).pairs() == []
+    assert store.values["managed_segment_iface"] == ""
+
+
+def test_the_ledger_is_not_written_at_all_when_it_would_not_read_back():
+    """PRODUCT-CRITICAL, and what makes the state above unreachable rather than merely survivable. A
+    pair whose interface carries a space serialises to THREE tokens, and a three-token entry makes
+    every later read of the record refuse it in full — which is the read that gates installing and
+    removing the segment's addresses. So it is checked against the parse that will read it, BEFORE the
+    write-ahead step: nothing is written, no scalar moves, and the reason names the entry."""
+    store = _ownership_store()
+    before = dict(store.values)
+
+    reasons = provision._record_ownership(store, "eth0.9", "192.168.10.2/24", "",
+                                          [("eth0.2 eth0.9", "192.168.9.2/24")])
+
+    assert reasons and "eth0.2 eth0.9" in reasons[0]
+    assert store.values == before, "a ledger that cannot be read back was written anyway"
+    assert provision._read_ownership(store).known
+
+
+def test_a_ledger_pair_of_the_wrong_type_is_refused_rather_than_coerced():
+    """`f"{iface} {addr}"` on a value of the wrong type is exactly the coercion this module refuses
+    everywhere else: `str(0.9)` is a plausible interface name and `str([1])` a plausible address."""
+    store = _ownership_store()
+
+    reasons = provision._record_ownership(store, "eth0.9", "192.168.10.2/24", "",
+                                          [(0.9, "192.168.9.2/24")])
+
+    assert reasons and "0.9" in reasons[0]
+    assert store.values.get(provision.STALE_KEY, "") == ""
+
+
+def test_a_ledger_entry_the_boundary_could_not_read_is_kept_verbatim_and_acted_on_never(caplog):
+    """A pair whose interface is not a name parses as a PAIR, so it is not the wedging shape — and it
+    may be the only record of an address on the host. It is retained exactly as it came, reported to the
+    operator, and never compared, deleted or rebuilt from parts; the entries beside it are unaffected.
+    It is deliberately NOT in `invalid`: the panel cannot heal an entry it must preserve, so failing the
+    pass on one would refuse the operator's change on every later pass too.
+
+    THE DECODE ITSELF IS SILENT. This boundary is read about five times in one pass, and it used to log
+    every retained entry on each read — five identical ERRORs for one durable fact. The reporting is the
+    pass's, once, at its own boundary (`_report_retained_ownership`; see the once-per-pass test over
+    `host_provision` in test_provision.py)."""
+    store = _Store()
+    store.values.update({"managed_segment_iface": "eth0.2",
+                         "managed_segment_addr4": "192.168.9.2/24", "managed_segment_addr6": "",
+                         provision.STALE_KEY: "eth0.7 192.168.8.2/24\neth0.2/x 192.168.7.2/24"})
+
+    with caplog.at_level("ERROR"):
+        own = provision._read_ownership(store)
+        provision._read_ownership(store)
+
+    assert own.known and own.stale == (("eth0.7", "192.168.8.2/24"),)
+    assert own.retained == (("eth0.2/x", "192.168.7.2/24"),)
+    assert own.invalid == (), "an entry the panel must keep would refuse every later pass"
+    assert caplog.text == "", "the decode narrated a durable fact once per read of it"
+
+    with caplog.at_level("ERROR"):
+        provision._report_retained_ownership(store)
+
+    assert caplog.text.count("eth0.2/x 192.168.7.2/24") == 1, \
+        "the entry the panel cannot heal was not reported to the operator at all"
+
+    assert provision._record_ownership(store, "eth0.2", "192.168.9.2/24", "",
+                                       list(own.stale), own.retained) == []
+    assert provision.read_set(store, provision.STALE_KEY).pairs() == [
+        ("eth0.7", "192.168.8.2/24"), ("eth0.2/x", "192.168.7.2/24")]
+
+
+def test_an_unreadable_ledger_entry_never_stops_a_later_pass_provisioning():
+    """NOT WEDGING, asked directly. The entry is preserved on every pass, so if it failed the pass it
+    would fail all of them — the outage the whole invalid-versus-blank distinction exists to avoid.
+    Provisioning keeps working around it, and the entry stays exactly where it is."""
+    store = _Store()
+    store.values.update({"managed_segment_iface": "eth0.2",
+                         "managed_segment_addr4": "192.168.9.2/24", "managed_segment_addr6": "",
+                         provision.STALE_KEY: "eth0.2/x 192.168.7.2/24"})
+    run = _Iproute2(on=("eth0.2",), addrs={"eth0.2": ["192.168.9.2/24"]})
+
+    for _ in range(2):
+        assert provision.clear_managed_addresses(store, run=run) == [], \
+            "an entry the panel cannot heal refused the pass, and would refuse every later one"
+
+    assert provision.read_set(store, provision.STALE_KEY).pairs() == [
+        ("eth0.2/x", "192.168.7.2/24")]
+    assert not [cmd for cmd in run.cmds if "del" in cmd and "eth0.2/x" in cmd]
+
+
+# --- ...and the TYPE of a scalar, which was still answered with the collapsed answer ------------
+#
+# The shape check above tells invalid from blank. The TYPE check did not, and it sat one gate earlier:
+# `read_record` maps every non-text value to UNKNOWN, and the three ownership scalars were read through
+# it. That mapping is right for a LEDGER — its entries are kept verbatim, so the panel cannot heal one
+# and "the store would not answer" costs exactly what "the store answered with rubbish" costs — and
+# wrong for a scalar the pass rewrites in full. A `managed_segment_iface` holding a number (a
+# hand-edited row, a foreign writer, a column that is not TEXT) made the whole `Ownership` unreadable,
+# `_ownership_cover` raise and `_provision_segment` decline BEFORE the reconcile that would have
+# rewritten it — so the refusal was permanent. The same wedge the invalid-versus-blank distinction
+# closes for text, reached through the type check instead of the shape check.
+#
+# `_read_scalar` separates the two facts: a store fault stays `unreadable` and refuses, and
+# returned-invalid data is `invalid` — no name, no pair, no comparison, no delete, reported, and
+# overwritten by the pass on its way past.
+
+_NOT_TEXT = [0, False, [], {}, 0.0, 7, b"eth0.2", ("eth0.2",), None.__class__]
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT)
+def test_a_scalar_the_store_answered_with_that_is_not_text_is_invalid_not_unreadable(value):
+    """Both facts at once: the RECORD is unknown, so nothing can take `.text` off it and get a
+    plausible blank, and the REASON comes back in the invalid channel — which authorises nothing and is
+    healed, rather than the unreadable one, which refuses."""
+    store = _Store()
+    store.values[KEY] = value
+
+    record, invalid = provision._read_scalar(store, KEY)
+
+    assert record.known is False, "a value that is not text was handed over as though it were"
+    assert invalid and repr(value) in invalid and KEY in invalid
+    for read in (lambda: record.text, record.lines, record.pairs):
+        with pytest.raises(provision.RecordUnknown):
+            read()
+
+
+def test_a_store_that_will_not_answer_a_scalar_is_still_unreadable_and_not_invalid():
+    """The line that has to hold while the rest of this loosens. A store fault says nothing about the
+    host, so it is the one of the two that still refuses — and it may not arrive as bad data the pass
+    would cheerfully overwrite."""
+    record, invalid = provision._read_scalar(_Store(read_raises=[KEY]), KEY)
+
+    assert record.known is False and invalid == ""
+    assert "simulated settings read failure" in record.reason
+
+
+@pytest.mark.parametrize("key", provision.OWNERSHIP_KEYS)
+def test_a_non_text_ownership_scalar_is_read_and_reported_and_never_refuses(key):
+    """Through the boundary, for each of the three scalars: the record still READS, so every pass that
+    depends on it runs, and the value is named to the operator instead."""
+    store = _ownership_store()
+    store.values[key] = 0
+
+    own = provision._read_ownership(store)
+
+    assert own.known is True, "a non-text scalar refused every pass, including the one that heals it"
+    assert len(own.invalid) == 1 and key in own.invalid[0]
+    assert own.stale == () and own.retained == ()
+    assert provision._invalid_ownership_reasons(own), "the value was not reported to the operator"
+
+
+def test_a_non_text_interface_scalar_authorises_no_deletion():
+    """PRODUCT-CRITICAL, and the whole cost of the distinction: `0` under the interface key is not an
+    interface, so no pair is formed from it, no `ip addr del` is aimed anywhere, and the address the
+    record's value stood for is left exactly where it is and named to the operator."""
+    store = _Store()
+    store.values.update({"managed_segment_iface": 0,
+                         "managed_segment_addr4": "192.168.9.2/24", "managed_segment_addr6": ""})
+    run = _Iproute2(on=("eth0.2",), addrs={"eth0.2": ["192.168.9.2/24"]})
+
+    reasons = provision.clear_managed_addresses(store, run=run)
+
+    assert not [cmd for cmd in run.cmds if "del" in cmd], \
+        "a delete was aimed at a device token derived from a value that is not even text"
+    assert run.addrs["eth0.2"] == {"192.168.9.2/24"}
+    assert reasons and "managed_segment_iface" in reasons[0]
+    assert provision._read_ownership(store).known, "the pass left a record no later one can read"
+    assert store.values["managed_segment_iface"] == ""       # ...and it is healed on the way past
+
+
+def test_a_store_fault_on_an_ownership_scalar_still_deletes_nothing():
+    """The same absence of a delete, for the reason that still refuses. Unreadable is not invalid: here
+    the pass declines the removal entirely and says so, rather than rewriting a record it never read."""
+    store = _ownership_store(read_raises=["managed_segment_addr4"])
+    run = _Iproute2(on=("eth0.2",), addrs={"eth0.2": ["192.168.9.2/24"]})
+
+    reasons = provision.clear_managed_addresses(store, run=run)
+
+    assert not [cmd for cmd in run.cmds if "del" in cmd]
+    assert reasons and "could not be read" in reasons[0]
+    assert store.values["managed_segment_iface"] == "eth0.2", \
+        "a record the panel could not read was rewritten anyway"
+
+
+@pytest.mark.parametrize("key", provision.OWNERSHIP_KEYS)
+def test_a_store_fault_on_any_ownership_scalar_still_refuses_to_narrow(key):
+    """...and the cover it feeds is short, so nothing narrows off an interface the unread record may
+    have been the only thing naming."""
+    store = _ownership_store(read_raises=[key])
+
+    cover = provision.superseded_state(store, "eth0.9")
+
+    assert cover.known is False and cover.may_narrow is False
+    assert "simulated settings read failure" in cover.why()
+
+
+# --- ...and the FALSEY non-text values that used to be flattened before the type gate ran -------
+#
+# `managed_host_state` is the same three scalars read for the undo's `installed`, and it documented
+# that it need not prove their shape because its one consumer decodes them through `_as_candidate`
+# first. `or ""` ran BEFORE that gate and flattened every falsey non-text value — `0`, `False`, `[]`,
+# `{}` — into the one string that means "the panel claims no address here". So the gate was never
+# reached: an address that IS installed was left out of the orphan report and out of the survivor
+# ledger, and the pending record settled over a record that had not been read.
+
+
+@pytest.mark.parametrize("value", [0, False, [], {}, 0.0])
+def test_a_falsey_non_text_ownership_value_reads_as_unknown_and_not_as_no_address(value):
+    """Handed over unchanged, so the decode sees what the store holds and refuses the whole record —
+    the undo then stays pending and the enforcement keeps covering the candidate."""
+    store = _Store()
+    store.values.update({"managed_segment_iface": "eth0.9",
+                         "managed_segment_addr4": "192.168.10.2/24",
+                         "managed_segment_addr6": value})
+
+    installed = provision.managed_host_state(store)
+
+    assert installed["addr6"] is value, "the value was flattened before the type gate could see it"
+    with pytest.raises(provision.RecordUnknown):
+        provision._as_candidate(installed)
+
+
+@pytest.mark.parametrize("field", ["iface", "addr4", "addr6"])
+def test_a_falsey_non_text_value_under_any_ownership_key_is_refused(field):
+    """All three, because the undo reads all three and the interface is what its delete is compared
+    against. `0` under the interface key coerced to `"0"`, which is a legal interface name."""
+    store = _Store()
+    store.values.update(dict(zip(provision.OWNERSHIP_KEYS,
+                                 ["eth0.9", "192.168.10.2/24", "fd00:1:2:3::1/64"])))
+    store.values[dict(zip(("iface", "addr4", "addr6"), provision.OWNERSHIP_KEYS))[field]] = 0
+
+    with pytest.raises(provision.RecordUnknown):
+        provision._as_candidate(provision.managed_host_state(store))
+
+
+def test_an_unset_ownership_key_is_still_a_legitimate_blank():
+    """The one value that IS mapped, because it is the store's own "no such key" — the same mapping
+    `read_record` makes. A pass that provisioned nothing must keep reading as claiming nothing."""
+    installed = provision.managed_host_state(_Store())
+
+    assert installed == {"iface": "", "addr4": "", "addr6": ""}
+    decoded = provision._as_candidate(installed)
+    assert decoded is not None and decoded.names_candidate is False
+
+
+def test_the_ownership_scalars_the_panel_writes_read_back_through_the_undo_unchanged():
+    """And the shapes it does write still decode: one interface name and two canonical addresses."""
+    store = _Store()
+    store.values.update(dict(zip(provision.OWNERSHIP_KEYS,
+                                 ["eth0.9", "192.168.10.2/24", "fd00:1:2:3::1/64"])))
+
+    decoded = provision._as_candidate(provision.managed_host_state(store))
+
+    assert (decoded.iface, decoded.addr4, decoded.addr6) == ("eth0.9", "192.168.10.2/24",
+                                                            "fd00:1:2:3::1/64")
 
 
 # --- clear: a terminal form the readers ignore, not a deletion the store may skip --------------
@@ -414,3 +730,101 @@ def test_a_clear_with_no_terminal_form_is_still_read_back():
     store.write_noop = set()
     assert provision.clear_record(store, KEY) == ""
     assert provision.read_record(store, KEY).text == ""
+
+
+# --- the COVER read through the same boundary, one state at a time -------------------------------
+#
+# `superseded_state` is asked three questions no other reader asks: is this pass a MOVE, what does the
+# NM drop-in take over, and may the enforcement narrow back. It was reading two of its three records
+# for itself — `managed_segment_iface` straight out of the record, the stale ledger straight out of
+# `_parse_stale` — so a scalar the panel did not write, and one entry the boundary retains, both came
+# back as "no answer at all". `_provision_segment` declines a short answer before it configures
+# anything, and neither of those states is healed by a pass that never gets that far: one refused
+# change with a heal behind it became provisioning refused for ever.
+#
+# So the source is the boundary (`_ownership_cover`), and the three states it distinguishes are three
+# different answers here: unreadable is unknown, invalid names nothing and blocks nothing, and a
+# retained entry contributes whatever half of it IS readable.
+
+
+def _ownership(store, iface="eth0.2", addr4="192.168.9.2/24", addr6="", stale="") -> _Store:
+    """A store recording what the panel owns, with the value under test swapped in."""
+    store.values.update({"managed_segment_iface": iface, "managed_segment_addr4": addr4,
+                         "managed_segment_addr6": addr6, provision.STALE_KEY: stale})
+    return store
+
+
+def test_an_invalid_interface_scalar_names_nothing_and_costs_the_answer_nothing():
+    """THE FINDING. A value that is not an interface name enforces on nothing, so carrying it as a
+    name is useless — and refusing over it is the wedge, because the pass that would rewrite it is the
+    pass this answer gates. The valid stale pair beside it is covered, which is what used to go with
+    it."""
+    store = _ownership(_Store(), iface="eth0.2 eth0.9", stale="eth0.7 192.168.8.2/24")
+
+    superseded = provision.superseded_state(store, "eth0.2")
+
+    assert superseded.known is True, "a value the pass heals on its way past refused the pass"
+    assert superseded.names == ["eth0.7"], "the readable half of the answer was discarded with it"
+    assert provision.enforcement_cover(store, "eth0.2").names == ["eth0.7"]
+    assert "eth0.2 eth0.9" not in superseded.names, "text no rule can match was carried as coverage"
+
+
+def test_a_retained_pair_contributes_the_interface_it_names():
+    """A pair is retained when EITHER half could not be read, and the interface is validated on its
+    own: an entry kept for an unreadable ADDRESS still names a real interface that may be carrying a
+    panel-owned address, which is the entry's whole purpose. It is covered, and it is not touched."""
+    store = _ownership(_Store(), stale="eth0.7 not-an-address")
+
+    own = provision._read_ownership(store)
+    superseded = provision.superseded_state(store, "eth0.2")
+
+    assert own.retained == (("eth0.7", "not-an-address"),) and own.stale == ()
+    assert superseded.known is True and superseded.names == ["eth0.7"]
+    assert superseded.may_narrow is False, "the enforcement narrowed off a retained interface"
+
+
+def test_a_retained_pair_whose_interface_is_unusable_covers_nothing_and_blocks_nothing():
+    """The other half of the same entry. Its interface names nothing enforceable, so there is nothing
+    to cover — and it is preserved on every pass, so refusing over it would refuse them all."""
+    store = _ownership(_Store(), stale="eth0.2/x 192.168.7.2/24")
+
+    superseded = provision.superseded_state(store, "eth0.2")
+
+    assert superseded.known is True and superseded.names == []
+    assert superseded.why() == ""
+    assert provision._read_ownership(store).retained == (("eth0.2/x", "192.168.7.2/24"),)
+
+
+@pytest.mark.parametrize("key", [*provision.OWNERSHIP_KEYS, provision.STALE_KEY])
+def test_a_record_the_store_will_not_answer_still_makes_the_cover_unknown(key):
+    """The line that has to hold while the rest of this loosens: UNREADABLE is not invalid. The set of
+    interfaces this would name has something already dropped out of it, so the answer is short, the
+    narrowing is forbidden, and the reason travels to the caller that has to keep covering."""
+    store = _ownership(_Store(read_raises=[key]), stale="eth0.7 192.168.8.2/24")
+
+    superseded = provision.superseded_state(store, "eth0.2")
+    cover = provision.enforcement_cover(store, "eth0.2")
+
+    for state in (superseded, cover):
+        assert state.known is False, "a record nobody could read answered for the whole host"
+        assert state.may_narrow is False
+        assert "simulated settings read failure" in state.why()
+
+
+def test_the_records_the_panel_writes_are_read_exactly_as_they_were():
+    """The clean paths, unchanged: the recorded interface, every stale interface and the link ledger
+    all still name what they always did, and a store with nothing in it still answers KNOWN."""
+    store = _ownership(_Store(), iface="eth0.2",
+                       stale="eth0.2 192.168.9.2/24\neth0.7 192.168.8.2/24")
+    store.values[provision.LINK_KEY] = "eth0.3"
+
+    superseded = provision.superseded_state(store, "eth0.9")
+
+    # Asked as a set: every source is still consulted and nothing is named twice, which is the
+    # contract. The ORDER names are merged in is not one — no caller reads it.
+    assert superseded.known is True and len(superseded.names) == 3
+    assert set(superseded.names) == {"eth0.2", "eth0.7", "eth0.3"}
+    assert set(provision.superseded_state(store, "eth0.2").names) == {"eth0.7", "eth0.3"}
+
+    fresh = provision.superseded_state(_Store(), "eth0.2")
+    assert (fresh.known, fresh.names, fresh.may_narrow) == (True, [], True)

@@ -21,9 +21,11 @@ from fastapi.testclient import TestClient
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel.app import create_app
 from pi_gw_panel.controller import restore_backup
+from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.net_control import linux, provision
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.net_control.plan import NetResult
+from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.state import build_state
 
 UNDO_KEY = "pending_provision_undo"
@@ -114,6 +116,13 @@ def _pending(state, **candidate):
     state.store.set_setting(UNDO_KEY, json.dumps(
         {"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
          "link_state": provision.LINK_ABSENT} | candidate))
+
+
+def _bare_store():
+    """A store and nothing else, for the readers that are a question about one record."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    return NodeStore(conn)
 
 
 def _boot(settings, state, *keys) -> dict:
@@ -260,6 +269,313 @@ def test_a_deleted_candidate_link_takes_its_own_addresses_with_it(settings, stub
     assert "eth0.9" not in net.links and "eth0.9" not in net.addrs   # the address went with it
     assert net.deleted_addrs() == []
     assert stored[UNDO_KEY] == ""
+
+
+# --- ...and what may AUTHORISE that one deletion -----------------------------------------------
+#
+# The delete is the one irreversible thing the undo still does, and its licence is a value read out of
+# JSON. It was read by truthiness — `candidate.get("vlan")` — so `"false"`, a non-empty string, was a
+# yes. The value sits next to an `iface` and a `link_state` in the same record, so a record saying
+# `{"iface": "eth0", "vlan": "false", "link_state": "absent"}` passed every other check and removed
+# eth0: an operator-owned uplink, on the strength of a claim nothing in the panel ever wrote.
+#
+# So the claim is identity with `True`, and it is checked against the NAME it is a claim about: the
+# panel creates a VLAN and only a VLAN, so `vlan: true` over a dotless name is a record whose halves
+# disagree, and a record that disagrees with itself authorises nothing. Anything refused is left on
+# the host, reported, and RETAINED — the interface goes on being covered either way.
+
+NOT_A_VLAN_CLAIM = ["false", "true", 0, 1, "1", None]
+
+
+@pytest.mark.parametrize("claim", NOT_A_VLAN_CLAIM)
+def test_only_a_recorded_yes_authorises_removing_a_candidate_link(settings, stub_xray, claim):
+    """PRODUCT-CRITICAL. Everything else in the record says delete — a VLAN-shaped name, a prior probe
+    that proved the link absent, a link that is on the host now — so the `vlan` value is the whole
+    authorisation. `1` is in the list because `1 == True` in Python: equality is not enough."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.9": ["192.168.10.2/24"]})
+    state = _state(settings, stub_xray, net)
+    _pending(state, vlan=claim)
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert net.deleted_links() == [], f"vlan={claim!r} authorised an ip link delete"
+    assert "eth0.9" in net.links and net.addrs["eth0.9"] == {"192.168.10.2/24"}
+    assert net.deleted_addrs() == []
+    # ...and the interface that was left up is still named by something the cover reads.
+    assert "eth0.9" in stored[provision.SURVIVOR_KEY] or "eth0.9" in stored[UNDO_KEY], \
+        "a candidate link the undo declined to remove stopped being covered"
+
+
+@pytest.mark.parametrize("claim", ["false", "true", 0, 1, "1"])
+def test_a_vlan_claim_that_cannot_be_read_is_reported_and_kept(settings, stub_xray, claim, caplog):
+    """A value that is neither a yes nor a no is not silently a no: the record cannot be read in full,
+    so it stays pending for an operator to repair and the reason reaches the log. (`null` and a missing
+    key ARE a no — a dotless segment interface, or the unarmed record a restore writes.)"""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    _pending(state, vlan=claim)
+
+    with caplog.at_level(logging.WARNING, logger="pi_gw_panel"):
+        stored = _boot(settings, state)
+
+    assert stored[UNDO_KEY], "a record that could not be read was cleared away"
+    assert "not an answer" in caplog.text and "eth0.9" in caplog.text
+    assert net.deleted_links() == []
+
+
+def test_a_malformed_claim_never_deletes_the_link_the_gateway_is_reached_on(settings, stub_xray):
+    """The finding at its worst, and the reason the value may not be read loosely: the record names
+    the WAN uplink, the prior probe says the panel created it, and the link is on the host. Only the
+    `vlan` value stands between that record and `ip link delete eth0`."""
+    net = _HostNet(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+    _pending(state, iface="eth0", vlan="false", addr4="", addr6="")
+
+    _boot(settings, state)
+
+    assert net.deleted_links() == [], "the panel removed an interface it does not own"
+    assert "eth0" in net.links
+
+
+def test_a_yes_about_a_name_that_is_not_a_vlan_deletes_nothing(settings, stub_xray, caplog):
+    """The other half of the same record. A real `true` is still not enough on a dotless name: the
+    panel creates VLANs and only VLANs, so such a record cannot have come from a pass here — and the
+    name it points at is exactly the kind the operator owns."""
+    net = _HostNet(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+    _pending(state, iface="eth0", vlan=True, addr4="", addr6="")
+
+    with caplog.at_level(logging.WARNING, logger="pi_gw_panel"):
+        _boot(settings, state)
+
+    assert net.deleted_links() == [] and "eth0" in net.links
+    assert "not a VLAN interface name" in caplog.text
+
+
+@pytest.mark.parametrize("planted", ["eth0.2 eth0.9", 'eth0"; drop', "eth0.2\teth0.9"])
+def test_a_yes_about_a_name_that_is_not_an_interface_name_deletes_nothing(planted):
+    """The in-process rollbacks hand their candidate straight to the undo, so the name gets the same
+    gate the cover uses (`_checked_names`) at the point of the delete too — `ip link delete` may never
+    be handed a value that is not one interface token.
+
+    IT IS NOW THE TYPE THAT SAYS SO, which is stronger than the check it replaces: such a record does
+    not become a `Candidate` at all, so there is no object for `_vlan_claim` to be asked about and no
+    path — boot, route or restore — on which the name can reach the delete."""
+    with pytest.raises(provision.RecordUnknown) as caught:
+        provision._checked_candidate({"iface": planted, "vlan": True})
+
+    assert "not an interface name" in str(caught.value)
+
+
+@pytest.mark.parametrize("recorded,expected", [
+    (True, provision.LINK_PRESENT),        # the only observation the superseded bool ever proved
+    (False, provision.LINK_UNKNOWN),       # it had already folded "could not tell" into False
+    (None, provision.LINK_UNKNOWN),        # `null` claims nothing at all
+])
+def test_the_superseded_prior_state_bool_is_read_only_as_a_bool(recorded, expected):
+    """The prior probe is the other licence to delete, and it can never be granted by this field: a
+    record from the older format reads as PRESENT or UNKNOWN, both of which refuse."""
+    prior = provision._checked_candidate({"iface": "eth0.9", "link_existed": recorded}).prior
+
+    assert prior == expected
+    assert prior != provision.LINK_ABSENT, "an upgraded record licensed deleting a link"
+
+
+@pytest.mark.parametrize("recorded", ["false", "", 1, 0, [True]])
+def test_a_superseded_bool_that_is_not_a_bool_makes_the_whole_record_unreadable(recorded):
+    """...and anything that is not a bool is not that field either. A truthy string used to be read as
+    PRESENT, reporting a prior state the record never claimed; now the record does not decode, so it
+    authorises nothing and is retained for repair — which is the same refusal, said once."""
+    with pytest.raises(provision.RecordUnknown) as caught:
+        provision._checked_candidate({"iface": "eth0.9", "link_existed": recorded})
+
+    assert "not an answer either way" in str(caught.value)
+
+
+def test_a_vlan_the_panel_really_created_is_still_removed(settings, stub_xray):
+    """The gate is not a refusal to work: the record the panel writes — a real `True`, a VLAN-shaped
+    name, a prior probe that proved the link absent — still settles by deleting the link."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    _pending(state, vlan=True)                        # exactly what `provision_candidate` records
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert net.deleted_links() == ["eth0.9"] and "eth0.9" not in net.links
+    assert stored[UNDO_KEY] == "" and stored[provision.SURVIVOR_KEY] == ""
+
+
+def test_a_record_whose_interface_is_not_text_is_no_licence_to_pair_it_as_text():
+    """The same record read for its ADDRESSES, and the contract this file used to pin the other way
+    round: the pairs were taken as `str(value or "")`, so a record holding `{"iface": 9}` produced the
+    survivor `("9", ...)` — an interface that cannot exist, written into the ledger whose entries are
+    what the ruleset names and what the drain proves gone. Coercion is not a repair: what the record
+    meant is unknown, so reading it says so — and the pairing now takes decoded records only, so the
+    refusal happens before there is anything to pair."""
+    with pytest.raises(provision.RecordUnknown) as caught:
+        provision._checked_candidate({"iface": 9, "addr4": "192.168.10.2/24", "addr6": ""})
+
+    assert "not text" in str(caught.value)
+
+
+# --- ...and the record of the segment it went BACK to -------------------------------------------
+#
+# The delete's fourth conjunct is a COMPARISON: a candidate may only be removed when it is not the
+# interface the recovery pass restored. That interface arrives out of `managed_segment_iface` as
+# whatever text the store holds, and the comparison was a bare `!=` — which answers "different" for
+# every value that is not an interface name at all. So `"eth0.9 eth0.2"`, the shape a hand-edited
+# database or a truncated write leaves, compared unequal to the candidate `eth0.9`; that conjunct
+# passed, and the rest were all legitimately true (a real `vlan: true`, a VLAN-shaped name, a prior
+# probe proving absence, the link present now). `ip link delete eth0.9` followed, against the very
+# interface the operator's segment had just been put back on.
+#
+# The danger was never that the malformed value would be USED as a name. It is that an unreadable
+# record READS AS PERMISSION when the only question asked of it is whether it differs. So both halves
+# are pinned: the value is checked for its shape where the record is read, and the comparison at the
+# site that acts on it refuses to answer "different" about a value whose shape it cannot confirm.
+
+NOT_ONE_INTERFACE_NAME = [
+    "eth0.9 eth0.2",                    # the richer value: two names where one was written
+    "eth0.9\teth0.2",
+    "e" * 16,                           # past IFNAMSIZ — what a truncating write leaves
+    "eth0.9;ip link delete eth0.2",
+]
+
+DELETABLE = {"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
+             "link_state": provision.LINK_ABSENT}
+
+
+@pytest.mark.parametrize("recorded", NOT_ONE_INTERFACE_NAME)
+def test_a_restored_interface_that_is_not_one_name_deletes_nothing(settings, stub_xray, recorded,
+                                                                  caplog):
+    """PRODUCT-CRITICAL, end to end. Every other conjunct of the delete precondition is true, so the
+    ownership record naming the restored segment is the whole guard — and a value nothing can read
+    as an interface name is not a licence, it is an unreadable record: nothing is removed, nothing is
+    recorded, the record stays pending and the enforcement goes on covering the candidate."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.9": ["192.168.10.2/24"]})
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting("managed_segment_iface", recorded)
+    _pending(state)                                  # eth0.9, a real VLAN claim, prior absent
+
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert net.deleted_links() == [], f"{recorded!r} authorised an ip link delete"
+    assert net.deleted_addrs() == []
+    assert "eth0.9" in net.links and net.addrs["eth0.9"] == {"192.168.10.2/24"}
+    assert stored[UNDO_KEY], "the record the coverage rests on was cleared away"
+    assert "not an interface name" in caplog.text        # reported, not silent
+    # NEITHER REMOVED NOR RECORDED, the same as a store that would not answer at all: the undo does
+    # not go on to write a survivor ledger from a record it could not read.
+    assert stored[provision.SURVIVOR_KEY] == ""
+    # ...and the interface that was left up is still covered, from that retained record.
+    after = _bare_store()
+    after.set_setting(UNDO_KEY, stored[UNDO_KEY])
+    assert provision.pending_candidate_ifaces(after) == ["eth0.9"]
+
+
+@pytest.mark.parametrize("recorded", NOT_ONE_INTERFACE_NAME)
+def test_the_ownership_read_is_unreadable_for_a_segment_it_cannot_name(recorded):
+    """The read itself, which is where such a value stops being anything an undo may act on. It is
+    checked against the same expression every cover source goes through, and the answer is the one a
+    store fault gets: unreadable, with the reason, and no interface and no address handed back for
+    something else to compare against."""
+    store = _bare_store()
+    store.set_setting("managed_segment_iface", recorded)
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+
+    unreadable, iface, addr4, addr6 = provision._read_managed_state(store)
+
+    assert unreadable and "not an interface name" in unreadable[0]
+    assert (iface, addr4, addr6) == ("", "", ""), "a value nothing could read came back as content"
+
+
+def test_the_ownership_read_still_answers_for_the_records_the_panel_writes():
+    """...and the readable ones are unchanged: one interface name, both addresses verbatim, and a
+    blank scalar is a blank answer rather than a refusal."""
+    store = _bare_store()
+    store.set_setting("managed_segment_iface", " eth0.2 ")
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+
+    assert provision._read_managed_state(store) == ([], "eth0.2", "192.168.10.2/24", "")
+    assert provision._read_managed_state(_bare_store()) == ([], "", "", "")
+
+
+def test_a_restored_interface_the_store_will_not_answer_for_deletes_nothing(settings, stub_xray,
+                                                                           monkeypatch):
+    """The other way the same record fails to say which interface is in service. A store fault and a
+    value that is not text are one answer here — "we cannot tell" — and neither may be spent as "the
+    candidate is something else"."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    _pending(state)
+    original = state.store.get_setting
+    monkeypatch.setattr(state.store, "get_setting",
+                        lambda key: 0.9 if key == "managed_segment_iface" else original(key))
+
+    outcome = provision.undo_provision_candidate(state, provision._checked_candidate(DELETABLE))
+
+    assert net.deleted_links() == [] and "eth0.9" in net.links
+    assert outcome.unresolved, "an undo that could not read the restored segment settled anyway"
+    state.close()
+
+
+@pytest.mark.parametrize("restored", NOT_ONE_INTERFACE_NAME + [0.9, ["eth0.2"], None])
+def test_the_delete_needs_a_PROVEN_difference_and_not_an_inequality(settings, stub_xray, restored):
+    """THE CONJUNCT ITSELF, asked at the site that acts on it and not through the read above.
+
+    The read is where such a record is refused in production; this is why refusing it there is not the
+    whole fix. `iface != restored` is true of every value that names no interface, so the precondition
+    that is supposed to protect the interface in service was the one that waved the delete through.
+    Only a difference between two interface NAMES is a difference here."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+
+    outcome, deleted = provision._undo_candidate_link(
+        state, provision._checked_candidate(DELETABLE),
+        {"iface": restored, "addr4": "", "addr6": ""}, net._run)
+
+    assert deleted is False and net.deleted_links() == []
+    assert "eth0.9" in net.links
+    assert outcome.unresolved, "the undo reported nothing to retry and nothing to repair"
+    assert outcome.actions and "eth0.9" in outcome.actions[0]
+    state.close()
+
+
+@pytest.mark.parametrize("restored,removes", [("eth0.2", True), ("", True), ("eth0.9", False)])
+def test_a_restored_interface_that_reads_permits_exactly_what_it_did_before(settings, stub_xray,
+                                                                           restored, removes):
+    """The gate is not a refusal to work. A real other interface and an unrecorded one both leave the
+    candidate deletable, exactly as before — an unset scalar is a legitimate "the panel claims no
+    segment interface" — and a record naming the candidate ITSELF still stops the delete silently,
+    because that interface is the one now in service."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+
+    outcome, deleted = provision._undo_candidate_link(
+        state, provision._checked_candidate(DELETABLE),
+        {"iface": restored, "addr4": "", "addr6": ""}, net._run)
+
+    assert deleted is removes and net.deleted_links() == (["eth0.9"] if removes else [])
+    assert outcome.unresolved == [] and (outcome.actions != []) is removes
+    state.close()
+
+
+def test_the_genuine_candidate_deletion_still_settles_over_a_recorded_segment(settings, stub_xray):
+    """The same thing end to end, over an ownership record that names a real restored interface: the
+    orphan goes, the pending record is cleared, and the segment the panel went back to is untouched."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.2": ["192.168.10.2/24"]})
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting("managed_segment_iface", "eth0.2")
+    state.store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+    _pending(state)
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert net.deleted_links() == ["eth0.9"] and "eth0.9" not in net.links
+    assert net.deleted_addrs() == [] and net.addrs["eth0.2"] == {"192.168.10.2/24"}
+    assert stored[UNDO_KEY] == "" and stored[provision.SURVIVOR_KEY] == ""
+    assert stored["managed_segment_iface"] == "eth0.2"
 
 
 # --- ...and what it does with an ADDRESS: names it, and nothing else -------------------------
@@ -746,6 +1062,29 @@ def _survivor_left_by_a_rollback(settings, stub_xray, **host):
     return net, state
 
 
+def _drains_one_boot_later(settings, stub_xray, net, state):
+    """The drain, read in the order boot actually performs it. Returns the first boot's settings.
+
+    THE GUARD IS RENDERED BEFORE THE PASS THAT DRAINS, and deliberately: it now goes on before
+    anything turns forwarding on, which is ahead of `host_provision` and therefore ahead of
+    `drain_enforcement_cover`. So the boot that drains the ledger still installs the WIDER ruleset it
+    rendered a moment earlier, and the one after it narrows. Over-covering an interface that is gone
+    costs nothing — nft matches `iifname` by name, so the rule simply never matches — while the
+    reverse order would render the guard from a cover that had already been shrunk by probes taken
+    after it. The property this pins is that the set is still finite: it drains, on its own, without
+    the operator doing anything a second time.
+    """
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+    assert stored[provision.SURVIVOR_KEY] == "", "the ledger did not drain on the boot that probed"
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.9"}, \
+        "the boot that drains rendered its guard from a cover its own probes had already shrunk"
+
+    _boot(settings, _state(settings, stub_xray, net), provision.SURVIVOR_KEY)
+
+    assert _enforced(net.applied[-1]) == {"eth0.2"}, "the cover never narrowed at all"
+    return stored
+
+
 def test_a_candidate_the_host_says_is_gone_leaves_the_cover(settings, stub_xray):
     """THE PROPERTY THAT KEEPS THE COVER FINITE. The operator removes the interface the rollback
     reported; the next pass asks the host, gets an explicit not-found, and the ruleset narrows back
@@ -754,11 +1093,7 @@ def test_a_candidate_the_host_says_is_gone_leaves_the_cover(settings, stub_xray)
     net.links.discard("eth0.9")                      # the operator removed it, as reported
     net.addrs.pop("eth0.9", None)
 
-    # the next boot: the pass (which asks the host) and then the guard it renders from the store
-    stored = _boot(settings, state, provision.SURVIVOR_KEY)
-
-    assert stored[provision.SURVIVOR_KEY] == ""
-    assert _enforced(net.applied[-1]) == {"eth0.2"}
+    _drains_one_boot_later(settings, stub_xray, net, state)
 
 
 def test_a_candidate_whose_address_is_off_it_leaves_the_cover(settings, stub_xray):
@@ -768,11 +1103,9 @@ def test_a_candidate_whose_address_is_off_it_leaves_the_cover(settings, stub_xra
     net, state = _survivor_left_by_a_rollback(settings, stub_xray)
     net.addrs["eth0.9"] = set()                      # the address was removed by hand; link stays
 
-    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+    _drains_one_boot_later(settings, stub_xray, net, state)
 
     assert "eth0.9" in net.links                     # still there, still not the panel's
-    assert stored[provision.SURVIVOR_KEY] == ""
-    assert _enforced(net.applied[-1]) == {"eth0.2"}
 
 
 def test_a_candidate_the_host_cannot_answer_for_stays_covered(settings, stub_xray):
@@ -1145,6 +1478,97 @@ def test_a_clear_whose_blanking_never_lands_leaves_no_candidate_behind_at_boot(s
     state.close()
 
 
+# --- ...and the terminal form is the EXACT record, not anything that mentions it ----------------
+#
+# The clear's terminal record is the one thing every reader below may ignore, so what counts as one
+# decides whether an interface goes on being covered. It was read as `if candidate.get("resolved")`
+# — truthiness over a value that arrives out of JSON — so `{"resolved": "false", "iface": "eth0.9"}`
+# was TERMINAL: a non-empty string is truthy, and a record still naming a candidate interface came
+# back as a known-empty cover, licensing a narrow, while eth0.9 may have been up carrying the segment.
+# A hand-edited database, a foreign backup document or a half-decoded write is all it takes.
+#
+# So the test is identity with `True` over the exact key set the clear writes. Everything else that
+# mentions `resolved` is a record the panel never wrote: it is not read as settled, it is not read as
+# a candidate an undo may act on either, and it is RETAINED — unknown, refusing, covered.
+
+HALF_SETTLED = [
+    {"resolved": "false", "iface": "eth0.9"},    # the finding: truthy, and still naming an interface
+    {"resolved": "true", "iface": "eth0.9"},     # the same string, the other way round
+    {"resolved": 1, "iface": "eth0.9"},          # `1 == True`, so equality alone would accept it
+    {"resolved": True, "iface": "eth0.9"},       # settled AND naming a candidate: not both
+    {"resolved": False, "iface": "eth0.9"},      # nothing the panel writes says this
+]
+
+
+@pytest.mark.parametrize("record", HALF_SETTLED)
+def test_a_record_that_only_claims_to_be_settled_keeps_covering_its_interface(record):
+    """The finding, at the level it is decided. Not settled, so the cover still names eth0.9; not a
+    candidate either, so nothing may act on it."""
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, json.dumps(record))       # set verbatim: no writer produces this
+
+    pending = provision._pending_candidate(store)
+    cover = provision.pending_candidate_state(store)
+
+    assert cover.names == ["eth0.9"], "a half-settled record stopped covering the interface it names"
+    assert cover.known is False and cover.may_narrow is False, \
+        "a record the panel never wrote licensed narrowing the enforcement off its own candidate"
+    assert "settled form" in cover.why()
+    assert pending.candidate is None, "a half-settled record was handed to the undo as a candidate"
+    assert pending.unusable == "", "a record naming a live interface was marked for discarding"
+
+
+def test_a_record_read_by_equality_would_be_settled_by_the_number_one(caplog):
+    """`1 == True` in Python, and a dict compares its values with `==`, so equality with the terminal
+    record — or with `True` — accepts `{"resolved": 1}`, which nothing here wrote. Identity plus the
+    key set is what makes the accepted shape exactly one shape."""
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, json.dumps({"resolved": 1}))
+
+    cover = provision.pending_candidate_state(store)
+
+    assert cover.known is False, "the number 1 was read as the resolution the clear writes"
+    assert cover.may_narrow is False
+    assert provision._pending_candidate(store).unusable == "", "it was marked for discarding"
+
+
+def test_the_settled_record_is_still_settled_and_still_ignored(settings, stub_xray):
+    """The other side of the same line: the exact form the clear writes stays invisible to every
+    reader, and is not undone again on the boot after it."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting(UNDO_KEY, provision.RESOLVED_UNDO)
+
+    assert json.loads(provision.RESOLVED_UNDO) == {"resolved": True}      # nothing else in it
+    _assert_nothing_pending(state)                       # no cover, no re-undo, nothing reported
+    assert net.deleted_links() == []
+    state.close()
+
+
+def test_a_boot_never_acts_on_a_record_that_only_claims_to_be_settled(settings, stub_xray, caplog):
+    """PRODUCT-CRITICAL, end to end. eth0.9 is on the host and the record half-says it is settled, so
+    the boot may neither remove it nor forget it: the record is what the enforcement is covering the
+    interface from until an operator repairs it."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.9": ["192.168.10.2/24"]})
+    state = _state(settings, stub_xray, net)
+    planted = json.dumps({"resolved": "false", "iface": "eth0.9", "addr4": "192.168.10.2/24",
+                          "addr6": "", "vlan": True, "link_state": provision.LINK_ABSENT})
+    state.store.set_setting(UNDO_KEY, planted)
+    assert provision.pending_candidate_ifaces(state.store) == ["eth0.9"]   # covered going in
+
+    with caplog.at_level(logging.WARNING, logger="pi_gw_panel"):
+        stored = _boot(settings, state)
+
+    assert net.deleted_links() == [] and net.deleted_addrs() == []
+    assert "eth0.9" in net.links and net.addrs["eth0.9"] == {"192.168.10.2/24"}
+    assert stored[UNDO_KEY] == planted, "the record the coverage rests on was cleared or rewritten"
+    # ...and the pass refused to install a ruleset it could not prove covers eth0.9, rather than
+    # rendering one that omits it: the boot's own fail-closed path, reached through this record.
+    assert "could not be established" in caplog.text
+    assert _enforced("\n".join(net.applied)) != {"eth0.2"} or net.applied == [], \
+        "a ruleset naming only the restored interface was installed while eth0.9 was uncovered"
+
+
 # --- unknown, from every record the cover is built out of -------------------------------------
 
 
@@ -1179,4 +1603,623 @@ def test_a_cover_source_that_cannot_be_read_is_never_read_as_empty(settings, stu
     with pytest.raises(TypeError):          # ...and it cannot be spent as a truth value either
         bool(cover)
     assert cover != [], "an unknown cover compared equal to an empty one"
+    state.close()
+
+
+# --- the record's SHAPE, checked once, where it is read ----------------------------------------
+#
+# Four rounds hardened the readers of this one record and each ended in the same place: a value of the
+# wrong TYPE was made to look like a value of the right one. The round before this one resolved a type
+# confusion by COERCING the value to text, and that is what these tests exist to forbid, because
+# coercion makes malformed data look valid:
+#
+#   * `str(0.9)` is `"0.9"`. It passes `_checked_names` (`_IFACE_RE` allows digits and a dot), it
+#     parses as VLAN 9, and with `vlan: true`, a prior `absent` and a link of that name on the host it
+#     reaches `ip link delete 0.9` — the delete is the one irreversible thing left in the undo.
+#   * `str([1])` is `"[1]"`. It is reported to the operator as an address, written into the survivor
+#     ledger as a survivor, and then proven absent by that ledger's very first probe: the interface
+#     leaves the enforcement cover while a real segment address may still be on it, and the pending
+#     record that was covering it has been cleared as settled.
+#
+# So every field of the record is checked for type and form at the ONE boundary where the record is
+# read, and a record that fails is unknown: covered, refusing, retained, never a licence to act.
+
+NOT_AN_INTERFACE = [0.9, 9, [1], ["eth0.9"], {"name": "eth0.9"}, None, True]
+
+
+def test_a_boot_never_deletes_a_link_named_by_a_number(settings, stub_xray):
+    """PRODUCT-CRITICAL, end to end. Everything else in the record says delete — a real `vlan: true`,
+    a prior probe that proved the link absent, a link of that name on the host now — so the JSON number
+    `0.9` is the whole difference between a repair and `ip link delete 0.9`. It is not text, so the
+    record cannot be read as one the panel wrote: nothing is deleted, the record is KEPT, and the
+    interface it names goes on being covered."""
+    net = _HostNet(links=("eth0", "eth0.2", "0.9"))
+    state = _state(settings, stub_xray, net)
+    _pending(state, iface=0.9)
+
+    stored = _boot(settings, state)
+
+    assert net.deleted_links() == [], "a link named by a JSON number was deleted"
+    assert "0.9" in net.links
+    assert stored[UNDO_KEY], "a record that could not be read was cleared away"
+    # ...and what the retained record is worth: the cover it feeds is unknown, so nothing narrows the
+    # enforcement off whatever that record was meant to name, boot after boot (`_enforcement_plan`).
+    kept = _bare_store()
+    kept.set_setting(UNDO_KEY, stored[UNDO_KEY])
+    cover = provision.pending_candidate_state(kept)
+    assert cover.known is False and cover.may_narrow is False, \
+        "a record nothing can read licensed narrowing the enforcement"
+    assert "not text" in cover.why()
+
+
+@pytest.mark.parametrize("planted", NOT_AN_INTERFACE + [""])
+def test_no_shape_but_one_interface_name_is_read_as_a_candidate(settings, stub_xray, planted):
+    """Every shape an `iface` can arrive in and be refused: a number, a list, an object, `null`, a
+    bool, and the blank string. None of them may delete a link, and none of them may be handed to an
+    undo as a candidate — the record does not say which interface a pass may have touched."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9", "0.9"))
+    state = _state(settings, stub_xray, net)
+    _pending(state, iface=planted)
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert net.deleted_links() == [] and net.deleted_addrs() == []
+    assert provision._pending_candidate(state.store).candidate is None, \
+        "a record whose interface is not one interface name was handed to an undo"
+    assert stored[provision.SURVIVOR_KEY] == "", "a survivor was recorded for an unnamed interface"
+    state.close()
+
+
+@pytest.mark.parametrize("planted", NOT_AN_INTERFACE)
+def test_an_iface_that_is_not_one_interface_name_keeps_the_record_and_refuses(planted):
+    """...and what a refused record DOES: it is retained, not discarded, and the cover it feeds is
+    unknown. Retaining is the whole point — clearing it throws away the coverage for the one interface
+    a rolled-back pass may have put the segment on, in the window before the survivor ledger can
+    answer for it."""
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, json.dumps(
+        {"iface": planted, "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
+         "link_state": provision.LINK_ABSENT}))
+
+    pending = provision._pending_candidate(store)
+
+    assert pending.candidate is None, "a record nothing can read authorised an undo"
+    assert pending.unusable == "", "a record that may be naming a live interface was discarded"
+    assert pending.cover.known is False and pending.cover.may_narrow is False
+    assert provision.pending_candidate_ifaces(store) == []
+
+
+def test_a_record_that_conforms_and_names_no_interface_is_the_one_that_is_discarded():
+    """THE ONE VERDICT THAT IS STILL `unusable`, and the line it sits on. A blank `iface` is not a
+    malformed value: it is text, the type the panel writes, saying there is no candidate — the same
+    answer as a record with no `iface` key at all, which is what a pass that provisions nothing
+    records. Reading it as unreadable instead would retain it for ever, and a retained unknown cover
+    means every store-derived render REFUSES (see `controller._enforcement_plan`), so a record that
+    names nothing would hold the segment at no network at all until an operator edited the database.
+    """
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, json.dumps({"iface": "  ", "vlan": True}))
+
+    pending = provision._pending_candidate(store)
+
+    assert pending.candidate is None and "names no candidate interface" in pending.unusable
+    assert pending.cover.known is True and pending.cover.names == []
+
+
+@pytest.mark.parametrize("planted", [[1], {"addr": "192.168.10.2/24"}, 9, True,
+                                     "192.168.10.2", "192.168.10.2/24 192.168.10.9/24", "nonsense"])
+def test_an_address_that_is_not_one_writes_no_survivor_and_keeps_the_record(settings, stub_xray,
+                                                                           planted, caplog):
+    """THE SECOND HALF OF THE FINDING. `str([1])` is `"[1]"`, and that string used to be persisted as a
+    surviving candidate: the undo then had nothing outstanding, the pending record was cleared as
+    settled, and the ledger held a pair the very first probe proves absent — so the interface left the
+    cover with a real segment address possibly still on it. A bare address is in this list for the same
+    reason: `_probe_addr` matches the whole CIDR token, so a prefix that is missing is a pair the host
+    can never confirm.
+
+    The candidate here is one the undo will NOT delete — the record says the panel did not create the
+    link — so the address half is the half that runs, which is exactly where the bogus survivor was
+    persisted and the pending record then cleared as settled.
+    """
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.9": ["192.168.10.2/24"]})
+    state = _state(settings, stub_xray, net)
+    _pending(state, addr4=planted, vlan=False, link_state=provision.LINK_PRESENT)
+
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        provision.resume_pending_provision_undo(state)
+
+    assert provision._parse_survivors(state.store) == [], \
+        "a survivor that is not an interface and an address was written into the ledger"
+    assert state.store.get_setting(UNDO_KEY), "the record that was covering eth0.9 was cleared away"
+    assert "neither acted on nor cleared" in caplog.text, "the operator was told nothing"
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)   # ...and the same across a whole boot
+
+    assert stored[provision.SURVIVOR_KEY] == "" and stored[UNDO_KEY]
+    assert net.deleted_links() == [] and net.deleted_addrs() == []
+    # THE PROPERTY, asked of the state the boot leaves behind: eth0.9 is still up carrying the segment
+    # address, so it is still an interface the enforcement may not narrow off. Coerced, the bogus
+    # survivor went into the ledger, the pending record was cleared as settled, and the drain then
+    # proved only that `"[1]"` was absent — leaving the cover empty, KNOWN, and free to narrow.
+    after = _bare_store()
+    after.set_setting(UNDO_KEY, stored[UNDO_KEY])
+    after.set_setting(provision.SURVIVOR_KEY, stored[provision.SURVIVOR_KEY])
+    cover = provision.enforcement_cover(after, "eth0.2")
+    assert cover.may_narrow is False, "the interface a rolled-back change left addressed was uncovered"
+    assert cover.names == ["eth0.9"] and cover.known is False
+    assert "eth0.9" in net.links and net.addrs["eth0.9"] == {"192.168.10.2/24"}
+
+
+def test_a_bogus_survivor_is_never_drained_out_of_the_cover(settings, stub_xray):
+    """The same lesson one record along, which is where the damage was going to land: the ledger's
+    entries are the names the enforcement carries and the tokens the drain proves gone. An entry that
+    is not an interface and an address cannot be answered for by the host — the probe's not-found is
+    about the entry, not about whatever it was meant to name — so the ledger is not read as a ledger
+    at all: nothing is drained, nothing is shrunk, and the cover stays unknown."""
+    store = _bare_store()
+    store.set_setting(provision.SURVIVOR_KEY, "eth0.9 [1]")
+
+    kept = provision.drain_enforcement_cover(store, run=_never_asked)
+
+    assert kept == []                                    # nothing was proven gone, so nothing dropped
+    assert store.get_setting(provision.SURVIVOR_KEY) == "eth0.9 [1]", "the ledger was shrunk"
+    cover = provision.enforcement_cover(store, "eth0.2")
+    assert cover.known is False and cover.may_narrow is False, \
+        "a ledger nothing can read licensed narrowing the enforcement"
+    assert provision.remember_survivors(store, [("eth0.9", "[1]")]) is False, \
+        "a survivor that is not an address was accepted into the ledger"
+
+
+def _never_asked(cmd, **kw):
+    raise AssertionError(f"the host was asked about an entry nothing can read: {cmd}")
+
+
+@pytest.mark.parametrize("record", [
+    {"iface": "eth0.9", "vlan": True, "link_state": provision.LINK_ABSENT},      # no address at all
+    {"iface": "eth0.9", "addr4": "", "addr6": "", "vlan": True,
+     "link_state": provision.LINK_ABSENT},                                      # both blank
+])
+def test_a_record_with_no_addresses_is_still_the_record_the_panel_writes(settings, stub_xray, record):
+    """The legitimate shapes stay legitimate. An absent address field and a blank one both mean "this
+    change claimed no address there" — what a pass with IPv6 off records, and what the unarmed
+    preflight record a restore writes looks like — so neither may be read as malformed."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting(UNDO_KEY, json.dumps(record))
+
+    stored = _boot(settings, state)
+
+    assert net.deleted_links() == ["eth0.9"], "a record the panel writes was refused"
+    assert stored[UNDO_KEY] == ""                       # settled, with nothing outstanding
+    state.close()
+
+
+def test_a_well_formed_record_still_authorises_exactly_what_it_did_before(settings, stub_xray):
+    """The gate is not a refusal to work. The record `provision_candidate` writes — text interface, a
+    real `True`, addresses with prefixes, one of the three probe answers — still deletes the link it
+    proves the panel created, still reports the addresses it left behind, and still settles."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth1"), addrs=PRE_ADDRESSED)
+    state = _state(settings, stub_xray, net)
+    candidate = _retarget(state)                        # through the real recorder: the real shapes
+
+    assert candidate == {"iface": "eth1", "addr4": "192.168.10.2/24", "addr6": "",
+                         "vlan": False, "link_state": provision.LINK_PRESENT}
+    outcome = provision.undo_provision_candidate(state, candidate)
+
+    assert net.deleted_links() == [] and net.deleted_addrs() == []       # eth1 is the operator's
+    assert any("192.168.10.2/24" in line and "eth1" in line for line in outcome.actions)
+    assert outcome.unresolved == []                                     # nothing left to finish
+    assert provision._parse_survivors(state.store) == [("eth1", "192.168.10.2/24")]
+    state.close()
+
+
+def test_a_candidate_the_panel_could_not_read_back_is_never_recorded(settings, stub_xray):
+    """The same check on the WRITE side, because a record the readers will refuse to act on is a pass
+    with no recovery story — and the only moment that can still be reported instead of discovered on a
+    later boot is before the pass runs."""
+    net = _HostNet(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+
+    with pytest.raises(RuntimeError, match="would not be readable"):
+        provision.record_provision_candidate(state.store, {"iface": 0.9, "vlan": True})
+
+    assert (state.store.get_setting(UNDO_KEY) or "") == ""
+    state.close()
+
+
+# --- the record as a TYPE, not a dict ----------------------------------------------------------
+#
+# Five rounds hardened this record's readers FIELD BY FIELD and the class survived all five, because
+# what was left is not about a field. A JSON object with a repeated key had already lost one of two
+# values before any field check ran. `link_state` and `link_existed` each passed alone while
+# contradicting each other, and the reader preferred the spelling that authorises a delete. A
+# canonicalising address check handed back the ORIGINAL token, so a validated record could name an
+# address that IS on the interface and be answered "absent" by the first probe. `resolved` was
+# reserved for the clear and checked by nobody validating a live candidate. A blank `iface` was spent
+# as "there is no candidate" before the rest of the record was looked at.
+#
+# So the record is decoded ONCE — duplicate-aware — canonicalised ONCE, checked as a whole, and handed
+# to its readers as a `Candidate` they cannot misread. These tests are that contract, from both sides.
+
+DUPLICATED = {
+    # The name half: two interfaces, one of which the enforcement would then never cover.
+    "iface": '{"iface": "eth0.9", "iface": "eth0.2", "addr4": "", "addr6": "", "vlan": true, '
+             '"link_state": "absent"}',
+    # The authorisation half: the last value wins, and the last value is the one that deletes.
+    "link_state": '{"iface": "eth0.9", "addr4": "", "addr6": "", "vlan": true, '
+                  '"link_state": "present", "link_state": "absent"}',
+    "vlan": '{"iface": "eth0.9", "addr4": "", "addr6": "", "vlan": false, "vlan": true, '
+            '"link_state": "absent"}',
+    # ...and the word that would make the whole record invisible to every reader.
+    "resolved": '{"resolved": false, "resolved": true}',
+}
+
+
+@pytest.mark.parametrize("key", sorted(DUPLICATED))
+def test_a_duplicate_key_is_not_a_record_and_nothing_acts_on_it(key):
+    """THE DECODE, and it runs before every check there is. `json.loads` keeps the LAST value for a
+    repeated key, so a record saying two things arrived as a record saying one — chosen by position,
+    and in each shape here the surviving value is the dangerous one: the interface the cover would then
+    never name, the probe answer that licenses `ip link delete`, the claim that authorises it, the word
+    that makes the record read as already settled. No writer here can produce a duplicate key; a
+    hand-edited database, a merged backup document or a truncated concatenation can. So it is not a
+    record — unknown, refusing, RETAINED, exactly as an `iface` nothing can read is."""
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, DUPLICATED[key])
+
+    pending = provision._pending_candidate(store)
+
+    assert pending.candidate is None, "a record that lost half of itself was handed to an undo"
+    assert pending.unusable == "", "a record that may be naming a live interface was discarded"
+    assert pending.cover.known is False and pending.cover.may_narrow is False, \
+        "a record nothing can read in full licensed narrowing the enforcement"
+    assert "more than once" in pending.cover.why()
+    assert provision.pending_candidate_ifaces(store) == []
+
+
+def test_a_duplicated_record_at_boot_deletes_nothing_and_is_kept(settings, stub_xray, caplog):
+    """PRODUCT-CRITICAL, end to end. The surviving `link_state` is `absent`, the `vlan` claim is a real
+    `true`, the name is VLAN-shaped and the link is on the host — every conjunct of the delete — while
+    the value the record ALSO holds says the panel did not create it. Read as one value it deletes an
+    interface it does not own."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.9": ["192.168.10.2/24"]})
+    state = _state(settings, stub_xray, net)
+    planted = DUPLICATED["link_state"]
+    state.store.set_setting(UNDO_KEY, planted)
+
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        stored = _boot(settings, state)
+
+    assert net.deleted_links() == [] and net.deleted_addrs() == []
+    assert "eth0.9" in net.links and net.addrs["eth0.9"] == {"192.168.10.2/24"}
+    assert stored[UNDO_KEY] == planted, "the record was cleared or rewritten"
+    assert "neither acted on nor cleared" in caplog.text     # the operator is told once per boot
+    state.close()
+
+
+# The spellings `ipaddress` accepts for one address, none of which `ip addr show` ever prints. Every
+# one of them used to be validated and then RECORDED AS WRITTEN, and compared as text against the
+# kernel's own spelling on the very next probe.
+OTHER_SPELLINGS = {
+    "netmask": ("192.168.10.2/255.255.255.0", "192.168.10.2/24"),
+    "expanded_v6": ("FD00:1234:5678:0009:0000:0000:0000:0001/64", "fd00:1234:5678:9::1/64"),
+}
+
+
+def _spelled(spelling: str) -> tuple[str, str, str, dict]:
+    """`(written, canonical, field, candidate)` for one alternative spelling of a live address.
+
+    The candidate is on a link the panel did NOT create, so the undo's address half is the half that
+    runs — which is where the survivor is recorded and where the drain then asks the host about it.
+    """
+    written, canonical = OTHER_SPELLINGS[spelling]
+    field = "addr6" if ":" in canonical else "addr4"
+    return written, canonical, field, (
+        {"iface": "eth0.9", "addr4": "", "addr6": "", "vlan": False,
+         "link_state": provision.LINK_PRESENT} | {field: written})
+
+
+@pytest.mark.parametrize("spelling", sorted(OTHER_SPELLINGS))
+def test_a_non_canonical_address_is_canonicalised_at_the_boundary(settings, stub_xray, spelling):
+    """ONE SPELLING, on the way in and on the way out. The check accepted every spelling `ipaddress`
+    accepts and handed back the token as written, so the record carried a value the kernel never
+    prints — and the probe compares against what the kernel prints."""
+    written, canonical, field, candidate = _spelled(spelling)
+    state = _state(settings, stub_xray, _HostNet(links=("eth0", "eth0.2", "eth0.9")))
+
+    provision.record_provision_candidate(state.store, candidate)
+
+    assert json.loads(state.store.get_setting(UNDO_KEY))[field] == canonical, \
+        "the record was stored in a spelling the probe does not compare"
+    decoded = provision._pending_candidate(state.store).candidate
+    assert getattr(decoded, field) == canonical, "the decoded record carries another spelling"
+    assert provision._checked_addr_text(written, "an address") == canonical
+    state.close()
+
+
+@pytest.mark.parametrize("spelling", sorted(OTHER_SPELLINGS))
+def test_a_live_address_spelled_another_way_is_never_falsely_drained(settings, stub_xray, spelling):
+    """PRODUCT-CRITICAL, and the harm the spelling did. The address IS on the interface, in the
+    kernel's spelling; the record names it in another. Whatever the record carries, the drain's probe
+    must answer about the ADDRESS — otherwise the survivor is proven absent by its very first probe,
+    eth0.9 leaves the enforcement cover, and the segment address is still on it."""
+    _written, canonical, _field, candidate = _spelled(spelling)
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"), addrs={"eth0.9": [canonical]})
+    state = _state(settings, stub_xray, net)
+
+    outcome = provision.undo_provision_candidate(state, candidate)
+
+    assert outcome.unresolved == []                      # the survivor write landed, so it settles
+    assert [iface for iface, _ in provision._parse_survivors(state.store)] == ["eth0.9"]
+    # THE PROPERTY: nothing is proven gone, so the pair stays and the interface stays covered.
+    assert [iface for iface, _ in provision.drain_enforcement_cover(state.store, run=net._run)] \
+        == ["eth0.9"], "a live address was drained out of the cover on a spelling mismatch"
+    assert provision.enforcement_cover(state.store, "eth0.2").names == ["eth0.9"]
+    assert net.deleted_addrs() == [] and net.deleted_links() == []
+    assert net.addrs["eth0.9"] == {canonical}, "the address the cover was for left the host"
+    state.close()
+
+
+@pytest.mark.parametrize("spelling", sorted(OTHER_SPELLINGS))
+def test_the_probe_answers_about_the_address_and_not_about_its_spelling(spelling):
+    """The comparison side, where the mismatch actually lived. `_probe_addr` matched the record's token
+    against `ip addr show` as TEXT, so every spelling above answered ABSENT for an address that is
+    there — and ABSENT is the one answer that drains a survivor and retires an ownership record. Both
+    sides are parsed now, so the answer is about the address."""
+    written, canonical = OTHER_SPELLINGS[spelling]
+    family = "inet6" if ":" in canonical else "inet"
+    listed = (f"2: eth0.9    {family} {canonical} scope global eth0.9\n"
+              "       valid_lft forever preferred_lft forever\n")
+
+    assert provision._probe_addr("eth0.9", written,
+                                 run=lambda cmd, input=None: listed)[0] == provision.ADDR_PRESENT, \
+        "a live address was read as absent because the record spelled it differently"
+    # ...and the other direction is untouched: a different address is still ABSENT, prefix included.
+    assert provision._probe_addr("eth0.9", written.replace("2/", "9/").replace("1/", "9/"),
+                                 run=lambda cmd, input=None: listed)[0] == provision.ADDR_ABSENT
+
+
+def test_an_owned_address_in_another_spelling_is_never_forgotten_as_absent():
+    """The same comparison on the path that is not decoded at all: the ownership records, whose
+    addresses reach `_probe_addr` as stored. A refused `ip addr del` asks the host whether the address
+    is still there, and only ABSENT licenses dropping the record that would retry the removal — so a
+    spelling mismatch there forgets an address that is on the host with nothing left to reclaim it."""
+    listed = ("2: eth0.9    inet 192.168.10.2/24 scope global eth0.9\n"
+              "       valid_lft forever preferred_lft forever\n")
+
+    def host(cmd, **kw):
+        if cmd[1:3] == ["addr", "del"] or cmd[2:4] == ["addr", "del"]:
+            raise subprocess.CalledProcessError(2, cmd, stderr="RTNETLINK answers: refused")
+        return subprocess.CompletedProcess(cmd, 0, listed, "")
+
+    kept = provision._retire_owned_addr("eth0.9", "192.168.10.2/255.255.255.0", run=host)
+
+    assert kept is not None, "an address still on the host was forgotten as absent"
+    assert "192.168.10.2/255.255.255.0 on eth0.9" in kept
+
+
+def test_a_contradicted_prior_link_state_authorises_no_deletion(settings, stub_xray, caplog):
+    """PRODUCT-CRITICAL. `link_state` and the superseded `link_existed` are two spellings of ONE
+    observation, and they were validated independently: `{"link_state": "absent", "link_existed":
+    true}` passed both while saying the panel both did and did not create the link. The reader then
+    preferred `link_state` — the spelling that authorises `ip link delete`. A record that says it twice
+    and disagrees with itself is not one the panel wrote: nothing acts on it, and it is kept."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    planted = json.dumps({"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
+                          "link_state": provision.LINK_ABSENT, "link_existed": True})
+    state.store.set_setting(UNDO_KEY, planted)
+
+    pending = provision._pending_candidate(state.store)
+    assert pending.candidate is None and pending.unusable == ""
+    assert pending.cover.names == ["eth0.9"] and pending.cover.known is False
+
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        stored = _boot(settings, state)
+
+    assert net.deleted_links() == [], "a record that contradicts itself deleted a link"
+    assert "eth0.9" in net.links
+    assert stored[UNDO_KEY] == planted, "the record the coverage rests on was cleared"
+    assert "which observation was taken cannot be read" in caplog.text
+    state.close()
+
+
+RESOLVED_LIVE = [
+    {"resolved": True},                                     # the clear's own word, as a live record
+    {"resolved": True, "iface": "eth0.9", "vlan": True, "link_state": provision.LINK_ABSENT},
+    {"resolved": False, "iface": "eth0.9", "vlan": False, "link_state": provision.LINK_UNKNOWN},
+]
+
+
+@pytest.mark.parametrize("candidate", RESOLVED_LIVE)
+def test_a_live_candidate_may_not_claim_to_be_settled(settings, stub_xray, candidate):
+    """`resolved` is the CLEAR's word and the validator every writer and reader shares ignored it. So
+    `{"resolved": true}` could be written as a pending record — proven, looking to its caller like a
+    successful arm, and read by every reader as ALREADY SETTLED: no cover, no undo, and an interface a
+    pass is about to create named nowhere. Refused where it can still be reported: the write."""
+    net = _HostNet(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+
+    with pytest.raises(RuntimeError, match="only a clear may write that word"):
+        provision.record_provision_candidate(state.store, candidate)
+
+    assert (state.store.get_setting(UNDO_KEY) or "") == "", "a live candidate claiming to be settled"
+    # ...and the in-process rollbacks, which hand their dict straight to the undo, refuse it too.
+    outcome = provision.undo_provision_candidate(state, candidate)
+    assert outcome.unresolved and net.deleted_links() == []
+    assert "settled undo" in outcome.unresolved[0]
+    state.close()
+
+
+def test_a_blank_interface_in_a_record_that_does_not_conform_is_kept(settings, stub_xray, caplog):
+    """THE ORDER, and it was the wrong way round. A blank `iface` was classified as "there is no
+    candidate" — discardable, cleared by the next boot — BEFORE the remaining fields were looked at, so
+    `{"iface": "", "addr4": [1]}` was cleared as known-empty while conforming to nothing. The discard
+    is only ever right for a record that is otherwise exactly what the panel writes, so every other
+    field is proven first and this one is retained."""
+    net = _HostNet(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+    planted = json.dumps({"iface": "", "addr4": [1]})
+    state.store.set_setting(UNDO_KEY, planted)
+
+    pending = provision._pending_candidate(state.store)
+    assert pending.candidate is None
+    assert pending.unusable == "", "a record that conforms to nothing was discarded as known-empty"
+    assert pending.cover.known is False and pending.cover.may_narrow is False, \
+        "a record nothing can read licensed narrowing the enforcement"
+
+    with caplog.at_level(logging.ERROR, logger="pi_gw_panel"):
+        stored = _boot(settings, state)
+
+    assert stored[UNDO_KEY] == planted, "the record was cleared instead of kept for repair"
+    assert "neither acted on nor cleared" in caplog.text
+    state.close()
+
+
+@pytest.mark.parametrize("record", [
+    {"iface": "  ", "vlan": True},                          # blank text: "there is no candidate"
+    {"vlan": False, "link_state": provision.LINK_UNKNOWN},   # ...and the same said by omission
+    {"iface": "", "addr4": "", "addr6": "", "vlan": False, "link_state": provision.LINK_UNKNOWN},
+])
+def test_a_conforming_record_that_names_no_interface_is_still_discarded(record):
+    """The disclosed discard behaviour, unchanged for the records it was meant for. Reading these as
+    unreadable instead would retain them for ever, and a retained unknown cover makes every
+    store-derived render REFUSE — so a record that names nothing would hold the segment at no network
+    at all until an operator edited the database. That is the over-rejection this must not become."""
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, json.dumps(record))
+
+    pending = provision._pending_candidate(store)
+
+    assert pending.candidate is None
+    assert "names no candidate interface" in pending.unusable
+    assert pending.cover.known is True and pending.cover.names == []
+    assert pending.cover.may_narrow is True, "a record that says there is nothing to cover refused"
+
+
+# EVERY SHAPE THE PANEL HAS EVER WRITTEN HERE, because over-rejection is its own defect: a record the
+# readers refuse is a cover that stays unknown, and every store-derived render refuses with it — the
+# segment held at no network at all until someone edits the database. This module has produced that
+# outcome twice from safety machinery, so the shapes are enumerated and proven rather than assumed.
+PANEL_WRITES = {
+    # `provision_candidate` today: a VLAN the pass is about to create, proven absent beforehand.
+    "armed_vlan": {"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
+                   "link_state": provision.LINK_ABSENT},
+    # ...with IPv6 on, where `addr6` is whatever `host_addr6` resolved for the segment.
+    "armed_v6": {"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "fd00:1234:5678:9::1/64",
+                 "vlan": True, "link_state": provision.LINK_ABSENT},
+    # A retarget onto an interface the operator owns: no VLAN created, the link was already there.
+    "retarget": {"iface": "eth1", "addr4": "192.168.10.2/24", "addr6": "", "vlan": False,
+                 "link_state": provision.LINK_PRESENT},
+    # The probe that would not answer, recorded as such — it refuses the delete for ever.
+    "unprobed": {"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
+                 "link_state": provision.LINK_UNKNOWN},
+    # `controller._unarmed_candidate`: the restore's preflight, before the host has been touched.
+    "unarmed_preflight": {"iface": "eth0.9", "addr4": "", "addr6": "", "vlan": False,
+                          "link_state": provision.LINK_UNKNOWN, "armed": False},
+    # A pass with nothing to record in either address: the keys are simply absent.
+    "no_addresses": {"iface": "eth0.9", "vlan": True, "link_state": provision.LINK_ABSENT},
+    # The release before `link_state`: a bool that had already folded "could not tell" into False.
+    "legacy_link_existed": {"iface": "eth1", "addr4": "192.168.10.2/24", "addr6": "", "vlan": False,
+                            "link_existed": True},
+    "legacy_link_existed_false": {"iface": "eth0.9", "addr4": "192.168.10.2/24", "addr6": "",
+                                  "vlan": True, "link_existed": False},
+    # The release that recorded a per-address probe and deleted on it: read for its addresses only.
+    "legacy_addr_state": {"iface": "eth1", "addr4": "192.168.10.2/24", "addr6": "", "vlan": False,
+                          "link_state": provision.LINK_PRESENT,
+                          "addr_state": {"192.168.10.2/24": provision.LINK_ABSENT}},
+}
+
+
+@pytest.mark.parametrize("shape", sorted(PANEL_WRITES))
+def test_every_shape_the_panel_writes_still_reads(shape):
+    """The whole enumeration, read through the boundary and written through the writer. A pending
+    record outlives the release that wrote it — that is the entire reason it exists — so each of these
+    must decode into a candidate, name its interface to the cover, and be neither discarded nor
+    refused."""
+    record = PANEL_WRITES[shape]
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, json.dumps(record))
+
+    pending = provision._pending_candidate(store)
+
+    assert pending.candidate is not None, f"the panel's own {shape} record was refused"
+    assert pending.candidate.iface == record["iface"]
+    assert pending.unusable == "", f"the panel's own {shape} record was discarded"
+    assert pending.cover.known is True and pending.cover.names == [record["iface"]]
+    assert provision.pending_candidate_ifaces(store) == [record["iface"]]
+    # ...and the writer accepts it too: one validator, both sides of the record.
+    provision.record_provision_candidate(store, record)
+    assert json.loads(store.get_setting(UNDO_KEY))["iface"] == record["iface"]
+    for extra in ("armed", "addr_state"):           # nothing the panel put there is dropped
+        assert (extra in json.loads(store.get_setting(UNDO_KEY))) == (extra in record)
+
+
+@pytest.mark.parametrize("raw", ["", "   ", provision.RESOLVED_UNDO])
+def test_the_settled_shapes_are_still_nothing_at_all(raw):
+    """The other two shapes the panel writes: the blank record and the exact terminal form the clear
+    writes. Neither is a candidate, neither is reported, and both leave the cover complete and free to
+    narrow — the settled state, quietly."""
+    store = _bare_store()
+    store.set_setting(UNDO_KEY, raw)
+
+    pending = provision._pending_candidate(store)
+
+    assert pending.candidate is None and pending.unusable == ""
+    assert pending.cover.known is True and pending.cover.may_narrow is True
+
+
+def test_the_typed_record_cannot_be_read_as_the_dict_it_came_from():
+    """The point of the type. Every defect in this record's history is a reader reaching a raw field
+    and deriving a poorer answer from it — `get("vlan")` over JSON making `"false"` an authorisation,
+    `str(get("iface") or "")` turning `0.9` into a name `ip link delete` accepted. So there is nothing
+    left to reach, and the wrong access fails loudly rather than plausibly."""
+    candidate = provision._checked_candidate(PANEL_WRITES["armed_vlan"])
+
+    assert candidate.iface == "eth0.9" and candidate.vlan is True
+    assert candidate.prior == provision.LINK_ABSENT
+    with pytest.raises(TypeError):
+        candidate["vlan"]
+    with pytest.raises(TypeError):
+        candidate.get("vlan")
+    with pytest.raises(TypeError):          # "no candidate" is None, not a falsey record
+        bool(candidate)
+
+
+# --- `installed` may not be flattened before the decode that is supposed to refuse it -----------
+#
+# `managed_host_state` reads the same three scalars for the undo's `installed`, and documented that it
+# need not prove their shape because its one consumer decodes them through `_as_candidate` first. `or
+# ""` ran BEFORE that gate and turned every falsey non-text value — `0`, `False`, `[]`, `{}` — into the
+# string that means "the panel claims no address here". So the gate was never reached: `installed` is
+# the ONLY source of an address the pass resolved for itself (an `auto`/PD /64), that address was left
+# out of the orphan report and out of the survivor ledger, and the pending record was cleared over a
+# record that had not been read.
+
+
+@pytest.mark.parametrize("value", [0, False, [], {}])
+def test_an_installed_address_that_could_not_be_read_keeps_the_undo_pending(settings, stub_xray,
+                                                                           value):
+    """PRODUCT-CRITICAL. The undo may not settle over a record it did not read. What it would have
+    omitted is the address only `installed` names, on an interface that is still up — so the whole
+    record is unreadable, nothing is removed, nothing is recorded, and the pending record stays."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth1"), addrs=PRE_ADDRESSED)
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting("managed_segment_iface", "eth0.2")
+    state.store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+    candidate = _retarget(state)
+
+    # Read through a store that answers with the value, rather than written into one: a real sqlite
+    # column refuses a list outright, and what is under test is the READ, which any store wrapper —
+    # a JSON column, a cache, a restore document decoded straight into settings — can present.
+    plain = state.store.get_setting
+    state.store.get_setting = (
+        lambda key: value if key == "managed_segment_addr6" else plain(key))
+    installed = provision.managed_host_state(state.store)
+    state.store.get_setting = plain
+    outcome = provision.undo_provision_candidate(state, candidate, installed)
+
+    assert net.deleted_addrs() == []
+    assert outcome.unresolved, "the pending record settled over a record that was not read"
+    assert any("not the record the panel writes" in line for line in outcome.actions)
     state.close()

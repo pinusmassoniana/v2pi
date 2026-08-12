@@ -22,6 +22,22 @@ def _store():
     return NodeStore(conn)
 
 
+def _canon_addr(addr: str) -> str:
+    """An address as THE KERNEL would hold it: one spelling, whatever spelling `ip` was handed.
+
+    Part of the fixes below and not scaffolding, for the reason `HostFacts` gives about every other
+    fact it models. `ip addr del FD00:1:2:3:0:0:0:1/64` and `ip addr del fd00:1:2:3::1/64` name the
+    SAME address and the kernel removes it either way. A fake that keyed its per-interface sets on
+    the literal token answered "the address is still there" for a delete that really would have
+    taken it off — so the defect where a differently-spelled ownership record has the live segment
+    address deleted moments after it was installed could not be written down as a test at all.
+    """
+    try:
+        return ipaddress.ip_interface(addr).with_prefixlen
+    except ValueError:
+        return addr
+
+
 class HostFacts:
     """The per-interface facts every runner fake below records, and none of them used to.
 
@@ -65,7 +81,7 @@ class HostFacts:
 
     def note_addr(self, rest) -> None:
         """`rest` is `["addr", "replace"|"del", <cidr>, "dev", <iface>]`, flags already stripped."""
-        iface, addr = rest[4], rest[2]
+        iface, addr = rest[4], _canon_addr(rest[2])
         if rest[1] == "del":
             self.on.get(iface, set()).discard(addr)
         else:
@@ -79,7 +95,7 @@ class HostFacts:
 
     def seed(self, iface: str, addrs) -> None:
         """Put addresses on an interface without issuing a command (host state a test starts from)."""
-        self.on.setdefault(iface, set()).update(addrs)
+        self.on.setdefault(iface, set()).update(_canon_addr(addr) for addr in addrs)
 
     @property
     def addrs(self) -> frozenset:
@@ -220,7 +236,12 @@ class AddrHost(HostFacts):
         self.returncode, self.stderr = returncode, stderr
 
     def blocked(self, blocks, iface: str, addr: str) -> bool:
-        """Whether `blocks` names this command: the address anywhere, or on this interface."""
+        """Whether `blocks` names this command: the address anywhere, or on this interface.
+
+        Keyed on the canonical spelling for the same reason the host's own sets are: a refusal names
+        an ADDRESS, and the kernel refuses it whichever spelling the command carried.
+        """
+        addr = _canon_addr(addr)
         return addr in blocks or (iface, addr) in blocks
 
     def __call__(self, cmd, input=None):
@@ -2850,3 +2871,437 @@ def test_an_unknown_answer_that_still_names_an_interface_refuses_before_touching
     assert written == [] and state.dnsmasq.applied == []
     assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.2"}
     assert result.ok is False and "simulated" in result.error
+
+
+# --- the ownership pipeline as a TYPED boundary ------------------------------------------------
+#
+# The four ownership records are the pending undo's sibling, and until now they were read as four raw
+# scalars plus a list of raw text pairs. Every defect the undo record grew a type to end lived here
+# unfixed, and one of them is the worst thing in this module: the addresses were compared AS TEXT, so
+# a record holding an expanded or upper-case spelling of the very address the pass was installing was
+# "different from" it. It was classified as superseded, it was not recognised by the desired-address
+# protection either — a text comparison too — and it was `ip addr del`'d off the interface moments
+# after the same address was installed there. On a live gateway that is the segment's own address.
+#
+# The interface scalar had never been checked at all, on the argument that a name that is not a name
+# matches no device — which is true of the delete and NOT true of the ledger entry the same value
+# becomes: three tokens, which every later read of the record refuses in full, and both readers are
+# the paths that install and remove the segment's addresses. So one bad scalar plus one refused
+# replacement blocked provisioning until someone edited the database by hand.
+#
+# What closes both is one boundary. `_read_ownership` canonicalises and family-checks the scalars AND
+# every ledger pair before anything is compared, persisted or deleted, and hands back an `Ownership`
+# with no raw scalar to reach. A value the panel did not write is INVALID rather than blank: it
+# authorises nothing and blocks nothing but the action it would have authorised, so the pass still
+# applies the operator's change and the gateway is not wedged. And `_record_ownership` refuses to
+# write a ledger it could not read back, which makes the unparseable state unreachable.
+
+# The same address the plan below installs, in the two spellings a record may legitimately hold.
+_V6_PREFIX = "fd00:1:2:3::/64"
+_V6_CANON = "fd00:1:2:3::1/64"
+_V6_LOUD = "FD00:0001:0002:0003:0000:0000:0000:0001/64"
+
+
+def _owned(store, iface="eth0.2", addr4="192.168.9.2/24", addr6="", stale=""):
+    """A store recording exactly what the panel writes, with one value under test swapped in."""
+    store.set_setting("managed_segment_iface", iface)
+    store.set_setting("managed_segment_addr4", addr4)
+    store.set_setting("managed_segment_addr6", addr6)
+    store.set_setting(provision.STALE_KEY, stale)
+    return store
+
+
+def _dels(host) -> list:
+    return [cmd for cmd in host.cmds() if cmd[:3] == ["ip", "addr", "del"]]
+
+
+def test_a_differently_spelled_ownership_address_is_not_deleted_off_the_interface():
+    """PRODUCT-CRITICAL. The record holds the expanded, upper-case spelling of the address the pass is
+    installing. Read as text that is a different address: superseded, unprotected, and deleted
+    immediately after its canonical spelling went on. It is the SAME address, so nothing is
+    superseded, nothing is owed a removal, and the segment keeps its v6."""
+    host = AddrHost(addrs=["192.168.9.2/24", _V6_CANON])
+    store = _owned(_store(), addr6=_V6_LOUD)
+
+    outcome = provision.reconcile_segment_addresses(
+        store, _plan_with("192.168.9.2", _V6_PREFIX), run=host)
+
+    assert _dels(host) == [], "the live segment address was deleted over a spelling"
+    assert host.addrs_on("eth0.2") == {"192.168.9.2/24", _V6_CANON}
+    assert store.get_setting(provision.STALE_KEY) == ""
+    assert store.get_setting("managed_segment_addr6") == _V6_CANON      # and the record is healed
+    assert outcome.applied is True and outcome.reasons == []
+
+
+def test_a_differently_spelled_stale_pair_is_not_deleted_off_the_interface():
+    """THE SEMANTIC MUTATION'S TARGET, and the same defect one record along: `A` -> `B` -> `A` left the
+    ledger owed a removal of `A`, and the ledger's spelling of `A` need not be the plan's. Canonicalise
+    the scalars and keep comparing the PAIRS as raw text and this is what happens: the entry survives
+    the desired-address subtraction, is written back as owed, and is deleted off the interface the pass
+    has just installed it on."""
+    host = AddrHost(addrs=["192.168.9.2/24", _V6_CANON])
+    store = _owned(_store(), addr6=_V6_CANON, stale=f"eth0.2 {_V6_LOUD}")
+
+    outcome = provision.reconcile_segment_addresses(
+        store, _plan_with("192.168.9.2", _V6_PREFIX), run=host)
+
+    assert _dels(host) == [], "a ledger entry deleted the address the pass installed"
+    assert host.addrs_on("eth0.2") == {"192.168.9.2/24", _V6_CANON}
+    assert store.get_setting(provision.STALE_KEY) == "", \
+        "the panel still claims it owes a removal of the address it is required to have"
+    assert outcome.applied is True and outcome.reasons == []
+
+
+def test_a_family_crossed_ownership_scalar_drives_no_deletion():
+    """Each ownership key names a family by existing, and the comparison that decides "superseded" is
+    against the plan's address FOR THAT FAMILY. A v4 value under the v6 key is never equal to a v6
+    address, so it read as superseded and was deleted — and the v4 address on a gateway's segment is
+    the one the operator reaches it on. Both directions, in one pass: neither is compared, neither is
+    deleted, both are reported."""
+    host = AddrHost(addrs=["192.168.9.2/24", _V6_CANON, "fd00:9:9:9::1/64", "192.168.1.120/24"])
+    store = _owned(_store(), addr4="fd00:9:9:9::1/64", addr6="192.168.1.120/24")
+
+    outcome = provision.reconcile_segment_addresses(
+        store, _plan_with("192.168.9.2", _V6_PREFIX), run=host)
+
+    assert _dels(host) == [], "an address was deleted on the authority of a family-crossed record"
+    assert {"fd00:9:9:9::1/64", "192.168.1.120/24"} <= host.addrs_on("eth0.2")
+    assert outcome.applied is True
+    assert any("managed_segment_addr4" in reason and "managed_segment_addr6" in reason
+               for reason in outcome.reasons), "the crossed values were not reported"
+    assert provision._parse_stale(store) == [], "a pair was derived from a value that was not read"
+
+
+def test_an_unusable_ownership_interface_is_not_the_interface_the_plan_names():
+    """Blank means "nothing recorded" and the plan's interface may then be substituted; a value that is
+    not a name means the recorded addresses are on SOMETHING, and substituting the plan's aims `ip addr
+    del <recorded address>` at the interface the pass is installing onto. Here the recorded address is
+    a DIFFERENT one, so under the substitution it is not protected either: it comes straight off the
+    live segment."""
+    host = AddrHost(addrs=["192.168.9.2/24", "192.168.1.120/24"])
+    store = _owned(_store(), iface="eth0.2 eth0.9", addr4="192.168.1.120/24")
+
+    outcome = provision.reconcile_segment_addresses(store, _plan_with("192.168.9.2"), run=host)
+
+    assert _dels(host) == []
+    assert host.addrs_on("eth0.2") == {"192.168.9.2/24", "192.168.1.120/24"}
+    assert provision._parse_stale(store) == [], "a pair was formed from a value that is not a name"
+    assert outcome.applied is True and any("eth0.2 eth0.9" in r for r in outcome.reasons)
+    # ...and the pass is not left refusing for ever: the scalar is healed on the way past, so the
+    # SECOND pass reports nothing at all. One refused change plus a heal, never a refusal for ever.
+    assert provision._read_ownership(store).known
+    assert store.get_setting("managed_segment_iface") == "eth0.2"
+    again = provision.reconcile_segment_addresses(store, _plan_with("192.168.9.2"), run=host)
+    assert again.applied is True and again.reasons == []
+
+
+def test_an_unusable_interface_through_the_pd_callback_persists_nothing_unparseable():
+    """PRODUCT-CRITICAL, and the shape that used to wedge the gateway. The PD watcher calls the
+    reconcile DIRECTLY, so no route validated anything first, and the delegation's replacement is then
+    refused — which is the branch that RETAINS what it was superseding. Retained as a pair built from a
+    space-bearing interface, the ledger reads back as three tokens and every later pass refuses to
+    install or remove a segment address at all. Nothing unparseable may be persisted, and the next
+    delegation must still land."""
+    host = UninstallableAddrHost(reject=["2001:db8:1200:2::1/64"])
+    state = _auto_pd_state(host)
+    store = state.store
+    store.set_setting("managed_segment_iface", "eth0.2 eth0.9")
+
+    state.pd_client.callback("2001:db8:1200::/56")
+
+    assert provision._read_ownership(store).known, \
+        "the pass persisted a ledger no later pass can read, so the segment cannot be provisioned"
+    assert all(len(line.split()) == 2
+               for line in (store.get_setting(provision.STALE_KEY) or "").splitlines()
+               if line.strip())
+    assert not state.provision_result.ok                    # and it is reported, not swallowed
+
+    # The gateway is not wedged: the very next delegation is installed and recorded.
+    host.reject.clear()
+    state.pd_client.callback("2001:db8:1300::/56")
+
+    assert store.get_setting("managed_segment_addr6") == "2001:db8:1300:2::1/64"
+    assert "2001:db8:1300:2::1/64" in host.addrs_on("eth0.2")
+    assert store.get_setting("pd_segment_prefix6") == "2001:db8:1300:2::/64"
+
+
+def test_every_shape_the_panel_writes_still_reads_and_still_provisions():
+    """The other half of every refusal above. A first pass on a fresh host, a v4-only segment, a
+    dual-stack one, and a ledger of both families all read clean and all provision — the boundary
+    canonicalises what the panel already writes canonically and refuses none of it."""
+    fresh = provision._read_ownership(_owned(_store(), iface="", addr4=""))
+    assert (fresh.known, fresh.iface, fresh.invalid, fresh.iface_unusable) == (True, "", (), False)
+
+    host = AddrHost(addrs=["192.168.9.2/24"])
+    store = _owned(_store(), addr4="192.168.9.2/24",
+                   stale="eth0.7 192.168.8.2/24\neth0.7 fd00:8:8:8::1/64")
+    host.seed("eth0.7", ["192.168.8.2/24", "fd00:8:8:8::1/64"])
+
+    outcome = provision.reconcile_segment_addresses(
+        store, _plan_with("192.168.10.2", _V6_PREFIX), run=host)
+
+    assert outcome.applied is True and outcome.reasons == []
+    # The v4 the record named IS superseded here — a real move, not a spelling — so it goes.
+    assert host.addrs_on("eth0.2") == {"192.168.10.2/24", _V6_CANON}
+    assert host.addrs_on("eth0.7") == set()             # both families retired off the old interface
+    assert provision._parse_stale(store) == []
+    own = provision._read_ownership(store)
+    assert (own.iface, own.addr4, own.addr6) == ("eth0.2", "192.168.10.2/24", _V6_CANON)
+    assert own.invalid == () and own.retained == ()
+
+
+# --- ...and the cover the pass reads FIRST, which was still re-deriving those records ------------
+#
+# `_provision_segment` opens with `superseded_state`, and declines the whole pass when the answer is
+# short: nothing is created, no address is installed, no ruleset is staged. That refusal is right for
+# a record the store would not answer — it may be naming an interface that is up carrying the segment
+# right now — and it was being spent on two states that are not that at all. The interface scalar was
+# read raw, so a value the panel did not write made the cover UNKNOWN; the stale ledger was read
+# all-or-nothing, so one entry the boundary would have RETAINED discarded the valid pairs beside it.
+#
+# Both states survive the pass that reads them. The scalar is only rewritten by the reconcile, which
+# is BELOW the refusal, and a retained entry is preserved deliberately, on every pass, for ever. So
+# the refusal was not one refused change with a heal behind it — it was every normal provisioning pass
+# refused until someone edited the database by hand, which is the outage the whole invalid-versus-blank
+# distinction exists to avoid, reached through the one reader still parsing the scalars for itself.
+#
+# Asked through `host_provision` over TWO passes, deliberately. A test that calls one function cannot
+# see "the pass proceeds and heals, and the next one is clean" — that is a property of the sequence,
+# and the sequence is where the wedge was.
+
+
+def _healing_host():
+    """A live gateway on `eth0.2`, carrying an address the panel's record no longer describes."""
+    return LinkAndAddrHost(links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"},
+                           on={"eth0.2": {"192.168.1.120/24"}})
+
+
+def test_an_invalid_interface_scalar_does_not_refuse_the_pass_that_would_heal_it(monkeypatch):
+    """PRODUCT-CRITICAL: the pass must RUN. `eth0.2 eth0.9` names no interface, so it contributes no
+    name to the cover — and it can be enforced on nothing either, so it may not cost the answer its
+    completeness. Pass one applies the operator's configuration and rewrites the scalar; pass two has
+    nothing left to report. Under the raw read neither pass reached the host at all."""
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: None)
+    host = _healing_host()
+    store = _owned(_store(), iface="eth0.2 eth0.9", addr4="192.168.1.120/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    first = provision.host_provision(state)
+
+    assert any(cmd[:3] == ["ip", "addr", "replace"] for cmd in host.cmds()), \
+        "the pass refused before it configured anything, and the value it refused over is durable"
+    assert "192.168.10.2/24" in host.addrs_on("eth0.2")      # the operator's segment is up
+    assert state.dnsmasq.applied, "nothing keyed to the segment was configured"
+    # Reported once, through the channel that already carries it — and HEALED on the way past.
+    assert first.ok is False and "eth0.2 eth0.9" in first.error
+    assert "could not read which interfaces" not in first.error
+    assert store.get_setting("managed_segment_iface") == "eth0.2"
+    assert provision._read_ownership(store).invalid == ()
+
+    second = provision.host_provision(state)
+
+    assert second.ok is True and second.error == "", \
+        "the pass is still refusing, so the value refused every later pass too"
+    assert host.addrs_on("eth0.2") >= {"192.168.10.2/24"}
+
+
+def test_a_retained_ledger_entry_neither_refuses_the_pass_nor_costs_the_cover_its_names(monkeypatch):
+    """PRODUCT-CRITICAL both ways. `eth0.2/x` parses as a PAIR, so the boundary keeps it verbatim —
+    and reading the ledger raw discarded `eth0.7` along with it, which is the interface that really is
+    up carrying a segment address the panel owes a removal of. So: the pass runs, the ruleset covers
+    `eth0.7` for as long as its address is on it, and the entry is neither acted on nor lost."""
+    written: list[str] = []
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: written.append(text))
+    host = LinkAndAddrHost(links={"eth0", "eth0.2", "eth0.7"}, up={"eth0", "eth0.2", "eth0.7"},
+                           on={"eth0.2": {"192.168.10.2/24"}, "eth0.7": {"192.168.9.2/24"}},
+                           refuse=[("eth0.7", "192.168.9.2/24")])
+    store = _owned(_store(), addr4="192.168.10.2/24",
+                   stale="eth0.7 192.168.9.2/24\neth0.2/x 192.168.7.2/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    for pass_number in (1, 2):
+        result = provision.host_provision(state)
+
+        assert "could not read which interfaces" not in result.error, \
+            f"pass {pass_number} refused over an entry every later pass preserves too"
+        assert "192.168.10.2/24" in host.addrs_on("eth0.2")
+        # The valid stale interface is still covered: it is up, still carrying the address whose
+        # removal was refused, and the entry that says so is the only record of it there is.
+        assert _enforced_ifaces(_live_ruleset(state)) >= {"eth0.2", "eth0.7"}
+        _assert_segment_covered(host, state)
+        assert "interface-name:eth0.7" in written[-1], "the drop-in handed it back to NM"
+        assert result.ok is False and "192.168.9.2/24" in result.error
+        # ...and the entry the panel cannot heal goes back exactly as it came, on every pass.
+        assert "eth0.2/x 192.168.7.2/24" in store.get_setting(provision.STALE_KEY).splitlines()
+        assert not [cmd for cmd in host.cmds() if "eth0.2/x" in cmd]
+
+    # Whatever refused the removal clears: the address comes off, the pair is forgotten, and the
+    # retained entry alone does not hold the cover open — the enforcement narrows and the pass is
+    # clean, which is what "it blocks nothing" has to mean in the end.
+    host.refuse.clear()
+
+    third = provision.host_provision(state)
+
+    assert third.ok is True and third.error == ""
+    assert host.addrs_on("eth0.7") == set()
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.2"}
+    _assert_segment_covered(host, state)
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2/x 192.168.7.2/24"
+
+
+# --- ...and the same two passes over a scalar that is not TEXT, which was still the old answer ----
+#
+# The boundary told invalid from blank by SHAPE and not by TYPE, because the type check sat one gate
+# earlier, in `read_record`, where every non-text value is UNKNOWN. That is the right answer for the
+# ledger — its entries go back verbatim, so the panel cannot heal one — and the wrong one for a scalar
+# the pass rewrites in full: a `managed_segment_iface` holding a number made the whole record
+# unreadable, `_ownership_cover` raise, and `_provision_segment` decline ABOVE the reconcile that is
+# the only thing that would have rewritten it. Every pass, for ever, until someone edited the database.
+#
+# Asked over TWO passes through `host_provision` for the reason the invalid-text pair above is: "the
+# pass proceeds and heals, and the next one is clean" is a property of the sequence, and the sequence is
+# where the wedge was. One function call cannot see it.
+
+
+class _NonTextStore:
+    """A store that hands back a value that is NOT TEXT under one key, and stops the moment the panel
+    writes that key itself.
+
+    The shape a hand-edited row, a foreign writer or a column that is not TEXT produces — which a real
+    `NodeStore` cannot be made to hold, since SQLite's affinity turns `0` into `"0"` on the way in, so
+    the state has to be modelled at the seam the panel actually reads through. Stopping on the panel's
+    own write is what makes the HEAL visible: pass one rewrites the scalar, and pass two reads the text
+    that is really in the store.
+    """
+
+    def __init__(self, store, key: str, value):
+        self._store, self._key, self._value = store, key, value
+        self.lying = True
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def get_setting(self, key):
+        if key == self._key and self.lying:
+            return self._value
+        return self._store.get_setting(key)
+
+    def set_setting(self, key, value):
+        if key == self._key:
+            self.lying = False
+        self._store.set_setting(key, value)
+
+
+def test_a_non_text_interface_scalar_does_not_refuse_the_pass_that_would_heal_it(monkeypatch):
+    """PRODUCT-CRITICAL: the pass must RUN. `0` under the interface key is not an interface name and is
+    not even text, so it names nothing the enforcement could be scoped to — and it may not cost the
+    cover its completeness, because the value is durable and the pass that rewrites it is the pass this
+    answer gates. Pass one applies the operator's configuration and heals the scalar; pass two has
+    nothing left to report. Read through `read_record` neither pass reached the host at all."""
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: None)
+    host = _healing_host()
+    store = _NonTextStore(_owned(_store(), iface="eth0.2", addr4="192.168.1.120/24"),
+                          "managed_segment_iface", 0)
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    first = provision.host_provision(state)
+
+    assert any(cmd[:3] == ["ip", "addr", "replace"] for cmd in host.cmds()), \
+        "the pass refused before it configured anything, and the value it refused over is durable"
+    assert "192.168.10.2/24" in host.addrs_on("eth0.2")      # the operator's segment is up
+    assert state.dnsmasq.applied, "nothing keyed to the segment was configured"
+    # ...and nothing was deleted on the authority of a value that is not a value: the address the
+    # record's old value stood for is left exactly where it is, and named to the operator.
+    assert _dels(host) == []
+    assert "192.168.1.120/24" in host.addrs_on("eth0.2")
+    assert first.ok is False
+    assert "managed_segment_iface" in first.error and "not text" in first.error
+    assert "could not read which interfaces" not in first.error
+    assert "could not be read" not in first.error, "a value the store DID answer with read as a fault"
+    assert store.get_setting("managed_segment_iface") == "eth0.2"
+    assert provision._read_ownership(store).invalid == ()
+
+    second = provision.host_provision(state)
+
+    assert second.ok is True and second.error == "", \
+        "the pass is still refusing, so the value refused every later pass too"
+    assert host.addrs_on("eth0.2") >= {"192.168.10.2/24"}
+
+
+def test_a_non_text_address_scalar_does_not_refuse_the_pass_that_would_heal_it(monkeypatch):
+    """The same over the address keys, which is where the pass would otherwise aim a delete. A value
+    that is not text is not an address either, so no pair is formed, nothing comes off the interface,
+    and the scalar is rewritten with the address this pass installs."""
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: None)
+    host = _healing_host()
+    store = _NonTextStore(_owned(_store(), iface="eth0.2", addr4="192.168.1.120/24"),
+                          "managed_segment_addr4", [])
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    first = provision.host_provision(state)
+
+    assert "192.168.10.2/24" in host.addrs_on("eth0.2") and state.dnsmasq.applied
+    assert _dels(host) == [], "an address was deleted on the authority of a value that is not one"
+    assert "192.168.1.120/24" in host.addrs_on("eth0.2")
+    assert first.ok is False and "managed_segment_addr4" in first.error
+    assert "could not read which interfaces" not in first.error
+    assert store.get_setting("managed_segment_addr4") == "192.168.10.2/24"
+
+    second = provision.host_provision(state)
+
+    assert second.ok is True and second.error == ""
+    assert provision._read_ownership(store).invalid == ()
+
+
+def test_a_store_fault_on_an_ownership_scalar_still_refuses_the_whole_pass(monkeypatch):
+    """THE LINE THAT DID NOT MOVE. A store that will not answer is not a store that answered with
+    rubbish: it says nothing about the host, so the pass declines before it touches anything, deletes
+    nothing, and reports — and the record it could not read is left exactly as it was."""
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: None)
+    host = _healing_host()
+    store = _owned(_store(), iface="eth0.2", addr4="192.168.1.120/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    broken = [True]
+    _read_fails_when(monkeypatch, store, "managed_segment_addr4", lambda: broken[0])
+
+    result = provision.host_provision(state)
+
+    assert not any(cmd[:3] == ["ip", "addr", "replace"] for cmd in host.cmds())
+    assert _dels(host) == [] and state.dnsmasq.applied == []
+    assert host.addrs_on("eth0.2") == {"192.168.1.120/24"}
+    assert result.ok is False and "could not read which interfaces" in result.error
+
+    broken[0] = False       # whatever the fault was, it left the record exactly as it found it
+
+    assert store.get_setting("managed_segment_addr4") == "192.168.1.120/24"
+    assert provision._read_ownership(store).known is True
+
+
+def test_a_retained_entry_is_reported_once_a_pass_and_not_once_a_read(monkeypatch, caplog):
+    """The boundary is read about five times in one pass — the cover before the reconcile, the
+    reconcile, the cover after it, the drop-in decision, the narrowing decision — and it used to log
+    every retained entry on each of them. One durable fact, five identical ERRORs a pass. It is reported
+    ONCE now, at the pass boundary, and the entry itself is still preserved verbatim."""
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: None)
+    host = _healing_host()
+    store = _owned(_store(), iface="eth0.2", addr4="192.168.1.120/24",
+                   stale="eth0.2/x 192.168.7.2/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    with caplog.at_level("ERROR"):
+        result = provision.host_provision(state)
+
+    named = [r for r in caplog.records if "eth0.2/x 192.168.7.2/24" in r.getMessage()]
+    assert len(named) == 1, f"the entry was reported {len(named)} times in one pass"
+    # An entry the panel cannot heal blocks nothing, so the pass is clean...
+    assert result.ok is True and result.error == ""
+    # ...and it goes back exactly as it came, on this pass and on the next.
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2/x 192.168.7.2/24"
+
+    with caplog.at_level("ERROR"):
+        caplog.clear()
+        assert provision.host_provision(state).ok is True
+
+    assert len([r for r in caplog.records
+                if "eth0.2/x 192.168.7.2/24" in r.getMessage()]) == 1
+    assert store.get_setting(provision.STALE_KEY) == "eth0.2/x 192.168.7.2/24"

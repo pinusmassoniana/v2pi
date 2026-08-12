@@ -32,6 +32,8 @@ import pytest
 from conftest import _login
 from fastapi.testclient import TestClient
 
+from pi_gw_panel import controller
+from pi_gw_panel.api import routes as routes_mod
 from pi_gw_panel.app import create_app
 from pi_gw_panel.net_control import provision
 from pi_gw_panel.net_control.dryrun import DryRunBackend
@@ -40,6 +42,9 @@ from pi_gw_panel.net_control.provision import EMERGENCY_TABLE
 from pi_gw_panel.state import build_state
 
 FAMILIES = {("ip", EMERGENCY_TABLE), ("ip6", EMERGENCY_TABLE)}
+
+# The step that opens the forward path, as it appears in the traced boot sequence below.
+FORWARDING_ON = "ip_forward=1"
 
 
 class _Host(DryRunBackend):
@@ -119,14 +124,50 @@ def _unreadable(state, monkeypatch, key=provision.SURVIVOR_KEY):
     return lambda: monkeypatch.setattr(state.store, "get_setting", original)
 
 
-def _booted(settings, stub_xray, monkeypatch, net, unreadable=True):
+def _sequence(monkeypatch, steps):
+    """Record the boot steps whose ORDER is the finding, each one still calling through.
+
+    Wrapping rather than replacing, because the question is not whether these run in isolation but
+    what runs before what: the leak-guard used to be resolved AFTER `host_provision`, whose first act
+    is `ensure_sysctls` — forwarding on — so the window the guard exists to close was open for the
+    length of a provisioning pass. `ip_forward=1` is therefore recorded in the same list as the
+    functions, and the assertions below read one sequence.
+
+    The `/proc` writer is the one thing NOT called through: bound to the real one, a suite running as
+    root would turn the host's own forwarding on while testing that boot does not.
+    """
+    def trace(module, name):
+        original = getattr(module, name)
+
+        def traced(*args, **kwargs):
+            steps.append(name)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, traced)
+
+    trace(controller, "boot_guard")
+    trace(provision, "resume_pending_provision_undo")
+    trace(provision, "host_provision")
+    trace(routes_mod, "rw_reconcile_pending")
+
+    def writing(path, value):
+        if path.endswith("ip_forward"):
+            steps.append(f"ip_forward={value}")
+        return True
+
+    monkeypatch.setattr(provision, "_write_proc", writing)
+
+
+def _booted(settings, stub_xray, monkeypatch, net, unreadable=True, steps=None):
     """Bring the real app up through its real lifespan. Returns `(client, state, started, reapplied)`.
 
     The background components are stubs and `reapply_active_node` is recorded rather than run: the
     question every test below asks is whether boot went on to drive traffic, and those are the two
-    places it would.
+    places it would. Pass `steps` to also trace the boot sequence itself (see `_sequence`).
     """
     settings.xray_bin = stub_xray
+    if steps is not None:
+        _sequence(monkeypatch, steps)
     state = build_state(settings, net=net)
     state.dnsmasq = state.pd_client = None
     started: list[str] = []
@@ -244,6 +285,93 @@ def test_boot_does_not_drive_traffic_when_nothing_can_be_shown_to_hold_the_path(
         assert client.get("/api/health").json() == {"status": "ok"}
         note = client.get("/api/ready").json()["details"]["enforcement"]
         assert "could not be installed" in note
+
+
+# --- the ORDER in which boot resolves it ---------------------------------------------------------
+#
+# The fallback above only holds the window shut if it is decided BEFORE the window opens. It was not:
+# `host_provision` ran first, and `ensure_sysctls` — its first act — turns IPv4 and IPv6 forwarding
+# on. So a host reboot spent an entire provisioning pass with forwarding enabled and no nft table at
+# all, and the tier check that followed could not retroactively close it. Worse, the check was
+# downstream of the machinery it gates: with the deny REFUSED, the host had still been provisioned
+# and the segment interface raised, over a forward path nothing was accounting for.
+
+
+def test_nothing_turns_forwarding_on_before_the_guard_and_its_fallback_have_answered(
+        settings, stub_xray, monkeypatch):
+    """PRODUCT-CRITICAL, and it is an ordering assertion because the defect was an ordering.
+
+    The guard is refused here and the deny is PROVEN, which is the state boot may carry on through —
+    the gateway is closed harder than configured. So the normal sequence proceeds, and the whole point
+    is where `ip_forward=1` sits in it: after the forward path has been accounted for, not before.
+    """
+    steps: list[str] = []
+    app, state, started, reapplied, _restore = _booted(
+        settings, stub_xray, monkeypatch, _Host(), steps=steps)
+    with TestClient(app):
+        assert steps == ["boot_guard", "resume_pending_provision_undo", "host_provision",
+                         FORWARDING_ON, "rw_reconcile_pending"]
+        assert state.net.tables & FAMILIES == FAMILIES     # ...and it is the deny holding it
+        assert reapplied == [True]
+        assert started == ["scheduler", "monitor", "liveness", "backup", "recorder"]
+
+
+def test_a_refused_deny_holds_back_everything_that_could_open_the_forward_path(settings, stub_xray,
+                                                                              monkeypatch):
+    """THE SEMANTIC CASE. Nothing can be shown to be holding the forward path, so nothing that could
+    open or use it runs: forwarding is never turned on, the host is not provisioned, the interrupted
+    undo is not resumed, the revocation is not reconciled, no tunnel is reapplied and no unattended
+    loop starts. Keeping the reordering but letting provisioning run past `unguarded` is exactly the
+    mutation the `FORWARDING_ON` assertion catches.
+
+    And the panel still comes up: refusing to serve would take away the screen the gateway gets fixed
+    from, which is never the safe end of an unenforceable gateway.
+    """
+    steps: list[str] = []
+    app, state, started, reapplied, _restore = _booted(
+        settings, stub_xray, monkeypatch, _Host(nft_refuses=True), steps=steps)
+    with TestClient(app) as client:
+        assert FORWARDING_ON not in steps, "boot turned forwarding on with nothing holding the path"
+        assert steps == ["boot_guard", "ip_forward=0"], \
+            "boot ran past the point where nothing could be shown to be holding the forward path"
+        assert state.net.tables == set()                   # the deny could not go on either
+        assert [cmd for cmd in state.net.cmds if cmd[:1] == ["ip"]] == [], \
+            "boot reconfigured the host over a forward path nobody vouches for"
+        assert reapplied == [], "boot brought a tunnel up over a forward path nobody vouches for"
+        assert started == [], "boot started the unattended loops over an unguarded forward path"
+
+        assert client.get("/api/health").json() == {"status": "ok"}
+        token = _login(client)
+        assert client.get("/api/nodes", headers={"X-CSRF-Token": token}).status_code == 200
+        assert client.get("/api/ready").status_code == 503          # reachable AND honest
+
+
+def test_a_first_ever_boot_with_nothing_configured_comes_up_guarded(settings, stub_xray, monkeypatch):
+    """Moving the guard above provisioning must not make it depend on provisioning having happened.
+
+    It does not, and by construction. The guard is rendered from the STORE — `NetPlan.from_store`
+    resolves each editable field as store-override-or-config, so an empty store is the configured
+    default rather than a missing answer — and it NAMES its interface instead of probing for it: nft
+    matches `iifname` by name, so the segment VLAN this boot has not created yet is named for free,
+    and `apply_guard` touches no link and no address. Every cover record is absent, which is an
+    ANSWERED empty cover, so the guard installs, no fallback is needed, and the pass below then
+    creates the interface the ruleset was already covering.
+    """
+    steps: list[str] = []
+    app, state, started, reapplied, _restore = _booted(
+        settings, stub_xray, monkeypatch, _Host(links=("eth0",)), unreadable=False, steps=steps)
+    assert state.store.get_setting("managed_segment_iface") in (None, "")   # never provisioned
+    with TestClient(app) as client:
+        assert steps == ["boot_guard", "resume_pending_provision_undo", "host_provision",
+                         FORWARDING_ON, "rw_reconcile_pending"]
+        assert state.net.tables & FAMILIES == set(), "a first boot needed the emergency fallback"
+        assert provision.enforcement_fallback_note(state.net) == ""
+        assert 'iifname "eth0.2"' in state.net.applied[0], \
+            "the first ruleset of the boot was not the guard over the configured segment"
+        assert "eth0.2" in state.net.links          # ...and the pass then created what it covered
+        assert client.get("/api/health").json() == {"status": "ok"}
+        assert reapplied == [True]
+        assert started == ["scheduler", "monitor", "liveness", "backup", "recorder"]
 
 
 def test_the_last_resort_turns_forwarding_off_when_the_table_will_not_load(settings, stub_xray):

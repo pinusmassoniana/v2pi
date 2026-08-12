@@ -19,6 +19,7 @@ So the record is validated one legal interface token at a time, all-or-nothing, 
 is not one makes the WHOLE record unknown — which every consumer already knows how to handle: the
 cover forbids narrowing, the render installs nothing, the retirement paths touch no link and report.
 """
+import json
 import re
 import subprocess
 
@@ -34,6 +35,13 @@ from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.state import build_state
 
 MANGLED = "eth0.2 eth0.9"
+UNDO_KEY = provision.PROVISION_UNDO_KEY
+
+# Everything that cannot be one interface name, and so names nothing an enforcement rule can match.
+ILLEGAL = [MANGLED,                          # whitespace: the finding
+           'eth0"; drop',                    # a quote, which would close the render's own string
+           "eth0.2\teth0.9",                 # a tab is whitespace too
+           "verylonginterfacename"]          # past IFNAMSIZ, so no such device can exist
 
 
 def _store():
@@ -129,12 +137,7 @@ def test_a_legal_single_token_entry_still_parses(planted, expected):
     assert provision._parse_links(store) == expected
 
 
-@pytest.mark.parametrize("planted", [
-    MANGLED,                              # whitespace: the finding
-    'eth0"; drop',                        # a quote, which would close the render's own string
-    "eth0.2\teth0.9",                     # a tab is whitespace too
-    "verylonginterfacename",              # past IFNAMSIZ, so no such device can exist
-])
+@pytest.mark.parametrize("planted", ILLEGAL)
 def test_nothing_that_cannot_be_an_interface_name_is_read_as_one(planted):
     store = _store()
     _plant(store, planted)
@@ -260,5 +263,110 @@ def test_a_pass_configures_nothing_while_the_ledger_cannot_be_read(settings, stu
         assert result.ok is False
         assert MANGLED in result.error
         assert [cmd for cmd in net._run.cmds if cmd[:2] == ["ip", "link"]] == []
+    finally:
+        state.close()
+
+
+# --- the same rule for the last source that was not following it ---------------------------------
+#
+# The pending-undo record is the cover's fallback for the window in which the survivor ledger cannot
+# yet answer: it names the ONE interface a rolled-back pass may have put the segment on, and it is on
+# disk before the pass runs a single command. It was reading its own `iface` straight out of the JSON,
+# so `{"iface": "eth0.2 eth0.9"}` produced `Cover(known=True, names=["eth0.2 eth0.9"])` — a complete
+# answer, licensing a narrow, over a name no packet can match.
+#
+# The second half matters as much as the validation: a record like that may NOT be quietly discarded.
+# `unusable` records are cleared by the boot resume, and clearing this one throws away the coverage it
+# stands for. Unknown, refusing, retained.
+
+
+def _plant_pending(store, iface: str) -> None:
+    """A pending undo record naming `iface` — set verbatim, as a hand-edited database or a foreign
+    backup document leaves it, because no writer here would produce the entry this is about."""
+    store.set_setting(UNDO_KEY, json.dumps(
+        {"iface": iface, "addr4": "192.168.10.2/24", "addr6": "", "vlan": True,
+         "link_state": provision.LINK_ABSENT}))
+
+
+@pytest.mark.parametrize("planted", ILLEGAL)
+def test_a_pending_candidate_that_is_not_an_interface_name_is_no_answer(planted):
+    """The finding, at the level it is decided: not a name that over-covers, no answer at all."""
+    store = _store()
+    _plant_pending(store, planted)
+
+    pending = provision.pending_candidate_state(store)
+
+    assert pending.known is False
+    assert pending.names == []
+    assert pending.may_narrow is False, "a bogus candidate name licensed narrowing the enforcement"
+    # The value is quoted into the reason as `repr` — a tab has to reach the operator visibly.
+    assert repr(planted) in pending.why()
+    assert "not an interface name" in pending.why()
+    assert provision.pending_candidate_ifaces(store) == []      # nothing installable came out of it
+
+
+def test_the_whole_cover_refuses_while_the_pending_candidate_cannot_be_read():
+    """The cover is the decision this record feeds, so the unknown has to reach it — and it may not
+    be traded for the names the other four sources gave."""
+    store = _store()
+    _plant_pending(store, MANGLED)
+    store.set_setting(provision.SURVIVOR_KEY, "eth0.7 192.168.8.2/24")
+
+    cover = provision.enforcement_cover(store, "eth0.2")
+
+    assert cover.known is False
+    assert cover.may_narrow is False
+    assert cover.names == ["eth0.7"]          # a render installs what it can; it may not narrow
+    assert MANGLED in cover.why()
+
+
+def test_a_mangled_pending_candidate_is_kept_rather_than_discarded(settings, stub_xray):
+    """THE HALF THAT IS NOT THE VALIDATION. `unusable` records — unparseable, not a record, naming no
+    interface at all — are cleared at boot, and that is right: they say nothing an undo could act on.
+    This one says an interface may be LIVE and then says it in something nothing can enforce on, so
+    clearing it would delete the only record of the interface a rolled-back pass may have addressed.
+    It is kept, no host command runs against the name, and every store-derived render refuses while
+    it is there — which is the operator's cue to repair it.
+    """
+    settings.xray_bin = stub_xray
+    net = _Watched()
+    net._run = _Host()                       # the `_run` seam is what makes it the linux path
+    state = build_state(settings, net=net)
+    state.dnsmasq = state.pd_client = None
+    try:
+        _plant_pending(state.store, MANGLED)
+
+        outcome = provision.resume_pending_provision_undo(state)
+
+        assert outcome.actions == [] and outcome.unresolved == []
+        assert json.loads(state.store.get_setting(UNDO_KEY))["iface"] == MANGLED, \
+            "the boot resume discarded the coverage the record stood for"
+        assert [cmd for cmd in net._run.cmds if cmd[:2] == ["ip", "link"]] == []
+
+        result = stop_net(state.settings, state.net, state.store)
+
+        assert result.ok is False and MANGLED in result.error
+        assert net.entered == [], "a ruleset was installed from a record nobody could read"
+    finally:
+        state.close()
+
+
+def test_a_legal_pending_candidate_still_covers_the_interface_it_names(settings, stub_xray):
+    """The regression guard for the fix: the fallback source still does its job, all the way into the
+    ruleset. A candidate a rolled-back change left up is named in the drop and the redirect."""
+    settings.xray_bin = stub_xray
+    state = build_state(settings, net=DryRunBackend())
+    state.dnsmasq = state.pd_client = None
+    try:
+        _plant_pending(state.store, "eth0.9")
+
+        pending = provision.pending_candidate_state(state.store)
+
+        assert pending.known is True and pending.names == ["eth0.9"]
+        assert provision.pending_candidate_ifaces(state.store) == ["eth0.9"]
+        assert provision.enforcement_cover(state.store, "eth0.2").names == ["eth0.9"]
+
+        assert stop_net(state.settings, state.net, state.store).ok is True
+        assert _enforced(state.net.applied[-1]) == {"eth0.2", "eth0.9"}
     finally:
         state.close()
