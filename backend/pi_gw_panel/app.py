@@ -151,7 +151,7 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             log_handler = logs_mod.setup_app_logging(app_state.settings.app_log)
             from pi_gw_panel.controller import reapply_active_node, boot_guard
             from pi_gw_panel.net_control.provision import (
-                host_provision, resume_pending_provision_undo)
+                enforcement_fallback, host_provision, resume_pending_provision_undo)
             # Provisioning can partially start these resources, so register their cleanup first.
             for resource in (getattr(app_state, "dnsmasq", None),
                              getattr(app_state, "pd_client", None)):
@@ -167,7 +167,16 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             # the screen they would fix the gateway from.
             resume_pending_provision_undo(app_state)
             host_provision(app_state)
-            boot_guard(app_state)
+            # THE LEAK-GUARD'S FAILURE IS A PACKET-PATH FACT, NOT A STATUS. `boot_guard` refuses to
+            # install a ruleset it cannot prove covers every interface the segment may be on, which
+            # is right — a ruleset is replaced, so a short one uncovers a live interface. But on a
+            # panel restart that refusal inherits the previous, correct ruleset, while on a HOST
+            # reboot it inherits NO TABLE AT ALL, and `host_provision` above has just turned
+            # forwarding on. Nothing then stops a forwarded client packet: `/api/ready` going red is
+            # observability, and no packet consults it. So the refusal is not discarded — the forward
+            # path is held closed by something that needs no interface knowledge, which is the whole
+            # reason the normal ruleset could not be rendered (see `enforcement_fallback`).
+            unguarded = enforcement_fallback(app_state, boot_guard(app_state))
             # A revocation commits the credential change before it can touch the runtime, so a
             # process that died in between left a store granting less than the config on disk —
             # and, if the previous xray outlived the panel, less than what is being served right
@@ -179,15 +188,30 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
                 logging.getLogger("pi_gw_panel").error(
                     "a remote-access revocation is still not reconciled with the config on "
                     "disk; the liveness loop will keep retrying")
-            res = reapply_active_node(app_state)
-            if res is not None and not res.ok:
-                logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
-            for component in (scheduler, monitor, liveness, backup_scheduler,
-                              app_state.recorder):
-                if component is None:
-                    continue
-                owned.append(component)
-                component.start()
+            # "DO NOT CONTINUE UNTIL FAIL-CLOSED ENFORCEMENT IS CONFIRMED", concretely: boot does
+            # not refuse to start — this is the machine's own gateway and the panel is the screen the
+            # operator would fix it from, so an unreachable panel is not the safe end of this — and
+            # it does not start the traffic machinery either. Below this line are the two things that
+            # drive packets: the tunnel reapply, and the loops that restart xray and fail nodes over
+            # unattended. Neither may run while nothing can be shown to be holding the forward path,
+            # because nothing here would make it safer and the watchdog would keep re-asserting a
+            # gateway the panel cannot enforce. The management API, the audit log and `/api/ready`
+            # come up regardless, which is what the operator needs.
+            if unguarded:
+                logging.getLogger("pi_gw_panel").critical(
+                    "the gateway's forward path cannot be shown to be closed, so no tunnel and no "
+                    "background loop were started; the panel is serving the management API only: %s",
+                    unguarded)
+            else:
+                res = reapply_active_node(app_state)
+                if res is not None and not res.ok:
+                    logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
+                for component in (scheduler, monitor, liveness, backup_scheduler,
+                                  app_state.recorder):
+                    if component is None:
+                        continue
+                    owned.append(component)
+                    component.start()
             yield
         finally:
             for component in reversed(owned):
@@ -264,12 +288,23 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
              responses={503: {"model": ReadinessOut}})
     def ready():
         from pi_gw_panel.net_control import netcheck
+        from pi_gw_panel.net_control.provision import enforcement_fallback_note
+
         # `details` carries the reason a check is false when the check computed one (which
         # segment addresses drifted). Strictly additive: readiness is still decided by, and
         # reported through, the same booleans under the same names — the host migration
         # script commits on those — but "not_ready" no longer means "read the server log".
         details: dict[str, str] = {}
         checks = netcheck.readiness_checks(app_state, details=details)
+        # The enforcement fallback is not a check of its own — `enforcement` is already false while
+        # it is in force, and adding a boolean would change the contract the host migration script
+        # commits on. What it adds is which of three states `false` means: the enforcement simply
+        # failed, the forward path is being held closed by the interface-independent deny, or the
+        # deny itself was refused and nothing is known to be holding it. That is the first thing an
+        # operator needs, so it goes in `details`, which is strictly additive by design.
+        note = enforcement_fallback_note(app_state.net)
+        if note:
+            details["enforcement"] = note
         is_ready = all(checks.values())
         payload = {"status": "ready" if is_ready else "not_ready", "checks": checks,
                    "details": details}

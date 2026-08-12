@@ -112,11 +112,93 @@ def _require_net(result: NetResult, action: str) -> None:
         raise RuntimeError(f"{action}: {result.error or 'network backend reported failure'}")
 
 
+class EnforcementCoverUnknown(RuntimeError):
+    """The panel cannot say which interfaces may still be carrying the segment.
+
+    Raised by `_enforcement_plan` INSTEAD of returning a plan, because there is no partial plan
+    worth having. A ruleset is not edited, it is REPLACED — the linux backend deletes its table and
+    recreates it from the render, and every other backend behaves the same way — so a render made
+    from the cover sources that happened to answer does not "install what it knows": it takes the
+    kill-switch drop and the tproxy redirect OFF an interface the unreadable source may have been
+    naming, while that interface is up carrying a segment address. That is the direct-WAN bypass
+    the whole segment protocol exists to prevent, and it needs no failed provisioning pass to reach
+    it — one record that will not answer at render time is enough.
+
+    So `apply_net` and `stop_net` turn this into a recorded failure and DO NOT enter the backend.
+    Not applying is the only way to leave the live ruleset alone; applying a best guess is not a
+    weaker version of it, it is the defect. Covering an interface that is already gone costs
+    nothing (nft matches `iifname` by name), which is why the safe direction is always "keep what
+    is there".
+    """
+
+
+def _refuse_enforcement(net, reason: str, store=None) -> NetResult:
+    """Report a render that may not be installed, having installed nothing.
+
+    Same shape as every other failure on this path — a `NetResult` plus the enforcement snapshot —
+    so no caller has to learn a new one, and none of them can mistake it for a success. The
+    backend is never called, so whatever ruleset is on the host stays exactly as it is.
+    """
+    logger.error("%s", reason)
+    return _record_enforcement(net, NetResult(ok=False, error=reason),
+                               wan_blocked=None, store=store)
+
+
+def _enforcement_plan(settings: Settings, store) -> NetPlan:
+    """The plan to ENFORCE from the store: its own, scoped to every interface that may still be
+    carrying the segment.
+
+    The store names exactly one segment interface, and there are states in which the host has two.
+    A move that failed leaves the old interface up and addressed with the ownership record already
+    pointing at the candidate; a rolled-back change leaves a candidate interface the undo may not
+    delete still up and carrying the address the pass put there. Both outlast the pass that made
+    them, so a ruleset rendered here from the segment interface alone would leave one of them
+    outside the kill-switch drop and the tproxy redirect — the direct-WAN bypass, for as long as
+    the interface lasts. `provision.enforcement_cover` is the panel's record of what may be up, and
+    every render on this path consumes it; the interfaces in it leave only when the host proves
+    them gone. This is enforcement only: dnsmasq, readiness and the API still describe the one
+    interface the configuration names.
+
+    A cover source that will not answer means there is NO PLAN TO RENDER, and this raises
+    `EnforcementCoverUnknown` rather than returning the names that did answer. Installing those was
+    the defect: a ruleset is replaced, never edited, so a render short by one interface uninstalls
+    that interface's kill-switch drop and tproxy redirect while it may still be up carrying the
+    segment — reachable with no provisioning pass anywhere near it, by one store read failing
+    underneath a `sync_net`. The pass that NARROWS already refuses on the same fact (see
+    `provision.Cover`); the pass and the render were never entitled to different answers, and the
+    render is the one that runs on every apply, every disconnect and every boot.
+
+    Imported inside the call for the same reason `provision` imports this module inside its own:
+    the two reach into each other and neither may import the other at module scope.
+    """
+    from pi_gw_panel.net_control import provision
+    plan = NetPlan.from_store(store, settings)
+    cover = provision.enforcement_cover(store, plan.segment_iface)
+    if not cover.known:
+        raise EnforcementCoverUnknown(
+            "the interfaces that may still be carrying the segment could not be established, so "
+            "the enforcement already on the host was left exactly as it is: " + cover.why())
+    return provision.covering_plan(plan, cover.names) if cover.names else plan
+
+
 def apply_net(settings: Settings, net, store=None) -> NetResult:
     """Render+apply the Pi net plan. With a store, editable fields (segment/DHCP/DNS)
     and the kill-switch come from the settings k/v (falling back to config); without
-    one it's the pure-config plan. Reused by apply_node and PUT /api/network."""
-    plan = NetPlan.from_store(store, settings) if store is not None else NetPlan.from_settings(settings)
+    one it's the pure-config plan. Reused by apply_node and PUT /api/network.
+
+    A plan the panel cannot promise covers every interface that may be carrying the segment is not
+    applied AT ALL — the tproxy ruleset that is already on the host stays, and this returns failure
+    (see `EnforcementCoverUnknown`). Every caller of this treats a failed `NetResult` as a failed
+    apply already: `apply_node` rolls the config back and fails closed, the route rollback guards
+    and reports, `sync_net`'s callers answer 502.
+    """
+    if store is None:
+        plan = NetPlan.from_settings(settings)
+    else:
+        try:
+            plan = _enforcement_plan(settings, store)
+        except EnforcementCoverUnknown as exc:
+            return _refuse_enforcement(net, str(exc), store)
     return _call_net(net, "apply_tproxy", plan, wan_blocked=False, store=store)
 
 
@@ -131,6 +213,11 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
     Kill-switch ON  → install the fail-closed leak-guard (keep dropping client→WAN, v4+v6)
     instead of a full teardown — otherwise a "fail closed" kill-switch would *leak* the
     moment you stop (audit A1). Kill-switch OFF → full teardown (clients fall back direct).
+
+    The guard is a ruleset like any other, so it is subject to the same refusal: a cover the panel
+    cannot complete means the guard is NOT installed and this returns failure, leaving whatever is
+    on the host in place. A teardown renders no plan and is unaffected — it names no interface, and
+    with the kill-switch off falling back to direct IS the configured intent.
     """
     if _kill_switch_on(store):
         if not hasattr(net, "apply_guard"):
@@ -147,7 +234,12 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
         # reached. Malformed stored net settings (hand-edited DB, foreign backup) are exactly
         # what can make the render raise, and they must not be able to veto a revocation.
         try:
-            plan = NetPlan.from_store(store, settings)
+            plan = _enforcement_plan(settings, store)
+        except EnforcementCoverUnknown as exc:
+            # Not a render that failed — one that may not be INSTALLED. Handled before the general
+            # case only so the operator is told which of the two happened; the outcome is the same
+            # either way, and it is the only safe one: nothing goes on the host.
+            return _refuse_enforcement(net, str(exc), store)
         except Exception as exc:
             return _record_enforcement(
                 net, NetResult(ok=False, error=f"could not render the net plan: {exc}"),
@@ -156,22 +248,102 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
     return _call_net(net, "teardown", wan_blocked=False, store=store)
 
 
+def _enforcement_mode(state) -> str:
+    """Which enforcement the current runtime state calls for: tproxy, guard, or teardown.
+
+    One reading of that state, shared by the two callers that act on it: `sync_net`, which renders
+    the plan from the store, and `sync_net_plan`, which is handed one. They must not be able to
+    drift — a segment retarget applies a transitional ruleset through the second and is narrowed
+    back through the first, and the two deciding differently would swap the rules out for a
+    different KIND of ruleset halfway through the move.
+    """
+    running = state.supervisor.status().get("running")
+    if running and state.store.get_setting("active_node_id"):
+        return "tproxy"
+    return "guard" if _kill_switch_on(state.store) else "teardown"
+
+
 def sync_net(state) -> NetResult:
     """Apply the net rules that match the CURRENT tunnel state — used by PUT /network so a
     segment/kill-switch edit takes effect immediately without black-holing. Tunnel up (xray
     running + an active node) → full tproxy; otherwise → stop_net (leak-guard if the
     kill-switch is on, else teardown). Avoids installing a tproxy-to-dead-port when there's
-    no live tunnel (A1)."""
-    running = state.supervisor.status().get("running")
-    if running and state.store.get_setting("active_node_id"):
+    no live tunnel (A1).
+
+    THIS is where the incomplete cover was reproduced, with no provisioning pass in sight: a
+    segment edit, or anything else that syncs, rendered from a store whose survivor record would
+    not answer and replaced a ruleset covering two interfaces with one covering the configured one.
+    Both branches now refuse instead (see `EnforcementCoverUnknown`), so a sync that cannot see the
+    whole picture changes nothing and reports — the caller answers 502 and the live ruleset, which
+    was rendered when the picture WAS complete, keeps standing."""
+    if _enforcement_mode(state) == "tproxy":
         return apply_net(state.settings, state.net, state.store)
     return stop_net(state.settings, state.net, state.store)
+
+
+def sync_net_plan(state, plan: NetPlan) -> NetResult:
+    """`sync_net` for a plan the caller has already rendered, and the ONE reason that exists.
+
+    Enforcement is scoped by interface name, and the store names exactly one segment interface —
+    so while the segment is being moved from one to another, the plan the store renders cannot
+    describe the host: for the length of that move both interfaces are live, and a ruleset naming
+    either one alone leaves the other outside the kill-switch drop and the tproxy redirect. The
+    pass performing the move is the only thing that knows what it is about to do (see
+    `net_control.provision.host_provision`); it builds the transitional plan and applies it
+    through here, before it raises anything, and narrows back through here once the old link is
+    gone. The mode decision, the failure wrapping and the enforcement snapshot are the same as
+    `sync_net`'s, deliberately: this is where the plan comes from, and nothing else.
+
+    What a FINISHED pass leaves behind is a different question and is not answered here: an
+    interface a failed move or a rolled-back change left live outlasts the pass, so it is recorded
+    and picked up by `_enforcement_plan` on every store-derived render. The plan handed in here has
+    already been scoped by its caller and is applied exactly as given.
+    """
+    mode = _enforcement_mode(state)
+    if mode == "tproxy":
+        return _call_net(state.net, "apply_tproxy", plan, wan_blocked=False, store=state.store)
+    if mode == "guard":
+        if not hasattr(state.net, "apply_guard"):
+            return _record_enforcement(
+                state.net, NetResult(ok=False, error="network backend cannot install fail-closed guard"),
+                wan_blocked=None, store=state.store)
+        return _call_net(state.net, "apply_guard", plan, wan_blocked=True, store=state.store)
+    return _call_net(state.net, "teardown", wan_blocked=False, store=state.store)
+
+
+def _disconnected_guard_plan(state) -> NetPlan | None:
+    """The enforcement a disconnect will install, rendered while the tunnel is still up.
+
+    `None` when the kill-switch is off, and that is not a missing answer: that disconnect is a full
+    teardown, which names no interface, renders no plan, and so has nothing in it that can refuse.
+    Every other answer is a plan the caller must KEEP and hand to `sync_net_plan` exactly as given.
+
+    THE RENDER IS THE PART THAT CAN FAIL, which is the whole reason this exists as a step of its own.
+    A store-derived render refuses when the enforcement cover cannot be completed
+    (`EnforcementCoverUnknown`) and raises outright on stored net settings that will not parse — and
+    both of those are transient-persistence-fault shaped. Asking the question where the ruleset is
+    installed puts them after the runtime has been taken down, where the answer "there is no plan to
+    install" is a gateway outage instead of a refusal. Asked here, with the tunnel the operator has
+    still up, the same answer costs nothing.
+
+    Re-deriving the plan at the install point would put a second copy of that failure back at exactly
+    the point this moves it away from, so callers apply the retained plan and do not render again.
+    """
+    if not _kill_switch_on(state.store):
+        return None
+    return _enforcement_plan(state.settings, state.store)
 
 
 def boot_guard(state) -> NetResult:
     """Close the boot leak window (A1): if the kill-switch is on, install the leak-guard
     BEFORE the tunnel is (re)applied, so a reboot never leaks client→WAN while xray starts.
-    No-op when the kill-switch is off. Best-effort — never blocks boot."""
+    No-op when the kill-switch is off. Best-effort — never blocks boot.
+
+    Boot is not a clean slate: nft rules live in the kernel, so a panel or container restart
+    arrives with the previous, correctly-covering ruleset still installed, and a guard rendered
+    here from an incomplete cover would narrow exactly that. So this refuses on the same fact as
+    every other store-derived render and returns the failure, which boot logs and carries in the
+    enforcement snapshot rather than treating as a guard that went on."""
     if not _kill_switch_on(state.store):
         return NetResult(ok=True)
     return stop_net(state.settings, state.net, state.store)
@@ -406,6 +578,12 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
                         recovery.append("xray could not be stopped (it survived SIGKILL)")
                 except Exception as stop_exc:
                     recovery.append(f"xray stop raised: {stop_exc}")
+                # A guard that cannot be rendered over every interface that may be carrying the
+                # segment is reported, not approximated: this apply's own net step has already
+                # failed, so the ruleset on the host is the one the PREVIOUS apply installed —
+                # rendered when the cover was complete, and pointing at an xray this recovery has
+                # just stopped. Keeping it black-holes clients; replacing it with a short guard
+                # would release one of them to the WAN.
                 guard = stop_net(settings, net, store)
                 if not guard.ok:
                     recovery.append(f"fail-closed recovery failed: {guard.error or 'unknown error'}")
@@ -563,8 +741,83 @@ def _restore_candidate_data(state, validated) -> dict:
     return data
 
 
+# THE PREFLIGHT CANDIDATE RECORD DESCRIBES AN INTENTION, NOT SOMETHING THE PANEL HAS DONE.
+#
+# It is written before the restore has run a single host command — that is the point of it being
+# first — and its two readers need opposite answers from exactly that fact:
+#
+#   * The enforcement cover reads it as a COVERAGE source (`provision.pending_candidate_ifaces`), and
+#     naming an interface in a ruleset costs nothing: nft matches `iifname` by name, so a rule for a
+#     device that is not there simply never matches. Covering an interface the restore only might
+#     create is the safe direction, and it stays.
+#   * The undo reads it as a licence to REMOVE host state — `provision.resume_pending_provision_undo`
+#     at the next boot, and the in-process rollback — and there an intention licenses nothing. Acting
+#     on it deletes a link this restore never created, and an `ip link delete` against an interface
+#     the operator, netplan or NetworkManager put there is the segment on a live gateway.
+#
+# The exits between the record and the host pass are where the difference bites: none of them ran a
+# provisioning pass, all of them try to settle the record, and the clear is best effort by contract —
+# so a store that quietly writes nothing leaves the record behind and boot is authorised to undo a
+# candidate that was never created.
+#
+# So the record is written UNARMED first and ARMED only once the restore is committed to running the
+# pass. Unarmed is not a flag the readers must learn: it is a record whose delete preconditions
+# cannot be met, so the existing readers already do the right thing with it. `provision`'s undo will
+# not issue a link delete unless the record says the candidate is a VLAN *and* carries the
+# `LINK_ABSENT` probe answer that proves the pass created it, and it reports and records nothing for
+# addresses the record does not name. `armed` is carried on top of that so the intent is legible in
+# the stored value instead of being inferable from which fields are missing.
+def _unarmed_candidate(candidate: dict) -> dict:
+    """`candidate` as it may be recorded BEFORE the restore has touched the host.
+
+    Keeps the interface, so the enforcement cover goes on naming it. Drops everything the undo would
+    need in order to justify removing anything: the addresses it would report as orphans and write
+    into the surviving-candidate ledger, the VLAN fact, and the prior-probe answer that is the only
+    licence to delete a link. Either of the last two alone blocks the delete and both are dropped —
+    over-caution is free in this direction and an interface is not.
+
+    Empty in, empty out: an empty candidate already means "the pass puts nothing anywhere", and it is
+    never recorded at all.
+    """
+    from pi_gw_panel.net_control import provision
+    if not candidate:
+        return {}
+    return {"iface": candidate.get("iface") or "",
+            "addr4": "",
+            "addr6": "",
+            "vlan": False,
+            "link_state": provision.LINK_UNKNOWN,
+            "armed": False}
+
+
+def _settle_preflight_candidate(state, after: str) -> None:
+    """Settle the unarmed preflight record on an exit that ran no host provisioning, and SAY when it
+    did not settle.
+
+    `clear_provision_candidate` reports rather than raises, deliberately — nothing on a recovery path
+    may turn one failure into another — and its result was being dropped, so a store that accepted the
+    write and kept nothing left the record in place with nothing said about it. What that now costs is
+    bounded by the record being unarmed: its interface stays named in every later ruleset, which is
+    the safe direction and drains on its own, and no undo may act on it. So this reports and does not
+    raise: the exit that calls it has already decided its own answer and this may not change it.
+    """
+    from pi_gw_panel.net_control import provision
+    why = provision.clear_provision_candidate(state.store)
+    if why:
+        logger.error("the restore's unarmed provisioning record could not be settled after %s; the "
+                     "enforcement keeps covering the interface it names and no undo may act on it: "
+                     "%s", after, why)
+
+
 def restore_backup(state, document) -> RestoreResult:
-    """Restore validated intent and leave runtime explicitly disconnected + enforced."""
+    """Restore validated intent and leave runtime explicitly disconnected + enforced.
+
+    Two phases, in this order: everything that can REFUSE is proven while the gateway the operator
+    has is still running, and only then is that gateway taken down. The lockout guard, the recovery
+    snapshot, the candidate record and the render of the disconnected guard are all in the first
+    phase; the disconnect, that guard's INSTALL, the import and the host pass are in the second. A
+    refusal therefore costs nothing — same as `PUT /api/network`.
+    """
     from pi_gw_panel import backup as backup_mod
     from pi_gw_panel.net_control import provision
 
@@ -591,28 +844,139 @@ def restore_backup(state, document) -> RestoreResult:
         stats_client = getattr(state, "stats_client", None)
         previous_stats_address = (
             stats_client.status().get("address") if stats_client is not None else None)
-        state.supervisor.stop()
-        if state.supervisor.status().get("running"):
-            return RestoreResult(ok=False, error="xray did not stop before restore")
-        initial_guard = stop_net(state.settings, state.net, state.store)
-        if not initial_guard.ok:
-            return RestoreResult(
-                ok=False, error=f"could not enforce disconnected state: {initial_guard.error}")
-        # Recorded OUTSIDE the transaction below, for the same reason `PUT /api/network` does it:
-        # a record that rolls back with the transaction it exists to clean up after would never be
+        # PROVEN BEFORE ANY RUNTIME IS TOUCHED, and that ordering is the whole point.
+        #
+        # `PUT /api/network` refuses before it mutates the host: the validation and the candidate
+        # record both come first, so a refusal leaves the gateway exactly as it was. This path did
+        # the same two things in the opposite order — it stopped xray and installed the disconnected
+        # guard, and only then recorded what the pass was about to put on the host. A store that
+        # would not take that record therefore imported nothing, applied nothing, changed nothing
+        # the operator can see afterwards, and left a previously working gateway DISCONNECTED. The
+        # write is transient by nature (a locked database, a full disk), which is exactly the kind of
+        # failure that must not cost a working tunnel.
+        #
+        # Nothing here touches the host: the candidate is rendered from stored settings plus one
+        # read-only probe of the target link, and the record is a settings write. So it can be proven
+        # first, and the disconnect below now happens only once the restore is committed to running.
+        #
+        # It is recorded OUTSIDE the transaction for the same reason `PUT /api/network` does it: a
+        # record that rolls back with the transaction it exists to clean up after would never be
         # readable when it is needed, and a crash in between would strand the candidate interface.
         try:
             candidate = provision.provision_candidate(
                 state, _restore_candidate_data(state, validated))
         except Exception as exc:
-            # Rendering the candidate reads the CURRENT stored net settings, which are only
-            # validated at the API boundary and so can raise on hand-edited state. That must not
-            # abort a restore which has already stopped the tunnel and installed the guard: the
-            # pass below reports the same broken settings through its own result, which the
-            # recovery here knows how to handle. No candidate simply means no orphan to reclaim.
-            logger.warning("could not record the restore's provisioning candidate: %s", exc)
-            candidate = {}
-        provision.record_provision_candidate(state.store, candidate)
+            # REFUSE, AND NEVER `{}`. An empty candidate is this path's way of saying "the pass will
+            # put nothing anywhere" — a dry-run backend, or `manage_segment` projected off — and it
+            # is read that way everywhere below: no record is written, no undo is attempted, and no
+            # exit settles anything. A render that FAILED is the opposite claim. The pass may still
+            # create a link and address it, and with the failure spent as "there is nothing to
+            # record" the restore went on to disconnect and provision with no undo record at all, so
+            # a rolled-back transaction — or a crash — left that interface outside the restored
+            # enforcement cover, invisible to every later pass and outside the nft guard. The two
+            # facts demand opposite behaviour, so they may not share a value.
+            #
+            # It cannot be narrowed to "only when a candidate is required" from out here either,
+            # because that is precisely what the failed render was going to answer. It does not need
+            # to be: `provision_candidate` returns `{}` before it can raise unless the backend
+            # carries the host seam (`_run`), so reaching here IS the host branch — the one case in
+            # which Linux segment management may require a candidate.
+            #
+            # Refusing costs nothing, which is the whole reason this sits where it does: xray is
+            # still serving the node it was serving, no host command has run, and nothing has been
+            # written. The operator gets the broken setting reported instead of a disconnected
+            # gateway. Hand-edited or restored net settings reaching `int()`/`ip_network()` are
+            # exactly what makes the render raise, and they are also what the pass below would fail
+            # on a moment later — with the runtime already down.
+            return RestoreResult(
+                ok=False, snapshot=snapshot,
+                error=f"could not establish what the restore would put on the host, so nothing was "
+                      f"applied: {exc}")
+        # UNARMED, because nothing below this line has touched the host yet and every exit before the
+        # pass tries to settle it again — see `_unarmed_candidate` for why a record that survives a
+        # failed settle must not be one a later boot may act on.
+        preflight = _unarmed_candidate(candidate)
+        try:
+            provision.record_provision_candidate(state.store, preflight)
+        except Exception as exc:
+            # A candidate that cannot be PROVEN recorded is a pass with no recovery story, so the
+            # restore does not start one — and now nothing has been stopped either. The tunnel is
+            # still up on the configuration the operator had.
+            return RestoreResult(ok=False, snapshot=snapshot,
+                                 error=f"could not record what the restore is about to put on the "
+                                       f"host, so nothing was applied: {exc}")
+        # THE DISCONNECTED GUARD IS RENDERED HERE AND APPLIED BELOW — one render, two places.
+        #
+        # It is a store-derived render like every other, so it can refuse: a cover source that will
+        # not answer means there is NO plan to install (see `EnforcementCoverUnknown`), and stored net
+        # settings that will not parse make the render raise outright. Both were being asked AFTER
+        # `supervisor.stop()`, where "there is no plan to install" is no longer a refusal but a
+        # gateway outage — xray down, the tproxy ruleset the previous apply installed still on the
+        # host pointing at it, clients black-holed, and nothing imported to show for it. A transient
+        # persistence fault must not be able to buy that.
+        #
+        # Asked here it is the same question with the operator's tunnel still up, so it joins the
+        # other first-phase refusals and costs nothing. The plan is then RETAINED and applied
+        # verbatim: re-deriving it after the disconnect would put the same failure back at the same
+        # point. `sync_net_plan` applies a plan it is handed and, with xray stopped, decides the very
+        # mode `stop_net` would have — the fail-closed guard with the kill-switch on, a teardown
+        # without it, which renders no plan and is the `None` case.
+        #
+        # AFTER the candidate record, deliberately. That record is one of the cover's sources
+        # (`pending_candidate_ifaces`), so a plan rendered before it landed would name one interface
+        # fewer than the plan this path installs today — and dropping a name from a ruleset that is
+        # replaced rather than edited is the one direction that is never safe.
+        try:
+            guard_plan = _disconnected_guard_plan(state)
+        except Exception as exc:
+            # Nothing has been stopped, so this is still free. The candidate record is settled for
+            # the same reason as the exits below: no pass ran, so there is nothing to reclaim.
+            if preflight:
+                _settle_preflight_candidate(state, "a guard that could not be rendered")
+            return RestoreResult(
+                ok=False, snapshot=snapshot,
+                error=f"could not enforce disconnected state, so the gateway was left as it was: "
+                      f"{exc}")
+        # From here the runtime IS touched, so every remaining exit before the transaction settles
+        # the record above: no pass ran, so there is no candidate for a later boot to reclaim, and
+        # leaving one behind would keep an interface named in every ruleset. Settling is best effort
+        # and cannot be made otherwise, which is why the record it tries to settle is UNARMED: what a
+        # silent no-op leaves behind is an interface the enforcement keeps covering, and nothing
+        # `resume_pending_provision_undo` may remove.
+        state.supervisor.stop()
+        if state.supervisor.status().get("running"):
+            if preflight:
+                _settle_preflight_candidate(state, "a stop that did not take")
+            return RestoreResult(ok=False, snapshot=snapshot,
+                                 error="xray did not stop before restore")
+        initial_guard = (stop_net(state.settings, state.net, state.store) if guard_plan is None
+                         else sync_net_plan(state, guard_plan))
+        if not initial_guard.ok:
+            if preflight:
+                _settle_preflight_candidate(state, "a guard the host would not take")
+            return RestoreResult(
+                ok=False, snapshot=snapshot,
+                error=f"could not enforce disconnected state: {initial_guard.error}")
+        # ARMED HERE, and this is the line between an intention and a fact. Every exit above ran no
+        # host provisioning whatsoever, so the record they may leave behind must authorise no undo;
+        # below, `host_provision` can create the candidate link and address it, and from then on this
+        # record is the only thing that can reclaim it after a rollback or a crash.
+        #
+        # OUTSIDE the transaction, for the reason the preflight write is: a record that rolled back
+        # with the transaction it exists to clean up after would never be readable when it is needed.
+        try:
+            provision.record_provision_candidate(state.store, candidate)
+        except Exception as exc:
+            # Same rule as the preflight write, at the only other point it can be applied: a candidate
+            # that cannot be PROVEN recorded is a pass with no recovery story, so the restore does not
+            # start one. Nothing is imported and the host still has the segment it had — the gateway
+            # is disconnected and says so, which is what every failure in this phase looks like.
+            if preflight:
+                _settle_preflight_candidate(state, "a record that could not be armed")
+            return RestoreResult(
+                ok=False, snapshot=snapshot,
+                error=f"could not arm the record of what the restore is about to put on the host, so "
+                      f"no host provisioning was started: {exc}")
         installed: dict = {}
         try:
             with state.store.transaction():

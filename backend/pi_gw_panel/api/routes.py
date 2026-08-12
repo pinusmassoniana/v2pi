@@ -1515,7 +1515,13 @@ def put_network(body: NetworkIn, request: Request,
         # Committed OUTSIDE the transaction on purpose: a record that rolls back with the
         # transaction it is meant to clean up after would never be readable when it is needed.
         candidate = provision.provision_candidate(state, data)
-        provision.record_provision_candidate(state.store, candidate)
+        try:
+            provision.record_provision_candidate(state.store, candidate)
+        except Exception as exc:
+            # A candidate that cannot be PROVEN recorded is a pass with no recovery story, so the
+            # change is refused before any host command runs and before anything is stored. Nothing
+            # to roll back and nothing to reconcile: the gateway is exactly as it was.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         installed: dict = {}
         try:
             with state.store.transaction():

@@ -11,9 +11,11 @@ the boot path.
 """
 import json
 import logging
+import re
 import subprocess
 
 import pytest
+from conftest import _login
 from fastapi.testclient import TestClient
 
 from pi_gw_panel import backup as backup_mod
@@ -145,12 +147,15 @@ def test_a_crash_between_provisioning_and_undo_is_finished_at_the_next_boot(sett
 def test_the_boot_undo_runs_before_the_pass_that_would_otherwise_half_undo_it(settings, stub_xray):
     """ORDERING CONTRACT. The undo goes before `host_provision`, never after.
 
-    Here the pass creates the segment VLAN, records it in its own ownership ledger, and then dies
-    bringing it up — so the address metadata is never written and the record still names that
-    interface. Running the undo AFTER the pass reads those empty keys, sees a link its record says
-    was not there beforehand, and deletes the very link the pass just created and claimed: the
-    ledger then describes a host that no longer matches it, and nothing re-creates the link this
-    boot. Running it BEFORE cannot: the pass that follows re-asserts the configured segment.
+    Here the pass creates the segment VLAN, records it in its own ownership ledger, installs its
+    addresses, and then dies on the last step of all — bringing the link up, which is where the
+    bring-up now is. An undo running AFTER that is reading a record written BEFORE the pass, whose
+    `link_state` says the interface was not on the host, against a host the pass has since changed
+    — where that same interface is present precisely because the pass created and claimed it. How
+    much of the ownership metadata has caught up depends on exactly where the pass died, so it is
+    not something to lean on; the order is. Running the undo BEFORE cannot make the mistake at
+    all, and the pass that follows re-asserts the configured segment, so an undo that reaches too
+    far is repaired inside the same boot.
     """
     net = _HostNet(links=("eth0",), refuse=[("ip", "link", "set", "eth0.2", "up")])
     state = _state(settings, stub_xray, net)
@@ -640,4 +645,538 @@ def test_a_sparse_document_records_the_interface_the_restore_will_actually_creat
     assert "eth0.2" not in net.links
     assert "eth0.7" in net.links, "the interface the restore went back to was deleted instead"
     assert state.store.get_setting(UNDO_KEY) == ""
+    state.close()
+
+
+# --- what SURVIVES the undo, and what keeps enforcing it -------------------------------------
+#
+# The undo's decision not to remove something is the common case, not the exception: a candidate
+# link the panel cannot prove it created is left alone, a deletion the kernel refuses leaves the
+# link up, and an address is never deleted at all. Every one of those ends with an interface that
+# may be up carrying the segment address the rolled-back change put there — and the caller's very
+# next act is to install the RESTORED guard, rendered from a store that names the interface it went
+# back to and nothing else. The interface the change created was then live, addressed, and outside
+# the kill-switch drop: the direct-WAN bypass, reached through the recovery path.
+#
+# So the surviving pairs are recorded where that decision is made, every store-derived render covers
+# them, and they leave only when the host proves them gone. The pending-undo record still clears on
+# its own rule — "is there work a later pass could finish" — which is a different question.
+
+
+def _enforced(text: str) -> set:
+    """Every interface a rendered ruleset scopes a segment rule to — one name or a set of them."""
+    found = set()
+    for one, many in re.findall(r'iifname (?:"([^"]+)"|\{([^}]*)\})', text):
+        found |= {one} if one else set(re.findall(r'"([^"]+)"', many))
+    return found
+
+
+def _retarget_document(state, iface: str) -> dict:
+    """A restore document that moves the segment onto `iface` and changes nothing else."""
+    document = backup_mod.export_state(state.store)
+    document["settings"]["segment_iface"] = iface
+    return document
+
+
+def test_the_restored_guard_covers_a_pre_existing_candidate_link(settings, stub_xray):
+    """PRODUCT-CRITICAL. `eth0.9` was already on the host, so the undo may not delete it — the panel
+    cannot prove it created it, and on a live gateway a link it did not create may be the one the
+    operator is reached on. The restore put the segment address on it and was then rolled back, so
+    it is up, addressed, and no longer anything the store's own plan names. The guard the rollback
+    installs has to name it anyway."""
+    net = _GuardFailsOnce(links=("eth0", "eth0.2", "eth0.9"))       # eth0.9 pre-dates the panel
+    state = _state(settings, stub_xray, net)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is False
+    assert net.deleted_links() == [] and "eth0.9" in net.links      # not the panel's to remove
+    assert net.addrs["eth0.9"] == {"192.168.10.2/24"}               # ...and it is carrying the segment
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.9"}, \
+        "the restored guard named only the interface the restore went back to"
+    assert state.store.get_setting(UNDO_KEY) == ""                  # no retry can prove ownership
+    assert provision._parse_survivors(state.store) == [("eth0.9", "192.168.10.2/24")]
+    state.close()
+
+
+def test_the_restored_guard_covers_a_candidate_link_whose_deletion_was_refused(settings, stub_xray):
+    """The other way a candidate survives: the panel DID create the link and owns it, and the
+    `ip link delete` is refused. Nothing about the ledger's honesty helps here — the link is still
+    up with the address on it, and the ruleset has to cover it exactly as if it were the operator's.
+    """
+    net = _GuardFailsOnce(links=("eth0", "eth0.2"),
+                          refuse=[("ip", "link", "delete", "eth0.9")])
+    state = _state(settings, stub_xray, net)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is False
+    assert ["ip", "link", "add", "link", "eth0", "name", "eth0.9",
+            "type", "vlan", "id", "9"] in net.cmds                  # the pass created it...
+    assert "eth0.9" in net.links                                    # ...and it would not go
+    assert net.addrs["eth0.9"] == {"192.168.10.2/24"}
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.9"}
+    assert state.store.get_setting(UNDO_KEY), "an unsettled undo must survive for the next pass"
+    state.close()
+
+
+def test_a_deleted_candidate_link_is_dropped_from_the_cover_it_never_needed(settings, stub_xray):
+    """The undo's one deletion settles the enforcement too. A link that goes takes every address on
+    it with it, so there is nothing left for a ruleset to cover — and covering it would be the start
+    of a set that only ever grows."""
+    net = _GuardFailsOnce(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is False
+    assert "eth0.9" in net.deleted_links() and "eth0.9" not in net.links
+    assert provision._parse_survivors(state.store) == []
+    assert _enforced(net.applied[-1]) == {"eth0.2"}
+    state.close()
+
+
+def _survivor_left_by_a_rollback(settings, stub_xray, **host):
+    """A gateway whose rolled-back restore left `eth0.9` up, addressed, and covered."""
+    net = _GuardFailsOnce(links=("eth0", "eth0.2", "eth0.9"), **host)
+    state = _state(settings, stub_xray, net)
+    assert restore_backup(state, _retarget_document(state, "eth0.9")).ok is False
+    assert provision._parse_survivors(state.store) == [("eth0.9", "192.168.10.2/24")]
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.9"}
+    return net, state
+
+
+def test_a_candidate_the_host_says_is_gone_leaves_the_cover(settings, stub_xray):
+    """THE PROPERTY THAT KEEPS THE COVER FINITE. The operator removes the interface the rollback
+    reported; the next pass asks the host, gets an explicit not-found, and the ruleset narrows back
+    to the configured interface alone. Without this the set of names in the ruleset only grows."""
+    net, state = _survivor_left_by_a_rollback(settings, stub_xray)
+    net.links.discard("eth0.9")                      # the operator removed it, as reported
+    net.addrs.pop("eth0.9", None)
+
+    # the next boot: the pass (which asks the host) and then the guard it renders from the store
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert stored[provision.SURVIVOR_KEY] == ""
+    assert _enforced(net.applied[-1]) == {"eth0.2"}
+
+
+def test_a_candidate_whose_address_is_off_it_leaves_the_cover(settings, stub_xray):
+    """The same drain for an interface that is NOT going away — the operator's own leg, which the
+    panel will never delete. What takes it out of service is the address coming off, and the host is
+    asked about exactly that, so the cover drains without anything having to remove a link."""
+    net, state = _survivor_left_by_a_rollback(settings, stub_xray)
+    net.addrs["eth0.9"] = set()                      # the address was removed by hand; link stays
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert "eth0.9" in net.links                     # still there, still not the panel's
+    assert stored[provision.SURVIVOR_KEY] == ""
+    assert _enforced(net.applied[-1]) == {"eth0.2"}
+
+
+def test_a_candidate_the_host_cannot_answer_for_stays_covered(settings, stub_xray):
+    """THE THREE-VALUED PROBE, USED AS THREE VALUES. `ip link show` and `ip addr show` fail without
+    an explicit not-found — a refusal, a netlink error, the runner's time limit — which proves
+    nothing about the interface. "Not proven absent" is not absent: the interface may be up right
+    now carrying the segment, so it stays covered and the ruleset stays wide."""
+    net, state = _survivor_left_by_a_rollback(settings, stub_xray)
+    net.silent.add("eth0.9")                         # the host stops answering about it
+
+    stored = _boot(settings, state, provision.SURVIVOR_KEY)
+
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.9"}, \
+        "an unanswerable probe narrowed the ruleset off an interface that may be live"
+    assert stored[provision.SURVIVOR_KEY] == "eth0.9 192.168.10.2/24"
+
+
+# --- ...and when the ledger write itself is what fails ----------------------------------------
+#
+# Everything above rests on one assumption: that a decision not to remove something was RECORDED.
+# `remember_survivors` used to assume it from the absence of an exception, which a store write does
+# not give you — it can raise, and it can also return having kept nothing at all. Either way the
+# ledger does not name the interface the undo just left up and addressed, the undo reports nothing
+# outstanding, and the caller clears the pending record and renders the restored guard from a store
+# that names only the interface it went back to. That is the same direct-WAN bypass the cover exists
+# to close, reached through the recovery path, with a ledger claiming otherwise.
+#
+# So the write is READ BACK, and a failure is handled in the only way that survives a store which
+# will not take writes: the undo goes unresolved, so the caller keeps the pending record — already
+# on disk, written before the pass began — and that record covers the candidate interface until the
+# ledger can. It is a fallback, not a fourth ledger: the moment the write is proven, the undo has
+# nothing outstanding, the record clears on its own rule, and the ledger alone answers for the
+# interface, drainable by the host exactly as before.
+
+
+def _write_refused(monkeypatch, store, key: str, how: str):
+    """Make `set_setting` fail for one durable record, the two ways a store write can fail silently.
+
+    The record AND its write-ahead journal (`provision.write_set` keeps the complete expected content
+    in one before replacing the other), because what is modelled here is a store that will not take
+    THIS record at all. Refusing only half of it models something different and much narrower — a
+    partial write, where the journal is exactly what keeps the entries covered — and that is worth its
+    own test rather than being smuggled in here.
+    """
+    original = store.set_setting
+    refused = {key, provision._journal_key(key)}
+
+    def failing(name, value):
+        if name in refused:
+            if how == "raises":
+                raise RuntimeError("simulated settings write failure")
+            return                                   # "succeeded", kept nothing
+        original(name, value)
+
+    monkeypatch.setattr(store, "set_setting", failing)
+    return original
+
+
+@pytest.mark.parametrize("how", ["raises", "no-op"])
+def test_a_survivor_write_that_fails_keeps_the_undo_pending_and_the_candidate_covered(
+        settings, stub_xray, monkeypatch, how):
+    """PRODUCT-CRITICAL. `eth0.9` pre-dates the panel, so the undo may not delete it; the rolled-back
+    restore put the segment address on it and it is up carrying it. The ledger write that records
+    that is refused — by raising, or by keeping nothing while reporting success — and the guard the
+    rollback installs straight afterwards must STILL name the interface.
+
+    Both failures answer the same way because the panel can tell them apart only by reading the key
+    back, which is exactly what it now does: a write it cannot prove landed is a write that did not.
+    """
+    net = _GuardFailsOnce(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    _write_refused(monkeypatch, state.store, provision.SURVIVOR_KEY, how)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is False
+    assert "eth0.9" in net.links and net.addrs["eth0.9"] == {"192.168.10.2/24"}   # live, addressed
+    assert provision._parse_survivors(state.store) == []          # the ledger really is empty...
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.9"}, \
+        "the guard was rendered without the live candidate: a failed ledger write reopened the bypass"
+    # ...and the undo says so, so the record that carries the cover meanwhile is not thrown away.
+    assert state.store.get_setting(UNDO_KEY), "the pending record was cleared over a lost survivor"
+    assert provision.pending_candidate_ifaces(state.store) == ["eth0.9"]
+    assert "could not be recorded" in result.error and "eth0.9" in result.error
+    state.close()
+
+
+def test_a_recorded_survivor_needs_no_fallback_and_clears_the_pending_record(settings, stub_xray):
+    """The unchanged path, pinned against the fix: when the write IS provable, nothing about the
+    undo's report or the record's lifetime changes. The ledger names the pair, the undo has nothing
+    outstanding, and the pending record clears on its own rule — so the cover has exactly one source
+    for that interface and no second set of books to keep."""
+    _net, state = _survivor_left_by_a_rollback(settings, stub_xray)
+
+    assert state.store.get_setting(UNDO_KEY) == ""                # cleared: nothing outstanding
+    assert provision.pending_candidate_ifaces(state.store) == []  # so the fallback contributes none
+    assert provision._parse_survivors(state.store) == [("eth0.9", "192.168.10.2/24")]
+    assert provision.enforcement_cover(state.store, "eth0.2").names == ["eth0.9"]
+    state.close()
+
+
+def test_the_retried_write_settles_the_undo_and_the_cover_then_drains(settings, stub_xray,
+                                                                     monkeypatch):
+    """THE PROPERTY THAT KEEPS THE FALLBACK FINITE, end to end. The store recovers, the next pass
+    retries the undo it kept — that is what keeping the record is for — and the write lands. From
+    there the interface is covered by the ledger alone, so the host can still take it out: the
+    operator removes the address, the drain gets its explicit not-found, and the cover empties. A
+    fallback that outlived the write would keep re-adding the interface and nothing could ever
+    narrow off it."""
+    net = _GuardFailsOnce(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    original = _write_refused(monkeypatch, state.store, provision.SURVIVOR_KEY, "raises")
+    assert restore_backup(state, _retarget_document(state, "eth0.9")).ok is False
+    assert state.store.get_setting(UNDO_KEY) and provision._parse_survivors(state.store) == []
+    assert provision.enforcement_cover(state.store, "eth0.2").names == ["eth0.9"], \
+        "with the ledger empty, the retained record is the only thing covering the interface"
+
+    monkeypatch.setattr(state.store, "set_setting", original)   # the store takes writes again
+    outcome = provision.resume_pending_provision_undo(state)     # what the next pass does
+
+    assert outcome.unresolved == []                          # settled now
+    assert provision._parse_survivors(state.store) == [("eth0.9", "192.168.10.2/24")]
+    assert state.store.get_setting(UNDO_KEY) == ""           # ...so the fallback is out of the way
+    assert provision.enforcement_cover(state.store, "eth0.2").names == ["eth0.9"]
+
+    net.addrs["eth0.9"] = set()                              # the operator removes it, as reported
+    provision.drain_enforcement_cover(state.store, net._run)
+
+    assert provision.enforcement_cover(state.store, "eth0.2").names == [], \
+        "the cover kept naming an interface the host proved is no longer carrying the segment"
+    state.close()
+
+
+# --- ...and when the write lands only PARTLY, or the clear does not land at all ----------------
+#
+# Everything above is about a write that plainly failed. A settings value holding a SET has a third
+# outcome, and it is the one a delta check cannot see: the write lands and the record comes back
+# holding some of what was in it. One entry per line, so any truncation keeps the newest and drops
+# the oldest — which is precisely the entry nothing will ask for again. Verifying that the pairs the
+# caller just handed over came back therefore passes every time, and the older interface, still up
+# and still carrying the address a previous rollback left on it, is uncovered permanently.
+#
+# So the complete expected content is journalled under its own key BEFORE the record is replaced,
+# verified afterwards in full, and the journal is cleared only once the record is proven to hold
+# everything. What that buys is not a better report: while the record is short the journal still names
+# the whole set, and the cover reads the two as one, so the older interface STAYS COVERED.
+
+
+def _keeps_only_the_last_line(monkeypatch, store, key: str):
+    """A store whose write keeps only the LAST line of the record it is given.
+
+    The partial write, in the shape a set record actually takes: one value, one entry per line, so a
+    truncation anywhere keeps the newest entries and loses the oldest. Deliberately NOT applied to the
+    journal — this models a store that mangles one write, not one that refuses a whole record (see
+    `_write_refused`), and the journal is the half that has to survive it.
+    """
+    original = store.set_setting
+
+    def writing(name, value):
+        if name == key:
+            lines = [line for line in value.splitlines() if line.strip()]
+            value = lines[-1] if lines else value
+        original(name, value)
+
+    monkeypatch.setattr(store, "set_setting", writing)
+
+
+OLDER_SURVIVOR = ("eth0.7", "192.168.8.2/24")
+
+
+def _gateway_with_an_older_survivor(settings, stub_xray, monkeypatch):
+    """A gateway whose cover already names `eth0.7` from an EARLIER rollback, about to take another.
+
+    Two rollbacks is the ordinary case, not a corner: the ledger is additive precisely because a
+    second one does not settle the first one's leftovers.
+    """
+    net = _GuardFailsOnce(links=("eth0", "eth0.2", "eth0.7", "eth0.9"),
+                          addrs={"eth0.7": [OLDER_SURVIVOR[1]]})
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting(provision.SURVIVOR_KEY, " ".join(OLDER_SURVIVOR))
+    _keeps_only_the_last_line(monkeypatch, state.store, provision.SURVIVOR_KEY)
+    return net, state
+
+
+def test_a_partial_survivor_write_is_a_failure_and_the_older_interface_stays_covered(
+        settings, stub_xray, monkeypatch):
+    """PRODUCT-CRITICAL. `eth0.7` is up carrying the segment address an earlier rollback left on it,
+    and is in the ledger. This rollback adds `eth0.9`, the record comes back holding `eth0.9` alone,
+    and checking only the pair just requested says that worked.
+
+    Two things have to be true afterwards. The write is REPORTED as a failure, so the undo stays
+    pending — and `eth0.7` is still covered, which the report alone would not give: the pending record
+    names only the current candidate, so a ledger that lost `eth0.7` uncovers it for good.
+    """
+    net, state = _gateway_with_an_older_survivor(settings, stub_xray, monkeypatch)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is False
+    assert net.addrs["eth0.7"] == {OLDER_SURVIVOR[1]} and "eth0.7" in net.links   # live, addressed
+    # The record really is short — this is not a test of a store that behaved.
+    assert state.store.get_setting(provision.SURVIVOR_KEY) == "eth0.9 192.168.10.2/24"
+    assert "could not be recorded" in result.error, \
+        "a write that dropped an older survivor was reported as having worked"
+    assert state.store.get_setting(UNDO_KEY), "the pending record was cleared over a lost survivor"
+    # ...and the older interface is covered anyway, by the journal the replace could not truncate.
+    assert set(provision._parse_survivors(state.store)) == {OLDER_SURVIVOR,
+                                                            ("eth0.9", "192.168.10.2/24")}
+    assert _enforced(net.applied[-1]) == {"eth0.2", "eth0.7", "eth0.9"}, \
+        "the guard was rendered without an interface a partial write dropped from the ledger"
+    state.close()
+
+
+def test_a_journalled_survivor_still_drains_when_the_host_proves_it_gone(settings, stub_xray,
+                                                                        monkeypatch):
+    """The journal may not become a second ledger nothing can empty. The store recovers, the write
+    that was short lands in full, and from there the pair drains on the host's own answer exactly as
+    an ordinary one does."""
+    net, state = _gateway_with_an_older_survivor(settings, stub_xray, monkeypatch)
+    assert restore_backup(state, _retarget_document(state, "eth0.9")).ok is False
+
+    monkeypatch.undo()                                       # the store stops mangling writes
+    outcome = provision.resume_pending_provision_undo(state)  # the retry the kept record buys
+
+    assert outcome.unresolved == []                          # settled: the whole set landed
+    assert set(provision._parse_survivors(state.store)) == {OLDER_SURVIVOR,
+                                                            ("eth0.9", "192.168.10.2/24")}
+    assert state.store.get_setting(provision._journal_key(provision.SURVIVOR_KEY)) == "", \
+        "the journal outlived the write it was covering for"
+
+    net.addrs["eth0.7"] = set()                              # the operator removes both, as reported
+    net.addrs["eth0.9"] = set()
+    provision.drain_enforcement_cover(state.store, net._run)
+
+    assert provision._parse_survivors(state.store) == []
+    assert provision.enforcement_cover(state.store, "eth0.2").names == []
+    state.close()
+
+
+# --- the clear that is not a deletion ---------------------------------------------------------
+#
+# The pending record is the cover's fallback source, so what it costs to leave one behind is an
+# interface named in every ruleset for ever — and, once that name is reused for something else,
+# unrelated traffic pulled into the segment's tproxy redirect. Clearing it was `set_setting(key, "")`
+# and a `try`/`except`, which takes a non-raising write as proof of deletion; a store that quietly
+# keeps nothing leaves the previous JSON exactly where it was.
+#
+# So the clear no longer depends on the blanking. It writes a TERMINAL form — a record marked
+# resolved, which every reader ignores — and PROVES that, then blanks best-effort on top. Whatever
+# becomes of the blank write, what is left either reads as settled or is reported.
+
+
+def _blanking_is_a_noop(monkeypatch, store):
+    """A store whose write of an EMPTY value keeps nothing, silently: the deletion that does not
+    happen. Every other write behaves, which is what makes this a test of the clear and not of a
+    store that is simply broken."""
+    original = store.set_setting
+
+    def writing(name, value):
+        if name == UNDO_KEY and value == "":
+            return                               # "deleted", and the old record is still there
+        original(name, value)
+
+    monkeypatch.setattr(store, "set_setting", writing)
+
+
+def _assert_nothing_pending(state):
+    """The record is settled: it names no interface to cover, and no later pass acts on it."""
+    assert provision.pending_candidate_ifaces(state.store) == [], \
+        "a settled undo record was still naming a candidate interface for the enforcement to cover"
+    assert provision.enforcement_cover(state.store, "eth0.2").known, \
+        "a settled undo record was left in a state the cover cannot read"
+    outcome = provision.resume_pending_provision_undo(state)
+    assert outcome.actions == [] and outcome.unresolved == [], \
+        "a settled undo record was undone again by the next pass"
+
+
+def test_a_clear_whose_blanking_never_lands_leaves_no_candidate_behind_after_a_restore(
+        settings, stub_xray, monkeypatch):
+    """The restore's COMMIT path. The change lands, so nothing is left to undo — and the record that
+    says so cannot be blanked. What survives has to be the terminal form, not the JSON naming
+    `eth0.9`, or the ruleset covers that interface until someone notices."""
+    net = _HostNet(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+    _blanking_is_a_noop(monkeypatch, state.store)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is True and "eth0.9" in net.links       # the new segment really came up
+    assert state.store.get_setting(UNDO_KEY) == provision.RESOLVED_UNDO
+    _assert_nothing_pending(state)
+    state.close()
+
+
+def test_a_clear_whose_blanking_never_lands_leaves_no_candidate_behind_after_a_rollback(
+        settings, stub_xray, monkeypatch):
+    """The restore's ROLLBACK path, where the record has done its job: the candidate link was the
+    panel's, the undo deleted it, and there is nothing outstanding. The interface is GONE, so a
+    record still naming it is the case the auditor's "reused interface name" costs most — a later
+    `eth0.9` created for something else is inside the segment's redirect."""
+    net = _GuardFailsOnce(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+    _blanking_is_a_noop(monkeypatch, state.store)
+
+    result = restore_backup(state, _retarget_document(state, "eth0.9"))
+
+    assert result.ok is False
+    assert "eth0.9" in net.deleted_links() and "eth0.9" not in net.links
+    assert state.store.get_setting(UNDO_KEY) == provision.RESOLVED_UNDO
+    _assert_nothing_pending(state)
+    assert _enforced(net.applied[-1]) == {"eth0.2"}, \
+        "the guard covered an interface the undo had already removed from the host"
+    state.close()
+
+
+class _GuardFailsOnDemand(_HostNet):
+    """A host whose fail-closed guard starts working and stops when the test says so — so the app can
+    boot and log in normally and the failure lands inside the request under test."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.fail_guard = False
+
+    def apply_guard(self, plan):
+        if self.fail_guard:
+            return NetResult(ok=False, error="nft denied")
+        return super().apply_guard(plan)
+
+
+@pytest.mark.parametrize("outcome", ["commit", "rollback"])
+def test_a_clear_whose_blanking_never_lands_leaves_no_candidate_behind_on_the_route(
+        settings, stub_xray, monkeypatch, outcome):
+    """The other caller, on both of its completion paths. `PUT /api/network` clears the record in two
+    places — after the transaction commits and after the rollback finishes — and a clear that cannot
+    prove itself has to hold in both."""
+    net = _GuardFailsOnDemand(links=("eth0", "eth0.2"))
+    state = _state(settings, stub_xray, net)
+    client = TestClient(create_app(settings, state=state))
+    headers = {"X-CSRF-Token": _login(client)}
+    net.fail_guard = outcome == "rollback"
+    _blanking_is_a_noop(monkeypatch, state.store)
+
+    response = client.put("/api/network", json={"segment_iface": "eth0.9"}, headers=headers)
+
+    assert response.status_code == (502 if outcome == "rollback" else 200)
+    assert state.store.get_setting(UNDO_KEY) == provision.RESOLVED_UNDO
+    _assert_nothing_pending(state)
+
+
+def test_a_clear_whose_blanking_never_lands_leaves_no_candidate_behind_at_boot(settings, stub_xray,
+                                                                              monkeypatch):
+    """The boot path's two clears: the one that discards a record it cannot use, and the one that
+    settles a finished undo. Neither may leave a live-looking record — and a record already in its
+    terminal form must not be re-reported on every boot afterwards, which is the other half of a
+    reader that ignores it."""
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    state.store.set_setting(UNDO_KEY, '{"vlan": true}')      # names no interface: unusable
+    _blanking_is_a_noop(monkeypatch, state.store)
+
+    assert provision.resume_pending_provision_undo(state).actions == []
+    assert state.store.get_setting(UNDO_KEY) == provision.RESOLVED_UNDO
+    _assert_nothing_pending(state)
+
+    _pending(state)                                          # ...and now a real one, which settles
+    assert provision.resume_pending_provision_undo(state).unresolved == []
+    assert "eth0.9" in net.deleted_links()
+    assert state.store.get_setting(UNDO_KEY) == provision.RESOLVED_UNDO
+    _assert_nothing_pending(state)
+    state.close()
+
+
+# --- unknown, from every record the cover is built out of -------------------------------------
+
+
+@pytest.mark.parametrize("key", [provision.SURVIVOR_KEY, provision.LINK_KEY, provision.STALE_KEY,
+                                "managed_segment_iface", "pending_provision_undo"])
+def test_a_cover_source_that_cannot_be_read_is_never_read_as_empty(settings, stub_xray, monkeypatch,
+                                                                  key):
+    """Every record the cover is derived from, asked the same question: does a store that will not
+    answer for you come back as "there is nothing to cover"?
+
+    It used to, for the one the auditor found, and the shape was general — a `try`/`except` returning
+    `[]`, or an `or ""` in front of a `.splitlines()`. So the answer is pinned for all five: the names
+    are whatever could be read, `known` is False, and `may_narrow` — the only thing that licenses
+    taking an interface out of the ruleset — is False whatever the names say.
+    """
+    net = _HostNet(links=("eth0", "eth0.2", "eth0.9"))
+    state = _state(settings, stub_xray, net)
+    _pending(state)
+    state.store.set_setting(provision.SURVIVOR_KEY, "eth0.7 192.168.8.2/24")
+    original = state.store.get_setting
+
+    def reading(name):
+        if name == key:
+            raise RuntimeError("simulated settings read failure")
+        return original(name)
+
+    monkeypatch.setattr(state.store, "get_setting", reading)
+    cover = provision.enforcement_cover(state.store, "eth0.2")
+
+    assert cover.known is False and cover.why()
+    assert cover.may_narrow is False, "an unreadable record licensed narrowing the enforcement"
+    with pytest.raises(TypeError):          # ...and it cannot be spent as a truth value either
+        bool(cover)
+    assert cover != [], "an unknown cover compared equal to an empty one"
     state.close()

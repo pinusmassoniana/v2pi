@@ -1,5 +1,45 @@
 import ipaddress
+import re
+
 from pi_gw_panel.net_control.plan import NetPlan, net24
+
+# What an interface name may look like before it is interpolated into a rule. The same shape the
+# API boundary enforces on `segment_iface` (`config._NET_IFACE_RE`), applied here to the EXTRA
+# names, which do not come from a request: they are read back out of the panel's own records of
+# what it put — or may have put — on the host (the ownership, link, stale-address and surviving-
+# candidate ledgers), so a hand-edited database or an imported backup document is the one way
+# something else could arrive.
+# A value that cannot be an interface name is not one — Linux allows neither whitespace nor
+# quotes and stops at 15 characters — so dropping it costs no coverage of anything real, while
+# interpolating it would let a stored newline write nft rules of its own choosing.
+_IFACE_RE = re.compile(r"[A-Za-z0-9._@:-]{1,15}")
+
+
+def _segment_ifaces(plan: NetPlan) -> list[str]:
+    """Every interface the segment rules must cover: the configured one, then any being replaced.
+
+    Ordered and de-duplicated, and the configured interface is always first so the ordinary
+    one-interface render is byte-identical to what it has always been.
+    """
+    names = [plan.segment_iface]
+    for name in plan.extra_ifaces:
+        name = (name or "").strip()
+        if name and name not in names and _IFACE_RE.fullmatch(name):
+            names.append(name)
+    return names
+
+
+def _iif(plan: NetPlan) -> str:
+    """The `iifname` match scoping a rule to the segment — one name, or a set of them.
+
+    nft matches an anonymous set of interface names exactly as it matches one, so a transitional
+    ruleset covering both sides of a segment move is the same rules with the same meaning, and
+    not a second ruleset that has to be kept in step with this one.
+    """
+    names = _segment_ifaces(plan)
+    if len(names) == 1:
+        return f'iifname "{names[0]}"'
+    return "iifname { " + ", ".join(f'"{name}"' for name in names) + " }"
 
 
 def _seg_prefix6(plan: NetPlan) -> str | None:
@@ -49,12 +89,16 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
     # `tunnel_up=False` renders the FAIL-CLOSED guard: the forward drop only, with no
     # prerouting/tproxy — used when the tunnel is intentionally stopped but the kill-switch
     # must keep blocking client→WAN (A1). With the kill-switch off this is an empty table.
+    #
+    # Every rule below is scoped by `_iif`, which is the configured segment interface alone except
+    # while the segment is being MOVED between interfaces, when it names both — see `_iif`.
+    iif = _iif(plan)
     forward = ""
     if plan.kill_switch:
         forward = f"""\
     chain forward {{
         type filter hook forward priority filter; policy accept;
-        iifname "{plan.segment_iface}" ip daddr != {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} drop
+        {iif} ip daddr != {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} drop
     }}
 """
     seg_net, lan = net24(plan.segment_ip), net24(plan.mgmt_ip)
@@ -66,8 +110,8 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
         type filter hook prerouting priority mangle; policy accept;
         meta mark 0x{plan.egress_mark:x} return
         ip daddr {{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }} return
-        iifname "{plan.segment_iface}" ip daddr {{ {dhcp_dst} }} udp dport {{ 67, 68 }} return
-        iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
+        {iif} ip daddr {{ {dhcp_dst} }} udp dport {{ 67, 68 }} return
+        {iif} meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip to :{plan.tproxy_port} accept
     }}
 """
     # LAN access (independent of tunnel state): SNAT segment→home-LAN so replies return via the
@@ -106,8 +150,8 @@ def render_nft6(plan: NetPlan, tunnel_up: bool = True) -> str:
       (A foreign-RA L2 bypass never traverses this gateway — that case is detection-only.)
     - **tunnel down + kill-switch on** → fail-closed drop of client→global-v6 (the v1.8 leak-guard).
     - **tunnel down + kill-switch off** → empty (the v6 table is removed; clients fall back direct)."""
-    local6 = _local6(plan)
-    drop = (f'        iifname "{plan.segment_iface}" ip6 daddr != {local6} drop\n')
+    local6, iif = _local6(plan), _iif(plan)
+    drop = (f"        {iif} ip6 daddr != {local6} drop\n")
     forward = (f"    chain forward {{\n"
                f"        type filter hook forward priority filter; policy accept;\n"
                f"{drop}"
@@ -120,7 +164,7 @@ table ip6 pi_gw_panel {{
         meta mark 0x{plan.egress_mark:x} return
         ip6 daddr {local6} return
         udp dport {{ 546, 547 }} return
-        iifname "{plan.segment_iface}" meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip6 to :{plan.tproxy_port6} accept
+        {iif} meta l4proto {{ tcp, udp }} meta mark set 0x{plan.fwmark:x} tproxy ip6 to :{plan.tproxy_port6} accept
     }}
 {forward}}}
 """

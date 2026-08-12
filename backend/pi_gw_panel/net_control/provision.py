@@ -22,11 +22,11 @@ import logging
 import os
 import secrets
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pi_gw_panel.net_control.linux import TIMEOUT_RETURNCODE, _run, _write_proc
 from pi_gw_panel.net_control.plan import NetPlan, NetResult
-from pi_gw_panel.net_control.render import render_dnsmasq
+from pi_gw_panel.net_control.render import _IFACE_RE, render_dnsmasq
 
 _log = logging.getLogger("pi_gw_panel")
 
@@ -46,6 +46,267 @@ def _remove_file(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+# --- durable records: the one place a settings write becomes a fact ---------------------------
+#
+# Everything this module remembers between passes lives in the settings k/v store, and every one of
+# those records is load-bearing: the enforcement cover is derived from them, the links and addresses
+# the panel owns are retired from them, and a record that stops describing the host is how an
+# interface ends up live and outside the ruleset. The store offers no transactional guarantee and no
+# typed answer — `set_setting` can raise, and it can also return having written NOTHING, while
+# `get_setting` can raise or hand back something unparseable — so every call site used to implement
+# its own verification, and each one got it wrong differently: a failed read read as "the record is
+# empty", a write verified against the entries just requested instead of the whole record it
+# replaced, a clear that took a non-raising write as proof of deletion. Those are one missing
+# abstraction, not three bugs, so the store access lives here and the sites below use nothing else.
+#
+# THREE OPERATIONS, each named for the failure it exists to catch:
+#
+#   read  — a `Record`: the content, or UNKNOWN with the reason. Unknown is not empty, and the type
+#           makes reading it as empty fail loudly instead of quietly (see `Record`).
+#   write — writes, then PROVES it by reading back the COMPLETE expected content. A set record is
+#           journalled first, so the replace can never be the step that loses an entry the record
+#           already held (see `write_set`).
+#   clear — proven the same way, and by writing a TERMINAL form its readers ignore rather than by
+#           trusting the blanking, so a silent no-op cannot leave a live-looking record behind.
+#
+# NOTHING HERE RAISES on a store failure; each returns the reason instead, because every caller has
+# something better to do with it than an exception — decline to touch the host before it can record
+# what it is about to do, keep an interface covered, or report through the pass result. The one
+# deliberate exception is on the READ side: asking an UNKNOWN record for its content raises
+# `RecordUnknown`, because there is no answer to give and no safe default to invent.
+
+
+class RecordUnknown(RuntimeError):
+    """A record that could not be read, asked for its content anyway."""
+
+
+@dataclass(frozen=True)
+class Record:
+    """What one durable record SAYS, which is two facts and cannot be one.
+
+    `known` — the store answered. The content — `.text`, `.lines()`, `.pairs()` — is reachable only
+    then, and asking for it otherwise raises.
+
+    UNKNOWN IS NOT EMPTY. That collapse is the defect this type exists to end, and it had the same
+    shape everywhere it appeared: a `try`/`except` around the read that returned `[]`, so "the store
+    could not tell us which interfaces may still be carrying the segment" became "no interface is",
+    and the enforcement narrowed off one that may have been live. So the absent content is `None`
+    and never `""` — a caller that reaches past the guard gets an `AttributeError` on the next line
+    rather than a plausible empty answer — and `__bool__` refuses to guess which of the two facts
+    `if record:` meant, for the same reason `AddressOutcome` refuses to be a truth value.
+    """
+    raw: str | None
+    reason: str = ""
+
+    @property
+    def known(self) -> bool:
+        return self.raw is not None
+
+    def __bool__(self):
+        """Never a truth value: "the record is empty" and "there is no answer" are both falsey."""
+        raise TypeError("a record read is two facts: read .known, then its content")
+
+    def _content(self) -> str:
+        if self.raw is None:
+            raise RecordUnknown(self.reason or "the record could not be read")
+        return self.raw
+
+    @property
+    def text(self) -> str:
+        """The whole value, stripped. Raises when the record is unknown."""
+        return self._content().strip()
+
+    def lines(self) -> list[str]:
+        """The record's entries, in order, without blanks or repeats. Raises when unknown."""
+        out: list[str] = []
+        for line in self._content().splitlines():
+            entry = line.strip()
+            if entry and entry not in out:
+                out.append(entry)
+        return out
+
+    def names(self) -> list[str]:
+        """The INTERFACE-NAME entries — ALL OF THEM OR NONE. Raises when unknown, and when any
+        entry is not one legal interface token.
+
+        The same all-or-nothing rule as `pairs()`, one token wide instead of two, and it exists for
+        the same reason: a record that cannot be understood in full is UNKNOWN, not partly known.
+        The single-token format used to be treated as self-validating — "whatever a mangled line
+        says is carried as a name, which covers an interface that may not exist, free" — and that
+        was wrong in the one direction that matters. `eth0.2 eth0.9`, the shape a hand-edited
+        database or a truncated write produces, is not two names and it is not a name that
+        over-covers: it becomes ONE bogus name, `known`, covering nothing that exists, while
+        neither real interface is named in the drop or the redirect. It does not fail its own
+        delete either — `ip link delete "eth0.2 eth0.9"` is answered "does not exist", which is the
+        one answer that PROVES absence, so the entry is dropped from the ledger and the two live
+        interfaces it stood for are forgotten.
+
+        So the shape is checked, against the same expression the render interpolates through —
+        `render._IFACE_RE`, IMPORTED and not restated, because a second copy of it here is how the
+        ledger and the ruleset it feeds come to disagree about what a name is. Whitespace, quotes and
+        anything past IFNAMSIZ cannot be an interface name, so an entry carrying them names nothing,
+        and the safe answer is the one the read side already gives — say so, and let the reason
+        travel to a caller that has to keep covering.
+        """
+        out: list[str] = []
+        for entry in self.lines():
+            if not _IFACE_RE.fullmatch(entry):
+                raise RecordUnknown(
+                    f"the record holds {entry[:80]!r}, which is not one interface name, so what it "
+                    "names cannot be read in full")
+            if entry not in out:
+                out.append(entry)
+        return out
+
+    def pairs(self) -> list[tuple[str, str]]:
+        """The `(iface, addr)` entries — ALL OF THEM OR NONE. Raises when unknown, and when any
+        entry is not a pair.
+
+        STRUCTURED PARSING IS ALL-OR-NOTHING, and a record that cannot be understood in full is
+        UNKNOWN, not partly known — which is the same rule the read side follows, one level down.
+        Malformed nonblank entries used to be skipped here while the record stayed `known`, so a
+        truncated entry — `eth0.2` where `eth0.2 192.168.9.2/24` was written — produced
+        `Cover(known=True, names=[])` with `may_narrow` true, and the pass narrowed the enforcement
+        off the very interface that entry existed to keep named. "The store told us something we
+        cannot read" is not a weaker problem than "the store could not tell us", and it has the same
+        safe answer: say so, and let the reason travel to a caller that has to keep covering.
+        """
+        out: list[tuple[str, str]] = []
+        for entry in self.lines():
+            parts = entry.split()
+            if len(parts) != 2:
+                raise RecordUnknown(
+                    f"the record holds {entry[:80]!r}, which is not an interface and an address, "
+                    "so what it names cannot be read in full")
+            if (parts[0], parts[1]) not in out:
+                out.append((parts[0], parts[1]))
+        return out
+
+
+def read_record(store, key: str) -> Record:
+    """What `key` holds, or UNKNOWN with the reason the store could not say. Never raises."""
+    try:
+        return Record(store.get_setting(key) or "")
+    except Exception as exc:            # any store fault: it is one answer, "we cannot tell"
+        reason = str(exc) or exc.__class__.__name__
+        _log.error("the durable record %s could not be read: %s", key, reason)
+        return Record(None, reason)
+
+
+def _verified_write(store, key: str, text: str, expect: list[str] | None) -> str:
+    """Write `text` to `key` and read it back. "" or why the record does not hold it.
+
+    `expect` is the entry list the read-back must equal; `None` asks for the value verbatim. The
+    read-back is the whole point: a `set_setting` that returns having written nothing is
+    indistinguishable from one that worked until the record is read.
+    """
+    try:
+        store.set_setting(key, text)
+    except Exception as exc:            # any store fault: the record does not hold it either way
+        return f"{key} could not be written: {exc or exc.__class__.__name__}"
+    back = read_record(store, key)
+    if not back.known:
+        return f"{key} could not be read back after being written: {back.reason}"
+    if expect is None:
+        if back.text == text.strip():
+            return ""
+        return (f"{key} reads back as {back.text[:80]!r}, not the {text.strip()[:80]!r} that was "
+                "written")
+    held = back.lines()
+    if held == expect:
+        return ""
+    missing = [entry for entry in expect if entry not in held]
+    if missing:
+        return f"{key} does not name {'; '.join(missing)} after being written"
+    return f"{key} reads back as {held} after {expect} was written"
+
+
+def write_record(store, key: str, text: str) -> str:
+    """Write one scalar record and prove it landed. "" or why it did not. Never raises."""
+    return _verified_write(store, key, text, None)
+
+
+def _journal_key(key: str) -> str:
+    """Where a set record's complete expected content goes before the record itself is replaced."""
+    return f"{key}_journal"
+
+
+def read_set(store, key: str) -> Record:
+    """A set record: the ledger AND its write-ahead journal, read as one. Never raises.
+
+    UNKNOWN when either half is, because an unreadable half is not an empty one. The journal is
+    normally blank and is read anyway: what it holds is the complete expected content of a replace
+    that was not proven, which is exactly the state in which the ledger alone is missing an entry.
+    """
+    held = read_record(store, key)
+    if not held.known:
+        return held
+    journalled = read_record(store, _journal_key(key))
+    if not journalled.known:
+        return Record(None, journalled.reason)
+    return Record("\n".join(held.lines() + journalled.lines()))
+
+
+def write_set(store, key: str, entries) -> str:
+    """Replace the set at `key` with `entries`, and prove the record holds every one of them.
+
+    THE COMPLETE EXPECTED CONTENT, NEVER THE DELTA. Verifying only the entries a caller has just
+    added passes a partial write that keeps the new entry and drops an older one — and for a ledger
+    whose entries are the interfaces the ruleset must name, the dropped one is uncovered
+    permanently, because nothing will ever ask for it again.
+
+    The complete content is JOURNALLED FIRST, under its own key, and the journal is cleared only
+    once the record is proven to hold everything. So the replace cannot be the step that loses an
+    entry: while the record is unproven the journal still names the whole set and `read_set` reads
+    the two as one, which keeps the entry COVERED rather than merely reporting that it went.
+
+    The exact content is verified, so a partial write in either direction is reported. What is left
+    behind on a failure is always the over-covering direction — an interface named in a rule it no
+    longer needs costs nothing, and the drain removes it once the host proves it gone.
+    """
+    expect = list(dict.fromkeys(entry.strip() for entry in entries if entry and entry.strip()))
+    text = "\n".join(expect)
+    why = _verified_write(store, _journal_key(key), text, expect)
+    if why:
+        return why                          # the record is untouched, so nothing has been lost
+    why = _verified_write(store, key, text, expect)
+    if why:
+        return why                          # the journal still names the whole set
+    _blank(store, _journal_key(key))        # best effort: an unblanked journal only repeats it
+    return ""
+
+
+def _blank(store, key: str) -> None:
+    """Best-effort blanking of a record whose meaning is already settled. Never raises."""
+    try:
+        store.set_setting(key, "")
+    except Exception:                   # already settled; there is nothing this could cost
+        _log.debug("could not blank %s; what it still holds is already settled", key)
+
+
+def clear_record(store, key: str, terminal: str = "") -> str:
+    """Take `key` to a state no reader treats as live, and PROVE it got there. Never raises.
+
+    A non-raising write is not proof of deletion, and the blanking is the least trustworthy half of
+    a clear: a store that quietly keeps nothing leaves the OLD value in place, and for a record
+    whose presence means "this interface may still be live" that is the direction that costs
+    something — the ruleset keeps naming the interface for ever, and can capture unrelated traffic
+    once that name is reused.
+
+    So for such a record the VERIFIED step is writing a TERMINAL form its readers deliberately
+    ignore, and the blanking is best effort on top of it: whatever becomes of the blank write, what
+    is left either reads as settled or is reported here. A record with no terminal form (a ledger,
+    where empty already means nothing) is simply blanked and read back.
+    """
+    if not terminal:
+        return _verified_write(store, key, "", None)
+    why = write_record(store, key, terminal)
+    if why:
+        return why
+    _blank(store, key)
+    return ""
 
 
 # --- pure helpers --------------------------------------------------------------
@@ -124,6 +385,45 @@ def _probe_link(iface: str, run=_run) -> tuple[str, str]:
         return LINK_UNKNOWN, reason
     except OSError as exc:
         return LINK_UNKNOWN, str(exc) or exc.__class__.__name__
+
+
+# Whether a link is UP is a fourth answer about it, and a separate question from whether it is
+# there: a link can be present and down (a VLAN this panel just created), present and up (the
+# operator's own interface), or absent, which carries nothing and so answers the up-question with
+# `LINK_DOWN`. It is asked in one place — the PD watcher, deciding whether the segment is in a
+# state where dnsmasq may be pointed at it — and there only `LINK_UP` is an answer to act on.
+LINK_UP = "up"
+LINK_DOWN = "down"
+
+
+def _probe_iface_up(iface: str, run=_run) -> tuple[str, str]:
+    """Ask the host whether `iface` is administratively UP. `(state, reason)`.
+
+    `LINK_UP` requires the host to say so. An explicit not-found is `LINK_DOWN`: a device that is
+    not there carries no traffic, which is the fact the callers want. Everything else —
+    refused, a netlink error, the runner's time limit (whose synthetic stderr describes the
+    command it killed and says nothing about the device), output that cannot be read, or output
+    with no flags in it — is `LINK_UNKNOWN`, and no caller may read that as UP. The flag is
+    matched as a whole token, so `LOWER_UP` on a link whose admin state is down is not an answer.
+    """
+    if not iface:
+        return LINK_UNKNOWN, "no interface"
+    try:
+        out = _run_stdout(run(["ip", "-o", "link", "show", iface]))
+    except subprocess.CalledProcessError as exc:
+        err = ((exc.stderr or "") + " " + (exc.stdout or "")).lower()
+        if exc.returncode != TIMEOUT_RETURNCODE and any(t in err for t in _LINK_ABSENT_TOKENS):
+            return LINK_DOWN, ""
+        reason = (exc.stderr or "").strip() or f"ip link show exited {exc.returncode}"
+        return LINK_UNKNOWN, reason
+    except OSError as exc:
+        return LINK_UNKNOWN, str(exc) or exc.__class__.__name__
+    if out is None:
+        return LINK_UNKNOWN, "ip link show produced no readable output"
+    start, end = out.find("<"), out.find(">")
+    if start < 0 or end < start:
+        return LINK_UNKNOWN, "ip link show did not report the link flags"
+    return (LINK_UP if "UP" in out[start + 1:end].split(",") else LINK_DOWN), ""
 
 
 def _link_exists(iface: str, run=_run) -> bool:
@@ -231,17 +531,48 @@ def _parse_links(store) -> list[str]:
     Newline-joined, the same encoding the stale-address ledger uses. A gateway upgrading from
     a release that stored a single bare name here reads back as a one-entry list, so the link
     it already owns stays recognised and cleanable instead of being orphaned by the format.
+
+    RAISES `RecordUnknown` when the store cannot answer, and every caller wants that rather than an
+    empty list: one decides whether to CREATE a link (and may not create one it cannot record), and
+    the rest decide what the enforcement covers, where empty means "narrow".
+
+    IT RAISES ON A MANGLED ENTRY TOO, for the whole record. The single-token format is not
+    self-validating: an entry that is not one legal interface name is not an interface this
+    over-covers, it is a name that covers nothing while the interfaces it stood for go unnamed —
+    see `Record.names`, which is where that rule lives and why.
     """
-    out: list[str] = []
-    for line in (store.get_setting(LINK_KEY) or "").splitlines():
-        name = line.strip()
-        if name and name not in out:
-            out.append(name)
-    return out
+    return read_set(store, LINK_KEY).names()
 
 
-def _record_links(store, links: list[str]) -> None:
-    store.set_setting(LINK_KEY, "\n".join(links))
+def _read_links(store) -> tuple[list[str] | None, str]:
+    """The link ledger, or `(None, reason)` when it cannot be read IN FULL. Never raises.
+
+    The `_read_pairs` of this ledger, and for the same callers: the two retirement paths, which may
+    not raise and whose whole job is deleting what the ledger names. An unreadable record and one
+    holding an entry that is not an interface name are ONE answer to both — the set of links they
+    would act on is a set with something already dropped out of it — so neither touches the host and
+    both report, with the entry quoted, because a malformed ledger is fixed on the host and not by
+    guessing at it (the same stance as `_read_ownership`).
+    """
+    record = read_set(store, LINK_KEY)
+    if not record.known:
+        return None, record.reason
+    try:
+        return record.names(), ""
+    except RecordUnknown as exc:
+        return None, str(exc)
+
+
+def _record_links(store, links: list[str]) -> str:
+    """Replace the ownership ledger, proven. "" or why the record does not name every link.
+
+    Unverified, this was the quietest of the module's write defects: `ensure_segment_link` records a
+    VLAN before it creates it precisely so a kill between the two still leaves the panel owning it,
+    and a `set_setting` that returned having kept nothing turned that into a link on the host that
+    NOTHING owns — invisible to `retire_superseded_links` and to `clear_managed_link`, so no pass
+    would ever delete it, and outside the drop-in and the ruleset the moment the segment moves on.
+    """
+    return write_set(store, LINK_KEY, links)
 
 
 def _probe_seam(link_exists, run):
@@ -296,7 +627,13 @@ def _delete_owned_link(store, link: str, owned: list[str], run, probe) -> str | 
             return f"{link}: {why}"
     if link in owned:
         owned.remove(link)
-    _record_links(store, owned)
+    # The forgetting is proven too. A write that kept nothing leaves the ledger naming a link that
+    # is gone, which only costs a retried delete and one interface over-covered — the harmless
+    # direction — but it is still a record that does not describe the host, so it is reported.
+    why = _record_links(store, owned)
+    if why:
+        return (f"{link}: it is gone from the host, but the ownership ledger still names it, so a "
+                f"later pass will try again: {why}")
     return None
 
 
@@ -312,7 +649,7 @@ def _retire_links(store, links: list[str], owned: list[str], run, probe) -> list
 
 
 def ensure_segment_link(store, plan: NetPlan, run=_run, link_exists=None) -> None:
-    """Create the configured VLAN when needed and bring the segment link up. RETIRES NOTHING.
+    """Create the configured VLAN when needed. BRINGS NOTHING UP, AND RETIRES NOTHING.
 
     A VLAN the panel creates is appended to the ownership ledger BEFORE the kernel call, so
     disabling `manage_segment` can delete exactly the links this panel added (and never a
@@ -321,23 +658,508 @@ def ensure_segment_link(store, plan: NetPlan, run=_run, link_exists=None) -> Non
     (`eth0.2` -> `eth0.9`) must not overwrite the record of the link still on the host, or
     nothing would ever delete it.
 
-    This is only the CREATE half of a retarget, and the split is the point (see
-    `retire_superseded_links`): the addresses the plan names need an interface to land on, so
-    the new link has to exist before they are reconciled — but nothing about the OLD link has to
-    go before that, and retiring it there is what turned a rejected `ip addr replace` into a
-    segment with no network at all.
+    This is the CREATE step alone, and the other two steps of a retarget are elsewhere for two
+    different reasons. The addresses the plan names need an interface to land on, so the creation
+    has to go first — but nothing about the OLD link has to go before that, and retiring it here
+    is what turned a rejected `ip addr replace` into a segment with no network at all (see
+    `retire_superseded_links`); and nothing about the NEW link has to be LIVE before that either,
+    which is why the bring-up left too (see `activate_segment_link`).
+
+    The bring-up mattered for a different reason than the retirement, and a worse one. Every rule
+    that constrains the segment names an interface — the kill-switch drop, the tproxy redirect,
+    dnsmasq's listen address and DHCP range, the NetworkManager drop-in — and until this pass
+    finishes they all still name the interface being replaced. Raising the candidate here made a
+    half-applied pass — IPv4 installed and IPv6 refused, or the process killed between the two —
+    leave an interface that is up and addressed and outside every one of them: a path around the
+    policy, not merely an apply that failed, and one that persists for as long as the failure does.
+
+    So a link this creates is created DOWN and stays down until every requested replacement has
+    landed. There is deliberately no `ip link set … down` anywhere on the failure path to match:
+    a candidate the panel did NOT create may already be up and carrying the operator's traffic,
+    and taking an interface down is not something a pass may do on the strength of a plan it could
+    not apply. Down-on-failure is a property of never having raised it, which also makes it hold
+    when no failure path runs at all — a process killed between the two replacements leaves the
+    candidate down because nothing ever brought it up, not because something caught the fall.
     """
     link_exists = link_exists or (lambda i: _link_exists(i, run))
     seg = plan.segment_iface
     parent, vid = parse_vlan(seg)
-    owned = _parse_links(store)
+    owned = _parse_links(store)          # raises when the ledger cannot be read: see `_parse_links`
     if vid is not None and not link_exists(seg):
         if seg not in owned:
             owned.append(seg)
-            _record_links(store, owned)
+            # AND THE RECORD HAS TO BE PROVEN BEFORE THE KERNEL CALL, not merely attempted. The
+            # whole point of writing it first is that a kill between the two lines still leaves the
+            # panel owning the link — which a `set_setting` that quietly kept nothing does not give
+            # you: the pass would then create a VLAN no ledger names, so nothing would ever retire
+            # it and it would sit outside the drop-in and the ruleset the moment the segment moved
+            # on. A pass that cannot record what it is about to install must install nothing.
+            why = _record_links(store, owned)
+            if why:
+                raise RuntimeError(f"the panel could not record that it is about to create {seg}, "
+                                   f"so it did not create it: {why}")
         run(["ip", "link", "add", "link", parent, "name", seg,
              "type", "vlan", "id", str(vid)])
-    run(["ip", "link", "set", seg, "up"])
+
+
+def activate_segment_link(plan: NetPlan, run=_run) -> None:
+    """Bring the segment link UP. THE COMMIT POINT of a segment move, and it has two preconditions.
+
+    The plan's addresses must be on it, and the enforcement must already cover it — see
+    `_provision_segment`, which is the only caller, and which stages the second before it performs
+    the first. An interface that is up and addressed is reachable, and everything that CONSTRAINS
+    the segment is scoped by interface name, so an interface raised ahead of either precondition
+    is not a cosmetic ordering — it is a live interface the panel's own policy does not cover.
+
+    It is `ip link set … up` and nothing else: idempotent, so re-running it on the segment that is
+    already up (every ordinary pass) is a no-op, and safe to leave on the success path only. This
+    module never brings a link DOWN — see `ensure_segment_link` for why the failure path has no
+    counterpart to this one.
+    """
+    run(["ip", "link", "set", plan.segment_iface, "up"])
+
+
+# --- the enforcement half of a segment move --------------------------------------------------
+#
+# Everything that CONSTRAINS the segment is scoped by interface name — the kill-switch drop, the
+# tproxy redirect, the NetworkManager drop-in, dnsmasq's listen address — and the store names
+# exactly one segment interface. So the ruleset the store renders cannot describe a host in the
+# middle of a MOVE from one interface to another: for the length of that move both are live, the
+# old one until it is retired and the new one from the moment it is raised, and a ruleset naming
+# either alone leaves the other outside the drop and the redirect. That is not an apply that
+# failed — it is a path around the panel's own policy, and it lasts as long as the move does.
+#
+# The pass performing the move applies a TRANSITIONAL ruleset naming every interface the segment
+# may be reachable on before it raises anything, and narrows back to the configured interface alone
+# once the superseded link is gone. A transitional ruleset is a superset, so every intermediate
+# state it leaves behind — including one a kill interrupts — is at worst over-covered, never
+# under-covered.
+#
+# The pass is not the only thing that has to know both names, though, and that is what the DURABLE
+# COVER below is for. A move that fails, and a change that is rolled back, both END with a second
+# interface up and carrying a segment address; the ruleset the store renders on the next pass, the
+# next `sync_net` or the next boot would then narrow onto one of them while the other is still
+# live. So what may be up is written down (`enforcement_cover`), every store-derived render
+# consumes it, and an interface leaves it only when the host says it is gone.
+
+
+def _other_ifaces(names, exclude: str) -> list[str]:
+    """`names` in order, without blanks, repeats, or `exclude` (the plan's own interface)."""
+    out: list[str] = []
+    for name in names:
+        if name and name != exclude and name not in out:
+            out.append(name)
+    return out
+
+
+@dataclass
+class Cover:
+    """Interfaces the enforcement must name besides the plan's own, and whether that is the WHOLE
+    answer.
+
+    Two facts, for the same reason `AddressOutcome` is two. `names` is what the panel can name right
+    now; `unknown` is why the answer may be short. A RENDER can only install the names it has, so it
+    installs them — but the decision to NARROW is a different one, and may be taken only on a
+    complete answer. An empty `names` alongside a reason in `unknown` means "nothing that could be
+    read", never "nothing to cover", and those two used to be the same value: a store read that
+    failed produced `[]`, the pass concluded its cover had emptied, and the ruleset narrowed off an
+    interface that may have been up carrying the segment. Covering an interface that is already gone
+    is free; uncovering one that may be live is the bypass this whole protocol exists to prevent.
+
+    `__bool__` raises so `if cover:` cannot pick one of the two facts by accident.
+    """
+    names: list[str] = field(default_factory=list)
+    unknown: list[str] = field(default_factory=list)
+
+    @property
+    def known(self) -> bool:
+        """Every source answered, so `names` is the whole set."""
+        return not self.unknown
+
+    @property
+    def may_narrow(self) -> bool:
+        """Only a COMPLETE answer with nothing in it licenses narrowing the enforcement."""
+        return not self.unknown and not self.names
+
+    def __bool__(self):
+        """Never a truth value: "nothing to cover" and "no answer" are both falsey and differ."""
+        raise TypeError("a cover is two facts: read .names and .known (or .may_narrow)")
+
+    def why(self) -> str:
+        return "; ".join(self.unknown)
+
+
+def _checked_names(values) -> list[str]:
+    """`values` as interface names, raising `RecordUnknown` if any of them is not one.
+
+    THE LAST GATE BEFORE A NAME BECOMES COVERAGE, and it is here rather than only in each source
+    because every source feeds the same decision. A value that cannot be an interface name covers
+    no interface: it is not a rule that matches nothing extra, it is a rule that matches nothing at
+    all, standing in for whatever the entry was meant to say. Blank is not that — an unrecorded
+    scalar is a legitimate "there is no such interface" and is simply skipped, exactly as
+    `_other_ifaces` has always skipped it.
+    """
+    out: list[str] = []
+    for value in values:
+        name = (value or "").strip()
+        if not name:
+            continue
+        if not _IFACE_RE.fullmatch(name):
+            raise RecordUnknown(
+                f"the panel's records name {name[:80]!r} as an interface that may be carrying the "
+                "segment, which is not an interface name, so what they name cannot be read in full")
+        out.append(name)
+    return out
+
+
+def _merge_cover(exclude: str, sources) -> Cover:
+    """Every source's names, minus `exclude`, plus a reason per source that could not answer.
+
+    One unreadable source does not discard the others: what it costs is the RIGHT TO NARROW, not the
+    names the readable ones gave. So each is asked separately and an unknown one contributes its
+    reason instead of an empty list.
+
+    A source that answers with something that is not an interface name is UNKNOWN, not answered —
+    see `_checked_names`. That keeps the two halves of the cover honest together: an entry nothing
+    can enforce on may not arrive as a name, and it may not arrive as silence either.
+    """
+    names: list[str] = []
+    unknown: list[str] = []
+    for source in sources:
+        try:
+            names.extend(_checked_names(source()))
+        except RecordUnknown as exc:
+            unknown.append(str(exc))
+    return Cover(_other_ifaces(names, exclude), unknown)
+
+
+def superseded_state(store, new_iface: str) -> Cover:
+    """Every interface OTHER than `new_iface` on which the panel still holds a segment address, and
+    whether that is the WHOLE answer.
+
+    Three records answer this and all three are needed. `managed_segment_iface` is the interface
+    the last pass configured, which is the one every rule the panel installed still names —
+    including on a host where the panel created neither link (an operator's own interfaces,
+    retargeted between). The link ledger adds any VLAN the panel created and has not yet retired,
+    which is where an earlier FAILED retarget leaves a second live interface. The STALE ledger adds
+    the rest, and it is the one that was missing: `reconcile_segment_addresses` rewrites
+    `managed_segment_iface` to the candidate BEFORE it touches the kernel, so an `ip addr replace`
+    the kernel then refuses leaves the working old interface — up, still carrying the segment
+    address the pass meant to supersede — represented by a stale pair and by nothing else. On a
+    host where the panel created neither link, that pair is the only record of it that exists.
+
+    This is what the panel MANAGES elsewhere: the NetworkManager drop-in is written from it, and
+    handing one of these interfaces back to NM while the panel still holds an address on it invites
+    NM to reconfigure an interface that is still in service. The ruleset must cover more than this
+    (see `enforcement_cover`) — naming an interface in a rule costs nothing, while un-managing one
+    the panel never addressed takes it away from the thing whose job it is.
+
+    Read BEFORE `reconcile_segment_addresses` when the answer is "what is this pass moving off":
+    afterwards the record names where it is moving TO. Read again after, to ask what is left.
+
+    RETURNS A `Cover`, AND THERE IS NO NAMES-ONLY VERSION OF IT ANY MORE. There was, and every
+    decision this record feeds turned out to be one the names alone cannot carry. A RENDER may
+    install `.names` — widening a ruleset or a drop-in is safe, so an unreadable source contributing
+    nothing costs nothing there. Everything else here is a decision about whether to STOP covering
+    something, or whether there is anything to cover at all: whether the pass is a move and so stages
+    the transitional ruleset, which interfaces the drop-in takes from NetworkManager, whether the
+    enforcement may narrow back. Under the names alone a source the store would not read arrives at
+    each of them as "the panel holds nothing anywhere else", which is the direct-WAN bypass produced
+    by a store read. So `.known` travels with the names and the callers read it (see `Cover`).
+    """
+    return _merge_cover(new_iface, [
+        lambda: [read_record(store, "managed_segment_iface").text],
+        lambda: _parse_links(store),
+        lambda: [iface for iface, _ in _parse_stale(store)],
+    ])
+
+
+def enforcement_cover(store, iface: str) -> Cover:
+    """THE DURABLE COVER: every interface other than `iface` the ruleset must also name.
+
+    Enforcement is scoped by interface name and the store names exactly ONE segment interface, so
+    a ruleset rendered from the store alone describes the host only when the host has one segment
+    interface. The pass performing a MOVE knows both names and covers both for the length of the
+    move — but the move is not the only way a second interface ends up live, and the others outlast
+    the pass that created them. An address replacement the kernel refuses leaves the old interface
+    up and addressed with the ownership record already pointing at the candidate; a rolled-back
+    change leaves a candidate interface the undo may not delete (it is the operator's own, or its
+    removal was refused) still up and carrying the address the pass put there. Both survive into
+    every LATER render — the next `sync_net`, the next boot — and a render that narrows to the
+    configured interface while one of them is still up is not a cosmetic mismatch: it is the
+    direct-WAN bypass, for as long as the interface lasts.
+
+    So the cover is durable, is derived from every record of an interface that may be up carrying a
+    segment address, and is consumed by every path that renders enforcement from the store:
+    `apply_net` and `stop_net` (and so `sync_net`, `boot_guard`, the two rollback restores and
+    every other caller of those two), and the provisioning pass, which stages it before it raises
+    anything and narrows only when this returns empty.
+
+    AN INTERFACE LEAVES ONLY WHEN ITS ABSENCE IS PROVEN, and each source proves it its own way:
+    the ownership record is rewritten by a reconcile that worked, a link entry is dropped when the
+    delete is proven (`_delete_owned_link`), a stale pair when the removal is proven
+    (`_retire_owned_addr`), and a surviving candidate when the host says its link is gone or its
+    address is not on it (`drain_enforcement_cover`). Every one of those is an explicit answer from
+    the host; "could not tell" keeps the interface covered. Covering an interface that is already
+    gone costs nothing — nft matches `iifname` by name, so a rule naming a device that is not there
+    simply never matches — while uncovering one that is still up is the defect.
+
+    THE PENDING UNDO RECORD IS THE FALLBACK UNDER ALL OF THAT, for the window in which a ledger
+    entry has been DECIDED and cannot be shown to be written: a store that refuses the write, or
+    accepts it and keeps nothing, would otherwise leave the undo's own decision to leave an
+    interface live recorded nowhere. It names the one interface a pass may have put the segment on,
+    it is already on disk before the pass starts, and it is cleared exactly when the undo has
+    nothing left outstanding — which now includes the survivor write being read back (see
+    `pending_candidate_ifaces` and `remember_survivors`). So it covers the gap and then gets out of
+    the way, rather than becoming a second ledger nothing can drain.
+
+    RETURNS A `Cover`, NOT A LIST, and that is what the type is for: five records answer this and any
+    of them can fail to answer at all. A caller that RENDERS installs `.names`, because names are
+    all a ruleset can hold; a caller that NARROWS must ask `.may_narrow`, which is true only when
+    every source answered and none of them named anything.
+    """
+    survivors = _merge_cover(iface, [
+        lambda: [name for name, _ in _parse_survivors(store)],
+    ])
+    superseded = superseded_state(store, iface)
+    pending = pending_candidate_state(store)
+    return Cover(_other_ifaces(superseded.names + survivors.names + pending.names, iface),
+                 superseded.unknown + survivors.unknown + pending.unknown)
+
+
+def covering_plan(plan: NetPlan, extra: list[str]) -> NetPlan:
+    """`plan`, with the segment rules scoped to the interfaces it is being moved off as well."""
+    return replace(plan, extra_ifaces=tuple(extra))
+
+
+def apply_enforcement(state, plan: NetPlan) -> str:
+    """Install the segment enforcement for `plan`; return "" or why it did not go on.
+
+    WHICH ruleset the host gets — full tproxy, the fail-closed guard, or a teardown — is the
+    controller's decision and stays there, so the transitional ruleset and the one that replaces
+    it can never be of different kinds. The import is deferred for the same reason the apply
+    lock's is: the controller reaches into this module too, and neither may import the other at
+    module scope. The lock is already held by every caller here.
+    """
+    from pi_gw_panel.controller import sync_net_plan
+    try:
+        result = sync_net_plan(state, plan)
+    except Exception as exc:
+        _log.error("the segment enforcement could not be applied: %s", exc)
+        return f"the segment enforcement could not be applied: {exc}"
+    if not getattr(result, "ok", False):
+        return getattr(result, "error", "") or "the segment enforcement could not be applied"
+    return ""
+
+
+# --- the fallback under the cover: enforcement that needs no interface name ---------------------
+#
+# Everything above refuses rather than installs a ruleset it cannot prove covers every interface the
+# segment may be on, and that refusal is right: a ruleset is REPLACED, so a short one uncovers a
+# live interface. But refusing has an outcome as well as a virtue, and at BOOT the outcome is the
+# defect. nft rules live in the kernel, so a panel restart inherits the previous correct ruleset and
+# a refusal costs nothing — while a HOST reboot arrives with no table at all, and `ensure_sysctls`
+# turns forwarding on. A refusal there leaves the forward path physically open. Readiness reports it
+# red, and readiness is observability: no packet consults `/api/ready`.
+#
+# So there is a second, weaker kind of enforcement underneath, for exactly the state in which the
+# normal kind cannot be rendered: a FORWARD deny that NAMES NO INTERFACE. That is not a smaller
+# version of the ruleset above, it is the only shape available — the whole reason the render refused
+# is that the panel cannot say which interfaces to name, so anything that has to name one is out.
+# A base chain with `policy drop` and no rules needs nothing to be known about the host.
+#
+# IT CANNOT LOCK THE OPERATOR OUT, and that is a property of the hook, not of a carve-out that could
+# be got wrong. It is registered on `forward` only, which is the hook TRANSIT packets traverse.
+# Traffic addressed to this machine — the panel over the management leg, SSH, and the DHCP/DNS the
+# segment's own clients ask this host for — goes `prerouting` -> `input` and never enters `forward`;
+# traffic the host originates, including the tunnel's own connection to the node, goes `output` ->
+# `postrouting`. None of it is reachable from a forward chain, so the machine stays reachable on
+# every leg while every forwarded packet is dropped. What IS dropped is other transit through this
+# host, a Docker bridge's egress included; that is the accepted cost of fail-closed, and it is the
+# same cost `ip_forward=0` would have.
+#
+# IT IS A SEPARATE TABLE from `pi_gw_panel`, deliberately. The normal ruleset is loaded by deleting
+# and recreating its own table, so a deny living inside it would be removed by the very apply that
+# may not have covered everything — and would be indistinguishable from the enforcement it stands in
+# for. A table of its own is removed only by the handover below, and only once the panel's own
+# enforcement is confirmed on the host.
+EMERGENCY_TABLE = "pi_gw_panel_emergency"
+
+# The note lives on the net backend, beside `enforcement_status`/`wan_blocked`: the same long-lived
+# object, holding the same kind of fact — what is CONFIRMED about the host right now — and, like
+# them, deliberately not persisted, because a fresh process has confirmed nothing. It carries BOTH
+# shapes of the fallback state, because both matter and the urgent one is the second: the deny is in
+# force, or it could not be installed and nothing is known to be holding the forward path.
+_EMERGENCY_ATTR = "enforcement_fallback_note"
+
+# One transaction per family. `add` makes the following `delete` safe on a host that has never had
+# the table, and the recreate is inside the SAME `nft -f`, so the hook is never momentarily
+# unregistered — the identical idempotent shape the normal ruleset is loaded with.
+_EMERGENCY_SCRIPT = "".join(
+    f"add table {family} {EMERGENCY_TABLE}\n"
+    f"delete table {family} {EMERGENCY_TABLE}\n"
+    f"table {family} {EMERGENCY_TABLE} {{\n"
+    "    chain forward {\n"
+    "        type filter hook forward priority filter; policy drop;\n"
+    "    }\n"
+    "}\n"
+    for family in ("ip", "ip6"))
+
+
+def enforcement_fallback_note(net) -> str:
+    """What is holding the forward path while the panel's own enforcement is not. Never raises.
+
+    "" means the ordinary state: the enforcement the panel renders is the thing on the host. Anything
+    else is a sentence for the operator, and it says which of the two fallback states this is — the
+    emergency deny in force, or the deny itself refused.
+    """
+    return getattr(net, _EMERGENCY_ATTR, "") or ""
+
+
+def _record_emergency(net, reason: str) -> None:
+    """Park the note on the backend, exactly as the controller parks its enforcement snapshot."""
+    setattr(net, _EMERGENCY_ATTR, reason)
+
+
+def _disable_forwarding(write_proc=None) -> str:
+    """Turn IPv4 and IPv6 forwarding off. "" or why one of them is not proven off.
+
+    THE LAST RESORT, AND NOT A SUBSTITUTE for the deny above. It is interface-independent for the
+    same reason, but it is contested state: `ensure_sysctls` and `LinuxBackend._ensure_forward` write
+    it back to 1, so anything the panel does afterwards can undo it, while an nft table stays until
+    something deletes it. It exists to narrow the window in the one case where the table could not be
+    loaded at all — and in that case boot does not go on to run the things that would rewrite it.
+
+    The writer is resolved at CALL time, never bound as a default: on a host running the suite as
+    root a default-bound `_write_proc` would take the test's forwarding down with it.
+    """
+    write = write_proc or _write_proc
+    failed: list[str] = []
+    for path in ("/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"):
+        if write(path, "0") is False:
+            failed.append(path)
+    return ("forwarding could not be turned off either (" + ", ".join(failed) + ")"
+            if failed else "")
+
+
+def install_emergency_forward_deny(state, why: str, write_proc=None) -> str:
+    """Hold every forwarded packet closed without naming an interface. "" when it is PROVEN in
+    force; otherwise the reason nothing can be shown to be holding it.
+
+    A caller that gets a reason back has learned that the packet path is not accounted for by
+    anything, which is the one state boot may not carry on through (see `app.create_app`).
+    """
+    run = getattr(state.net, "_run", None)
+    if run is None:
+        # No host: the dev/CI backends render and mutate nothing, so there is no forward path to
+        # hold and nothing to report. The same gate `host_provision` opens with.
+        return ""
+    try:
+        run(["nft", "-f", "-"], input=_EMERGENCY_SCRIPT)
+        for family in ("ip", "ip6"):
+            run(["nft", "list", "table", family, EMERGENCY_TABLE])
+    except (subprocess.CalledProcessError, OSError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc) or exc.__class__.__name__).strip()
+        sysctl = _disable_forwarding(write_proc)
+        reason = (f"the emergency deny on forwarded traffic could not be installed ({detail}); "
+                  + (sysctl or "IPv4 and IPv6 forwarding were turned off instead, which the next "
+                               "host pass would undo")
+                  + f" — the enforcement it stands in for was refused because: {why}")
+        _record_emergency(state.net, reason)
+        _log.critical("%s", reason)
+        return reason
+    reason = ("every forwarded packet is being dropped by an interface-independent emergency deny, "
+              "because the panel's own segment enforcement could not be installed: " + why
+              + " — segment clients have no network until it can be, and traffic to this host "
+                "(the panel, SSH, the segment's DHCP and DNS) is unaffected")
+    _record_emergency(state.net, reason)
+    _log.critical("%s", reason)
+    return ""
+
+
+def release_emergency_forward_deny(state) -> str:
+    """Remove the emergency deny. "" when it is gone; otherwise why it may still be dropping.
+
+    Called only where the panel's own enforcement has been CONFIRMED on the host, and then called
+    unconditionally — the marker is in-memory and the table is in the kernel, so a process that
+    installed the deny and was restarted arrives with nothing recorded and a table that would drop
+    every forwarded packet for ever. "No such table" is therefore the success answer, not an error,
+    and the delete is attempted on every confirmation.
+    """
+    run = getattr(state.net, "_run", None)
+    if run is None:
+        _record_emergency(state.net, "")
+        return ""
+    failed: list[str] = []
+    for family in ("ip", "ip6"):
+        try:
+            run(["nft", "delete", "table", family, EMERGENCY_TABLE])
+        except subprocess.CalledProcessError as exc:
+            err = ((exc.stderr or "") + " " + (exc.stdout or "")).lower()
+            if not any(token in err for token in _LINK_ABSENT_TOKENS):
+                failed.append(f"{family}: {(exc.stderr or str(exc)).strip()}")
+        except OSError as exc:
+            failed.append(f"{family}: {exc or exc.__class__.__name__}")
+    if failed:
+        reason = ("the segment enforcement is installed, but the emergency deny on forwarded "
+                  "traffic could not be removed, so segment clients may still have no network: "
+                  + "; ".join(failed))
+        _record_emergency(state.net, reason)
+        _log.error("%s", reason)
+        return reason
+    _record_emergency(state.net, "")
+    return ""
+
+
+def enforcement_fallback(state, result) -> str:
+    """Account for the forward path given the outcome of the panel's own enforcement.
+
+    "" means something is holding it — either the enforcement that was just confirmed, or the
+    emergency deny, proven in force. A reason means NOTHING can be shown to be holding it, and that
+    is the answer a caller may not proceed through.
+
+    A confirmed enforcement releases the deny, and a release that fails is reported but is NOT such
+    an answer: what it leaves behind drops forwarded traffic, which costs the segment its network and
+    leaks nothing. Failing closed is never the failure this function exists to catch.
+    """
+    if getattr(result, "ok", False):
+        release_emergency_forward_deny(state)
+        return ""
+    why = (getattr(result, "error", "")
+           or "the panel could not install the segment enforcement, and gave no reason")
+    return install_emergency_forward_deny(state, why)
+
+
+def _hand_back_from_emergency_deny(state) -> str:
+    """Replace the emergency deny with the panel's own enforcement, once that can be rendered.
+
+    "" when nothing is in force or the handover is complete; otherwise why the deny still is.
+
+    THIS IS THE RECOVERY, and it lives on the provisioning pass because that is what every path
+    which can change the answer runs — boot, `PUT /api/network`, a restore. The deny names no
+    interface, so nothing narrows it and nothing drains it: the only thing that can end it is a
+    store-derived render that PROVES a complete cover, which is exactly what the render refuses to
+    do otherwise. So the render is asked for, and only one that reached the host releases the deny; a
+    render that refuses again leaves it exactly where it is, says so through the pass result, and the
+    next pass asks again.
+    """
+    if not enforcement_fallback_note(state.net):
+        return ""
+    from pi_gw_panel.controller import sync_net
+    try:
+        applied = sync_net(state)
+    except Exception as exc:
+        applied = NetResult(ok=False, error=str(exc) or exc.__class__.__name__)
+    if not getattr(applied, "ok", False):
+        return ("forwarded traffic is still being dropped by the emergency deny, because the "
+                "panel's own segment enforcement still could not be installed: "
+                + (getattr(applied, "error", "") or "no reason given"))
+    why = release_emergency_forward_deny(state)
+    if why:
+        return why
+    _log.warning("the segment enforcement is installed again; the emergency deny on forwarded "
+                 "traffic has been removed")
+    return ""
 
 
 def retire_superseded_links(store, plan: NetPlan, run=_run, link_exists=None) -> list[str]:
@@ -363,7 +1185,13 @@ def retire_superseded_links(store, plan: NetPlan, run=_run, link_exists=None) ->
     link that could not be retired is returned as a reason string so the caller reports a
     provisioning failure rather than success over a link it owns and left running.
     """
-    owned = _parse_links(store)
+    owned, unreadable = _read_links(store)
+    if owned is None:
+        # Not "there is nothing to retire": a ledger that cannot be read in full may name a link
+        # this panel created and has to delete — and a mangled entry is exactly a link it cannot
+        # name. Nothing is touched and the pass reports, so a later one retries.
+        return ["the panel-created VLAN ledger could not be read, so no link was retired: "
+                + unreadable]
     superseded = [name for name in owned if name != plan.segment_iface]
     if not superseded:
         return []
@@ -373,7 +1201,10 @@ def retire_superseded_links(store, plan: NetPlan, run=_run, link_exists=None) ->
 def clear_managed_link(store, run=_run, link_exists=None) -> list[str]:
     """Delete every VLAN link this panel created, forgetting each one its removal is proven.
     Returns a reason per link that is not proven gone from the host afterwards."""
-    owned = _parse_links(store)
+    owned, unreadable = _read_links(store)
+    if owned is None:
+        return ["the panel-created VLAN ledger could not be read, so no link was removed: "
+                + unreadable]
     if not owned:
         return []
     return _retire_links(store, list(owned), owned, run, _probe_seam(link_exists, run))
@@ -452,22 +1283,272 @@ STALE_KEY = "managed_segment_stale"
 BACKLOG_WARN = 8
 
 
+def _parse_pairs(store, key: str) -> list[tuple[str, str]]:
+    """`(iface, addr)` pairs from a set record, in order.
+
+    Raises `RecordUnknown` when the store cannot answer AND when what it answered cannot be read in
+    full — see `Record` for why neither may come back as an empty ledger. The cover sources want
+    exactly that: `_merge_cover` turns the raise into a reason that forbids narrowing.
+    """
+    return read_set(store, key).pairs()
+
+
+def _read_pairs(store, key: str) -> tuple[list[tuple[str, str]] | None, str]:
+    """The pairs at `key`, or `(None, reason)` when the record cannot be read IN FULL. Never raises.
+
+    For the callers that may not raise and may not narrow: an unreadable record and one holding an
+    entry that is not a pair are ONE answer to every one of them, because both mean the set they
+    would compute is a set with something already dropped out of it. Written as a returned reason
+    rather than an exception because each of those callers reports it its own way — keep the ledger
+    as it is, keep the pending record, install nothing — and none of them has anything to gain from
+    a traceback (see `remember_survivors`, `drain_enforcement_cover`, `_read_ownership`).
+    """
+    record = read_set(store, key)
+    if not record.known:
+        return None, record.reason
+    try:
+        return record.pairs(), ""
+    except RecordUnknown as exc:
+        return None, str(exc)
+
+
 def _parse_stale(store) -> list[tuple[str, str]]:
     """`(iface, addr)` pairs recorded as panel-owned but not yet removed from the kernel."""
-    out: list[tuple[str, str]] = []
-    for line in (store.get_setting(STALE_KEY) or "").splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            out.append((parts[0], parts[1]))
-    return out
+    return _parse_pairs(store, STALE_KEY)
+
+
+# --- the surviving-candidate ledger (the part of the cover the undo cannot settle) -------------
+#
+# The stale ledger above answers for addresses the panel OWNS. This one answers for the addresses
+# it does not: a rolled-back change whose candidate interface is still on the host. The undo
+# deletes a candidate LINK only when it can prove the pass created it, and names-and-leaves every
+# address (see `_report_orphan_addrs`), so its ordinary outcome on an operator's own interface —
+# and on a link whose deletion was refused — is "it is still there, and it may be carrying the
+# segment address this change put on it". That is precisely an interface the ruleset has to name,
+# and until this ledger existed nothing recorded it: the undo reported the orphan once, cleared the
+# pending record, and the guard the rollback installed straight afterwards was rendered from a
+# store that names only the interface it went back to.
+#
+# It is a separate key from the pending undo, because the two answer different questions and clear
+# on different proofs. The pending record asks "is there work a later pass could still finish", and
+# an orphan nothing will ever delete is deliberately NOT that — keeping it would repeat the same
+# message forever. This one asks "may that interface still be carrying the segment", which stays
+# true exactly as long as the host says so, and is answered by probing (`drain_enforcement_cover`).
+#
+# The two do meet in one place. Writing to THIS ledger is itself work a later pass can finish, so a
+# write that cannot be proven to have landed makes the undo unresolved and keeps the pending record
+# — which then covers the interface on its own until the write succeeds (`pending_candidate_ifaces`).
+# That is the only way the coverage decision can outlive a store that will not take it.
+SURVIVOR_KEY = "provision_candidate_survivors"
+
+
+def _parse_survivors(store) -> list[tuple[str, str]]:
+    """`(iface, addr)` pairs a rolled-back change may have left live on a candidate interface."""
+    return _parse_pairs(store, SURVIVOR_KEY)
+
+
+def _record_survivors(store, pairs: list[tuple[str, str]]) -> str:
+    """Replace the ledger with exactly `pairs`, proven. "" or why it does not name them all."""
+    return write_set(store, SURVIVOR_KEY, [f"{iface} {addr}" for iface, addr in pairs])
+
+
+def remember_survivors(store, pairs: list[tuple[str, str]]) -> bool:
+    """Add `pairs` to the surviving-candidate ledger; return whether it PROVABLY names them all.
+
+    Additive because a second rollback does not settle the first one's leftovers, and because the
+    pairs a single undo reports are the ones it has just decided NOT to remove.
+
+    THE ANSWER MAY NOT BE INFERRED FROM THE WRITE, and it used to be: this returned nothing and
+    swallowed every failure, so the caller carried on as though durable coverage existed. A
+    `set_setting` can raise, and it can also return having written NOTHING — and in both cases the
+    ledger does not name the interface the undo has just decided to leave up and addressed, while
+    the caller's very next act is to render the restored guard from that ledger. "No exception"
+    read as "written" is therefore the direct-WAN bypass with a record claiming otherwise.
+
+    ADDITIVE MEANS THE WHOLE SET IS AT STAKE, not just `pairs`, and that is the second half of the
+    same mistake. This replaces the record with `existing + want`, so it can only be verified against
+    the COMPLETE expected content: checking that `want` came back passes a partial write that keeps
+    the pair the undo just decided about and drops an OLDER survivor — permanently, because nothing
+    asks for that one again and the pending record retained below names only the current candidate.
+    So both halves live in `write_set`, which journals the whole set before replacing the record and
+    verifies every entry afterwards — and leaves the journal in place when it cannot, so the older
+    pair stays covered rather than merely being reported missing. An UNREADABLE record is not
+    replaced at all, for the same reason: a set computed from a read that failed is a set with the
+    older survivors already dropped out of it.
+
+    STILL NEVER RAISES. This runs on a recovery path already handling a failure, and the caller has
+    something better to do with `False` than an exception: it marks the undo unresolved, which keeps
+    the pending record so a later pass retries this write, and the enforcement covers the candidate
+    from that record in the meantime (see `pending_candidate_ifaces`). Nothing is lost silently and
+    nothing is uncovered while it is lost.
+    """
+    want = _distinct(list(pairs))
+    if not want:
+        return True
+    held, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    if held is None:
+        _log.error("the surviving-candidate ledger could not be read in full, so it was not "
+                   "replaced — replacing a record that cannot be read is how an older survivor is "
+                   "lost. The interfaces stay covered through the pending undo record: %s",
+                   unreadable)
+        return False
+    why = _record_survivors(store, _distinct(held + want))
+    if why:
+        _log.error("could not record the interfaces a rolled-back change may have left carrying "
+                   "the segment; they stay covered through the pending undo record and the "
+                   "journalled ledger: %s", why)
+        return False
+    return True
+
+
+def forget_survivors(store, iface: str) -> None:
+    """Drop every recorded survivor on `iface`, which the caller has PROVEN is gone from the host.
+
+    One caller: the undo, after an `ip link delete` it verified. A link that goes takes every
+    address on it with it, so nothing on that interface can still be carrying the segment.
+
+    Never raises, and never shrinks a record it could not read: both failures leave every pair where
+    it was, which over-covers an interface that is gone — free — instead of dropping one that is not.
+    """
+    if not iface:
+        return
+    pairs, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    if pairs is None:
+        _log.warning("could not read the surviving-candidate ledger in full to drop %s, so every "
+                     "pair in it stays covered: %s", iface, unreadable)
+        return
+    keep = [pair for pair in pairs if pair[0] != iface]
+    if keep == pairs:
+        return
+    why = _record_survivors(store, keep)
+    if why:
+        _log.warning("could not drop %s from the surviving-candidate ledger, so it stays covered "
+                     "until the host proves it gone: %s", iface, why)
+
+
+def drain_enforcement_cover(store, run=_run) -> list[tuple[str, str]]:
+    """Drop every recorded survivor the HOST says is gone; keep every other one. Never raises.
+
+    The property that stops the cover growing forever, and the one place "not proven absent" could
+    quietly collapse into "absent". Two answers, and only two, take a pair out: the host says the
+    LINK is not there (it took its addresses with it), or it says the ADDRESS is not on the
+    interface (the operator removed it, as the undo's report asked, or the pass never installed it
+    in the first place). Both are explicit not-found answers from iproute2. Everything else —
+    present, refused, a netlink error, the runner's time limit, output that cannot be read — is
+    `*_UNKNOWN` and KEEPS the pair, because an interface that may still be up carrying the segment
+    is exactly what the cover is for.
+
+    Never raises: it runs at the top of every pass, and a probe that will not answer must not cost
+    the operator the pass that brings their segment up. An exception leaves the ledger untouched,
+    which keeps everything covered — the safe direction. A LEDGER THAT CANNOT BE READ IN FULL is the
+    same answer reached earlier: nothing is dropped, because nothing was proven gone.
+    """
+    pairs, unreadable = _read_pairs(store, SURVIVOR_KEY)
+    if pairs is None:
+        _log.warning("could not read the interfaces a rolled-back change left behind, so they stay "
+                     "covered: %s", unreadable)
+        return []
+    try:
+        if not pairs:
+            return []
+        keep: list[tuple[str, str]] = []
+        links: dict[str, str] = {}
+        for iface, addr in pairs:
+            if iface not in links:
+                links[iface] = _probe_link(iface, run)[0]
+            if links[iface] == LINK_ABSENT:
+                _log.info("%s is no longer on the host; it leaves the segment enforcement", iface)
+                continue
+            if _probe_addr(iface, addr, run)[0] == ADDR_ABSENT:
+                _log.info("%s is no longer on %s; it leaves the segment enforcement", addr, iface)
+                continue
+            keep.append((iface, addr))
+        if keep != pairs:
+            why = _record_survivors(store, keep)
+            if why:
+                # The record still names pairs the host says are gone: over-covering, which is free,
+                # and the next pass drains again. Reported so a store that keeps nothing is visible.
+                _log.warning("the surviving-candidate ledger could not be shrunk, so it keeps "
+                             "naming interfaces the host says are gone: %s", why)
+        if keep:
+            _log.warning("a rolled-back change may still have the segment on %s, so the "
+                         "enforcement keeps naming it: %s",
+                         ", ".join(sorted({iface for iface, _ in keep})),
+                         "; ".join(f"{addr} on {iface}" for iface, addr in keep))
+        return keep
+    except Exception:
+        # The ledger is left exactly as it was, so every pair in it is still covered.
+        _log.warning("could not check the interfaces a rolled-back change left behind; they stay "
+                     "covered", exc_info=True)
+        return []
+
+
+OWNERSHIP_KEYS = ("managed_segment_iface", "managed_segment_addr4", "managed_segment_addr6")
 
 
 def _record_ownership(store, iface: str, addr4: str, addr6: str,
-                      stale: list[tuple[str, str]]) -> None:
-    store.set_setting("managed_segment_iface", iface)
-    store.set_setting("managed_segment_addr4", addr4)
-    store.set_setting("managed_segment_addr6", addr6)
-    store.set_setting(STALE_KEY, "\n".join(f"{i} {a}" for i, a in stale))
+                      stale: list[tuple[str, str]]) -> list[str]:
+    """Record what the panel owns on the segment, and PROVE every part of it. A reason per part that
+    could not be proven; empty when the record now says all four things.
+
+    FOUR RECORDS THAT ONLY MEAN ANYTHING TOGETHER, which is why a partial write is its own failure
+    and not a lesser version of a total one. Written unverified, a `set_setting` that kept nothing
+    could leave `managed_segment_iface` naming the OLD interface while `_addr4` names the new
+    address — so the next removal is aimed at an interface that never had it, and the interface that
+    does keeps an address the panel no longer records — or drop the stale ledger, which is a retry
+    list, leaving an address on the host that nothing will ever come back for. Both are the exact
+    orphan every other guarantee in this module is arranged around, reached through the record
+    rather than through the kernel.
+
+    SO THE GROUP HAS ONE WRITE-AHEAD STEP, and it is the STALE LEDGER, proven before any scalar
+    moves. Verifying the four separately is not enough, because the scalars and the ledger do not
+    hold the same news: the scalars say where the segment is going, the ledger is the only record of
+    the pair it is coming OFF. Written in the other order, a store that took the scalars and then
+    refused the ledger's journal left `managed_segment_iface` naming the candidate with the old live
+    pair recorded NOWHERE — a snapshot that is internally consistent, reads as known, and has just
+    dropped the interface that is still up carrying the segment out of the cover, out of the NM
+    drop-in and off every retry list. Reporting failure afterwards does not give it back.
+
+    This is the discipline `write_set` already applies to one record, lifted to the group: the thing
+    that must survive is written and PROVEN first, and until it is, nothing has changed at all. On
+    that failure the function returns immediately — the scalars still name the old live pair, so the
+    next pass reads the host correctly and retries the whole step — and `write_set`'s own journal
+    holds underneath, so a ledger the store half-replaced still reads complete. Every remaining
+    failure is a scalar, and what it leaves behind is the over-recording direction: a pair named in
+    both the ledger and the current-address keys costs a retried delete, not a lost address.
+    """
+    why = write_set(store, STALE_KEY, [f"{i} {a}" for i, a in stale])
+    if why:
+        return [why]
+    reasons: list[str] = []
+    for key, value in zip(OWNERSHIP_KEYS, (iface, addr4, addr6)):
+        why = write_record(store, key, value)
+        if why:
+            reasons.append(why)
+    return reasons
+
+
+def _read_ownership(store) -> tuple[list[str], str, str, str, list[tuple[str, str]]]:
+    """The four ownership records, or the reasons they could not be read.
+
+    `(unreadable, iface, addr4, addr6, stale)`. A caller with a non-empty `unreadable` has no
+    trustworthy picture of what the panel owns and must not touch addresses on that basis: the stale
+    ledger it would write is one the unread entries have already dropped out of.
+
+    A ledger entry that is not a pair is `unreadable` for exactly that reason and not a lesser one:
+    the rewrite below is computed from what parsed, so an entry that did not is an address on the
+    host that this pass would drop the last record of. It is reported instead, with the entry
+    quoted, because a malformed ledger is fixed on the host and not by guessing at it.
+    """
+    records = [read_record(store, key) for key in OWNERSHIP_KEYS]
+    stale, why = _read_pairs(store, STALE_KEY)
+    unreadable = [record.reason for record in records if not record.known]
+    if stale is None:
+        unreadable.append(why)
+    if unreadable:
+        return unreadable, "", "", "", []
+    iface, addr4, addr6 = records
+    return [], iface.text, addr4.text, addr6.text, stale
 
 
 def _desired_pairs(iface: str, *addrs: str) -> frozenset[tuple[str, str]]:
@@ -619,15 +1700,23 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcom
     thing the pass could not settle. The two are separate because they are separate facts, and a
     caller must not configure anything keyed to this plan when nothing was applied.
     """
-    old_iface = store.get_setting("managed_segment_iface") or plan.segment_iface
-    old4 = store.get_setting("managed_segment_addr4") or ""
-    old6 = store.get_setting("managed_segment_addr6") or ""
+    unreadable, recorded_iface, old4, old6, recorded_stale = _read_ownership(store)
+    if unreadable:
+        # NOTHING IS INSTALLED ON A RECORD THAT CANNOT BE READ. The ledger written below is computed
+        # from the one read here, so an unreadable read would silently drop every entry it holds —
+        # the addresses would go on and the record of what is owed a removal would be gone. Failing
+        # here costs the pass; the caller rolls back and reports, and the host is untouched.
+        reason = ("the panel's record of what it owns on the segment could not be read, so no "
+                  "address was installed: " + "; ".join(unreadable))
+        _log.error("%s", reason)
+        return AddressOutcome(False, [reason])
+    old_iface = recorded_iface or plan.segment_iface
     new_iface = plan.segment_iface
     new4 = f"{plan.segment_ip}/24"
     new6 = host_addr6(plan.segment_ip6) if plan.ipv6_enabled else None
 
     desired = _desired_pairs(new_iface, new4, new6 or "")
-    recorded = _distinct(_parse_stale(store), desired)
+    recorded = _distinct(recorded_stale, desired)
     superseded = []
     if old4 and (old4 != new4 or old_iface != new_iface):
         superseded.append((old_iface, old4))
@@ -636,7 +1725,22 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcom
     rotating = _distinct(superseded, desired | frozenset(recorded))
     stale = recorded + rotating
 
-    _record_ownership(store, new_iface, new4, new6 or "", stale)
+    # ...AND NOTHING IS INSTALLED ON A RECORD THAT CANNOT BE WRITTEN EITHER. This is the record the
+    # whole ordering rests on — written before the kernel so a failure, or a caller whose transaction
+    # rolls back mid-apply, still finds every address to remove — and a `set_setting` that quietly
+    # keeps nothing makes that promise silently false. The addresses would go on with the ownership
+    # of them recorded nowhere: the orphan no later pass looks at.
+    #
+    # `stale` is the pass's write-ahead set and holds every pair it is superseding, so the group
+    # writes it FIRST and proves it: until it is on disk nothing may name the candidate, or a store
+    # that took the scalars and refused the ledger would leave the old live pair recorded nowhere at
+    # all (see `_record_ownership`).
+    unwritten = _record_ownership(store, new_iface, new4, new6 or "", stale)
+    if unwritten:
+        reason = ("the panel could not record what it was about to install on the segment, so it "
+                  "installed nothing: " + "; ".join(unwritten))
+        _log.error("%s", reason)
+        return AddressOutcome(False, [reason])
 
     # Each command is carried alongside THE ADDRESS IT INSTALLS, because the reason has to name
     # the one that was actually rejected. Both used to run under one `try` that blamed `new4`
@@ -665,8 +1769,18 @@ def reconcile_segment_addresses(store, plan: NetPlan, run=_run) -> AddressOutcom
             return AddressOutcome(False, [f"{addr} on {new_iface}: {why}"])
 
     keep, reasons = _retire_owned(stale, run, desired)
-    _record_ownership(store, new_iface, new4, new6 or "", keep)
+    # The addresses ARE on the interface now, so this shrink cannot un-apply the pass; an unprovable
+    # write here leaves the ledger naming pairs already removed, which only costs a retried delete
+    # and an over-covered interface. It is still a record that does not describe the host, so it
+    # travels the reasons channel and fails the pass.
+    reasons += _ownership_reasons(_record_ownership(store, new_iface, new4, new6 or "", keep))
     return AddressOutcome(True, reasons + _backlog_warning(keep))
+
+
+def _ownership_reasons(unwritten: list[str]) -> list[str]:
+    """Record-write failures phrased for the address channel that carries them."""
+    return ([("the ledger of panel-owned segment addresses could not be updated, so a later pass "
+              "will retry what it names: " + "; ".join(unwritten))] if unwritten else [])
 
 
 def clear_managed_addresses(store, run=_run) -> list[str]:
@@ -684,11 +1798,15 @@ def clear_managed_addresses(store, run=_run) -> list[str]:
     host that refuses every removal reaches its largest ledger here, in the one mode where nothing
     else is looking (see `BACKLOG_WARN`).
     """
-    iface = store.get_setting("managed_segment_iface") or ""
-    keep, reasons = _retire_owned(
-        _parse_stale(store) + [(iface, store.get_setting("managed_segment_addr4") or ""),
-                               (iface, store.get_setting("managed_segment_addr6") or "")], run)
-    _record_ownership(store, "", "", "", keep)
+    unreadable, iface, addr4, addr6, stale = _read_ownership(store)
+    if unreadable:
+        # Same rule as the reconcile path, and it matters more here: this path is the only thing that
+        # ever retires these pairs, so a ledger rewritten from a read that failed strands them for
+        # good — with segment management off, invisible to readiness too.
+        return ["the panel's record of what it owns on the segment could not be read, so nothing "
+                "was removed: " + "; ".join(unreadable)]
+    keep, reasons = _retire_owned(stale + [(iface, addr4), (iface, addr6)], run)
+    reasons += _ownership_reasons(_record_ownership(store, "", "", "", keep))
     return reasons + _backlog_warning(keep)
 
 
@@ -707,11 +1825,26 @@ def _nm_reload(run, nm_active) -> None:
             pass
 
 
-def ensure_nm_unmanaged(seg: str, run=_run, write_file=_write_file, nm_active=None) -> None:
+def ensure_nm_unmanaged(seg: str, run=_run, write_file=None, nm_active=None,
+                        also=()) -> None:
     """Tell NetworkManager to leave the segment alone (so it doesn't fight our addressing).
     Writes the drop-in unconditionally (honored whenever NM (re)starts); reloads NM live via
-    nsenter into pid 1 only when NM is actually running."""
-    write_file(NM_CONF_PATH, f"[keyfile]\nunmanaged-devices=interface-name:{seg}\n")
+    nsenter into pid 1 only when NM is actually running.
+
+    `also` names the interfaces the segment is being moved OFF, which stay unmanaged for the
+    length of the move: the old link is still carrying the segment until it is retired, and
+    handing it back to NetworkManager mid-move invites NM to reconfigure an interface that is
+    still in service. They are dropped from the drop-in by the narrowing write at the end of the
+    pass, so the steady state is one interface, exactly as it always was.
+    """
+    devices: list[str] = []
+    for name in [seg, *also]:
+        if name and name not in devices:
+            devices.append(name)
+    unmanaged = ";".join(f"interface-name:{name}" for name in devices)
+    # Resolved at call time, exactly as `remove_nm_unmanaged` resolves its own seam: a default
+    # bound at definition time is one a caller cannot replace.
+    (write_file or _write_file)(NM_CONF_PATH, f"[keyfile]\nunmanaged-devices={unmanaged}\n")
     _nm_reload(run, nm_active)
 
 
@@ -726,6 +1859,23 @@ def remove_nm_unmanaged(run=_run, remove_file=None, nm_active=None) -> None:
     _nm_reload(run, nm_active)
 
 
+def _record_generated_prefix(store, key: str, prefix: str, what: str) -> str:
+    """Persist a prefix this module just invented, PROVEN. Returns it, or raises.
+
+    A generated prefix is only stable because it is written down: it is derived from fresh random
+    bytes, so a `set_setting` that quietly kept nothing means the NEXT pass generates a DIFFERENT
+    /64, installs it, supersedes the one before, and does it again — the segment renumbers on every
+    pass and every client's v6 address moves under it. Returning a prefix that is not recorded is
+    therefore worse than failing the pass, which is what the raise does: `host_provision` reports it
+    and the addresses are left alone.
+    """
+    why = write_record(store, key, prefix)
+    if why:
+        raise RuntimeError(f"the {what} could not be recorded, so it was not used — a prefix that "
+                           f"is not persisted is a different prefix on the next pass: {why}")
+    return prefix
+
+
 def ensure_segment_prefix6(store, settings, rand=secrets.token_bytes) -> str:
     """Resolve the segment v6 prefix for the current mode and return it:
     static CIDR -> unchanged; `auto` -> unchanged (the PD client owns it, Phase D);
@@ -736,7 +1886,7 @@ def ensure_segment_prefix6(store, settings, rand=secrets.token_bytes) -> str:
         return cur
     _, vid = parse_vlan(store.get_setting("segment_iface") or settings.segment_iface)
     ula = generate_ula_prefix(vid if vid is not None else 0, rand=rand)
-    store.set_setting("segment_ip6", ula)
+    _record_generated_prefix(store, "segment_ip6", ula, "generated segment IPv6 prefix")
     _log.info("generated stable ULA prefix for the segment: %s", ula)
     return ula
 
@@ -759,7 +1909,14 @@ def effective_segment_prefix6(store, settings, rand=secrets.token_bytes, delegat
     if intent.lower() != "auto":
         return ensure_segment_prefix6(store, settings, rand=rand)
     if delegated is None:
-        delegated = store.get_setting("pd_segment_prefix6") or ""
+        # Typed, because this is the one read whose failure would be spent as a DIFFERENT prefix:
+        # falling through to the ULA fallback on an unreadable delegation installs a /64 the
+        # delegation was meant to replace, and supersedes the one that is on the interface.
+        record = read_record(store, "pd_segment_prefix6")
+        if not record.known:
+            raise RecordUnknown("the recorded delegated IPv6 prefix could not be read, so the "
+                                "segment prefix could not be resolved: " + record.reason)
+        delegated = record.text
     delegated = delegated.strip()
     if host_addr6(delegated):
         return delegated
@@ -767,7 +1924,7 @@ def effective_segment_prefix6(store, settings, rand=secrets.token_bytes, delegat
     if not host_addr6(ula):
         _, vid = parse_vlan(store.get_setting("segment_iface") or settings.segment_iface)
         ula = generate_ula_prefix(vid if vid is not None else 0, rand=rand)
-        store.set_setting("ula_prefix6", ula)
+        _record_generated_prefix(store, "ula_prefix6", ula, "generated ULA fallback prefix")
         _log.info("generated stable ULA fallback for DHCPv6-PD: %s", ula)
     return ula
 
@@ -810,8 +1967,23 @@ class UndoOutcome:
     unresolved: list[str] = field(default_factory=list)
 
 
+def _read_managed_state(store) -> tuple[list[str], str, str, str]:
+    """`(unreadable, iface, addr4, addr6)` — the ownership keys, typed. Never raises."""
+    records = [read_record(store, key) for key in OWNERSHIP_KEYS]
+    unreadable = [record.reason for record in records if not record.known]
+    if unreadable:
+        return unreadable, "", "", ""
+    return [], records[0].text, records[1].text, records[2].text
+
+
 def managed_host_state(store) -> dict:
-    """The interface and addresses the panel currently claims ownership of."""
+    """The interface and addresses the panel currently claims ownership of.
+
+    The two in-transaction callers read this to learn what a pass CLAIMED, and are already inside a
+    handler for a store that will not answer, so this one keeps the raising contract it always had.
+    The undo reads `_read_managed_state` instead, because there an unanswerable read decides whether
+    a link may be deleted (see `undo_provision_candidate`).
+    """
     return {"iface": store.get_setting("managed_segment_iface") or "",
             "addr4": store.get_setting("managed_segment_addr4") or "",
             "addr6": store.get_setting("managed_segment_addr6") or ""}
@@ -910,18 +2082,132 @@ def provision_candidate(state, data: dict) -> dict:
 def record_provision_candidate(store, candidate: dict) -> None:
     """Persist the candidate so a rollback — or the next boot — can find it. Unguarded on
     purpose: a caller that cannot record what it is about to install has no recovery story, and
-    must fail before it installs anything."""
-    if candidate:
-        store.set_setting(PROVISION_UNDO_KEY, json.dumps(candidate))
+    must fail before it installs anything.
+
+    Which is why the write is PROVEN and not merely attempted. "Unguarded" only ever covered the
+    store that raises; one that returns having kept nothing left the caller believing it had a
+    recovery record and about to provision a candidate interface nothing would reclaim — the same
+    end state as no record at all, reached without an exception to stop it.
+    """
+    if not candidate:
+        return
+    why = write_record(store, PROVISION_UNDO_KEY, json.dumps(candidate))
+    if why:
+        raise RuntimeError("the host-provisioning undo record could not be written, so the change "
+                           "was not applied: " + why)
 
 
-def clear_provision_candidate(store) -> None:
-    """Drop the pending record. Guarded: nothing here may turn a finished operation into a
-    failure, and a record that survives only costs one redundant undo attempt later."""
+# The TERMINAL form of the pending record: a settled undo, which every reader below ignores. It
+# exists because blanking is the least trustworthy half of a clear — a store that quietly keeps
+# nothing leaves the previous JSON in place, and that record means "this interface may still be
+# live", so the ruleset would keep naming a candidate for ever and could capture unrelated traffic
+# once the name is reused. So the resolution is written as its own value and PROVEN, and the blanking
+# is best effort on top of it (see `clear_record`).
+RESOLVED_UNDO = json.dumps({"resolved": True})
+
+
+def clear_provision_candidate(store) -> str:
+    """Settle the pending record. "" or why it is still there. Never raises.
+
+    Guarded, for the reason it always was: nothing here may turn a finished operation into a failure,
+    and a record that survives only costs a redundant undo attempt later. What it may NOT do is
+    assume: a non-raising `set_setting` was treated as proof of deletion, so a store that kept
+    nothing left the pending record — and therefore the enforcement cover's fallback source — naming
+    a candidate interface indefinitely, long after the survivor ledger it was covering for had
+    drained. Now the record is taken to its terminal form and read back, and the caller is told when
+    even that could not be done.
+    """
+    why = clear_record(store, PROVISION_UNDO_KEY, terminal=RESOLVED_UNDO)
+    if why:
+        _log.error("the pending host-provisioning undo could not be settled, so the enforcement "
+                   "keeps covering the candidate interface it names: %s", why)
+    return why
+
+
+@dataclass
+class Pending:
+    """What the pending undo record holds, in the answers its two readers need kept apart.
+
+    `candidate` — a record naming an interface a pass may have put the segment on: the undo acts on
+    it and the cover names it. `unusable` — why a value that IS there cannot be used, which is
+    discarded once and reported. Neither, and no reason, means settled: a blank record or one already
+    taken to its terminal form, which is not an error and not worth a word on every boot.
+
+    `cover` is the same record as the enforcement sees it, and the one place where "the store could
+    not answer" may not become "there is no candidate". Note that a record which cannot be READ is
+    never `unusable`: it may be a perfectly good one naming a live interface, so nothing is discarded
+    and the cover keeps naming what it cannot rule out.
+    """
+    candidate: dict = field(default_factory=dict)
+    unusable: str = ""
+    cover: "Cover" = field(default_factory=lambda: Cover())
+
+
+def _pending_candidate(store) -> Pending:
+    """Read the pending undo record once, for both of its readers. Never raises."""
+    record = read_record(store, PROVISION_UNDO_KEY)
+    if not record.known:
+        return Pending(cover=Cover(unknown=["the pending host-provisioning undo could not be read: "
+                                            + record.reason]))
+    raw = record.text
+    if not raw:
+        return Pending()
     try:
-        store.set_setting(PROVISION_UNDO_KEY, "")
-    except Exception:
-        _log.warning("could not clear the pending host-provisioning undo", exc_info=True)
+        candidate = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        # Unusable AND unknown: it names no interface the cover could add, and until it is discarded
+        # it may have been one that did, so it does not license a narrow either.
+        return Pending(unusable=f"it could not be parsed ({exc}): {raw[:200]!r}",
+                       cover=Cover(unknown=[
+                           f"the pending host-provisioning undo could not be parsed: {exc}"]))
+    if not isinstance(candidate, dict):
+        return Pending(unusable=f"it is not a record: {raw[:200]!r}",
+                       cover=Cover(unknown=["the pending host-provisioning undo is not a record"]))
+    if candidate.get("resolved"):
+        return Pending()                            # settled: the terminal form, and nothing to do
+    iface = str(candidate.get("iface") or "").strip()
+    if not iface:
+        return Pending(unusable=f"it names no candidate interface: {raw[:200]!r}")
+    return Pending(candidate=candidate, cover=Cover(names=[iface]))
+
+
+def pending_candidate_state(store) -> Cover:
+    """`pending_candidate_ifaces` as two facts — see it, and `Cover`, for why the difference is the
+    whole point of this record."""
+    return _pending_candidate(store).cover
+
+
+def pending_candidate_ifaces(store) -> list[str]:
+    """The interface a PENDING undo record names — the enforcement cover's fallback source.
+
+    The cover is normally derived from ledgers that are written when a decision is made and read on
+    every later render. The surviving-candidate ledger is the one that answers for a rolled-back
+    change, and there is a window in which it cannot: between the undo deciding to leave a candidate
+    interface up and addressed, and the write that records it being PROVEN to have landed. A store
+    that raises, or one that accepts the write and keeps nothing, never closes that window at all —
+    and the recovery pass that renders the restored guard runs inside it (see the two rollbacks,
+    which reconcile the previous host state BEFORE they reach the undo).
+
+    This record is already on the host's disk when that window opens, written before the pass ran a
+    single command precisely so a failure could still be recovered from, and it names the one
+    interface the pass may have put the segment on. So while it exists, the cover names that
+    interface too. That is a fallback and not a fourth ledger: it holds only until
+    `remember_survivors` is proven to have recorded the pairs, at which point the undo has nothing
+    unresolved and the caller clears this record on its own rule — and the ledger, which drains only
+    on an explicit not-found from the host, becomes the single bookkeeping for that interface.
+
+    Never raises: it is consulted by every store-derived enforcement render, which can only ever
+    install the names it has.
+
+    THE NAMES ONLY, and that is why this is not what the narrowing decision reads. A record that
+    cannot be read or parsed names no interface — but it is not the same fact as a record that says
+    there is no candidate, and swallowing the difference here is what let "unknown" be spent as
+    "candidate absent": the cover came back empty, the pass concluded it had nothing left to cover,
+    and the ruleset narrowed off an interface this very record existed to keep named. So the
+    difference is kept in `pending_candidate_state`, and `Cover.may_narrow` is the only thing allowed
+    to license the narrow.
+    """
+    return pending_candidate_state(store).names
 
 
 def _prior_link_state(candidate: dict) -> str:
@@ -997,7 +2283,31 @@ _ORPHAN_ADDRS = (
     "Check `ip addr show dev {iface}` and remove by hand any this change added.")
 
 
-def _report_orphan_addrs(candidate: dict, installed: dict, restored: dict) -> UndoOutcome:
+def _orphan_pairs(candidate: dict, installed: dict,
+                  restored: dict) -> list[tuple[str, str]]:
+    """The `(iface, addr)` pairs a rolled-back pass may have left on the host.
+
+    Addresses the RESTORED ownership metadata still names are excluded — those are in use, not
+    orphans. That also keeps the common case quiet: a change that never moved the segment leaves
+    the candidate addresses equal to the restored ones, so there is nothing here at all.
+
+    Both sources are needed. `candidate` is what the pass was HEADED for, written before it ran a
+    single host command, and `installed` is what it was read back as having claimed — the only
+    place a v6 prefix the pass resolved for itself (`auto`/PD) ever appears. Neither proves the
+    address is on the host, which is exactly why the undo does not delete them; for the cover the
+    weaker claim is the right one, because an address that was never installed is proven absent by
+    the first probe (see `drain_enforcement_cover`) and costs one pass of over-covering, while one
+    that was installed and left out would be the bypass.
+    """
+    keep = {(restored["iface"], restored["addr4"]), (restored["iface"], restored["addr6"])}
+    return _distinct([(installed.get("iface") or "", installed.get("addr4") or ""),
+                      (installed.get("iface") or "", installed.get("addr6") or ""),
+                      (candidate.get("iface") or "", candidate.get("addr4") or ""),
+                      (candidate.get("iface") or "", candidate.get("addr6") or "")],
+                     frozenset(keep))
+
+
+def _report_orphan_addrs(pairs: list[tuple[str, str]]) -> UndoOutcome:
     """Name the addresses a rolled-back pass may have left on the host. DELETES NOTHING.
 
     This is the whole address half of the undo, and it is report-only by decision. Every address
@@ -1010,25 +2320,21 @@ def _report_orphan_addrs(candidate: dict, installed: dict, restored: dict) -> Un
     operator reaches the gateway on. The value of this ledger was always the visibility; that part
     is safe, cannot be falsified by a lost record, and is all that is kept.
 
-    Reported once, never `unresolved`: no later pass will delete these either, so keeping the
-    pending record would only repeat the same message with nothing to act on. The link half still
-    retries, because there a retry can still finish the job.
+    Reported once, never `unresolved` for the REPORT's sake: no later pass will delete these
+    either, so keeping the pending record to say the same thing again buys nothing. The link half
+    still retries, because there a retry can still finish the job — and so does the ledger write the
+    caller performs with these same pairs, which is a different outstanding thing and is allowed to
+    keep the record (see `undo_provision_candidate`).
 
-    Addresses the RESTORED ownership metadata still names are excluded — those are in use, not
-    orphans. That also keeps the common case quiet: a change that never moved the segment leaves
-    the candidate addresses equal to the restored ones, so there is nothing to report at all.
+    Reporting is not the only thing done with these pairs, though, and it used to be. An address
+    left on an interface that is up is an interface the ruleset has to name, for as long as it is
+    there — so the same pairs are recorded in the surviving-candidate ledger and covered until the
+    host proves them gone (see `SURVIVOR_KEY`). One is what the operator is told; the other is what
+    the panel keeps enforcing meanwhile.
     """
-    keep = {(restored["iface"], restored["addr4"]), (restored["iface"], restored["addr6"])}
     by_iface: dict[str, list[str]] = {}
-    for iface, addr in ((installed.get("iface") or "", installed.get("addr4") or ""),
-                        (installed.get("iface") or "", installed.get("addr6") or ""),
-                        (candidate.get("iface") or "", candidate.get("addr4") or ""),
-                        (candidate.get("iface") or "", candidate.get("addr6") or "")):
-        if not (iface and addr) or (iface, addr) in keep:
-            continue
-        addrs = by_iface.setdefault(iface, [])
-        if addr not in addrs:
-            addrs.append(addr)
+    for iface, addr in pairs:
+        by_iface.setdefault(iface, []).append(addr)
     return UndoOutcome(actions=[_ORPHAN_ADDRS.format(iface=iface, addrs=", ".join(addrs))
                                 for iface, addrs in by_iface.items()])
 
@@ -1063,16 +2369,62 @@ def undo_provision_candidate(state, candidate: dict, installed: dict | None = No
     left in place (see `_report_orphan_addrs`). A record that carries the fields those mechanisms
     used — a pending undo written by an earlier release — is read for its interface and addresses
     like any other, and the extra fields are simply not consulted.
+
+    WHAT SURVIVES IS ALSO RECORDED, and that is the half this used to be missing. "The candidate
+    link is still on the host and may be carrying the address this change put there" is the
+    conclusion of every branch that does not delete — a pre-existing link, one the panel cannot
+    prove it created, one whose deletion was refused, one whose probe would not answer — and the
+    caller's next act is to render the RESTORED plan, which names the interface it went back to and
+    nothing else. So the surviving pairs go into the enforcement cover here, where the decision not
+    to remove them is made, and stay there until the host proves them gone. The one branch that
+    records nothing is the one that proved the opposite: a link the undo deleted took its addresses
+    with it, so its entries are dropped instead.
+
+    AND THAT RECORDING HAS TO BE PROVEN, not attempted. It is the whole basis of the cover, so a
+    write that raises — or one that quietly keeps nothing — leaves the interface live and named
+    nowhere, while this returns as though coverage were durable and the caller clears the pending
+    record and renders the guard. That is the bypass reached through the recovery path, so a
+    survivor write that cannot be read back makes the undo UNRESOLVED: the caller keeps the pending
+    record, a later pass retries the write, and the cover names the candidate from that record until
+    it lands (`pending_candidate_ifaces`).
     """
     run = getattr(state.net, "_run", None)
     if run is None or not candidate:
         return UndoOutcome()
-    restored = managed_host_state(state.store)
+    unreadable, iface, addr4, addr6 = _read_managed_state(state.store)
+    if unreadable:
+        # WHAT IT KEEPS is whatever the ownership metadata names, so an unreadable one is not a
+        # licence to remove anything: the candidate link may be the very interface the recovery pass
+        # went back to, and the guard against deleting that one is a comparison with this record.
+        # Nothing is touched, the pending record stays, and the cover keeps naming the candidate.
+        reason = ("the panel's record of the segment it went back to could not be read, so the host "
+                  "state a rolled-back change left behind was neither removed nor recorded; the undo "
+                  "stays pending and the enforcement keeps covering "
+                  f"{candidate.get('iface') or 'the candidate'}: " + "; ".join(unreadable))
+        _log.error("%s", reason)
+        return UndoOutcome(actions=[reason], unresolved=[reason])
+    restored = {"iface": iface, "addr4": addr4, "addr6": addr6}
     outcome, link_deleted = _undo_candidate_link(state, candidate, restored, run)
     if link_deleted:
-        # The link went and took every address on it with it; there is nothing left to report.
+        # The link went and took every address on it with it; there is nothing left to report,
+        # and nothing left for the enforcement to cover.
+        forget_survivors(state.store, candidate.get("iface") or "")
         return outcome
-    return _merge(outcome, _report_orphan_addrs(candidate, installed or {}, restored))
+    surviving = _orphan_pairs(candidate, installed or {}, restored)
+    outcome = _merge(outcome, _report_orphan_addrs(surviving))
+    if not remember_survivors(state.store, surviving):
+        # The one thing in the address half a later pass CAN still finish, and the reason this
+        # branch is `unresolved` while the report above deliberately is not: what is outstanding is
+        # the ledger write, not a deletion. Keeping the record buys both halves of the recovery —
+        # a retry (`resume_pending_provision_undo` runs before the next pass) and, until it works,
+        # the enforcement cover for this very interface (`pending_candidate_ifaces`).
+        reason = ("the interfaces a rolled-back change may have left carrying the segment could "
+                  "not be recorded (" + ", ".join(sorted({iface for iface, _ in surviving}))
+                  + "); the undo stays pending so a later pass can record them, and the "
+                  "enforcement covers them from that record until it does")
+        outcome.actions.append(reason)
+        outcome.unresolved.append(reason)
+    return outcome
 
 
 def resume_pending_provision_undo(state) -> UndoOutcome:
@@ -1091,23 +2443,22 @@ def resume_pending_provision_undo(state) -> UndoOutcome:
 
     A record it cannot use is discarded and reported rather than acted on: an unreadable value
     names no interface, so there is nothing it could safely remove and nothing a later boot could
-    do better. A record whose work is not finished is KEPT, so the next pass retries it.
+    do better. A record whose work is not finished is KEPT, so the next pass retries it. A record
+    already in its TERMINAL form is nothing at all — the same answer as a blank one, quietly, so a
+    clear whose blanking did not land does not report a settled undo on every boot.
+
+    A store that cannot be READ is distinguished from one holding an unusable value, and only the
+    second is discarded: the first may be holding a perfectly good record naming an interface that is
+    up, so nothing is cleared and the enforcement keeps covering it from that record meanwhile.
     """
     store = state.store
-    try:
-        raw = store.get_setting(PROVISION_UNDO_KEY) or ""
-    except Exception:
-        _log.warning("could not read the pending host-provisioning undo", exc_info=True)
-        return UndoOutcome()
-    if not raw.strip():
-        return UndoOutcome()
-    try:
-        candidate = json.loads(raw)
-        if not isinstance(candidate, dict) or not str(candidate.get("iface") or "").strip():
-            raise ValueError("no candidate interface")
-    except (ValueError, TypeError) as exc:
-        _log.error("discarding an unusable pending host-provisioning undo (%s): %.200r", exc, raw)
+    pending = _pending_candidate(store)
+    if pending.unusable:
+        _log.error("discarding an unusable pending host-provisioning undo: %s", pending.unusable)
         clear_provision_candidate(store)
+        return UndoOutcome()
+    candidate = pending.candidate
+    if not candidate:            # settled, or a record the store would not read (already logged)
         return UndoOutcome()
     _log.warning("a network change was interrupted before its host state could be reclaimed; "
                  "undoing candidate %s", candidate.get("iface"))
@@ -1140,7 +2491,24 @@ def _set_result(state, result: NetResult) -> NetResult:
     return result
 
 
-def _provision_result(links: list[str], addrs: list[str] = (), applied: bool = True) -> NetResult:
+def _clear_pd_prefix(store) -> list[str]:
+    """Forget the recorded delegated /64, proven. A reason per thing that did not land.
+
+    Called where the pass has just decided the segment is not on a delegated prefix any more — auto
+    mode off, or segment management off — and the record is what a LATER pass reads to decide which
+    /64 to install. Unverified, a `set_setting` that kept nothing left a stale delegation that the
+    next re-enable would install as though it were current.
+    """
+    why = write_record(store, "pd_segment_prefix6", "")
+    if why:
+        _log.error("the recorded delegated IPv6 prefix could not be cleared: %s", why)
+        return ["the recorded delegated IPv6 prefix could not be cleared, so a later pass may "
+                "install a /64 that is no longer delegated: " + why]
+    return []
+
+
+def _provision_result(links: list[str], addrs: list[str] = (), applied: bool = True,
+                      enforcement: str = "", records: list[str] = ()) -> NetResult:
     """The pass result, given the host state the panel OWNS and could not remove.
 
     `applied=False` says the segment addresses in the plan were never installed, and it is reported
@@ -1164,6 +2532,18 @@ def _provision_result(links: list[str], addrs: list[str] = (), applied: bool = T
     parts = []
     if links:
         parts.append("panel-created VLAN link not removed: " + "; ".join(links))
+    if records:
+        # Its own clause because it is its own failure: the host may be exactly as the configuration
+        # says while the panel's record of it is not, and what that costs is every LATER decision
+        # taken from the record — which /64 to install, which address is owed a removal, which
+        # interface the ruleset still has to name.
+        parts.append("durable record not written: " + "; ".join(records))
+    if enforcement:
+        # The ruleset the host is left with still covers the segment — a transitional one covers
+        # MORE than the plan names, never less — so this is not a leak. It is a pass whose
+        # enforcement does not match the configuration it is reporting, which is the same class of
+        # failure as an address that would not go, and travels the same channel.
+        parts.append("segment enforcement not narrowed: " + enforcement)
     if not applied:
         parts.append("segment addresses not applied: "
                      + ("; ".join(addrs) or "no reason given"))
@@ -1214,14 +2594,52 @@ def _pd_callback(state, run):
                     _set_result(state, _provision_result([], addrs.reasons, applied=False))
                     return
                 # It is on the interface, so it is now a fact about the host and is recorded as
-                # one. Anything below that fails leaves it correctly recorded.
-                store.set_setting("pd_segment_prefix6", selected or "")
+                # one — PROVABLY, because the record is what every later pass resolves the segment
+                # prefix from. A write that quietly kept nothing leaves the delegated /64 on the
+                # interface and the store still naming the ULA fallback, so the next pass installs
+                # that instead and supersedes a working delegation.
+                records = _clear_pd_prefix(store) if not selected else []
+                if selected:
+                    why = write_record(store, "pd_segment_prefix6", selected)
+                    records = ["the delegated IPv6 prefix is on the segment but could not be "
+                               "recorded, so a later pass will install the fallback instead: "
+                               + why] if why else []
+                    if why:
+                        _log.error("%s", records[0])
+                # THIS WATCHER MAY NOT RAISE THE SEGMENT, and used to. A renewal can land on an
+                # interface an earlier FAILED retarget left created and down — and raising it here
+                # completes none of the rest of that retarget: the superseded link is still there,
+                # NetworkManager still owns the candidate, and the kill-switch drop and tproxy
+                # redirect still name the interface being replaced. The bring-up would therefore
+                # do exactly what the pass refuses to do, and applying dnsmasq straight afterwards
+                # would put clients on it. What a down candidate needs is a full provisioning pass,
+                # which is the only thing that can order all of those correctly.
+                #
+                # So the link is asked about instead, and only a host that says UP gets the rest.
+                # `LINK_UNKNOWN` is not a yes: an unanswerable probe is exactly the state a
+                # half-finished retarget produces, and pointing dnsmasq at the segment is what
+                # makes an interface operational. Skipping it costs a renewal its RA refresh, which
+                # the next renewal or pass repeats; the addresses are already installed either way.
+                link_state, why = _probe_iface_up(plan.segment_iface, run=run)
+                if link_state != LINK_UP:
+                    reason = (f"the delegated prefix is on {plan.segment_iface}, but the interface "
+                              f"is not up ({why or link_state}), so nothing keyed to it was "
+                              "configured; a full provisioning pass has to finish the interface "
+                              "change that left it down")
+                    _log.error("%s", reason)
+                    # Its own clause, not appended to the address reasons: those are removals that
+                    # would not go, and this is the segment not being in a state that may be
+                    # served. Whatever the reconcile could not settle is still reported with it.
+                    settled = _provision_result([], addrs.reasons, records=records).error
+                    _set_result(state, NetResult(
+                        ok=False, error="; ".join(part for part in (settled, reason) if part)))
+                    return
                 dnsmasq = getattr(state, "dnsmasq", None)
                 if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
                     dnsmasq.apply(render_dnsmasq(plan))
                 # A superseded address this could not remove is reported here too: the watcher is
                 # the one caller with no request to fail, so its result is the only surface.
-                _set_result(state, _provision_result([], addrs.reasons))
+                _set_result(state, _provision_result([], addrs.reasons, records=records))
             except Exception as exc:
                 _set_result(state, NetResult(ok=False, error=f"PD prefix apply failed: {exc}"))
                 raise
@@ -1239,11 +2657,211 @@ def _stop_pd(pd) -> None:
         _log.warning("stopping the DHCPv6-PD client failed: %s", exc)
 
 
+def _provision_segment(state, run, pd, dnsmasq) -> tuple[NetResult, bool]:
+    """Bring the configured segment up on the host. Returns `(result, stop the PD client)`.
+
+    MOVING THE SEGMENT FROM ONE INTERFACE TO ANOTHER IS A SEQUENCE, and this is it:
+
+      1. CREATE the candidate, down                  `ensure_segment_link`
+      2. STAGE the enforcement over BOTH interfaces  `apply_enforcement(covering_plan(…))`
+      3. REPLACE both addresses                      `reconcile_segment_addresses`
+      4. take NM ownership of both                   `ensure_nm_unmanaged(also=…)`
+      5. ACTIVATE the candidate  <- THE COMMIT POINT `activate_segment_link`
+      6. point dnsmasq at it, then RETIRE the link it supersedes
+      7. NARROW the enforcement and the drop-in back to the configured interface alone
+
+    Each step is where it is because of what a failure — or a process killed — between it and the
+    next one leaves behind, and the invariant every one of those states has to satisfy is that no
+    interface is ever up and reachable without the ruleset covering it.
+
+    The addresses need an interface to land on, so the creation goes first, and it creates the
+    link DOWN. The bring-up is the single commit point: before it the candidate carries nothing
+    and the previous interface is still the live one; after it the segment is on the new
+    interface, which is why everything that would configure a service for the new segment sits
+    below it and nothing above it can be undone by a caller. Retirement is later still, because a
+    link deleted before the replacement that supersedes it is a link the failure path cannot give
+    back — and dnsmasq is moved before it, so no window has the old link deleted while the
+    segment's DHCP still names it.
+
+    The enforcement is staged BEFORE any of that. It is the one thing that must already be true of
+    an interface the moment it can carry a packet, and the moment differs: a VLAN this pass
+    created cannot carry one until step 5, but a candidate that was ALREADY UP when the pass
+    arrived — an operator's own interface, which this module may never lower — becomes reachable
+    on the segment's address at step 3. Staging above both covers both, and covering both
+    interfaces at once is a superset: every intermediate state is over-covered, never under. The
+    alternative, refusing the operator's change when the target is already up, puts a "do nothing"
+    branch in the middle of a host reconfiguration, which is the shape of defect that has already
+    cost this module a segment twice (see `BACKLOG_WARN`).
+
+    Steps 2 and 7 are no-ops when this is not a move: with one interface there is nothing
+    transitional to install or narrow, and the pass touches the ruleset not at all. WHAT it stages
+    is not the same question as WHETHER it stages, though. The ruleset a move installs covers the
+    whole durable cover (`enforcement_cover`), not merely the interface this pass is leaving: a
+    rolled-back change may have left a third one up and carrying the segment, and a transitional
+    ruleset that named only the two this pass knows about would narrow away from it. Outside a
+    move, that third interface is covered by the store-derived render every caller of this pass
+    performs straight afterwards (`sync_net`, `boot_guard`, the rollback restores), which is where
+    the cover belongs — a pass that touched nothing has nothing to stage.
+    """
+    store, settings = state.store, state.settings
+    stop_pd = False
+    ensure_sysctls(settings)
+    ensure_segment_prefix6(store, settings)
+    plan = NetPlan.from_store(store, settings)
+    plan.segment_ip6 = effective_segment_prefix6(store, settings)
+    # Both read BEFORE the reconcile, which rewrites the record that answers them. `superseded` is
+    # what this pass is moving OFF — the interfaces the panel still holds an address on, which is
+    # also what the NM drop-in is written from — and `cover` is everything the ruleset must name,
+    # which is that plus anything a rolled-back change left behind.
+    #
+    # BOTH ARE `Cover`s, AND NEITHER IS ASKED AS A LIST. `superseded` decides WHETHER this pass is a
+    # move — so whether the transitional ruleset is staged at all, and what the drop-in hands to
+    # NetworkManager — and a names-only view of it cannot tell "the panel holds nothing anywhere
+    # else" from "one of the three records would not answer". Spent as the former, and it was: this
+    # read used to discard the difference, so a single transient read failure skipped step 2 entirely,
+    # and the pass then went on to address and RAISE the candidate under the ruleset the previous
+    # configuration left in force — which names only the interface being left. A pass that reported
+    # `ok=True`, over the direct-WAN bypass. So the whole answer is kept and read below.
+    superseded = superseded_state(store, plan.segment_iface)
+    cover = enforcement_cover(store, plan.segment_iface)
+
+    if not superseded.known:
+        # NOTHING MOVES ON A HALF-READ ANSWER. This is the record that says whether an interface
+        # other than the plan's is still holding a segment address, and an unread source may name one
+        # that is up right now: staging, the drop-in and the narrowing decision all read it, and each
+        # of them would read the short answer as "there is nothing else". Declining costs this pass —
+        # the host is untouched, the live ruleset still covers the segment where it is, and the next
+        # pass retries — which is also what the reconcile below does with the same unreadable record,
+        # so a store that stays broken loses nothing extra by being refused here first.
+        reason = ("the panel could not read which interfaces may still be holding a segment "
+                  f"address, so nothing was configured for {plan.segment_iface}: " + superseded.why())
+        _log.error("%s", reason)
+        return _set_result(state, _provision_result([], [reason], applied=False)), stop_pd
+
+    ensure_segment_link(store, plan, run=run)                                   # 1
+    if superseded.names:                                                        # 2
+        if not cover.known:
+            # A TRANSITIONAL RULESET MAY NOT BE SHORT. It is what covers the candidate from the
+            # moment step 3 can make it reachable, and a cover source that would not answer may
+            # perfectly well be naming an interface that is already up carrying the segment. So the
+            # move does not start: nothing has moved yet, the live ruleset still names the interface
+            # the segment is on, and the pass reports instead of raising an interface it cannot
+            # promise to have covered.
+            reason = ("the enforcement could not be staged over every interface that may be "
+                      f"carrying the segment, so it was not moved to {plan.segment_iface}: "
+                      + cover.why())
+            _log.error("%s", reason)
+            return _set_result(state, _provision_result([], [reason], applied=False)), stop_pd
+        staged = apply_enforcement(state, covering_plan(plan, cover.names))
+        if staged:
+            # Nothing has moved yet, so nothing has to be given back: the segment is still on the
+            # interface the live ruleset still names, with its address, its dnsmasq and its
+            # drop-in. Stopping here is the only safe answer — the next step is the first one that
+            # can make the candidate reachable, and there would be no ruleset covering it.
+            reason = (f"the enforcement covering {', '.join(cover.names)} and "
+                      f"{plan.segment_iface} could not be installed, so the segment was not "
+                      f"moved: {staged}")
+            _log.error("%s", reason)
+            return _set_result(state, _provision_result([], [reason], applied=False)), stop_pd
+
+    addrs = reconcile_segment_addresses(store, plan, run=run)                   # 3
+    link_failures: list[str] = []
+    records: list[str] = []
+    narrow = ""
+    # EVERYTHING BELOW IS KEYED TO THE ADDRESSES THIS PLAN NAMES, so none of it runs when they
+    # were not installed. dnsmasq is the reason the distinction exists: its DHCP range, router
+    # option and listen address all come from `plan.segment_ip`, so applying it over addresses
+    # that never landed serves a subnet the interface does not have — and the NetworkManager
+    # drop-in would likewise hand the interface the panel still holds an address on back to NM.
+    # Such a pass leaves the working configuration of the previous one alone and reports; the
+    # caller rolls back.
+    if addrs.applied:
+        # The addresses are on the new interface, so it may carry traffic and the old link has
+        # genuinely been superseded. Not applied means NEITHER: the candidate stays down — it was
+        # created down and nothing here raises it — and the previous link is still the live one,
+        # keeps its address, keeps the ledger naming both, a true description of the host, which
+        # the next pass acts on. The staged ruleset covers it either way.
+        # `superseded.names` is the whole set here, proven above: taking an interface away from
+        # NetworkManager on a short list is how the one the panel still addresses gets handed back.
+        ensure_nm_unmanaged(plan.segment_iface, run=run, also=superseded.names)  # 4
+        activate_segment_link(plan, run=run)                                    # 5
+        if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
+            dnsmasq.apply(render_dnsmasq(plan))                                 # 6
+        elif dnsmasq is not None:
+            dnsmasq.stop()
+        link_failures = retire_superseded_links(store, plan, run=run)
+        # Narrowing is what ENDS the cover, so it may only happen once nothing it would uncover
+        # can still be carrying the segment, and there are several ways one can be. A panel-created
+        # link that would not go is still on the host with everything that was on it. An interface
+        # the panel did NOT create is never deleted at all — an operator's own — so what decides
+        # for that one is whether the address the pass superseded actually came off it: a refused
+        # `ip addr del` leaves the old segment address exactly where it was, on an interface that
+        # is up, which is the state the ledger records and retries. And a candidate a rolled-back
+        # change left behind is neither, and is answered by the host through its own probes. Asking
+        # the cover again is asking all of them at once, and it is asked AFTER the retirement,
+        # because that is what turns them into answers. Either way the transitional ruleset stays
+        # until a later pass finishes the job. Over-covering an interface that no longer exists is
+        # free; uncovering one that is still live is the defect.
+        #
+        # The drop-in narrows on the smaller set, deliberately. Being named in a rule costs an
+        # interface nothing, so the ruleset waits for the whole cover; being listed as unmanaged
+        # takes an interface away from NetworkManager, so the drop-in waits only for the ones the
+        # panel actually holds an address on and hands back anything else at the first opportunity.
+        #
+        # AND NEITHER SET IS ASKED AS A LIST. Both are records, both can fail to answer, and both
+        # decisions here are "stop covering something": an unreadable source that came back as an
+        # empty list read as "nothing left" and narrowed off exactly the interface the record it
+        # could not read existed to keep named. `may_narrow` is true only when every source answered
+        # AND named nothing; anything else leaves the transitional ruleset — a superset — in place
+        # and reports, so a later pass finishes the job.
+        # `superseded.names` is what says this pass staged something to narrow BACK from, and it is
+        # the proven set — `Cover.__bool__` raises, so neither of these decisions can be taken from
+        # the object as a whole and read "no answer" as "not a move".
+        managed = superseded_state(store, plan.segment_iface)
+        remaining = enforcement_cover(store, plan.segment_iface)
+        if superseded.names and managed.may_narrow:                             # 7 (the drop-in)
+            ensure_nm_unmanaged(plan.segment_iface, run=run)
+        if superseded.names and remaining.may_narrow:                           # 7 (the ruleset)
+            narrow = apply_enforcement(state, plan)
+        elif superseded.names and not remaining.known:
+            narrow = ("the enforcement was left covering every interface it already named, because "
+                      "the panel could not prove nothing else is still carrying the segment: "
+                      + remaining.why())
+            _log.error("%s", narrow)
+        auto_pd = (plan.ipv6_enabled
+                   and (store.get_setting("segment_ip6") or "").strip().lower() == "auto")
+        if pd is not None:
+            if auto_pd:
+                set_callback = getattr(pd, "set_callback", None)
+                if set_callback is not None:
+                    set_callback(_pd_callback(state, run))
+                pd.start()
+            else:
+                stop_pd = True
+                records += _clear_pd_prefix(store)
+    else:
+        _log.error("the segment addresses this configuration names are not on the interface, so "
+                   "nothing keyed to them was configured: %s", "; ".join(addrs.reasons))
+    # The rest of the pass still runs: the new segment must come up even when a superseded link or
+    # address refuses to go, and the pass then reports that leftover — a config the host does not
+    # match must not commit as a success.
+    return _set_result(state, _provision_result(link_failures, addrs.reasons, records=records,
+                                                applied=addrs.applied, enforcement=narrow)), stop_pd
+
+
 def host_provision(state) -> NetResult:
     """Idempotent host gateway bring-up. Gated on the linux backend + `manage_segment`.
     Never raises out — a provisioning failure is logged, not fatal to boot. Re-entrant under
-    the controller apply-lock so it can't interleave with a tunnel apply."""
-    store, settings = state.store, state.settings
+    the controller apply-lock so it can't interleave with a tunnel apply.
+
+    IT IS ALSO WHERE THE EMERGENCY DENY IS HANDED BACK. A boot that could not install the panel's
+    own enforcement holds the forward path closed with a ruleset that names no interface, and
+    nothing narrows or drains such a ruleset — the only thing that ends it is a render that proves a
+    complete cover. This pass runs on boot, on `PUT /api/network` and on a restore, which is every
+    path that can change that answer, so the handover is attempted here, after the pass and whatever
+    it managed to settle (see `_hand_back_from_emergency_deny`).
+    """
+    store = state.store
     if not _is_linux_backend(state.net):
         return _set_result(state, NetResult(ok=True))
     from pi_gw_panel.controller import apply_lock
@@ -1252,70 +2870,35 @@ def host_provision(state) -> NetResult:
     stop_pd = False
     with apply_lock:
         try:
+            # Before anything reads the cover, give the host a chance to shrink it: a candidate a
+            # rolled-back change left behind leaves the moment the host says its link is gone or
+            # its address is off it. This is the ONLY thing that shrinks that ledger, so it runs on
+            # both branches below — with segment management off, this pass is all there is.
+            drain_enforcement_cover(store, run)
             dnsmasq = getattr(state, "dnsmasq", None)
             if (store.get_setting("manage_segment") or "1") != "1":
                 stop_pd = True
-                store.set_setting("pd_segment_prefix6", "")
+                records = _clear_pd_prefix(store)
                 if dnsmasq is not None:
                     dnsmasq.stop()
                 addr_failures = clear_managed_addresses(store, run=run)
                 link_failures = clear_managed_link(store, run=run)
                 remove_nm_unmanaged(run=run)
-                result = _set_result(state, _provision_result(link_failures, addr_failures))
+                result = _set_result(state, _provision_result(link_failures, addr_failures,
+                                                             records=records))
             else:
-                ensure_sysctls(settings)
-                ensure_segment_prefix6(store, settings)
-                plan = NetPlan.from_store(store, settings)
-                plan.segment_ip6 = effective_segment_prefix6(store, settings)
-                # CREATE the new link, then address it, and only then retire what it supersedes.
-                # The addresses need an interface to land on, so the creation goes first; the
-                # RETIREMENT is the step that must not, because a link deleted before the
-                # replacement that supersedes it is a link the failure path cannot give back.
-                ensure_segment_link(store, plan, run=run)
-                addrs = reconcile_segment_addresses(store, plan, run=run)
-                link_failures: list[str] = []
-                # EVERYTHING BELOW IS KEYED TO THE ADDRESSES THIS PLAN NAMES, so none of it runs
-                # when they were not installed. dnsmasq is the reason the distinction exists: its
-                # DHCP range, router option and listen address all come from `plan.segment_ip`, so
-                # applying it over addresses that never landed serves a subnet the interface does
-                # not have — and the NetworkManager drop-in would likewise hand the interface the
-                # panel still holds an address on back to NM. Such a pass leaves the working
-                # configuration of the previous one alone and reports; the caller rolls back.
-                if addrs.applied:
-                    # The addresses are on the new interface, so the old link has genuinely been
-                    # superseded and may go. Not applied means it has NOT: the previous link is
-                    # still the live one, it keeps its address, and the ledger keeps both names —
-                    # a true description of the host, which the next pass acts on.
-                    link_failures = retire_superseded_links(store, plan, run=run)
-                    ensure_nm_unmanaged(plan.segment_iface, run=run)
-                    auto_pd = (plan.ipv6_enabled
-                               and (store.get_setting("segment_ip6") or "").strip().lower()
-                               == "auto")
-                    if pd is not None:
-                        if auto_pd:
-                            set_callback = getattr(pd, "set_callback", None)
-                            if set_callback is not None:
-                                set_callback(_pd_callback(state, run))
-                            pd.start()
-                        else:
-                            stop_pd = True
-                            store.set_setting("pd_segment_prefix6", "")
-                    if dnsmasq is not None and (store.get_setting("manage_dnsmasq") or "1") == "1":
-                        dnsmasq.apply(render_dnsmasq(plan))
-                    elif dnsmasq is not None:
-                        dnsmasq.stop()
-                else:
-                    _log.error("the segment addresses this configuration names are not on the "
-                               "interface, so nothing keyed to them was configured: %s",
-                               "; ".join(addrs.reasons))
-                # The rest of the pass still runs: the new segment must come up even when a
-                # superseded link or address refuses to go, and the pass then reports that
-                # leftover — a config the host does not match must not commit as a success.
-                result = _set_result(state, _provision_result(link_failures, addrs.reasons,
-                                                              applied=addrs.applied))
+                result, stop_pd = _provision_segment(state, run, pd, dnsmasq)
         except Exception as exc:    # never crash boot on a provisioning hiccup
             _log.warning("host_provision failed: %s", exc)
             result = _set_result(state, NetResult(ok=False, error=str(exc)))
+        # Attempted whatever the pass above did, and reported through the same `ok=False` channel as
+        # every other host state the pass intended to reach and did not: while the deny is in force
+        # the segment has no network at all, so a pass that leaves it there has not reached the
+        # configuration it would otherwise be reporting as applied.
+        held = _hand_back_from_emergency_deny(state)
+        if held:
+            result = _set_result(state, NetResult(
+                ok=False, error="; ".join(p for p in (result.error, held) if p)))
     # Outside the apply-lock on purpose: the PD watcher takes that same lock inside its
     # callback, so joining its thread while holding it would block for the whole join
     # timeout. The store state that makes a late callback a no-op is already committed above.

@@ -52,6 +52,16 @@ class NetPlan:
     lan_access: bool = False
     mgmt_iface: str = "eth0"
     mgmt_ip: str = ""
+    # Interfaces the segment rules must ALSO be scoped to, on top of `segment_iface`. Empty in
+    # every steady state, and non-empty for exactly one thing: the window in which the segment is
+    # being moved from one interface to another. Both are then live at once — the old one still
+    # carrying clients until it is retired, the new one from the moment it is raised — and a
+    # ruleset naming either alone leaves the other outside the kill-switch drop and the tproxy
+    # redirect. It is never read from the store: the interface being superseded is known only to
+    # the pass performing the move (see `net_control.provision.host_provision`), which builds the
+    # transitional plan, applies it before it raises anything, and narrows back to this field
+    # empty once the old link is gone.
+    extra_ifaces: tuple[str, ...] = ()
 
     @classmethod
     def from_settings(cls, s: Settings) -> "NetPlan":

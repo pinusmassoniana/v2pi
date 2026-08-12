@@ -1,14 +1,18 @@
 import ipaddress
+import json
+import re
 import subprocess
 
 import pytest
 
 from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS
+from pi_gw_panel.controller import boot_guard, sync_net
 from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
-from pi_gw_panel.net_control.plan import NetPlan
+from pi_gw_panel.net_control.plan import NetPlan, NetResult
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.net_control.linux import TIMEOUT_RETURNCODE
+from pi_gw_panel.net_control.render import render_nft, render_nft6
 from pi_gw_panel.net_control import pd_client, provision
 
 
@@ -18,42 +22,156 @@ def _store():
     return NodeStore(conn)
 
 
-class FakeRun:
-    def __init__(self):
+class HostFacts:
+    """The per-interface facts every runner fake below records, and none of them used to.
+
+    `up` is the set of interfaces the host currently has UP; `on` maps an interface to the
+    addresses that are on THAT interface. Both were invisible here: `ip link set … up` fell
+    through every fake as an unrecorded no-op, and the addresses were one flat set with no
+    interface attached to them. So "the candidate is up and carrying the new IPv4 while dnsmasq,
+    the NM drop-in and the nft/tproxy policy all still name the interface it replaces" and "the
+    candidate is down and carries nothing" produced byte-identical fakes, and an ordering defect
+    between those two states could not be written down as a test. A fake that cannot represent a
+    state cannot be asked about it — which is why this is part of the fix and not scaffolding.
+
+    `on` IS THE HOST. The flat `addrs` view is derived from it (see the property), rather than
+    kept alongside it: while the two were maintained in parallel, `ip addr show dev <iface>`
+    answered from the flat one and so reported addresses that are on a DIFFERENT interface. That
+    is the one answer that licenses forgetting an ownership record, so the fake could tell a
+    probe an address had gone from the interface it asked about while the host still had it there
+    — and could not express the opposite either. Derivation removes the disagreement by
+    construction; nothing can seed one view without the other.
+
+    Facts are recorded where the command SUCCEEDS, never where it is issued: a refused `ip addr
+    del` leaves the address exactly where it was, and a refused `ip link delete` leaves the link
+    up, and a fake that recorded intent would report the opposite of the host in exactly the cases
+    these tests exist for.
+    """
+
+    def __init__(self, up=(), on=None):
+        self.up = set(up)
+        self.on = {iface: set(addrs) for iface, addrs in (on or {}).items()}
         self.calls = []
+
+    def note_link(self, cmd) -> None:
+        """Record what a link command that SUCCEEDED did to the up/down state."""
+        if cmd[:3] == ["ip", "link", "add"]:
+            self.up.discard(cmd[cmd.index("name") + 1])      # a VLAN is created DOWN
+        elif cmd[:3] == ["ip", "link", "set"] and cmd[4:5] in (["up"], ["down"]):
+            (self.up.add if cmd[4] == "up" else self.up.discard)(cmd[3])
+        elif cmd[:3] == ["ip", "link", "delete"]:
+            self.up.discard(cmd[3])
+            self.on.pop(cmd[3], None)                        # the link took its addresses with it
+
+    def note_addr(self, rest) -> None:
+        """`rest` is `["addr", "replace"|"del", <cidr>, "dev", <iface>]`, flags already stripped."""
+        iface, addr = rest[4], rest[2]
+        if rest[1] == "del":
+            self.on.get(iface, set()).discard(addr)
+        else:
+            self.on.setdefault(iface, set()).add(addr)
+
+    def is_up(self, iface) -> bool:
+        return iface in self.up
+
+    def addrs_on(self, iface) -> set:
+        return set(self.on.get(iface, ()))
+
+    def seed(self, iface: str, addrs) -> None:
+        """Put addresses on an interface without issuing a command (host state a test starts from)."""
+        self.on.setdefault(iface, set()).update(addrs)
+
+    @property
+    def addrs(self) -> frozenset:
+        """Every address anywhere on this host — the union of `on`, and never its own record.
+
+        Frozen so that seeding through it fails loudly instead of mutating a temporary: this used
+        to be the writable record, and a test that adds an address here and nowhere else would
+        otherwise describe a host on which `ip addr show` cannot find it.
+        """
+        return frozenset(addr for addrs in self.on.values() for addr in addrs)
+
+    def link_line(self, iface: str) -> str:
+        """What `ip link show <iface>` prints for a link that IS on the host.
+
+        The admin flag is what `up` means here, so a test that raised or lowered a link through
+        the fake gets that answer back from the probe as well — the two halves of "is it up" can
+        no longer disagree.
+        """
+        flags = "BROADCAST,MULTICAST,UP,LOWER_UP" if iface in self.up else "BROADCAST,MULTICAST"
+        state = "UP" if iface in self.up else "DOWN"
+        return f"3: {iface}: <{flags}> mtu 1500 qdisc noqueue state {state} mode DEFAULT\n"
+
+    def addr_lines(self, iface: str, ipv6: bool) -> str:
+        """What `ip -o addr show dev <iface>` prints — the addresses on THAT interface, only."""
+        return "".join(
+            f"2: {iface}    {'inet6' if ':' in a else 'inet'} {a} scope global\n"
+            for a in sorted(self.addrs_on(iface)) if (":" in a) == ipv6)
+
+
+class FakeRun(HostFacts):
+    """Records every command, and models the one fact its commands establish: which links are up.
+
+    `ip link set … up/down` moves an interface in and out of `up` and `ip link show` answers from
+    it, so a probe that asks this host whether the segment is up gets the answer this host's own
+    commands produced. Without that the runner answered every probe with silence, which is
+    `LINK_UNKNOWN` — indistinguishable from a wedged netlink, and not what a working host says.
+    """
+
+    def __init__(self, **facts):
+        super().__init__(**facts)
+        self.calls = []                                 # (cmd, input) pairs
 
     def __call__(self, cmd, input=None):
         self.calls.append((cmd, input))
+        if cmd[:1] == ["ip"]:
+            norm = ["ip"] + _strip_flags(cmd)
+            if norm[:3] == ["ip", "link", "show"]:
+                return subprocess.CompletedProcess(cmd, 0, self.link_line(norm[3]), "")
+            self.note_link(norm)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def cmds(self):
         return [c for c, _ in self.calls]
 
 
-class FakeHost:
+def _strip_flags(cmd) -> list[str]:
+    """`cmd` without the family/one-line switches, so a match can be written once per command."""
+    return [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+
+
+class FakeHost(HostFacts):
     """A runner whose `ip link add/delete` actually mutate a set of links, so a test can ask
     what is left on the host rather than only what was commanded. `ip link show` answers from
-    that same set, so a probe for a link's absence gets the host's real answer."""
+    that same set, so a probe for a link's absence gets the host's real answer — and, for a link
+    that is there, reports whether it is UP out of the same `up` set every other answer uses."""
 
-    def __init__(self, existing=()):
+    def __init__(self, existing=(), **facts):
+        super().__init__(**facts)
         self.links = set(existing)
-        self.calls = []
 
     def __call__(self, cmd, input=None):
         self.calls.append(cmd)
-        if cmd[:3] == ["ip", "link", "add"]:
-            self.links.add(cmd[cmd.index("name") + 1])
-        elif cmd[:3] == ["ip", "link", "delete"]:
-            if cmd[3] not in self.links:
+        norm = ["ip"] + _strip_flags(cmd)
+        if norm[:3] == ["ip", "link", "add"]:
+            self.links.add(norm[norm.index("name") + 1])
+        elif norm[:3] == ["ip", "link", "delete"]:
+            if norm[3] not in self.links:
                 raise subprocess.CalledProcessError(1, cmd)
-            self.links.discard(cmd[3])
-        elif cmd[:3] == ["ip", "link", "show"] and cmd[3] not in self.links:
-            raise subprocess.CalledProcessError(
-                1, cmd, output="", stderr=f'Device "{cmd[3]}" does not exist.')
+            self.links.discard(norm[3])
+        elif norm[:3] == ["ip", "link", "show"]:
+            if norm[3] not in self.links:
+                raise subprocess.CalledProcessError(
+                    1, cmd, output="", stderr=f'Device "{norm[3]}" does not exist.')
+            return subprocess.CompletedProcess(cmd, 0, self.link_line(norm[3]), "")
+        self.note_link(norm)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def exists(self, iface):
         return iface in self.links
+
+    def cmds(self):
+        return list(self.calls)
 
 
 class RefusingHost(FakeHost):
@@ -62,48 +180,66 @@ class RefusingHost(FakeHost):
     delete that never came back, which says nothing at all about the link."""
 
     def __init__(self, existing=(), refuse=(), returncode=1,
-                 stderr="RTNETLINK answers: Operation not permitted"):
-        super().__init__(existing)
+                 stderr="RTNETLINK answers: Operation not permitted", **facts):
+        super().__init__(existing, **facts)
         self.refuse, self.returncode, self.stderr = set(refuse), returncode, stderr
 
     def __call__(self, cmd, input=None):
-        if cmd[:3] == ["ip", "link", "delete"] and cmd[3] in self.refuse:
+        norm = ["ip"] + _strip_flags(cmd)
+        if norm[:3] == ["ip", "link", "delete"] and norm[3] in self.refuse:
             self.calls.append(cmd)
             raise subprocess.CalledProcessError(self.returncode, cmd, output="",
                                                 stderr=self.stderr)
         return super().__call__(cmd, input)
 
 
-class AddrHost:
+class AddrHost(HostFacts):
     """A runner that models the ADDRESSES on an interface, the way `FakeHost` models the links.
 
-    `ip addr replace/del` mutate the set, `ip -o addr show` answers from it, and a delete named in
-    `refuse` fails while leaving the address exactly where it was — which is what EPERM and the
-    runner's time limit both do, and the state the reconcile/clear paths have to survive.
+    `ip addr replace/del` move an address on or off the interface the command NAMES, `ip -o addr
+    show dev <iface>` answers with what is on THAT interface, and a delete named in `refuse` fails
+    while leaving the address exactly where it was — which is what EPERM and the runner's time
+    limit both do, and the state the reconcile/clear paths have to survive.
+
+    Seeding: `on={iface: {addr, …}}` says which interface each address is on; `addrs=[…]` is the
+    shorthand for "on the segment" and puts them on `default_iface`. There is no third, flat
+    record — `HostFacts.addrs` is derived — so a seeded address is always somewhere.
+
+    A refusal may be keyed by CIDR (`"192.168.9.2/24"`, refused wherever it is issued) or by the
+    PAIR (`("eth0.2", "192.168.9.2/24")`, refused only on that interface). The pair is what a
+    retarget needs: the same address can be on the way off one interface and on the way onto
+    another in a single pass, and a fake keyed by CIDR alone answers for both at once.
     """
 
     def __init__(self, addrs=(), refuse=(), returncode=1,
-                 stderr="RTNETLINK answers: Operation not permitted"):
-        self.addrs = set(addrs)
+                 stderr="RTNETLINK answers: Operation not permitted",
+                 default_iface="eth0.2", **facts):
+        super().__init__(**facts)
+        self.seed(default_iface, addrs)
         self.refuse = set(refuse)
         self.returncode, self.stderr = returncode, stderr
-        self.calls = []
+
+    def blocked(self, blocks, iface: str, addr: str) -> bool:
+        """Whether `blocks` names this command: the address anywhere, or on this interface."""
+        return addr in blocks or (iface, addr) in blocks
 
     def __call__(self, cmd, input=None):
         self.calls.append(cmd)
-        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+        rest = _strip_flags(cmd)
         if rest[:2] == ["addr", "del"]:
-            if rest[2] in self.refuse:
+            if self.blocked(self.refuse, rest[4], rest[2]):
                 raise subprocess.CalledProcessError(self.returncode, cmd, output="",
                                                     stderr=self.stderr)
-            self.addrs.discard(rest[2])
+            self.note_addr(rest)
         elif rest[:2] == ["addr", "replace"]:
-            self.addrs.add(rest[2])
+            self.note_addr(rest)
         elif rest[:2] == ["addr", "show"]:
-            ipv6 = "-6" in cmd
-            return subprocess.CompletedProcess(cmd, 0, "".join(
-                f"2: {rest[-1]}    {'inet6' if ':' in a else 'inet'} {a} scope global\n"
-                for a in sorted(self.addrs) if (":" in a) == ipv6), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, self.addr_lines(rest[-1], "-6" in cmd), "")
+        elif rest[:2] == ["link", "show"]:
+            return subprocess.CompletedProcess(cmd, 0, self.link_line(rest[2]), "")
+        else:
+            self.note_link(["ip"] + rest)   # `ip link set … up/down` reaches the host here
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def cmds(self):
@@ -116,8 +252,8 @@ class UnansweringHost(FakeHost):
     synthetic stderr, so this is the exact exception `provision`'s default seam sees in
     production — no `link_exists` is injected against this fake, deliberately."""
 
-    def __init__(self, existing=(), unanswered=()):
-        super().__init__(existing)
+    def __init__(self, existing=(), unanswered=(), **facts):
+        super().__init__(existing, **facts)
         self.unanswered = set(unanswered)
 
     def __call__(self, cmd, input=None):
@@ -135,17 +271,70 @@ def _plan_for(iface: str) -> NetPlan:
     return plan
 
 
-class LinuxBackend:                 # name + `_run` seam = the provision linux gate
-    def __init__(self, run):
+class LinuxBackend:
+    """The `_run` seam that gates the provision path onto "this is a real host", plus the
+    enforcement seam a segment move drives.
+
+    `apply_tproxy`/`apply_guard` render the REAL ruleset and record the text, so a test asks what
+    the panel actually scoped its rules to rather than trusting a flag: which interfaces the
+    kill-switch drop and the tproxy redirect name, at each point in the move, is the whole
+    question. Failure is injectable per call, because an enforcement apply that will not go on is
+    what must stop the move before anything is raised.
+    """
+
+    def __init__(self, run, fail=None):
         self._run = run
+        self.applied: list[str] = []
+        self.fail = fail            # a reason string => every enforcement apply reports failure
+        self.kill_in = None         # the process dies as the Nth further ruleset is being loaded
+
+    def _record(self, text: str, tunnel_up: bool) -> NetResult:
+        if self.kill_in is not None:
+            self.kill_in -= 1
+            if self.kill_in < 0:
+                raise KeyboardInterrupt("killed while loading a ruleset")
+        if self.fail:
+            return NetResult(ok=False, rendered=text, error=self.fail)
+        self.applied.append(text)
+        return NetResult(ok=True, rendered=text)
+
+    def apply_tproxy(self, plan):
+        return self._record(render_nft(plan) + render_nft6(plan), True)
+
+    def apply_guard(self, plan):
+        return self._record(
+            render_nft(plan, tunnel_up=False) + render_nft6(plan, tunnel_up=False), False)
+
+    def teardown(self):
+        self.applied.append("")
+        return NetResult(ok=True)
+
+
+class _Supervisor:
+    def __init__(self, running=False):
+        self.running = running
+
+    def status(self):
+        return {"running": self.running}
+
+
+def _enforced_ifaces(text: str) -> set:
+    """Every interface a rendered ruleset scopes a segment rule to — one name or a set of them."""
+    found = set()
+    for one, many in re.findall(r'iifname (?:"([^"]+)"|\{([^}]*)\})', text):
+        found |= {one} if one else set(re.findall(r'"([^"]+)"', many))
+    return found
 
 
 class _Dnsmasq:
-    def __init__(self):
+    def __init__(self, kill=False):
         self.applied = []
         self.stopped = 0
+        self.kill = kill        # the process dies as the segment's DHCP is being switched over
 
     def apply(self, text):
+        if self.kill:
+            raise KeyboardInterrupt("killed while switching dnsmasq to the new segment")
         self.applied.append(text)
 
     def stop(self):
@@ -173,9 +362,12 @@ class _PD:
 
 
 class _State:
-    def __init__(self, store, net, dnsmasq=None):
+    def __init__(self, store, net, dnsmasq=None, running=False):
         self.store, self.net, self.dnsmasq = store, net, dnsmasq
         self.settings = Settings()
+        # The enforcement a pass installs depends on the runtime state (tunnel up => tproxy,
+        # otherwise the fail-closed guard), so the fake carries the supervisor that decides it.
+        self.supervisor = _Supervisor(running)
 
 
 # --- Task 1: settings / NetPlan ------------------------------------------------
@@ -252,8 +444,16 @@ def test_ensure_segment_link_creates_vlan_and_records_ownership():
     provision.ensure_segment_link(store, p, run=fake, link_exists=lambda i: False)
     cmds = fake.cmds()
     assert ["ip", "link", "add", "link", "eth0", "name", "eth0.2", "type", "vlan", "id", "2"] in cmds
-    assert ["ip", "link", "set", "eth0.2", "up"] in cmds
+    # ...and leaves it DOWN. A link is raised only once the addresses the plan names are on it
+    # and everything that constrains the segment has been pointed at it.
+    assert not any(c[:3] == ["ip", "link", "set"] for c in cmds)
     assert store.get_setting("managed_segment_link") == "eth0.2"
+
+
+def test_activate_segment_link_only_brings_the_named_link_up():
+    fake = FakeRun()
+    provision.activate_segment_link(_plan_for("eth0.9"), run=fake)
+    assert fake.cmds() == [["ip", "link", "set", "eth0.9", "up"]]
 
 
 def test_ensure_segment_link_skips_link_add_and_ownership_when_present():
@@ -883,6 +1083,53 @@ def test_a_genuine_move_still_deletes_the_address_it_replaced():
     assert store.get_setting(provision.STALE_KEY) == ""
 
 
+# --- an address is somewhere, and the probe is asked about ONE interface ----------------------
+# Both of these are questions the fake could not be asked while `ip addr show dev <iface>`
+# answered from a flat set of everything the host carried: an address on ANOTHER interface came
+# back as present here, which is the answer that keeps an ownership record, and a refusal could
+# only be keyed by CIDR, which cannot express a delete that is refused on the interface the pass
+# is leaving while the same CIDR goes on fine on the one it is moving to.
+
+
+def test_a_refused_removal_forgets_the_record_when_the_address_is_on_a_DIFFERENT_interface():
+    # The panel owns `192.168.9.2/24` on eth0.2; what is on the host is the same CIDR on eth0.9,
+    # put there by someone else. The delete is refused, and the probe that follows asks about
+    # eth0.2 alone: the address is not there, so this record has nothing left to retry and goes.
+    # Keeping it — which a probe answering "somewhere on this host" produces — would make the
+    # panel retry a removal forever against an interface that never had the address.
+    host = AddrHost(on={"eth0.9": {"192.168.9.2/24"}},
+                    refuse=[("eth0.2", "192.168.9.2/24")])
+
+    keep, reasons = provision._retire_owned([("eth0.2", "192.168.9.2/24")], host)
+
+    assert keep == [] and reasons == []
+    assert host.addrs_on("eth0.9") == {"192.168.9.2/24"}     # and the other interface is untouched
+
+
+def test_the_same_address_moving_interface_is_refused_only_where_it_is_being_removed():
+    # A retarget that keeps the segment address and changes only the interface. The replace onto
+    # eth0.9 has to succeed while the delete from eth0.2 is refused — one CIDR, two interfaces,
+    # opposite answers — so the pass ends with the address on BOTH, applied, and the OLD pair
+    # still recorded as owed a removal.
+    host = AddrHost(on={"eth0.2": {"192.168.10.2/24"}},
+                    refuse=[("eth0.2", "192.168.10.2/24")])
+    store = _store()
+    store.set_setting("segment_iface", "eth0.9")
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.10.2/24")
+    plan = _plan_with("192.168.10.2")
+    plan.segment_iface = "eth0.9"
+
+    outcome = provision.reconcile_segment_addresses(store, plan, run=host)
+
+    assert outcome.applied is True and len(outcome.reasons) == 1
+    assert outcome.reasons[0].startswith("192.168.10.2/24 on eth0.2: ")
+    assert host.addrs_on("eth0.9") == {"192.168.10.2/24"}    # installed where the plan wants it
+    assert host.addrs_on("eth0.2") == {"192.168.10.2/24"}    # and still where it would not go
+    assert provision._parse_stale(store) == [("eth0.2", "192.168.10.2/24")]
+    assert store.get_setting("managed_segment_addr4") == "192.168.10.2/24"
+
+
 # --- what a pass DID is two facts, and neither is a list of warnings --------------------------
 # `reconcile_segment_addresses` used to answer with a list of reasons, which cannot say whether
 # anything was applied: "installed, but a superseded address would not go" and "not installed, so
@@ -898,7 +1145,9 @@ class UninstallableAddrHost(AddrHost):
 
     With the ownership ceiling gone this is the only way a pass ends with `applied=False`: the
     kernel would not take the address. (`AddrHost.refuse` models the other half — a `del` the
-    kernel would not take, which is a warning and not a failure to apply.)
+    kernel would not take, which is a warning and not a failure to apply.) `reject` is keyed the
+    same way `refuse` is: a CIDR refuses that address on any interface, an `(iface, CIDR)` pair
+    only on that one.
     """
 
     def __init__(self, addrs=(), reject=(), **kwargs):
@@ -906,8 +1155,8 @@ class UninstallableAddrHost(AddrHost):
         self.reject = set(reject)
 
     def __call__(self, cmd, input=None):
-        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
-        if rest[:2] == ["addr", "replace"] and rest[2] in self.reject:
+        rest = _strip_flags(cmd)
+        if rest[:2] == ["addr", "replace"] and self.blocked(self.reject, rest[4], rest[2]):
             self.calls.append(cmd)
             raise subprocess.CalledProcessError(1, cmd, output="",
                                                 stderr="RTNETLINK answers: Permission denied")
@@ -1012,7 +1261,7 @@ class RefusingAddrHost(AddrHost):
         self.refusing = True
 
     def __call__(self, cmd, input=None):
-        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+        rest = _strip_flags(cmd)
         if self.refusing and rest[:2] == ["addr", "del"]:
             self.refuse.add(rest[2])
         return super().__call__(cmd, input)
@@ -1031,18 +1280,21 @@ class LinkAndAddrHost(AddrHost):
         self.links = set(links)
 
     def __call__(self, cmd, input=None):
-        if cmd[:3] == ["ip", "link", "add"]:
+        norm = ["ip"] + _strip_flags(cmd)
+        if norm[:3] == ["ip", "link", "add"]:
             self.calls.append(cmd)
-            self.links.add(cmd[cmd.index("name") + 1])
+            self.links.add(norm[norm.index("name") + 1])
+            self.note_link(norm)                # created DOWN, and recorded as such
             return subprocess.CompletedProcess(cmd, 0, "", "")
-        if cmd[:3] == ["ip", "link", "delete"]:
+        if norm[:3] == ["ip", "link", "delete"]:
             self.calls.append(cmd)
-            self.links.discard(cmd[3])
+            self.links.discard(norm[3])
+            self.note_link(norm)
             return subprocess.CompletedProcess(cmd, 0, "", "")
-        if cmd[:3] == ["ip", "link", "show"] and cmd[3] not in self.links:
+        if norm[:3] == ["ip", "link", "show"] and norm[3] not in self.links:
             self.calls.append(cmd)
             raise subprocess.CalledProcessError(
-                1, cmd, output="", stderr=f'Device "{cmd[3]}" does not exist.')
+                1, cmd, output="", stderr=f'Device "{norm[3]}" does not exist.')
         return super().__call__(cmd, input)
 
 
@@ -1071,7 +1323,12 @@ def test_an_interface_retarget_with_a_large_backlog_still_applies_in_full():
     assert len(state.dnsmasq.applied) == 1 and "192.168.10.2" in state.dnsmasq.applied[0]
     assert any("nsenter" in cmd for cmd in host.cmds())             # the NM drop-in moved with it
     assert store.get_setting("managed_segment_iface") == "eth0.9"
-    assert host.addrs == owed | {"192.168.10.2/24"}    # the superseded address went; nothing else
+    # The new link carries the plan's address and nothing else; the superseded VLAN is gone and
+    # took everything that was on it — including the backlog, which the host really does lose with
+    # the interface. Not one of those pairs is FORGOTTEN, though: they stay owed a removal below.
+    assert host.addrs_on("eth0.9") == {"192.168.10.2/24"}
+    assert host.addrs_on("eth0.2") == set()
+    assert {addr for _, addr in provision._parse_stale(store)} == owed
     # It still FAILS — the undrained backlog is reported — but as a cleanup problem, never as a
     # change the panel declined to make.
     assert not result.ok and "not applied" not in result.error
@@ -1128,7 +1385,7 @@ def test_a_backlog_under_the_threshold_is_not_announced_as_one():
     assert not any("awaiting removal" in reason for reason in outcome.reasons)
 
     # One more retained pair and the count appears, over the same unchanged behaviour.
-    host.addrs.add("192.168.99.2/24")
+    host.seed("eth0.2", ["192.168.99.2/24"])
     host.refuse.add("192.168.99.2/24")
     store.set_setting(provision.STALE_KEY,
                       "\n".join(backlog + ["eth0.2 192.168.99.2/24"]))
@@ -1244,7 +1501,7 @@ def _auto_pd_state(host):
 def _fill_backlog(store, host, count):
     backlog = _backlog(count)
     owed = {line.split()[1] for line in backlog}
-    host.addrs |= owed
+    host.seed("eth0.2", owed)
     host.refuse |= owed
     store.set_setting(provision.STALE_KEY, "\n".join(backlog))
     return owed
@@ -1264,7 +1521,7 @@ class WatchingAddrHost(AddrHost):
         self.at_install = []
 
     def __call__(self, cmd, input=None):
-        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+        rest = _strip_flags(cmd)
         if self.store is not None and rest[:2] == ["addr", "replace"] and ":" in rest[2]:
             self.at_install.append(self.store.get_setting("pd_segment_prefix6") or "")
         return super().__call__(cmd, input)
@@ -1284,7 +1541,7 @@ class ExplodingReplaceHost(AddrHost):
         self.exploding = False
 
     def __call__(self, cmd, input=None):
-        rest = [tok for tok in cmd[1:] if tok not in ("-4", "-6", "-o")]
+        rest = _strip_flags(cmd)
         if self.exploding and rest[:2] == ["addr", "replace"] and ":" in rest[2]:
             self.calls.append(cmd)
             raise OSError("netlink socket is gone")
@@ -1779,3 +2036,817 @@ def test_a_delegated_prefix_the_kernel_rejects_is_named_in_the_failure():
     assert "not applied" in error
     assert "2001:db8:1200:2::1/64" in error            # the rejected delegated address
     assert "192.168.10.2/24" not in error              # not the IPv4 one, which is on the interface
+
+
+# --- a candidate link is raised only once every address it must carry is ON it -----------------
+# The other half of the retarget ordering, and the half that is not merely an availability bug.
+# `ensure_segment_link` used to bring the candidate UP the moment it had created it, before a
+# single address was reconciled. The replacements are sequential, so a pass that installed IPv4
+# and was then refused IPv6 — or was killed between the two — left an interface that was up and
+# addressed while dnsmasq, the NetworkManager drop-in, the kill-switch drop and the tproxy
+# redirect were all still scoped, by interface name, to the interface it replaces. That is not a
+# failed apply: it is a live interface outside every rule the panel enforces, and it stays one
+# until someone notices. `/api/ready` reporting the pass as failed does not change what the host
+# is carrying.
+#
+# So the bring-up is `activate_segment_link`, run after `applied` and immediately before the
+# retirement, and there is deliberately no `ip link set … down` to match it: down is where a
+# created candidate already is, and a candidate the panel did NOT create may be the operator's own
+# interface, already up, already carrying the address this gateway is reached on.
+
+
+def _retarget_host(old6="", cls=None, **kwargs):
+    """A live gateway mid-retarget: `eth0.2` is up carrying the segment address, `eth0.9` is not
+    on the host yet. Both halves are modelled per interface, including which links are UP."""
+    on = {"eth0": {"192.168.1.20/24"},
+          "eth0.2": {"192.168.9.2/24"} | ({old6} if old6 else set())}
+    return (cls or LinkAndUninstallableAddrHost)(
+        links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"}, on=on, **kwargs)
+
+
+def _assert_old_segment_untouched(host, state):
+    """The interface every rule still names is exactly as the pass found it."""
+    assert "eth0.2" in host.links
+    assert host.is_up("eth0.2")
+    assert "192.168.9.2/24" in host.addrs_on("eth0.2")
+    assert not any(cmd[:3] == ["ip", "link", "delete"] for cmd in host.cmds())
+    assert state.dnsmasq.applied == []                       # dnsmasq still serves the old one
+    assert not any("nsenter" in cmd for cmd in host.cmds())   # and NM was not repointed either
+
+
+def test_a_candidate_whose_ipv6_replace_is_refused_is_left_down():
+    # THE finding. IPv4 landed on the new VLAN and IPv6 did not, so the plan is not on the host —
+    # and the half-addressed candidate must not be carrying traffic outside the policy while the
+    # operator works out why. It was created down; nothing raises it.
+    host = _retarget_host(old6="fd00:1:2:9::1/64", reject=["fd00:1:2:3::1/64"])
+    store = _retarget_store(ipv6_enabled="1", segment_ip6="fd00:1:2:3::/64")
+    store.set_setting("managed_segment_addr6", "fd00:1:2:9::1/64")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert "eth0.9" in host.links                             # created — the address needed it
+    assert host.addrs_on("eth0.9") == {"192.168.10.2/24"}     # and the IPv4 replacement did land
+    assert not host.is_up("eth0.9")                           # ...but it is DOWN, so it carries none
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())
+    _assert_old_segment_untouched(host, state)
+    assert not result.ok and "not applied" in result.error
+
+
+def test_a_candidate_whose_ipv4_replace_is_refused_is_left_down():
+    # The first replacement refused: nothing landed at all, and the candidate is an empty, down
+    # interface. Same rule, so that "down" can never be a property of which command failed.
+    host = _retarget_host(reject=["192.168.10.2/24"])
+    store = _retarget_store()
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert "eth0.9" in host.links and host.addrs_on("eth0.9") == set()
+    assert not host.is_up("eth0.9")
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())
+    _assert_old_segment_untouched(host, state)
+    assert not result.ok and "not applied" in result.error
+
+
+class _KilledBetweenReplacements(LinkAndAddrHost):
+    """A host whose panel process is KILLED between the IPv4 and IPv6 replacements.
+
+    `KeyboardInterrupt` is not an `Exception`, so it walks straight out through `host_provision`'s
+    handler, its logging and its result and out of the call — which is the point. A real SIGKILL
+    runs no cleanup either, so whatever the candidate is left in has to be what the ORDER of the
+    commands already put it in, and not something a failure path was kind enough to repair.
+    """
+
+    def __call__(self, cmd, input=None):
+        rest = _strip_flags(cmd)
+        if rest[:2] == ["addr", "replace"] and ":" in rest[2]:
+            self.calls.append(cmd)
+            raise KeyboardInterrupt("killed between the two replacements")
+        return super().__call__(cmd, input)
+
+
+def test_a_process_killed_between_the_two_replacements_leaves_the_candidate_down():
+    host = _retarget_host(old6="fd00:1:2:9::1/64", cls=_KilledBetweenReplacements)
+    store = _retarget_store(ipv6_enabled="1", segment_ip6="fd00:1:2:3::/64")
+    store.set_setting("managed_segment_addr6", "fd00:1:2:9::1/64")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    with pytest.raises(KeyboardInterrupt):      # nothing catches it: no cleanup runs, by design
+        provision.host_provision(state)
+
+    assert host.addrs_on("eth0.9") == {"192.168.10.2/24"}    # IPv4 on it, IPv6 never issued
+    assert not host.is_up("eth0.9")
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())
+    _assert_old_segment_untouched(host, state)
+
+
+def test_a_successful_retarget_raises_the_candidate_after_the_addresses_and_before_the_retirement():
+    # The ordering the fix has to keep, stated as the sequence itself: every replacement the plan
+    # asks for, THEN the bring-up, THEN the retirement of what it supersedes. The middle step is
+    # the one that moved; the outer two are the property the previous fix established.
+    host = _retarget_host(old6="fd00:1:2:9::1/64")
+    store = _retarget_store(ipv6_enabled="1", segment_ip6="fd00:1:2:3::/64")
+    store.set_setting("managed_segment_addr6", "fd00:1:2:9::1/64")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    cmds = host.cmds()
+    up = cmds.index(["ip", "link", "set", "eth0.9", "up"])
+    assert cmds.index(["ip", "addr", "replace", "192.168.10.2/24", "dev", "eth0.9"]) < up
+    assert cmds.index(["ip", "-6", "addr", "replace", "fd00:1:2:3::1/64", "dev", "eth0.9"]) < up
+    assert up < cmds.index(["ip", "link", "delete", "eth0.2"])
+
+    assert result.ok
+    assert host.is_up("eth0.9")
+    assert host.addrs_on("eth0.9") == {"192.168.10.2/24", "fd00:1:2:3::1/64"}
+    assert "eth0.2" not in host.links and provision._parse_links(store) == ["eth0.9"]
+    assert len(state.dnsmasq.applied) == 1 and "192.168.10.2" in state.dnsmasq.applied[0]
+
+
+def test_a_candidate_that_was_already_up_is_never_taken_down_by_a_failed_pass():
+    # The counterpart, and the reason the failure path has no `ip link set … down` in it. Here
+    # `eth0.9` is the operator's own interface — on the host before the pass, already up, already
+    # carrying an address the panel did not install — and the retarget onto it is refused. The
+    # panel may not raise it (it cannot say the segment works) and may not lower it either: it
+    # never created it, so this may be the interface the gateway is being reached on. Left as found.
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2", "eth0.9"}, up={"eth0", "eth0.2", "eth0.9"},
+        on={"eth0.2": {"192.168.9.2/24"}, "eth0.9": {"10.9.9.1/24"}},
+        reject=["192.168.10.2/24"])
+    store = _retarget_store()
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert not any(cmd[:3] == ["ip", "link", "add"] for cmd in host.cmds())   # not the panel's
+    assert provision._parse_links(store) == ["eth0.2"]                       # never claimed
+    assert host.is_up("eth0.9")                                              # STILL up
+    assert host.addrs_on("eth0.9") == {"10.9.9.1/24"}        # and carrying only what it had
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())
+    _assert_old_segment_untouched(host, state)
+    assert not result.ok and "not applied" in result.error
+
+
+def test_a_pass_over_the_live_segment_that_fails_never_lowers_it():
+    # No retarget at all: the segment is `eth0.2`, it is up and working, and only the IPv6 address
+    # this pass adds is refused. Bringing the interface the whole gateway is on down over that
+    # would turn a rejected address into an outage, so the pass leaves it exactly as it is.
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"}, on={"eth0.2": {"192.168.9.2/24"}},
+        reject=["fd00:1:2:3::1/64"])
+    store = _store()
+    store.set_setting("segment_ip", "192.168.9.2")
+    store.set_setting("ipv6_enabled", "1")
+    store.set_setting("segment_ip6", "fd00:1:2:3::/64")
+    store.set_setting("managed_segment_iface", "eth0.2")
+    store.set_setting("managed_segment_addr4", "192.168.9.2/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert host.is_up("eth0.2") and host.addrs_on("eth0.2") == {"192.168.9.2/24"}
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())
+    assert not result.ok and "not applied" in result.error
+    assert state.dnsmasq.applied == []
+
+
+# --- the segment is moved under a ruleset that covers BOTH interfaces --------------------------
+# Retargeting the segment spans a VLAN link, two address replacements, NetworkManager, dnsmasq and
+# the interface-scoped nft/tproxy enforcement, and none of it is a transaction. What made that
+# dangerous rather than merely untidy is that the enforcement was not part of the sequence at all:
+# the pass raised the candidate and the ruleset was re-rendered afterwards, by the caller, from a
+# store that names exactly ONE segment interface. Every ordering of that leaves a window in which
+# an interface is up and addressed while the kill-switch drop and the tproxy redirect name the
+# other one — a path around the segment's own policy, lasting as long as the window does.
+#
+# So the enforcement is staged first, over both interfaces at once, and narrowed back only once
+# the superseded link is proven gone. A transitional ruleset is a superset: every intermediate
+# state is over-covered, never under-covered, and that is the property these tests check — at
+# every boundary of the sequence, including the ones a killed process stops at.
+
+_SEGMENT_ADDRS = {"192.168.9.2/24", "192.168.10.2/24", "fd00:1:2:9::1/64", "fd00:1:2:3::1/64"}
+
+
+def _reachable_segment(host) -> set:
+    """Interfaces a segment client can put a packet onto: UP, and carrying a segment address."""
+    return {iface for iface in host.on
+            if host.is_up(iface) and host.addrs_on(iface) & _SEGMENT_ADDRS}
+
+
+def _live_ruleset(state) -> str:
+    """The ruleset the host is enforcing right now — the last one that finished loading."""
+    return state.net.applied[-1]
+
+
+def _assert_segment_covered(host, state) -> None:
+    """THE INVARIANT: nothing carrying the segment is outside the ruleset in force."""
+    outside = _reachable_segment(host) - _enforced_ifaces(_live_ruleset(state))
+    assert not outside, (f"{outside} carry the segment and the live ruleset does not cover them: "
+                         f"{_enforced_ifaces(_live_ruleset(state))}")
+
+
+class _KillAt(LinkAndUninstallableAddrHost):
+    """A host whose panel process is KILLED at a chosen command.
+
+    `KeyboardInterrupt` is not an `Exception`, so it walks straight out through `host_provision`'s
+    handler, its logging and its result — which is the point. A real SIGKILL runs no cleanup
+    either, so whatever the host is left in has to be what the ORDER of the steps already put it
+    in, and not something a failure path was kind enough to repair.
+    """
+
+    def __init__(self, kill=None, **kwargs):
+        super().__init__(**kwargs)
+        self.kill = kill
+
+    def __call__(self, cmd, input=None):
+        if self.kill is not None and self.kill(cmd):
+            self.calls.append(cmd)
+            raise KeyboardInterrupt(f"killed at: {' '.join(cmd)}")
+        return super().__call__(cmd, input)
+
+
+def _at(*prefix):
+    return lambda cmd: cmd[:len(prefix)] == list(prefix)
+
+
+def _seed_enforcement(state) -> None:
+    """The ruleset a live gateway is already carrying: the interface it is being moved OFF."""
+    old = NetPlan.from_store(state.store, Settings())
+    old.segment_iface, old.segment_ip = "eth0.2", "192.168.9.2"
+    assert state.net.apply_guard(old).ok
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.2"}
+
+
+def _run_move(kill_cmd=None, kill_apply=None, kill_dnsmasq=False, stubborn=False, fail=None,
+              running=False, owned_old=True):
+    """A live gateway moving its segment from eth0.2 to eth0.9, interrupted where asked.
+
+    `stubborn` refuses the removal of the OLD addresses, which is the case where the interface
+    being left really does keep carrying the segment for the whole move rather than losing its
+    address at the replacement — the state that makes covering both more than a formality.
+    `running` is the tunnel: up, the enforcement is the full tproxy ruleset; down, the fail-closed
+    guard. Both are scoped by the same interface names, and the move has to hold for either.
+    """
+    old = {("eth0.2", "192.168.9.2/24"), ("eth0.2", "fd00:1:2:9::1/64")} if stubborn else set()
+    host = _KillAt(kill=kill_cmd, links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"},
+                   on={"eth0": {"192.168.1.20/24"},
+                       "eth0.2": {"192.168.9.2/24", "fd00:1:2:9::1/64"}},
+                   refuse=old)
+    store = _retarget_store(ipv6_enabled="1", segment_ip6="fd00:1:2:3::/64",
+                            **({} if owned_old else {provision.LINK_KEY: ""}))
+    store.set_setting("managed_segment_addr6", "fd00:1:2:9::1/64")
+    if running:
+        store.set_setting("active_node_id", "1")
+    state = _State(store, LinuxBackend(host), _Dnsmasq(kill=kill_dnsmasq), running=running)
+    _seed_enforcement(state)                    # ...before the backend is told to start failing
+    state.net.fail, state.net.kill_in = fail, kill_apply
+    killed, result = False, None
+    try:
+        result = provision.host_provision(state)
+    except KeyboardInterrupt:
+        killed = True
+    return host, state, result, killed
+
+
+# Every boundary between two steps of the move, named by the step that has just finished. The
+# enumeration is the test: a kill at any of them must leave either the old configuration intact or
+# a fully covered new one.
+_BOUNDARIES = [
+    ("1 the candidate link is created", {"kill_apply": 0}),
+    ("2 the enforcement covers both", {"kill_cmd": _at("ip", "addr", "replace")}),
+    ("3a the IPv4 address is replaced", {"kill_cmd": _at("ip", "-6", "addr", "replace")}),
+    ("3b both addresses are replaced", {"kill_cmd": _at("nsenter")}),
+    ("4 NetworkManager is told to keep off", {"kill_cmd": _at("ip", "link", "set")}),
+    ("5 the candidate is raised", {"kill_dnsmasq": True}),
+    ("6a dnsmasq serves the new segment", {"kill_cmd": _at("ip", "link", "delete")}),
+    ("6b the superseded link is retired", {"kill_apply": 1}),
+    ("7 nothing — the move completes", {}),
+]
+
+
+@pytest.mark.parametrize("stubborn", [False, True], ids=["old-address-released", "old-address-kept"])
+@pytest.mark.parametrize("label, where", _BOUNDARIES, ids=[b[0][0] for b in _BOUNDARIES])
+def test_a_kill_at_every_boundary_of_a_segment_move_leaves_a_covered_host(label, where, stubborn):
+    host, state, _result, killed = _run_move(stubborn=stubborn, **where)
+
+    _assert_segment_covered(host, state)
+    # ...and the two halves of the move that a client can actually notice never get ahead of it:
+    # nothing is served on an interface that is not up, and nothing is retired before the segment
+    # it carried has been re-served somewhere else.
+    if state.dnsmasq.applied:
+        assert host.is_up("eth0.9") and "192.168.10.2/24" in host.addrs_on("eth0.9")
+    if "eth0.2" not in host.links:
+        assert state.dnsmasq.applied and "192.168.10.2" in state.dnsmasq.applied[-1]
+    # The kill lands wherever the sequence actually reaches. The one boundary a stubborn old
+    # address never reaches is the narrowing: with the segment still on the interface being left,
+    # that step is deliberately not taken, and the transitional ruleset is the final one.
+    reached = label != "7 nothing — the move completes" and not (
+        stubborn and label.startswith("6b"))
+    assert killed is reached
+    if not killed:
+        assert _enforced_ifaces(_live_ruleset(state)) == (
+            {"eth0.9", "eth0.2"} if stubborn else {"eth0.9"})
+
+
+def test_the_transitional_ruleset_names_both_interfaces_and_the_final_one_names_only_the_new():
+    # The rendered rules, not a flag: what nft is actually given is an interface SET while the
+    # move is in flight, so the kill-switch drop and the tproxy redirect apply to the interface
+    # being left and the one being moved to at the same time. Run with the tunnel UP, which is the
+    # mode that renders both of those rules.
+    _host, state, result, killed = _run_move(running=True)
+
+    assert result.ok and not killed
+    staged, final = state.net.applied[1], state.net.applied[-1]
+    both = 'iifname { "eth0.9", "eth0.2" }'
+    assert _enforced_ifaces(staged) == {"eth0.9", "eth0.2"}
+    assert f"{both} ip daddr != {{ 127.0.0.0/8" in staged            # the kill-switch drop
+    assert f"{both} meta l4proto {{ tcp, udp }}" in staged           # the v4 tproxy redirect
+    assert f"{both} ip daddr {{ 192.168.10.0/24" in staged           # the DHCP carve-out
+    assert f"{both} ip6 daddr !=" in staged                          # the v6 drop
+    assert f"{both} meta l4proto {{ tcp, udp }} meta mark set 0x40 tproxy ip6 to :52346" in staged
+    assert _enforced_ifaces(final) == {"eth0.9"} and 'iifname "eth0.9"' in final
+    assert "{" not in final.split("iifname ")[1][:12]                # one name, not a set
+
+
+def test_a_completed_move_ends_on_the_new_interface_with_nothing_left_naming_the_old():
+    host, state, result, _killed = _run_move()
+
+    assert result.ok
+    assert host.is_up("eth0.9")
+    assert host.addrs_on("eth0.9") == {"192.168.10.2/24", "fd00:1:2:3::1/64"}
+    assert "eth0.2" not in host.links and provision._parse_links(state.store) == ["eth0.9"]
+    assert len(state.dnsmasq.applied) == 1 and "192.168.10.2" in state.dnsmasq.applied[0]
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.9"}
+    # The order itself: NetworkManager is told to keep off the candidate BEFORE it is raised (so
+    # NM cannot reconfigure an interface the panel has just addressed), the bring-up is the commit
+    # point, and the superseded link is retired after it — never before.
+    cmds = host.cmds()
+    nm = next(i for i, cmd in enumerate(cmds) if cmd[:1] == ["nsenter"])
+    up = cmds.index(["ip", "link", "set", "eth0.9", "up"])
+    assert nm < up < cmds.index(["ip", "link", "delete", "eth0.2"])
+
+
+def test_the_drop_in_covers_both_interfaces_while_the_old_one_is_still_there():
+    written = []
+    provision.ensure_nm_unmanaged("eth0.9", run=FakeRun(), nm_active=lambda: False,
+                                  write_file=lambda p, t: written.append(t), also=["eth0.2"])
+    provision.ensure_nm_unmanaged("eth0.9", run=FakeRun(), nm_active=lambda: False,
+                                  write_file=lambda p, t: written.append(t))
+
+    assert "unmanaged-devices=interface-name:eth0.9;interface-name:eth0.2" in written[0]
+    assert "unmanaged-devices=interface-name:eth0.9\n" in written[1]
+
+
+def test_an_enforcement_that_cannot_be_staged_stops_the_move_before_the_first_replacement():
+    # The fail-closed direction of the same rule. If the ruleset that would cover the candidate
+    # cannot be installed, the pass may not go on to the step that makes the candidate reachable —
+    # so nothing is replaced, nothing is raised, nothing is retired, and the gateway is left on the
+    # configuration whose enforcement is still in force.
+    host, state, result, _killed = _run_move(fail="nft: Operation not permitted")
+
+    assert not any(cmd[:3] == ["ip", "addr", "replace"] for cmd in host.cmds())
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())
+    assert not any(cmd[:3] == ["ip", "link", "delete"] for cmd in host.cmds())
+    assert host.addrs_on("eth0.2") == {"192.168.9.2/24", "fd00:1:2:9::1/64"}
+    assert state.dnsmasq.applied == []
+    assert not result.ok and "could not be installed" in result.error
+    assert "not applied" in result.error            # the addresses are not on the interface
+    _assert_segment_covered(host, state)
+
+
+def test_a_candidate_that_is_already_up_is_covered_before_its_first_address_lands():
+    # THE already-up case. `eth0.9` is the operator's own interface — on the host before the pass
+    # and already up — so the first `ip addr replace` is what makes it reachable ON THE SEGMENT,
+    # long before any bring-up this module could gate. The IPv6 replacement is then refused, so the
+    # move fails half-done: the panel may not raise the candidate (it cannot say the segment
+    # works), may not lower it (it never created it, and it may be the interface this gateway is
+    # reached on) — and so the ruleset must already have covered it before the IPv4 address went on.
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2", "eth0.9"}, up={"eth0", "eth0.2", "eth0.9"},
+        on={"eth0.2": {"192.168.9.2/24", "fd00:1:2:9::1/64"}, "eth0.9": {"10.9.9.1/24"}},
+        reject=["fd00:1:2:3::1/64"])
+    store = _retarget_store(ipv6_enabled="1", segment_ip6="fd00:1:2:3::/64")
+    store.set_setting("managed_segment_addr6", "fd00:1:2:9::1/64")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+
+    result = provision.host_provision(state)
+
+    assert not any(cmd[:3] == ["ip", "link", "add"] for cmd in host.cmds())     # not the panel's
+    assert host.is_up("eth0.9")                                                # STILL up...
+    assert not any(cmd[:3] == ["ip", "link", "set"] for cmd in host.cmds())    # ...and never lowered
+    assert host.addrs_on("eth0.9") == {"10.9.9.1/24", "192.168.10.2/24"}       # IPv4 landed on it
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.9", "eth0.2"}      # both covered
+    _assert_segment_covered(host, state)
+    assert not result.ok and "not applied" in result.error
+    assert state.dnsmasq.applied == []                     # and nothing keyed to a half-done move
+
+
+def test_a_delegation_renewing_onto_a_candidate_a_failed_move_left_down_does_not_serve_it():
+    # The other way an interface could be made operational outside the sequence. The PD watcher
+    # runs on its own thread, long after the pass that started it, and a renewal can land on a
+    # segment an earlier FAILED move left created and DOWN. It used to raise that interface and
+    # then apply dnsmasq to it — completing none of the rest of the move (the superseded link, the
+    # drop-in, the interface-scoped ruleset) and making the bypass operational.
+    host = LinkAndUninstallableAddrHost(links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"},
+                                        on={"eth0.2": {"192.168.10.2/24"}})
+    state = _auto_pd_state(host)                    # a working segment on eth0.2, PD watching it
+    store = state.store
+    _seed_enforcement(state)
+
+    store.set_setting("segment_iface", "eth0.9")    # ...and a move onto a link the kernel refuses
+    host.reject.add(("eth0.9", "192.168.10.2/24"))
+    assert not provision.host_provision(state).ok
+    assert "eth0.9" in host.links and not host.is_up("eth0.9")
+    host.reject.clear()      # the kernel would take the addresses now; the MOVE is what is missing
+    served = len(state.dnsmasq.applied)
+
+    state.pd_client.callback("2001:db8:1200::/56")
+
+    assert len(state.dnsmasq.applied) == served               # the segment is NOT served on it
+    assert not host.is_up("eth0.9")                           # nor was it raised to serve it
+    assert not any(cmd[:4] == ["ip", "link", "set", "eth0.9"] for cmd in host.cmds())
+    assert not state.provision_result.ok
+    assert "is not up" in state.provision_result.error
+    assert "full provisioning pass" in state.provision_result.error
+    _assert_segment_covered(host, state)
+
+
+def test_a_delegation_renewing_onto_a_segment_that_is_up_is_still_served():
+    # The property that answer may not cost: the ordinary renewal, on an interface the pass raised,
+    # still reconfigures dnsmasq. "Not up" has to mean the host said so, not "the panel stopped
+    # asking".
+    host = AddrHost()
+    state = _auto_pd_state(host)
+    served = len(state.dnsmasq.applied)
+
+    state.pd_client.callback("2001:db8:1200::/56")
+
+    assert host.is_up("eth0.2")
+    assert len(state.dnsmasq.applied) == served + 1
+    assert state.provision_result.ok
+
+
+def test_the_drop_in_keeps_the_old_interface_unmanaged_until_the_move_is_complete(monkeypatch):
+    # The call site, not just the helper: NetworkManager is told to keep off BOTH interfaces
+    # before the candidate is raised, so it cannot reconfigure the one still in service, and is
+    # narrowed to the new interface alone once the old link is gone.
+    written = []
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: written.append(text))
+
+    *_, result, _killed = _run_move()
+
+    assert result.ok
+    assert "unmanaged-devices=interface-name:eth0.9;interface-name:eth0.2" in written[0]
+    assert written[-1].endswith("unmanaged-devices=interface-name:eth0.9\n")
+
+
+def test_the_dry_run_backend_renders_a_transitional_ruleset_exactly_as_the_host_one_would():
+    # The dev/CI backend records what it would install, and a move is the one time that render is
+    # not the store's own plan. It has no host to stage anything on — `host_provision` returns
+    # before any of this on a backend with no `_run` seam — but what it reports must never be
+    # narrower than what the real backend loads.
+    plan = _plan_for("eth0.9")
+    plan.kill_switch = True
+    result = DryRunBackend().apply_tproxy(provision.covering_plan(plan, ["eth0.2"]))
+
+    assert _enforced_ifaces(result.rendered) == {"eth0.9", "eth0.2"}
+    assert 'iifname { "eth0.9", "eth0.2" }' in result.rendered
+
+
+def test_an_interface_the_panel_never_created_keeps_its_cover_until_its_address_is_off_it():
+    # Narrowing is what ends the cover, and the interface being left is not always the panel's to
+    # delete: `eth0.2` here is the operator's own, so no retirement will ever remove it, and the
+    # only thing that takes it out of service is the removal of the segment address. That removal
+    # is refused — so the interface is still up, still carrying the segment, and the ruleset must
+    # still name it when the pass ends, however completely the new interface came up.
+    host, state, result, _killed = _run_move(stubborn=True, owned_old=False)
+
+    assert host.is_up("eth0.9") and "192.168.10.2/24" in host.addrs_on("eth0.9")   # the move landed
+    assert "eth0.2" in host.links and host.is_up("eth0.2")                         # ...and so is it
+    assert "192.168.9.2/24" in host.addrs_on("eth0.2")
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.9", "eth0.2"}
+    _assert_segment_covered(host, state)
+    assert ("eth0.2", "192.168.9.2/24") in provision._parse_stale(state.store)   # and it is owed
+    assert not result.ok and "not removed" in result.error
+
+
+def test_the_cover_narrows_as_soon_as_the_old_interface_is_out_of_service():
+    # The other half, so "keep covering it" cannot quietly become "never narrow": the same
+    # operator-owned interface, with the removal accepted. The address comes off, nothing is left
+    # carrying the old segment, and the ruleset narrows to the configured interface alone.
+    host, state, result, _killed = _run_move(owned_old=False)
+
+    assert result.ok
+    assert "eth0.2" in host.links and host.addrs_on("eth0.2") == set()
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.9"}
+    assert provision._parse_stale(state.store) == []
+
+
+# --- the cover is DURABLE: what may be up outlives the pass that put it there -------------------
+# Staging a transitional ruleset covers a move while the pass performing it is running. It cannot
+# cover what the pass LEAVES BEHIND, and a move that fails leaves exactly that: the ownership record
+# was rewritten to name the candidate before the kernel was touched, so a refused `ip addr replace`
+# ends with the old interface up, still carrying the segment address, and named by nothing but a
+# stale pair. Every LATER render — the next `sync_net`, the next boot's guard — is built from the
+# store, and one built from the segment interface alone narrows onto the candidate while the old
+# interface is still live. That is the direct-WAN bypass, and it lasts as long as the interface does.
+#
+# So what may be up is written down and every store-derived render consumes it. The interface that
+# matters most here is the operator's OWN: a panel-created VLAN is at least in the link ledger, while
+# an interface the panel never created is remembered by the address ledger and nowhere else.
+
+
+def _failed_retarget_off_an_operator_link():
+    """A move off the operator's own `eth0.2` whose new address the kernel refuses.
+
+    `eth0.2` is on the host, up, and carrying the segment — and it is not in the link ledger, so
+    nothing will ever delete it and no record of it survives the reconcile except the stale pair
+    the refused replacement leaves. The pass itself covers both interfaces; the question these
+    tests ask is what the renders AFTER it do.
+    """
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"},
+        on={"eth0": {"192.168.1.20/24"}, "eth0.2": {"192.168.9.2/24"}},
+        reject=["192.168.10.2/24"])
+    store = _retarget_store(**{provision.LINK_KEY: ""})
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+
+    assert not provision.host_provision(state).ok            # the address would not go on
+    assert host.is_up("eth0.2") and "192.168.9.2/24" in host.addrs_on("eth0.2")
+    assert store.get_setting("managed_segment_iface") == "eth0.9"     # ...and the record moved on
+    assert provision._parse_stale(store) == [("eth0.2", "192.168.9.2/24")]
+    return host, state
+
+
+def test_a_failed_replace_keeps_the_old_interface_covered_by_the_next_render():
+    # The rerender: any later `sync_net` — a kill-switch edit, a connect, a disconnect — renders the
+    # enforcement from the store, and the store's segment interface is now the candidate.
+    host, state = _failed_retarget_off_an_operator_link()
+
+    result = sync_net(state)
+
+    assert _enforced_ifaces(result.rendered) == {"eth0.9", "eth0.2"}
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.9", "eth0.2"}
+    _assert_segment_covered(host, state)
+
+
+def test_a_failed_replace_keeps_the_old_interface_covered_across_a_reboot():
+    # The reboot: nothing of the pass survives except the store, so a fresh backend with an empty
+    # record of what it has loaded is the honest test — the ruleset this boot ends on has to name
+    # the old interface because THIS boot rendered it that way, not because a previous pass did.
+    host, state = _failed_retarget_off_an_operator_link()
+    rebooted = _State(state.store, LinuxBackend(host), _Dnsmasq())
+
+    provision.host_provision(rebooted)          # boot: the pass, then the leak-guard
+    boot_guard(rebooted)
+
+    assert host.is_up("eth0.2") and "192.168.9.2/24" in host.addrs_on("eth0.2")
+    assert _enforced_ifaces(_live_ruleset(rebooted)) == {"eth0.9", "eth0.2"}
+    _assert_segment_covered(host, rebooted)
+
+
+def test_the_render_narrows_once_the_old_address_is_off_the_operator_link():
+    # The property the durable cover may not cost: it drains. The next pass installs the addresses,
+    # the removal it retries succeeds, nothing is left carrying the old segment — and the render
+    # goes back to naming one interface.
+    host, state = _failed_retarget_off_an_operator_link()
+    host.reject.clear()
+
+    assert provision.host_provision(state).ok
+    result = sync_net(state)
+
+    assert host.addrs_on("eth0.2") == set() and host.addrs_on("eth0.9") == {"192.168.10.2/24"}
+    assert provision._parse_stale(state.store) == []
+    assert provision.enforcement_cover(state.store, "eth0.9").names == []
+    assert _enforced_ifaces(result.rendered) == {"eth0.9"}
+
+
+def test_a_clean_move_leaves_nothing_in_the_cover_for_a_later_render_to_pick_up():
+    # The whole-sequence version of the same guarantee: after a move that worked, every source of
+    # the cover is empty, so the store renders one interface and keeps rendering one interface.
+    _host, state, result, _killed = _run_move()
+
+    assert result.ok
+    assert provision.enforcement_cover(state.store, "eth0.9").names == []
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.9"}
+    assert _enforced_ifaces(sync_net(state).rendered) == {"eth0.9"}
+
+
+def test_a_move_does_not_narrow_off_a_candidate_a_rolled_back_change_left_up(monkeypatch):
+    # The pass's OWN narrowing consults the same cover. Here an earlier rolled-back change left the
+    # operator's `eth1` up carrying the segment address, and then a perfectly ordinary move from
+    # `eth0.2` to `eth0.9` completes: everything this pass touched is settled, so narrowing on "my
+    # move is finished" would uncover `eth1`. The drop-in is the other way round — being named in a
+    # rule costs an interface nothing, being listed unmanaged takes it away from NetworkManager — so
+    # `eth1`, which the panel holds no address on, is never in it.
+    written = []
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: written.append(text))
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2", "eth1"}, up={"eth0", "eth0.2", "eth1"},
+        on={"eth0.2": {"192.168.9.2/24"}, "eth1": {"192.168.10.2/24"}})
+    store = _retarget_store()
+    store.set_setting(provision.SURVIVOR_KEY, "eth1 192.168.10.2/24")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+
+    result = provision.host_provision(state)
+
+    assert result.ok
+    assert "eth0.2" not in host.links                          # the move itself finished...
+    assert host.is_up("eth0.9") and host.addrs_on("eth0.9") == {"192.168.10.2/24"}
+    assert "eth1" in _enforced_ifaces(_live_ruleset(state))     # ...and did not uncover eth1
+    assert _enforced_ifaces(sync_net(state).rendered) == {"eth0.9", "eth1"}
+    _assert_segment_covered(host, state)
+    assert not any("eth1" in text for text in written), \
+        "an interface the panel holds no address on was taken away from NetworkManager"
+
+
+# --- ...and the same narrowing, asked about a record the store will not READ -------------------
+#
+# Every source of the cover is a durable record, and a record has a third answer besides its content:
+# the store may not be able to give it. That answer used to be spent as the content — the pending-undo
+# reader caught every exception and returned `[]` — so "the panel cannot tell you which interfaces may
+# still be carrying the segment" arrived at the narrowing decision as "no interface is", and the
+# ruleset was narrowed onto the configured interface while another one was up and addressed. Which is
+# the direct-WAN bypass, produced by a store read rather than by anything on the host.
+
+
+def _read_fails_when(monkeypatch, store, key: str, when):
+    """Make `get_setting` fail for `key` alone, from the moment `when()` says so.
+
+    The narrowing decision lives in a window — the cover is read once to STAGE the transitional
+    ruleset and again to decide whether it may be taken back — so a record that answers throughout
+    cannot be asked what that decision does with "no answer". The host fact the test hangs it on is
+    the commit point: the candidate coming up is the last thing before the narrow is considered.
+    """
+    original = store.get_setting
+
+    def reading(name):
+        if name == key and when():
+            raise RuntimeError("simulated settings read failure")
+        return original(name)
+
+    monkeypatch.setattr(store, "get_setting", reading)
+
+
+def test_a_move_does_not_narrow_when_the_pending_record_cannot_be_read(monkeypatch):
+    # PRODUCT-CRITICAL, and the same host as the test above with the cover coming from the other
+    # source. An earlier rolled-back change left the operator's `eth1` up carrying the segment
+    # address; its survivor write never landed, so the SURVIVOR LEDGER IS EMPTY and the pending undo
+    # record is the only thing that names the interface. An ordinary move from `eth0.2` to `eth0.9`
+    # then completes, and the read of that record fails before the pass decides whether to narrow.
+    #
+    # The ruleset must stay as it was staged. Narrowing here leaves `eth1` up, addressed, and outside
+    # the kill-switch drop and the tproxy redirect, for as long as the interface lasts.
+    written = []
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: written.append(text))
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2", "eth1"}, up={"eth0", "eth0.2", "eth1"},
+        on={"eth0.2": {"192.168.9.2/24"}, "eth1": {"192.168.10.2/24"}})
+    store = _retarget_store()
+    store.set_setting(provision.PROVISION_UNDO_KEY, json.dumps(
+        {"iface": "eth1", "addr4": "192.168.10.2/24", "addr6": "", "vlan": False,
+         "link_state": provision.LINK_PRESENT}))
+    assert provision._parse_survivors(store) == [], "the ledger has to be empty for this to bite"
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+    _read_fails_when(monkeypatch, store, provision.PROVISION_UNDO_KEY,
+                     lambda: host.is_up("eth0.9"))
+
+    result = provision.host_provision(state)
+
+    assert host.is_up("eth0.9") and host.addrs_on("eth0.9") == {"192.168.10.2/24"}
+    assert "eth1" in _enforced_ifaces(_live_ruleset(state)), \
+        "a record the store would not read narrowed the ruleset off an interface that may be live"
+    _assert_segment_covered(host, state)
+    # ...and the pass says so, rather than reporting a success over a ruleset it cannot vouch for.
+    assert result.ok is False
+    assert "not narrowed" in result.error and "could not be read" in result.error
+
+
+def test_a_move_will_not_start_when_the_cover_cannot_be_read(monkeypatch):
+    # The other end of the same window. Here the record is unreadable from the start, so the
+    # TRANSITIONAL ruleset — the thing that covers the candidate from the moment step 3 can make it
+    # reachable — would be short. The move does not begin: nothing has been raised, the segment is
+    # still on the interface the live ruleset names, and the pass reports instead of putting an
+    # interface up that it cannot promise is covered.
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"}, on={"eth0.2": {"192.168.9.2/24"}})
+    store = _retarget_store()
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+    _read_fails_when(monkeypatch, store, provision.PROVISION_UNDO_KEY, lambda: True)
+
+    result = provision.host_provision(state)
+
+    assert result.ok is False and "was not moved" in result.error
+    assert host.addrs_on("eth0.2") == {"192.168.9.2/24"}      # the working segment is untouched
+    assert not host.is_up("eth0.9")                            # ...and nothing was raised
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.2"}
+
+
+# --- ...and the same records read ONCE, transiently, before the pass decides anything -----------
+#
+# The two tests above interrupt a record for good. A store does not have to stay broken to cost the
+# segment its cover, though, and the shorter failure is the more dangerous one: the pass asks what it
+# is moving OFF exactly once, at the top, and every decision that follows — whether the transitional
+# ruleset is staged at all, which interfaces the drop-in keeps from NetworkManager, whether the
+# enforcement may be narrowed back — is taken from that one answer. Read as NAMES, an unread source
+# arrives at all three as "the panel holds nothing anywhere else": the pass concludes it is not a
+# move, stages nothing, and then addresses and RAISES the candidate under the ruleset the previous
+# configuration left in force. Which names only the interface being left. The reads that follow
+# succeed, so the record is perfectly readable by the time the addresses go on — the pass reports
+# `ok=True`, and the bypass is live for as long as the interface is.
+
+
+def _read_fails_once(monkeypatch, store, key: str) -> None:
+    """Make `get_setting(key)` fail on its FIRST read and answer normally ever after.
+
+    The transient store fault, in the one shape that matters here: gone by the time anything would
+    notice it, having already been spent as an answer about the host.
+    """
+    original = store.get_setting
+    spent: list[str] = []
+
+    def reading(name):
+        if name == key and not spent:
+            spent.append(name)
+            raise RuntimeError("simulated settings read failure")
+        return original(name)
+
+    monkeypatch.setattr(store, "get_setting", reading)
+
+
+# The old interface is the operator's own in both cases — the panel created no link — so exactly one
+# record names it, and a single failed read of that record is the whole difference between "there is
+# nothing else out there" and "there is, and it is up".
+_SOLE_RECORD = [
+    ("the interface the last pass configured", "managed_segment_iface",
+     {provision.LINK_KEY: "", "managed_segment_iface": "eth0.2"}),
+    ("the stale address ledger", provision.STALE_KEY,
+     {provision.LINK_KEY: "", "managed_segment_iface": "eth0.9",
+      provision.STALE_KEY: "eth0.2 192.168.9.2/24"}),
+]
+
+
+@pytest.mark.parametrize("label, key, records", _SOLE_RECORD, ids=[r[0] for r in _SOLE_RECORD])
+def test_a_transient_read_does_not_complete_a_move_with_the_candidate_uncovered(
+        monkeypatch, label, key, records):
+    # PRODUCT-CRITICAL. `eth0.2` is the operator's own interface, up and carrying the segment, and
+    # `records` is the one record that says so. Its first read fails; every later read works.
+    written = []
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: written.append(text))
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"}, on={"eth0.2": {"192.168.9.2/24"}},
+        refuse=[("eth0.2", "192.168.9.2/24")])       # the old address does not come off by itself
+    store = _retarget_store(**records)
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+    _read_fails_once(monkeypatch, store, key)
+
+    result = provision.host_provision(state)
+
+    # The move does not start: the candidate is not addressed, not raised, and not created.
+    assert not any(cmd[:3] == ["ip", "addr", "replace"] for cmd in host.cmds())
+    assert not host.is_up("eth0.9") and "eth0.9" not in host.links
+    assert host.addrs_on("eth0.2") == {"192.168.9.2/24"}       # the working segment is untouched
+    assert state.dnsmasq.applied == []
+    # ...and the ruleset in force still covers the segment where it actually is.
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.2"}
+    _assert_segment_covered(host, state)
+    # The NM drop-in is the other decision taken from that answer, and a short one hands the
+    # interface the panel still addresses back to NetworkManager. It is not written at all.
+    assert written == []
+    assert result.ok is False
+    assert "could not read which interfaces" in result.error
+    assert "not applied" in result.error
+
+
+def test_an_unknown_answer_that_still_names_an_interface_refuses_before_touching_the_host(
+        monkeypatch):
+    # The refusal is on `.known`, not on "the names came back empty" — a source that would not answer
+    # may be the one naming a second live interface whatever the others said. Here the answer names
+    # `eth0.2` AND is short, which is the state a names-only read cannot represent at all, and the
+    # pass declines before it creates the candidate link: nothing on the host, and nothing in the
+    # drop-in, may be decided from an answer the panel cannot vouch for.
+    written = []
+    monkeypatch.setattr(provision, "_write_file", lambda path, text: written.append(text))
+    monkeypatch.setattr(provision, "superseded_state",
+                        lambda store, iface: provision.Cover(["eth0.2"], ["simulated"]))
+    host = LinkAndUninstallableAddrHost(
+        links={"eth0", "eth0.2"}, up={"eth0", "eth0.2"}, on={"eth0.2": {"192.168.9.2/24"}})
+    store = _retarget_store()
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+    _seed_enforcement(state)
+
+    result = provision.host_provision(state)
+
+    assert not any(cmd[:3] == ["ip", "link", "add"] for cmd in host.cmds())
+    assert not any(cmd[:3] == ["ip", "addr", "replace"] for cmd in host.cmds())
+    assert written == [] and state.dnsmasq.applied == []
+    assert _enforced_ifaces(_live_ruleset(state)) == {"eth0.2"}
+    assert result.ok is False and "simulated" in result.error
