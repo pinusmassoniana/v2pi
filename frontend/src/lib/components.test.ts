@@ -35,7 +35,7 @@ function network(): Network {
     status: {
       segment_up: true, uplink: true, uplink6: null, dhcp_clients: 0, clients: [], wan_blocked: false,
       tunnel: { real_ok: true, latency_ms: 20, egress_ip: "203.0.113.8", checked_at: new Date().toISOString() },
-      ipv6_prefix: null, foreign_ra: false, ipv6_prefix_source: null,
+      ipv6_prefix: null, foreign_ra: false, ipv6_prefix_source: null, enforcement_warning: "",
     },
     recommendations: [], events: [],
   };
@@ -185,6 +185,32 @@ describe("mounted frontend regressions", () => {
       expect(control.disabled).toBe(true);
     }
     resolve(network());
+  });
+
+  it("shows a partially-applied network as a warning, not as a failure", async () => {
+    // The apply succeeded and enforcement is up; only the LAN-access rules are missing. That
+    // state used to be invisible outside the server log.
+    vi.mocked(api.getNetwork).mockImplementation(async () => {
+      const n = network();
+      n.status.enforcement_status = "ok";
+      n.status.enforcement_warning =
+        "LAN access chain not applied: iptables: No chain/target/match by that name.";
+      return n;
+    });
+    mounted.push(mount(NetworkScreen, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("LAN access chain not applied");
+    expect(document.querySelector(".warn-row.soft")).not.toBeNull();
+    // …and it is not dressed up as a hard failure (no error-toned row anywhere).
+    expect(document.querySelector(".sdot.bad")).toBeNull();
+    expect(document.body.textContent).not.toContain("leak protection is not confirmed");
+  });
+
+  it("renders no network warning row when the last apply was clean", async () => {
+    mounted.push(mount(NetworkScreen, { target: document.body }));
+    await flush();
+    expect(document.querySelector(".warn-row")).toBeNull();
+    expect(document.body.textContent).not.toContain("Applied with a warning");
   });
 
   it("cannot arm the remote-access inbound before a private key is stored", async () => {
@@ -572,6 +598,10 @@ describe("mounted frontend regressions", () => {
     const text = await removeOnlyClient("stop-failed");
     expect(text).toContain("SECURITY WARNING");
     expect(text).toContain("may still be able to connect");
+    // "stop-failed" also covers stop() raising, where the panel never learns what happened to
+    // the process — a specific "survived SIGKILL" diagnosis is not established for that case.
+    expect(text).toContain("could not be confirmed");
+    expect(text).not.toContain("SIGKILL");
     expect(text).not.toContain("remote access is down for everyone");
     const alert = document.querySelector(".msg")!;
     expect(alert.classList.contains("err")).toBe(true);   // never presented as a success
@@ -590,6 +620,8 @@ describe("mounted frontend regressions", () => {
     await flush();
     expect(document.body.textContent).toContain("SECURITY WARNING");
     expect(document.body.textContent).toContain("may still be live");
+    expect(document.body.textContent).toContain("could not be confirmed");
+    expect(document.body.textContent).not.toContain("SIGKILL");
     expect(document.querySelector(".msg")!.classList.contains("err")).toBe(true);
   });
 
@@ -714,6 +746,36 @@ describe("mounted frontend regressions", () => {
     expect(document.body.textContent).toContain("Live Traffic");
     expect(document.body.textContent).toContain("Upstream Health");
     expect(document.body.textContent).toContain("n1");
+  });
+
+  it("reports a config the running xray never loaded, beside the process state", async () => {
+    // `running: true` is not "serving the config on disk": a rewrite nobody reloaded (a
+    // revocation whose reload threw, a hand-edit, a restored backup) keeps the old config —
+    // and the client it still admits — live. The strip said RUNNING and nothing else.
+    vi.spyOn(api, "getStatus").mockResolvedValue({ ...STATUS, config_drift: "drift" });
+    mounted.push(mount(Dashboard, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("STALE CONFIG");
+    expect(document.body.textContent).toContain("Restart Xray");
+    expect(document.querySelector('[role="alert"]')).not.toBeNull();
+    // still honest about the process itself — it IS running
+    expect(document.body.textContent).toContain("RUNNING");
+  });
+
+  it("stays quiet on a boot that has not started xray yet (config_drift unknown)", async () => {
+    // Unknown is the normal state before the first start, and on any backend too old to answer.
+    // Rendering it as a problem would make every healthy boot look like a broken gateway.
+    for (const drift of ["unknown", "ok", undefined] as const) {
+      document.body.innerHTML = "";
+      resetStatus();
+      setupApi();
+      vi.spyOn(api, "getStatus").mockResolvedValue({ ...STATUS, config_drift: drift });
+      const app = mount(Dashboard, { target: document.body });
+      await flush();
+      expect(document.body.textContent, `config_drift=${drift}`).not.toContain("STALE CONFIG");
+      expect(document.querySelector('[role="alert"]'), `config_drift=${drift}`).toBeNull();
+      unmount(app);
+    }
   });
 
   it("does not delete a subscription until the confirm dialog is confirmed (F13-4)", async () => {

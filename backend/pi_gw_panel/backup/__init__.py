@@ -13,10 +13,12 @@ import time
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (BaseModel, ConfigDict, Field, ValidationError, ValidationInfo,
+                      model_validator)
 
 from pi_gw_panel import rw_inbound as rw
-from pi_gw_panel.config import (SETTINGS_DEFAULTS, validate_net_settings,
+from pi_gw_panel.config import (NET_CROSS_FIELD_KEYS, SETTINGS_DEFAULTS, Settings,
+                                check_change_safe, validate_net_settings,
                                 validate_setting_values)
 from pi_gw_panel.models import Node, RoutingRule, Subscription, TuningProfile
 from pi_gw_panel.nodes.store import _NODE_COLS, _node_values, _PROFILE_COLS, _profile_values
@@ -62,6 +64,49 @@ _SETTINGS_NEVER_BACKED_UP = frozenset({"rw_private_key", "rw_clients"})
 
 _NODE_DUMP = ("id",) + _NODE_COLS
 _PROFILE_DUMP = ("id",) + _PROFILE_COLS + ("noises",)
+
+
+class _ExportedState(dict):
+    """What `export_state` returns: a RECORD of the state this box already holds.
+
+    A document arriving from outside is a PROPOSAL to change the configuration, and one class of
+    change removes the operator's own access to the panel (see `_validate_network_settings`).
+    A document this box just exported proposes nothing — it describes what is already running —
+    so the cross-field refusal must not be turned on it: the pre-restore snapshot, the daily
+    auto-backup and `GET /api/backup` all validate their own export, and refusing those on a
+    gateway that is *already* in a colliding state would take away the backup and the restore
+    that fix it.
+
+    Only this marker separates the two, and only in-process: the moment a document is serialized
+    it is a plain dict again, so anything read back from a file or an HTTP body is treated as the
+    proposal it is.
+    """
+
+
+def _live_mgmt() -> Settings | None:
+    """The panel's own configuration — for the management leg — or None when it cannot be read.
+
+    A backup document never carries the management leg: `mgmt_iface`/`mgmt_ip` are process
+    configuration, deliberately absent from `_SETTINGS_KEYS` and not store-overridable, so the
+    values a proposed document has to be compared against can only come from the panel itself.
+
+    `Settings.from_env()` is where the live ones come from: `__main__.main()` builds the running
+    `Settings` with that exact call and afterwards rewrites only the session/TLS fields, and no
+    code path assigns `mgmt_iface`/`mgmt_ip`. Reading it again here therefore yields the same
+    management leg `state.settings` holds, rather than a second copy of the env-var mapping that
+    can drift from it. (It has to be read here and not taken as an argument: the restore path
+    calls `validate_document` with the document alone, before it touches anything, and that is
+    the only point in a restore where a refusal costs nothing.)
+
+    An environment that no longer parses is *unknown*, not unsafe: None then skips the check that
+    needs the management leg, which is `check_change_safe`'s own rule — a panel that cannot see
+    its own management path must not answer every document with a refusal, because refusing every
+    restore is the same lockout by another route.
+    """
+    try:
+        return Settings.from_env()
+    except (ValueError, OSError):
+        return None
 
 
 class _Strict(BaseModel):
@@ -197,7 +242,7 @@ class BackupDocument(_Strict):
         return value
 
     @model_validator(mode="after")
-    def validate_references(self):
+    def validate_references(self, info: ValidationInfo):
         def unique(values, label):
             if len(values) != len(set(values)):
                 raise ValueError(f"duplicate {label} id")
@@ -245,7 +290,10 @@ class BackupDocument(_Strict):
                 raise ValueError("default_profile_id must be an integer") from exc
             if parsed_default not in profiles:
                 raise ValueError("default_profile_id references missing profile")
-        _validate_network_settings(self.settings)
+        # The management leg to check the segment against, or None to skip that one check —
+        # `validate_document` decides which (a proposal vs. this box's own export), because only
+        # it knows where the document came from.
+        _validate_network_settings(self.settings, (info.context or {}).get("live"))
         return self
 
     def _reconcile_default_action(self) -> None:
@@ -269,7 +317,7 @@ class BackupDocument(_Strict):
                              "routing.default_action")
 
 
-def _validate_network_settings(settings: dict) -> None:
+def _validate_network_settings(settings: dict, live: Settings | None = None) -> None:
     """Segment/DHCP/DNS + road-warrior values, checked with the very validators the interactive
     routes use.
 
@@ -279,6 +327,9 @@ def _validate_network_settings(settings: dict) -> None:
     restore came to accept `dhcp_lease="12h\\ndhcp-script=/data/x.sh"` — a config `--test` calls
     valid, which runs an arbitrary script as root on the next lease event — while
     PUT /api/network rejected the very same string.
+
+    `live` is the panel's own `Settings`; given, the document also gets the cross-field refusals
+    `PUT /api/network` applies (`check_change_safe`), and None skips them.
     """
     validate_net_settings(settings)
     values = {}
@@ -292,6 +343,26 @@ def _validate_network_settings(settings: dict) -> None:
             raise ValueError("DHCP range must be inside the segment subnet")
         if int(values["dhcp_start"]) > int(values["dhcp_end"]):
             raise ValueError("DHCP range start must not exceed end")
+    # ...and the same field-against-field refusals the interactive route makes, through the SAME
+    # function (`config.check_change_safe`), because two copies of a lockout guard drift and this
+    # path is the half that got missed the first time: every validator above judges one value on
+    # its own, so a document could still move the segment — the kill-switch drop, the tproxy
+    # redirect and the segment's DHCP server — onto the interface the panel is reached on. A
+    # restore is the worse door for that: the operator is recovering, usually remotely, and a
+    # restore that quietly reconfigures the management leg leaves them with no panel and no
+    # visible cause.
+    #
+    # The values compared are the EFFECTIVE ones — what the box would run once the document is
+    # in. A key the document omits is not "unchanged": import_state DELETEs the allowlisted
+    # settings, and every reader then falls back to the configured default
+    # (`NetPlan.from_store`: `store.get_setting(k) or getattr(settings, k)`), which is exactly
+    # the `live` attribute of the same name.
+    if live is not None:
+        problems = check_change_safe(
+            {key: (str(settings.get(key) or "").strip() or getattr(live, key, ""))
+             for key in NET_CROSS_FIELD_KEYS}, live)
+        if problems:
+            raise ValueError("; ".join(problems))
     _validate_rw_settings(settings)
 
 
@@ -357,14 +428,16 @@ def export_state(store) -> dict:
              "enabled": rule.enabled, "label": rule.label}
             for rule in store.get_routing()]
         default_action = store.get_setting("routing_default_action") or "proxy"
-    return {
+    # `_ExportedState`, not a bare dict: this document records the state that already exists, and
+    # the marker is what keeps the "would this change take the panel away?" refusal off it.
+    return _ExportedState({
         "schema_version": BACKUP_SCHEMA,
         "nodes": nodes,
         "subscriptions": subscriptions,
         "profiles": profiles,
         "routing": {"rules": rules, "default_action": default_action},
         "settings": settings,
-    }
+    })
 
 
 def backups_dir(settings) -> str:
@@ -483,11 +556,21 @@ def write_pre_restore_snapshot(state, now: int | None = None) -> str:
     return path
 
 
-def validate_document(doc: dict | BackupDocument) -> BackupDocument:
+def validate_document(doc: dict | BackupDocument, live: Settings | None = None) -> BackupDocument:
+    """Full preflight for a document, before a single row or host command is touched.
+
+    A document that came from outside is a proposal to reconfigure this gateway, so it is also
+    checked against the gateway's own management leg (`_validate_network_settings`); `live` lets
+    a caller that already holds the running `Settings` hand it over instead of it being read.
+    This box's own export describes what is already running and is checked without it — see
+    `_ExportedState` for why that distinction has to exist.
+    """
     if isinstance(doc, BackupDocument):
         return doc
+    if live is None and not isinstance(doc, _ExportedState):
+        live = _live_mgmt()
     try:
-        return BackupDocument.model_validate(doc)
+        return BackupDocument.model_validate(doc, context={"live": live})
     except ValidationError as exc:
         first = exc.errors(include_url=False)[0]
         location = ".".join(str(part) for part in first["loc"])
@@ -504,9 +587,14 @@ def _node_from(node: BackupNode) -> Node:
     return Node(**node.model_dump())
 
 
-def import_state(store, doc: dict | BackupDocument) -> dict:
-    """Preflight fully, then replace the validated snapshot in one short transaction."""
-    validated = validate_document(doc)
+def import_state(store, doc: dict | BackupDocument, live: Settings | None = None) -> dict:
+    """Preflight fully, then replace the validated snapshot in one short transaction.
+
+    An already-validated `BackupDocument` is taken as-is (the restore path validates first, up
+    front, where a refusal has cost nothing yet); a raw document is validated here, `live` and
+    all.
+    """
+    validated = validate_document(doc, live)
     profiles = [_profile_from(profile) for profile in validated.profiles]
     subscriptions = [Subscription(**sub.model_dump()) for sub in validated.subscriptions]
     nodes = [_node_from(node) for node in validated.nodes]

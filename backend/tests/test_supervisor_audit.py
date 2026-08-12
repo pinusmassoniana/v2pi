@@ -19,7 +19,7 @@ from pi_gw_panel.models import Node
 from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.state import build_state
-from pi_gw_panel.xray_config.validate import ConfigManager, scrub_output
+from pi_gw_panel.xray_config.validate import ConfigManager, config_digest, scrub_output
 from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
 
 
@@ -398,3 +398,199 @@ def test_a_rollback_with_no_previous_node_does_not_call_a_survivor_a_success(set
     assert state.store.get_setting("active_node_id") == "7", \
         "the active selection was cleared while the tunnel it names is still up"
     assert stops, "the fail-closed net guard was skipped on the way out to the 502"
+
+
+# --- ...and a stop that RAISES is the same answer, not an escape hatch ------------------
+#
+# Both recovery stops handled only the False. `supervisor.stop()` shells out to terminate/wait/
+# kill, so an OSError from any of them left the route through an exit neither branch covers: the
+# reload-failed branch skipped the fail-closed network guard entirely, and the no-previous-node
+# branch skipped it too and lost the detail saying xray may still be up. A raise says the same
+# thing a False says — we did not observe the process go away — and must be answered the same way.
+
+
+class _RaisingStop:
+    """A child whose stop raises instead of returning. Same meaning as `_Unkillable` (nothing was
+    observed going down), delivered through the other exit."""
+
+    returncode = None
+    pid = 4343
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        raise OSError("terminate: operation not permitted")
+
+    def kill(self):
+        raise OSError("kill: operation not permitted")
+
+    def wait(self, timeout=None):
+        raise subprocess.TimeoutExpired("xray", timeout)
+
+
+def test_a_rollback_whose_reload_fails_and_whose_stop_raises_still_guards_the_network(
+        settings, stub_xray, monkeypatch):
+    """The reload-failed branch with a raising stop.
+
+    The raise travelled out of the handler, so `stop_net` never ran: clients kept their route to
+    a WAN the tunnel no longer covers, and the operator got a 500 that named neither the failed
+    reload nor the process still holding the port. The guard has to run whatever the stop did.
+
+    The reload reports its own failed stop by RETURNING False (see the test above); the recovery
+    stop that follows is a second trip through terminate/wait/kill, and it is the one that can
+    come back through the other exit — a child that outlived SIGKILL and then went unreachable.
+    """
+    c, h = _rollback_client(settings, stub_xray, monkeypatch)
+    state = c.app.state.app_state
+    state.store.set_setting("prev_active_node_id", "1")
+    state.supervisor._proc = _Unkillable()
+    monkeypatch.setattr(state.supervisor, "reload", lambda: False)
+    monkeypatch.setattr(state.supervisor, "stop",
+                        lambda: (_ for _ in ()).throw(OSError("kill: no such process")))
+
+    from pi_gw_panel.api import routes
+    real_stop_net, stops = routes.stop_net, []
+    monkeypatch.setattr(routes, "stop_net",
+                        lambda *a, **kw: (stops.append(1), real_stop_net(*a, **kw))[1])
+
+    r = c.post("/api/rollback", headers=h)
+
+    assert r.status_code == 502, "a raising stop escaped as a 500 instead of an answer"
+    assert stops, "the fail-closed net guard was skipped by a stop that raised"
+    detail = r.json()["detail"]
+    assert "did not become ready" in detail, "the failed reload went unreported"
+    assert "may still be running" in detail, \
+        "the operator was told about the reload and not about the xray that never went down"
+
+
+def test_a_rollback_with_no_previous_node_reports_a_raising_stop_beside_a_failed_net_stop(
+        settings, stub_xray, monkeypatch):
+    """The no-previous-node branch, with BOTH halves failing at once.
+
+    A raising stop skipped the network stop and the answer entirely. And even once it is caught,
+    a failing `stop_net` used to raise its own 502 first — reporting the rules and saying nothing
+    about the process still serving the config it had loaded, which is the more dangerous of the
+    two. One answer, both facts, and the active selection left alone because it still describes
+    something that is demonstrably running.
+    """
+    c, h = _rollback_client(settings, stub_xray, monkeypatch)
+    state = c.app.state.app_state
+    state.store.set_setting("active_node_id", "7")
+    state.store.set_setting("prev_active_node_id", "")
+    state.supervisor._proc = _RaisingStop()
+
+    from pi_gw_panel.api import routes
+    from pi_gw_panel.net_control.plan import NetResult
+    monkeypatch.setattr(routes, "stop_net",
+                        lambda *a, **kw: NetResult(ok=False, error="nft: permission denied"))
+
+    r = c.post("/api/rollback", headers=h)
+
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "nft: permission denied" in detail, "the network failure went unreported"
+    assert "may still be running" in detail, \
+        "a simultaneous network failure hid the xray that is still serving the old config"
+    assert state.store.get_setting("active_node_id") == "7", \
+        "the active selection was cleared while the tunnel it names is still up"
+
+
+# --- what the PROCESS loaded, as opposed to what the file now says --------------------
+
+def _other_config() -> dict:
+    """A valid config that is not `_rw_config()` — a later apply, or a revocation's rewrite."""
+    return {"inbounds": [{"tag": "rw-in", "settings": {"clients": []}}]}
+
+
+def test_a_start_records_the_digest_of_the_config_it_loaded(settings, stub_xray):
+    """start() already parses the config; it used to throw the parse away, so nothing recorded
+    what the running process is actually serving."""
+    cfg = _rw_config()
+    with open(settings.config_path, "w") as f:
+        json.dump(cfg, f)
+    sup = XraySupervisor(xray_bin=stub_xray, config_path=settings.config_path)
+    try:
+        sup.start()
+
+        assert sup.status()["loaded_config_digest"] == config_digest(cfg), \
+            "the running process did not record the config it loaded"
+    finally:
+        sup.stop()
+
+
+def test_a_config_that_cannot_be_parsed_records_unknown_and_not_the_previous_match(
+        settings, stub_xray):
+    """'unknown' and 'matches' are different answers. The redaction vocabulary deliberately
+    survives an unreadable config; the digest may not, or a truncated file would be reported as
+    still being the config the process was started on."""
+    good = _rw_config()
+    with open(settings.config_path, "w") as f:
+        json.dump(good, f)
+    sup = XraySupervisor(xray_bin=stub_xray, config_path=settings.config_path)
+    try:
+        sup.start()
+        assert sup.status()["loaded_config_digest"] == config_digest(good)
+
+        with open(settings.config_path, "w") as f:
+            f.write('{"inbounds": [')   # truncated by a power cut / mid-write crash
+        assert sup.reload() is True
+
+        st = sup.status()
+        assert st["running"] is True
+        assert st["loaded_config_digest"] is None, \
+            "a config that could not be parsed was reported as a known — and matching — one"
+    finally:
+        sup.stop()
+
+
+def test_rewriting_the_config_on_disk_without_a_reload_leaves_the_recorded_digest_alone(
+        settings, stub_xray):
+    """The finding itself: the file is rewritten, the process is not reloaded, and status() said
+    only `running: true` — so a config that still admits a revoked client reads as applied. The
+    fingerprint is of what was LOADED, so it must keep naming the old content until a restart."""
+    loaded, on_disk = _rw_config(), _other_config()
+    assert config_digest(loaded) != config_digest(on_disk)
+    with open(settings.config_path, "w") as f:
+        json.dump(loaded, f)
+    sup = XraySupervisor(xray_bin=stub_xray, config_path=settings.config_path)
+    try:
+        sup.start()
+
+        with open(settings.config_path, "w") as f:      # rewritten, deliberately not reloaded
+            json.dump(on_disk, f)
+
+        st = sup.status()
+        assert st["running"] is True
+        assert st["loaded_config_digest"] == config_digest(loaded), \
+            "the digest followed the file instead of the process — a rewrite nobody applied " \
+            "would read as live"
+        assert st["loaded_config_digest"] != config_digest(on_disk)
+    finally:
+        sup.stop()
+
+
+def test_a_successful_stop_clears_the_digest_and_a_failed_stop_keeps_it(settings, stub_xray):
+    """Nothing is loaded once the child is provably gone. A child that outlived both signals is
+    the opposite case: it may still be serving what it loaded, and forgetting that is exactly the
+    moment the panel would claim a revocation took effect."""
+    cfg = _rw_config()
+    with open(settings.config_path, "w") as f:
+        json.dump(cfg, f)
+    sup = XraySupervisor(xray_bin=stub_xray, config_path=settings.config_path)
+    try:
+        sup.start()
+        assert sup.stop() is True
+        assert sup.status()["loaded_config_digest"] is None, \
+            "a stopped supervisor still claimed a config was loaded"
+
+        sup.start()
+        assert sup.status()["loaded_config_digest"] == config_digest(cfg)
+        alive, sup._proc = sup._proc, _Unkillable()
+
+        assert sup.stop() is False
+        assert sup.status()["loaded_config_digest"] == config_digest(cfg), \
+            "a stop that did not happen erased the config the surviving process is serving"
+    finally:
+        sup._proc = alive
+        sup.stop()

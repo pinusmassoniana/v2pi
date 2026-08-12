@@ -1,6 +1,10 @@
 export interface Status {
   running: boolean; pid: number | null; active_node_id: number | null; xray_state: string;
   active_since: number | null; last_failover_at: number | null; prev_active_node_id: number | null; server_now: number;
+  // Is the RUNNING xray serving the config on disk? "drift" = it is not (the file was rewritten
+  // and nothing reloaded it, so a revoked client can still be admitted). "unknown" is its own
+  // answer — nothing started yet, the normal state at boot — and must never render as a problem.
+  config_drift?: "ok" | "drift" | "unknown";
   tunnel_online?: boolean | null; failover_ready?: boolean; eligible_standby_count?: number;
   active_health_fresh?: boolean; health_enabled?: boolean; failover_enabled?: boolean; failovers_24h?: number;
 }
@@ -125,6 +129,9 @@ export interface NetworkStatus {
   foreign_ra: boolean | null;   // another router advertising v6 on the segment (leak)
   ipv6_prefix_source: string | null;   // "static" | "ula" | "pd"
   enforcement_status?: "ok" | "unknown" | "error";
+  // The last apply SUCCEEDED except for a secondary part (LAN access). Render it as a
+  // warning, never as a failure — a partially-applied network is still enforcing.
+  enforcement_warning?: string;
   failovers_24h?: number; failover_ready?: boolean; eligible_standby_count?: number;
 }
 export interface RouterRec { title: string; detail: string; }

@@ -36,6 +36,9 @@ def test_status_and_nodes(settings, stub_xray):
         "running": False, "pid": None, "active_node_id": None,
         "xray_state": "stopped", "active_since": None, "last_failover_at": None,
         "prev_active_node_id": None, "rollback_available": False,
+        # nothing has been started, so nothing has loaded a config to compare: "unknown", which
+        # is deliberately not "ok" (see test_config_drift_audit.py)
+        "config_drift": "unknown",
         "tunnel_online": False, "active_health_fresh": False,
         "failover_ready": False, "eligible_standby_count": 0,
         "health_enabled": True, "failover_enabled": True, "failovers_24h": 0}

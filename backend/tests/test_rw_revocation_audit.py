@@ -9,6 +9,8 @@ growing a second copy that can drift from the first.
 """
 import json
 import sqlite3
+import threading
+import time
 
 import pytest
 from conftest import _client, _login
@@ -312,12 +314,20 @@ def test_a_rollback_cannot_reinstate_a_credential_a_no_write_revocation_took_awa
     c.post(f"/api/nodes/{nid}/disconnect", headers=h)
     _stale_pre_revocation_target(settings, stub_xray)
 
+    with open(settings.config_path) as f:
+        before = json.load(f)
     monkeypatch.setattr("pi_gw_panel.api.routes.ConfigManager.invalidate_rollback",
                         lambda self: False)                 # the sweep reports it could not
-    body = c.delete(f"/api/rw/clients/{lost}", headers=h).json()
+    c.delete(f"/api/rw/clients/{lost}", headers=h)
     monkeypatch.undo()
 
-    assert body["revocation"] == "not-live", "the revocation took a path that writes a config"
+    # The premise, asserted on the file rather than on the outcome string: this revocation wrote
+    # NO config, so its irreversible writer never ran and the pre-revocation pairing on disk is
+    # untouched — which is what makes the sweep the only guard here. (The outcome is `rebuilt`,
+    # not `not-live`: the config was already clean and the RUNNING process was reloaded onto it,
+    # because a clean file is no evidence about what a live xray loaded minutes ago.)
+    with open(settings.config_path) as f:
+        assert json.load(f) == before, "the revocation wrote a config — this is now another test"
     assert lost not in _client_ids(c)
     assert c.get("/api/status").json()["rollback_available"] is True, \
         "the stale pre-revocation target was already gone — the leak was never set up"
@@ -350,14 +360,17 @@ def test_a_rollback_that_cannot_be_sanitized_never_installs_the_candidate(settin
     c.post(f"/api/nodes/{nid}/disconnect", headers=h)
     _stale_pre_revocation_target(settings, stub_xray)
 
+    with open(settings.config_path) as f:
+        untouched = json.load(f)
     monkeypatch.setattr("pi_gw_panel.api.routes.ConfigManager.invalidate_rollback",
                         lambda self: False)             # the sweep reports it could not
-    assert c.delete(f"/api/rw/clients/{lost}", headers=h).json()["revocation"] == "not-live"
+    c.delete(f"/api/rw/clients/{lost}", headers=h)
     monkeypatch.undo()
-    assert c.get("/api/status").json()["rollback_available"] is True, \
-        "the promotable pre-revocation target was already gone — the leak was never set up"
     with open(settings.config_path) as f:
         before = json.load(f)
+    assert before == untouched, "the revocation wrote a config — the pairing under test is stale"
+    assert c.get("/api/status").json()["rollback_available"] is True, \
+        "the promotable pre-revocation target was already gone — the leak was never set up"
 
     monkeypatch.setenv("STUB_XRAY_FAIL", "1")           # nothing the guard writes can validate
     r = c.post("/api/rollback", headers=h)
@@ -647,6 +660,54 @@ def test_a_marker_that_cannot_clear_backs_off_instead_of_wedging_the_panel(setti
     assert c.post("/api/rw/clients", json={"email": "tablet"}, headers=h).status_code == 201
 
 
+def test_a_new_revocation_does_not_inherit_the_previous_episode_s_backoff(settings, stub_xray):
+    """Backing off is per EPISODE, and an episode ends when the marker goes.
+
+    Observing that a marker has cleared reset the attempt counter and the reported flag and left
+    the next-attempt DEADLINE where the last failed episode had pushed it — ten minutes out. A
+    fresh revocation interrupted anywhere inside that window then inherited a deadline it had
+    nothing to do with, and the credential it had already taken out of the store stayed live on
+    the running xray for the remainder of it. Nothing else is looking: the process is healthy, so
+    the watchdog passes over it, and no spawn means no start guard.
+
+    Driven from the worst case — an episode driven all the way to the 600 s ceiling, then
+    cleared, then a new marker one tick later, which must be acted on at once.
+    """
+    from pi_gw_panel.api.routes import RW_PENDING_KEY
+    from pi_gw_panel.health.liveness import DEFAULT_INTERVAL, LivenessLoop
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    _armed_with_two_clients(c, h)
+    state = c.app.state.app_state
+
+    now = [1000.0]
+    attempts: list[float] = []
+
+    def _never_resolves(_st) -> bool:
+        attempts.append(now[0])
+        return False
+
+    loop = LivenessLoop(state, now=lambda: now[0], reconcile=_never_resolves)
+    state.store.set_setting(RW_PENDING_KEY, "1")
+    for _ in range(200):                       # long enough to reach the 600 s ceiling
+        loop._reconcile_tick()
+        now[0] += DEFAULT_INTERVAL
+    assert attempts[-1] - attempts[-2] >= LivenessLoop.RECONCILE_MAX_BACKOFF, \
+        "the first episode never reached the maximum backoff — the test proves nothing"
+
+    state.store.set_setting(RW_PENDING_KEY, "")   # the operator (or a retry) finishes it
+    loop._reconcile_tick()                        # ...and the loop observes the episode end
+    now[0] += DEFAULT_INTERVAL
+
+    state.store.set_setting(RW_PENDING_KEY, "1")  # a NEW revocation is interrupted
+    before = len(attempts)
+    loop._reconcile_tick()
+
+    assert len(attempts) == before + 1, \
+        "the new revocation inherited the finished episode's deadline and was not acted on"
+
+
 # --- F6: a stop that did not happen may not be reported as a stop -------------------------
 
 
@@ -728,3 +789,652 @@ def test_an_unconfirmed_stop_is_retried_until_xray_is_actually_gone(settings, st
 
     assert not _pending(c), "a finished revocation left its marker behind"
     assert _live_client_ids(settings) == [kept]
+
+
+# --- F7: a CLEAN FILE is not a stopped process -------------------------------------------
+#
+# The revocation asked the config on disk whether anything was live and answered `not-live` when
+# it found no inbound. The file is the right evidence about the NEXT start and no evidence at all
+# about the current one: an irreversible reapply writes the new config BEFORE it reloads, so a
+# reapply that wrote a clean file and then could not make the old process take it leaves exactly
+# that state — a clean file in front of a process still serving every credential it loaded. The
+# two ways to reach it are the two that rebuild to a config with no `rw-in` at all: turning the
+# feature off, and removing or suspending the last enabled client.
+#
+# Both are answered here with a child that outlives SIGKILL, which is what makes the reload fail
+# and keeps the old process up. `not-live` now needs a supervisor observed to be DOWN; anything
+# else needs a confirmed reload or a confirmed stop before the marker may be cleared.
+
+
+def _unkillable_running(state):
+    """Leave the supervisor holding a child that cannot be stopped, so every reload fails and
+    every stop reports it. Returns the stand-in."""
+    from test_supervisor_audit import _Unkillable
+
+    stuck = _Unkillable()
+    state.supervisor._proc = stuck
+    return stuck
+
+
+def test_turning_the_feature_off_does_not_call_a_surviving_xray_not_live(settings, stub_xray):
+    """PUT /rw {enabled: false} with a node CONNECTED and an xray that will not die.
+
+    The rebuild renders a config with no remote-access inbound and writes it, then fails at the
+    reload because the old process cannot be stopped. Reading the file back then said "there was
+    nothing live to cut" — and cleared the durable marker, so nothing would ever come back to it —
+    about a process that is still up and still accepting every client it loaded.
+    """
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    from test_rw_inbound import RW_ARMED
+    _nid, lost, kept = _armed_with_two_clients(c, h)
+    state = c.app.state.app_state
+    _unkillable_running(state)
+
+    body = c.put("/api/rw", json={**RW_ARMED, "enabled": False, "private_key": ""},
+                 headers=h).json()
+
+    assert body["revocation"] != "not-live", \
+        "a running xray that could not be stopped was reported as nothing being live"
+    assert body["revocation"] == "stop-failed"
+    assert state.supervisor.status()["running"] is True, "the fixture did not survive the stop"
+    assert _pending(c), \
+        "the marker was cleared while the process still serving the credential is up, so " \
+        "nothing will ever finish this revocation"
+
+    state.supervisor._proc = None                 # the stuck child is finally reaped
+    _liveness_reconcile(c)
+
+    assert not _pending(c), "the recovery could not finish it once the process was gone"
+    assert _live_client_ids(settings) == [] and lost and kept
+
+
+def test_removing_the_last_client_does_not_call_a_surviving_xray_not_live(settings, stub_xray):
+    """The same hole through the other door: with the last enabled client gone the inbound is not
+    emitted at all, so the rebuilt config carries no `rw-in` and the file reads as clean while the
+    process that outlived the reload still accepts the client that was just deleted."""
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    _nid, lost, kept = _armed_with_two_clients(c, h)
+    assert c.delete(f"/api/rw/clients/{kept}", headers=h).json()["revocation"] == "reapplied"
+    assert _live_client_ids(settings) == [lost]
+    state = c.app.state.app_state
+    _unkillable_running(state)
+
+    body = c.delete(f"/api/rw/clients/{lost}", headers=h).json()
+
+    assert body["revocation"] != "not-live", \
+        "removing the last client left a surviving xray reported as nothing being live"
+    assert body["revocation"] == "stop-failed"
+    assert _pending(c), "the marker was cleared while the revoked client is still being served"
+
+    state.supervisor._proc = None
+    _liveness_reconcile(c)
+
+    assert not _pending(c)
+    assert _live_client_ids(settings) == []
+
+
+def test_a_clean_file_in_front_of_a_running_xray_is_reloaded_before_it_is_believed(settings,
+                                                                                   stub_xray):
+    """The other half of the same rule, on a process that CAN be reloaded.
+
+    With xray running and the file already clean the revocation may still not answer from the
+    file — but there is a way to make the answer true rather than merely hoped for, and it is the
+    reload itself. `reload_if_running` decides under the supervisor's own lock, so it cannot start
+    a process that went away in the meantime; what it reports is that the live process is now on
+    the config we just read.
+    """
+    from test_rw_inbound import RW_ARMED
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, kept = _armed_with_two_clients(c, h)
+    for cid in (kept, lost):        # both gone: `resolve()` emits no inbound, so the file goes clean
+        c.delete(f"/api/rw/clients/{cid}", headers=h)
+    c.post(f"/api/nodes/{nid}/disconnect", headers=h)          # xray stays up, nothing to rebuild
+    with open(settings.config_path) as f:
+        assert not any(i.get("tag") == "rw-in" for i in json.load(f)["inbounds"]), \
+            "the file is not clean — this test is about the branch that reads it as clean"
+    assert c.get("/api/status").json()["running"] is True
+
+    # A narrowing save against an already-clean file: nothing to write, and a live process that
+    # may still be on an older config. The only way to an honest answer is to make it true.
+    body = c.put("/api/rw", json={**RW_ARMED, "enabled": False, "private_key": ""},
+                 headers=h).json()
+
+    assert body["revocation"] == "rebuilt", \
+        "the running process was left on whatever it had loaded, on the word of the file"
+    assert c.get("/api/status").json()["running"] is True, "the revocation stopped a live tunnel"
+    assert _live_client_ids(settings) == []
+    assert not _pending(c), "a confirmed reload is a finished revocation"
+
+
+# --- F8: a RETRY is not the request it is finishing --------------------------------------
+#
+# The recovery used to re-run the whole revocation, which is far more than the runtime half: an
+# irreversible reapply that restarts xray and rewrites the session bookkeeping, an unconditional
+# drop of the rollback target, and an incident event per attempt. None of that is idempotent, and
+# the retries are paced to repeat for as long as the marker is stuck.
+
+
+def _fail_marker_clear(store):
+    """Make the CLEAR of the marker fail the way a full disk does, leaving the set that opened the
+    window intact. Returns a restore callable."""
+    from pi_gw_panel.api.routes import RW_PENDING_KEY
+
+    real_set = store.set_setting
+
+    def _failing(name, value):
+        if name == RW_PENDING_KEY and not value:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_set(name, value)
+
+    store.set_setting = _failing
+    return lambda: setattr(store, "set_setting", real_set)
+
+
+def test_a_retry_keeps_a_rollback_target_published_after_the_marker(settings, stub_xray,
+                                                                    monkeypatch):
+    """The rollback target an ordinary apply filed AFTER the marker was set.
+
+    Dropping it is right for the revocation itself — the snapshot on file is by construction from
+    before it — and false for every retry after it. Here the revocation completed, the marker
+    could not be cleared, and an ordinary apply then published an undo target that grants nothing
+    revoked. Re-running the revocation destroyed it, together with the session baselines the
+    Dashboard measures "this session" from, on every pass for as long as the marker was stuck.
+    """
+    from pi_gw_panel.api import routes
+    from pi_gw_panel.api.routes import RW_PENDING_KEY
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, kept = _armed_with_two_clients(c, h)
+    state = c.app.state.app_state
+    store = state.store
+
+    # A revocation that finished and whose marker would not clear.
+    restore = _fail_marker_clear(store)
+    try:
+        assert c.delete(f"/api/rw/clients/{lost}", headers=h).json()["revocation"] == "reapplied"
+        assert c.delete(f"/api/rw/clients/{kept}", headers=h).json()["revocation"] == "reapplied"
+    finally:
+        restore()
+    assert _pending(c), "the marker cleared after all — there is no stuck episode to retry"
+    assert _live_client_ids(settings) == []
+
+    # ...and an ordinary apply afterwards, which files the config it replaces as the undo target.
+    # That config is post-revocation: it grants nothing the store does not.
+    assert c.post(f"/api/nodes/{nid}/apply", headers=h).status_code == 200
+    assert c.get("/api/status").json()["rollback_available"] is True, \
+        "the apply published no promotable target — there is nothing for the retry to destroy"
+    assert not _pending(c), \
+        "a full apply rebuilt the config from the store and reloaded onto it, which is the whole " \
+        "of what the marker was waiting for — leaving it set reloads a healthy tunnel every tick"
+
+    # The marker is forced back on: the retry itself must be harmless, not merely unreached.
+    store.set_setting(RW_PENDING_KEY, "1")
+    store.set_setting("session_base_up", "12345")
+    store.set_setting("data_used_up", "99999")     # what a reapply would overwrite the base with
+    reapplied: list[int] = []
+    monkeypatch.setattr(routes, "reapply_active_node",
+                        lambda *a, **kw: reapplied.append(1))
+
+    _liveness_reconcile(c)
+
+    assert not reapplied, "the retry ran the reconnecting rebuild that belongs to the request"
+    assert store.get_setting("session_base_up") == "12345", \
+        "the retry reset the traffic baseline the Dashboard measures a session from"
+    assert c.get("/api/status").json()["rollback_available"] is True, \
+        "the retry destroyed an undo target that grants nothing the store does not"
+    assert not _pending(c), "the retry did not finish a revocation that was already applied"
+
+
+def test_a_retry_still_drops_a_rollback_target_that_grants_what_was_revoked(settings, stub_xray,
+                                                                            monkeypatch):
+    """...and the question is asked, not assumed away in the other direction.
+
+    Keeping a post-marker target is only safe for one that agrees with the store. A pairing whose
+    snapshot still names the revoked device is exactly what a revocation exists to take away, and
+    a retry that cannot prove otherwise must drop it — "we could not tell" is not permission to
+    leave a promotable pre-revocation config on disk.
+    """
+    from pi_gw_panel.api.routes import RW_PENDING_KEY
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, kept = _armed_with_two_clients(c, h)
+    c.post(f"/api/nodes/{nid}/disconnect", headers=h)
+    _stale_pre_revocation_target(settings, stub_xray)      # promotable, and it names `lost`
+    monkeypatch.setattr("pi_gw_panel.api.routes.ConfigManager.invalidate_rollback",
+                        lambda self: False)                # the request's own sweep cannot
+    assert c.delete(f"/api/rw/clients/{lost}", headers=h).json() and _pending(c) is False
+    monkeypatch.undo()
+    assert c.get("/api/status").json()["rollback_available"] is True, \
+        "the stale pre-revocation target was already gone — the leak was never set up"
+
+    c.app.state.app_state.store.set_setting(RW_PENDING_KEY, "1")
+    _liveness_reconcile(c)
+
+    assert c.get("/api/status").json()["rollback_available"] is False, \
+        "the retry kept a promotable snapshot that still grants the revoked credential"
+    assert kept
+
+
+def test_a_reconciliation_whose_marker_will_not_clear_is_not_reported_as_done(settings, stub_xray):
+    """`done` is what the liveness loop resets its backoff and its once-per-episode event on.
+
+    Reading it off the outcome alone meant a reconciliation whose runtime half succeeded and whose
+    marker write failed declared victory, the loop forgot the episode, and the next tick ran the
+    whole thing again — reloading the live tunnel every 20 seconds for as long as the settings
+    write kept failing. The marker is read back now, and nothing short of seeing it gone counts.
+    """
+    from pi_gw_panel.api.routes import RW_PENDING_KEY, rw_reconcile_pending
+    from pi_gw_panel.health.liveness import LivenessLoop
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    monkeypatch = pytest.MonkeyPatch()
+    _nid, lost, kept = _armed_and_interrupted(
+        c, h, monkeypatch, lambda cid: c.delete(f"/api/rw/clients/{cid}", headers=h))
+    state = c.app.state.app_state
+
+    restore = _fail_marker_clear(state.store)
+    try:
+        done = rw_reconcile_pending(state)
+        loop = LivenessLoop(state)
+        loop._reconcile_tick()
+    finally:
+        restore()
+
+    assert done is False, \
+        "a reconciliation that could not clear its marker reported the episode as finished"
+    assert _live_client_ids(settings) == [kept], "the runtime half did not actually run"
+    assert lost not in _live_client_ids(settings)
+    assert _pending(c), "the marker cleared after all — the failure never fired"
+    assert loop._reconcile_attempts == 1, \
+        "the loop reset its backoff on an episode that is still pending, so the next tick " \
+        "repeats the whole reconciliation immediately"
+
+    # ...and a write that fails SILENTLY is the same answer. Nothing about a settings call that
+    # returned tells us the key is gone, so the only thing that ends an episode is reading it
+    # back absent.
+    real_set = state.store.set_setting
+    state.store.set_setting = lambda name, value: (
+        None if name == RW_PENDING_KEY and not value else real_set(name, value))
+    try:
+        assert rw_reconcile_pending(state) is False, \
+            "a clear that quietly wrote nothing was taken for a finished episode"
+    finally:
+        state.store.set_setting = real_set
+    assert _pending(c)
+
+
+def test_the_real_reconciler_files_one_event_per_episode_not_one_per_attempt(settings, stub_xray,
+                                                                             monkeypatch):
+    """The 40-entry connection log is what an operator reads to work out what the box did with a
+    lost device, and a stuck episode was flushing it.
+
+    The loop reports the episode exactly once, and that was taken as the whole story — but the
+    reconciler underneath it filed a rebuild event and a stop event on every attempt, so two
+    retries left four entries behind. The test that claimed otherwise injected a no-op reconciler
+    and could not have seen it; this one drives the REAL one, which is the only way the claim
+    means anything.
+    """
+    from pi_gw_panel.api import routes
+    from pi_gw_panel.health.liveness import DEFAULT_INTERVAL, LivenessLoop
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, _kept = _armed_with_two_clients(c, h)
+    c.post(f"/api/nodes/{nid}/disconnect", headers=h)
+    monkeypatch.setattr(routes, "_rw_write_config", lambda _state: False)
+    state = c.app.state.app_state
+    _unkillable_running(state)
+    assert c.delete(f"/api/rw/clients/{lost}", headers=h).json()["revocation"] == "stop-failed"
+    before = len(_rw_events(c))
+
+    now = [1000.0]
+    loop = LivenessLoop(state, now=lambda: now[0])       # the REAL reconciler, not a stand-in
+    for _ in range(2):
+        loop._reconcile_tick()
+        now[0] += 10 * DEFAULT_INTERVAL                  # past every backoff window
+
+    assert loop._reconcile_attempts == 2, "the two retries did not actually run"
+    assert _pending(c), "the episode resolved — there was nothing to retry"
+    assert len(_rw_events(c)) - before == 1, \
+        f"two retries filed {len(_rw_events(c)) - before} entries in a 40-deep log; the episode " \
+        "is reported once and the attempts belong in the ordinary log"
+    assert any("did not reach the running xray" in d for d in _rw_events(c)), \
+        "the one entry that survived is not the episode report"
+
+
+# --- F9: only whoever holds the lock may say a revocation is finished --------------------
+#
+# Completing the marker on a successful apply is right, and it was done in the wrong PLACE: a
+# wrapper around selected callers, i.e. after `apply_node` had already released `apply_lock`. Two
+# faults, one cause.
+#
+#   * A revocation can commit a NEWER marker in that gap and then fail to prove the credential is
+#     gone, and the older apply's wrapper erased that marker afterwards — leaving nothing to ever
+#     come back to a revocation whose device is still being served.
+#   * Wrapping callers covers the callers somebody wrapped. The boot reapply, a subscription
+#     refresh and the failover tick reach the same proven success off the request path entirely.
+#
+# Both are answered by moving the completion into `apply_node`'s locked success path, which is
+# where the proof exists and where it cannot be interleaved.
+
+
+def _marker(store) -> str:
+    from pi_gw_panel.controller import RW_PENDING_KEY
+    return store.get_setting(RW_PENDING_KEY) or ""
+
+
+def _wait_for_marker(store, value: str, timeout: float) -> bool:
+    """Whether the marker becomes exactly `value` within `timeout`. Read-only, so it can watch
+    another thread without writing anything the store has to serialize against."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _marker(store) == value:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_an_older_apply_does_not_erase_a_newer_revocation_s_marker(settings, stub_xray):
+    """Two threads and one barrier: an apply that has succeeded, and a revocation behind it.
+
+    The apply is held at the exact instant it completes the marker. While it waits there, a
+    revocation is asked for — one that cannot confirm its stop, so it MUST leave a marker behind.
+    Whether that marker survives is decided entirely by whether the apply is still holding
+    `apply_lock` when it clears: from inside the lock the revocation cannot even begin, and the
+    apply can only ever erase the episode it actually finished; from outside it, the revocation
+    runs to completion in the gap and the apply erases a marker that describes a credential still
+    being served.
+
+    The two markers are told apart by their VALUE — the older episode is tagged, a revocation
+    always writes "1" — so the final assertion is about which marker is on disk, not merely about
+    one being there.
+    """
+    from pi_gw_panel.controller import RW_PENDING_KEY, apply_node
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, kept = _armed_with_two_clients(c, h)
+    state = c.app.state.app_state
+    store = state.store
+    store.set_setting(RW_PENDING_KEY, "an-earlier-episode")   # what the apply is entitled to clear
+
+    at_clear, release = threading.Event(), threading.Event()
+    real_set = store.set_setting
+
+    def _hold_the_apply_at_its_clear(name, value):
+        if name == RW_PENDING_KEY and not value and not at_clear.is_set():
+            at_clear.set()
+            release.wait(30)      # the main thread releases it; the timeout only bounds a hang
+        return real_set(name, value)
+
+    store.set_setting = _hold_the_apply_at_its_clear
+    applied, revoked = [], []
+    applying = threading.Thread(target=lambda: applied.append(
+        apply_node(store.get_node(nid), state.settings, state.supervisor, state.net,
+                   store=store, xray_bin=state.xray_bin)))
+    revoking = threading.Thread(target=lambda: revoked.append(
+        c.delete(f"/api/rw/clients/{lost}", headers=h).json()))
+    try:
+        applying.start()
+        assert at_clear.wait(30), "the apply never tried to complete the pending marker"
+        _unkillable_running(state)        # from here nothing can confirm a stop
+        revoking.start()
+        # Did the revocation get its own marker in while the apply was still finishing? Under the
+        # lock it cannot: it blocks before the deletion, so this waits out its window instead.
+        interleaved = _wait_for_marker(store, "1", 1.5)
+    finally:
+        release.set()
+        applying.join(30)
+        revoking.join(30)
+        store.set_setting = real_set
+
+    assert applied and applied[0].ok, "the apply under test failed — it clears nothing either way"
+    assert revoked and revoked[0]["revocation"] == "stop-failed", \
+        "the revocation confirmed its runtime half, so it left no marker to be erased"
+    assert not interleaved, \
+        "a revocation committed a marker while an apply was still completing one: the apply is " \
+        "clearing outside `apply_lock` again, which is the whole of the window"
+    assert _marker(store) == "1", \
+        "the older apply erased the marker of a newer revocation that could not confirm its " \
+        "stop, so nothing will ever come back to finish it while the credential is still served"
+    assert kept
+
+
+@pytest.mark.parametrize("caller", ["boot-reapply", "subscription-refresh", "failover-promote"])
+def test_a_full_apply_off_the_request_path_also_completes_the_marker(settings, stub_xray, caller):
+    """The same proven success, reached by the callers no wrapper covered.
+
+    A full apply rebuilds the config from the store and reloads xray onto it — that is what ends a
+    pending revocation, and it is true of the apply, not of the route that asked for it. While the
+    completion lived in a wrapper around selected handlers, `app.py`'s boot reapply, the
+    subscription refresh in `subs/service.py` and the failover promotion in `health/failover.py`
+    left the marker set on a success: a needless incident report, a needless reload of a healthy
+    tunnel on the next tick, and a retry that then destroyed the fresh rollback target that same
+    apply had just published.
+
+    Each case here is the call those paths actually make — the boot one through
+    `reapply_active_node` itself, the others through `apply_node` with the argument shape each site
+    passes (the failover tick notably passes no `xray_bin`).
+    """
+    from pi_gw_panel.controller import RW_PENDING_KEY, apply_node, reapply_active_node
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, kept = _armed_with_two_clients(c, h)
+    state = c.app.state.app_state
+    store = state.store
+    store.set_setting(RW_PENDING_KEY, "1")
+
+    if caller == "boot-reapply":
+        res = reapply_active_node(state)
+    elif caller == "subscription-refresh":
+        res = apply_node(store.get_node(nid), state.settings, state.supervisor, state.net,
+                         store=store, xray_bin=state.xray_bin)
+    else:
+        res = apply_node(store.get_node(nid), state.settings, state.supervisor, state.net,
+                         store=store)
+
+    assert res is not None and res.ok, f"the {caller} apply failed: {res and res.error}"
+    assert not _pending(c), \
+        f"a successful {caller} left the marker set, so the next tick reloads a healthy tunnel " \
+        "and the retry drops the rollback target this apply published"
+    assert sorted(_live_client_ids(settings)) == sorted([lost, kept]), \
+        "the apply did not rebuild the config from the store — its success proves nothing"
+
+
+def test_an_apply_that_fails_leaves_the_marker_exactly_where_it_was(settings, stub_xray,
+                                                                    monkeypatch):
+    """The other half of centralizing it: only a SUCCESS is proof.
+
+    A failed apply may have stopped at the config, at the reload or at the net rules, and may have
+    left the old process up on the old file — which is precisely the state the marker records. So
+    the marker is not something an apply clears on its way past; it is cleared by an apply that got
+    all the way through, and by nothing else.
+    """
+    from pi_gw_panel.controller import RW_PENDING_KEY, apply_node
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, _lost, _kept = _armed_with_two_clients(c, h)
+    state = c.app.state.app_state
+    state.store.set_setting(RW_PENDING_KEY, "1")
+
+    monkeypatch.setenv("STUB_XRAY_FAIL", "1")            # nothing this apply builds can validate
+    res = apply_node(state.store.get_node(nid), state.settings, state.supervisor, state.net,
+                     store=state.store, xray_bin=state.xray_bin)
+    monkeypatch.undo()
+
+    assert res is not None and not res.ok, "the apply was supposed to fail"
+    assert _pending(c), \
+        "a failed apply cleared the marker: the revocation is now unfinished and unrecorded"
+
+
+# --- F10: a retry may not destroy the undo it is about to try to preserve ----------------
+#
+# `_rw_drop_unsafe_rollback` asks whether the rollback target still grants what was revoked, so a
+# legitimate one published after the marker survives. It could never find one on the writing path:
+# the runtime push runs first, and `apply_irreversible` durably invalidates the pairing before it
+# touches the file — even when the config it was about to write is the one already on disk.
+
+
+def test_a_retry_does_not_rewrite_a_config_that_already_agrees_with_the_store(settings, stub_xray,
+                                                                             monkeypatch):
+    """One client still enabled, so the reconcile goes down the path that WRITES.
+
+    Its sibling above deletes both clients, which leaves no `rw-in` in the file at all and takes
+    the branch that writes nothing — so it could not have seen this. Here `kept` is still granted,
+    the file still carries the inbound, and the reconcile therefore reaches `_rw_write_config`
+    against a config an ordinary apply has already brought into line with the store. There is
+    nothing to write, and writing it anyway cost the operator the undo that apply had published.
+    """
+    from pi_gw_panel.api import routes
+    from pi_gw_panel.api.routes import RW_PENDING_KEY
+
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    nid, lost, kept = _armed_with_two_clients(c, h)
+    store = c.app.state.app_state.store
+
+    # A revocation that finished and whose marker would not clear, with `kept` still enabled.
+    restore = _fail_marker_clear(store)
+    try:
+        assert c.delete(f"/api/rw/clients/{lost}", headers=h).json()["revocation"] == "reapplied"
+    finally:
+        restore()
+    assert _pending(c), "the marker cleared after all — there is no stuck episode to retry"
+    assert _live_client_ids(settings) == [kept], "the revocation did not reach the config"
+
+    # ...and an ordinary apply afterwards, which files the config it replaces as the undo target.
+    # That config is post-revocation: it grants nothing the store does not.
+    assert c.post(f"/api/nodes/{nid}/apply", headers=h).status_code == 200
+    assert c.get("/api/status").json()["rollback_available"] is True, \
+        "the apply published no promotable target — there is nothing for the retry to preserve"
+    with open(settings.config_path) as f:
+        before = json.load(f)
+
+    store.set_setting(RW_PENDING_KEY, "1")          # the stuck marker, forced back on
+    wrote: list[bool] = []
+    real_write = routes._rw_write_config
+
+    def _watched(state):
+        wrote.append(True)
+        return real_write(state)
+
+    monkeypatch.setattr(routes, "_rw_write_config", _watched)
+    _liveness_reconcile(c)
+    monkeypatch.undo()
+
+    assert wrote, "the reconcile never reached the writing path — this is the no-inbound test again"
+    with open(settings.config_path) as f:
+        assert json.load(f) == before, \
+            "the reconcile rewrote a live config that already granted exactly what the store does"
+    assert c.get("/api/status").json()["rollback_available"] is True, \
+        "the retry destroyed the undo target an ordinary apply had published, by writing a config " \
+        "identical to the one already on disk"
+    assert _live_client_ids(settings) == [kept], "the retry changed what the config grants"
+    assert not _pending(c), "the reconcile did not finish an episode whose work was already done"
+
+
+def test_a_retry_still_writes_when_the_file_and_the_store_disagree(settings, stub_xray):
+    """...and the delta is measured, not assumed, in the direction that matters more.
+
+    Skipping a write that WAS needed is the worse failure — it leaves a credential in the file for
+    the next start to serve. So the skip is keyed on a content digest of what would be written
+    against what is there, and a file that differs by so much as one client is rewritten. Here the
+    revocation is interrupted before its runtime half runs at all, so the file still names the
+    revoked device and the retry has real work to do.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    c = _client(settings, stub_xray)
+    h = {"X-CSRF-Token": _login(c)}
+    _nid, lost, kept = _armed_and_interrupted(
+        c, h, monkeypatch, lambda cid: c.delete(f"/api/rw/clients/{cid}", headers=h))
+    assert lost in _live_client_ids(settings), "the fixture left nothing for the retry to write"
+
+    _liveness_reconcile(c)
+
+    assert _live_client_ids(settings) == [kept], \
+        "the retry skipped a write the file actually needed and left the revoked uuid in it"
+    assert not _pending(c)
+
+
+# --- F9: ONE definition of the pending-revocation key ----------------------------------------
+#
+# The recovery loop is the only thing that ever comes back for a revocation whose runtime half
+# never happened, and it finds one by reading a single settings key. The controller sets and
+# clears that key. A second literal for it in `liveness` therefore does not misbehave today and
+# cannot be seen to: it is a rename away from a loop that reads a name nothing writes any more,
+# sees nothing pending forever, and leaves the running xray serving a credential the store has
+# already taken away — with the watchdog passing over it, because that process is healthy.
+
+
+def test_liveness_and_the_controller_name_the_same_pending_marker():
+    """The key has one definition, and `liveness` gets it from the controller.
+
+    Two assertions because they fail on different mistakes. Equality catches a divergence — a
+    renamed key with a stale copy left behind. The source check catches the DUPLICATE itself,
+    which is the state that precedes every such divergence and which no behavioural test can see
+    while the two literals still agree: `from ... import RW_PENDING_KEY` binds the controller's
+    value at import, so a second definition here is indistinguishable at runtime right up to the
+    moment somebody changes one of them.
+    """
+    from pathlib import Path
+
+    from pi_gw_panel import controller
+    from pi_gw_panel.health import liveness
+
+    assert liveness.RW_PENDING_KEY == controller.RW_PENDING_KEY
+    src = Path(liveness.__file__).read_text()
+    assert "RW_PENDING_KEY =" not in src, \
+        "liveness restated the pending-marker key instead of importing the controller's"
+    assert "import" in next(line for line in src.splitlines() if "RW_PENDING_KEY" in line), \
+        "the first mention of the key in liveness is not its import"
+
+
+def test_the_recovery_tick_reads_the_key_the_controller_defines():
+    """...and it is that key the tick actually looks up, not merely one it agrees with.
+
+    The marker is written under the controller's name only. If the loop read anything else, it
+    would find nothing pending and the reconcile would never run — the silent failure this
+    de-duplication exists to make impossible.
+    """
+    from pi_gw_panel.controller import RW_PENDING_KEY
+    from pi_gw_panel.db import connect, init_schema
+    from pi_gw_panel.health.liveness import LivenessLoop
+    from pi_gw_panel.nodes.store import NodeStore
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    store = NodeStore(conn)
+
+    class _St:
+        pass
+
+    st = _St()
+    st.store = store
+    store.set_setting(RW_PENDING_KEY, "1")
+
+    read: list[str] = []
+    real_get = store.get_setting
+
+    def watching_get(name):
+        read.append(name)
+        return real_get(name)
+
+    store.get_setting = watching_get
+
+    attempts: list[int] = []
+    loop = LivenessLoop(st, now=lambda: 1000.0,
+                        reconcile=lambda _st: bool(attempts.append(1)) or False)
+    loop._reconcile_tick()
+
+    assert RW_PENDING_KEY in read, \
+        "the tick looked up some other key for the pending marker"
+    assert attempts, "the marker the controller writes did not trigger the recovery"

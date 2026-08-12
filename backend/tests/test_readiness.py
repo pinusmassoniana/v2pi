@@ -59,6 +59,10 @@ def test_readiness_checks_every_required_gateway_layer():
         "enforcement": True,
         "active_node": True,
         "xray": True,
+        # A running process is not the same as a process serving the config on disk. This
+        # supervisor records no loaded digest, i.e. "unknown", which is not a divergence — see
+        # test_config_drift_audit.py for the whole vocabulary.
+        "xray_config": True,
         "tunnel": True,
     }
 
@@ -87,6 +91,38 @@ def test_readiness_reports_an_unexpected_extra_address_as_drift(caplog):
         state, address_reader=lambda _iface: {"192.168.10.2/24", "192.168.44.2/24"})
     assert checks["segment_addresses"] is False
     assert "192.168.44.2/24" in caplog.text
+
+
+def test_readiness_reports_which_address_drifted_and_not_only_that_it_did():
+    # The boolean alone sent the operator to the server log for the one fact that decides the
+    # repair: whether an address is stranded or a recorded one is gone.
+    state = _ready_state()
+    details: dict[str, str] = {}
+    checks = netcheck.readiness_checks(
+        state, address_reader=lambda _iface: {"192.168.10.2/24", "192.168.44.2/24"},
+        details=details)
+    assert checks["segment_addresses"] is False
+    assert "192.168.44.2/24" in details["segment_addresses"]      # the drifted address itself
+    assert "eth0.2" in details["segment_addresses"]               # and where it is
+    assert set(checks) == {"provisioning", "segment_addresses", "dnsmasq", "enforcement",
+                           "active_node", "xray", "xray_config", "tunnel"}   # names unchanged
+
+
+def test_readiness_details_name_a_missing_managed_address():
+    state = _ready_state()
+    details: dict[str, str] = {}
+    checks = netcheck.readiness_checks(state, address_reader=lambda _iface: set(), details=details)
+    assert checks["segment_addresses"] is False
+    assert "missing 192.168.10.2/24" in details["segment_addresses"]
+
+
+def test_readiness_details_stay_empty_when_every_layer_is_ready():
+    state = _ready_state()
+    details: dict[str, str] = {}
+    checks = netcheck.readiness_checks(
+        state, address_reader=lambda _iface: {"192.168.10.2/24"}, details=details)
+    assert all(checks.values())
+    assert details == {}          # a detail is a reason for a failure, never noise on success
 
 
 def test_readiness_ignores_kernel_owned_link_local_addresses():
@@ -124,13 +160,37 @@ def test_ready_route_is_open_and_uses_503_until_all_checks_pass(
     names = ("provisioning", "segment_addresses", "dnsmasq", "enforcement",
              "active_node", "xray", "tunnel")
 
-    monkeypatch.setattr(netcheck, "readiness_checks", lambda _state: {k: False for k in names})
+    monkeypatch.setattr(netcheck, "readiness_checks",
+                        lambda _state, details=None: {k: False for k in names})
     response = client.get("/api/ready")
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
     assert response.json()["checks"]["provisioning"] is False
 
-    monkeypatch.setattr(netcheck, "readiness_checks", lambda _state: {k: True for k in names})
+    monkeypatch.setattr(netcheck, "readiness_checks",
+                        lambda _state, details=None: {k: True for k in names})
     response = client.get("/api/ready")
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "checks": {k: True for k in names}}
+    assert response.json() == {"status": "ready", "checks": {k: True for k in names},
+                               "details": {}}
+
+
+def test_ready_route_returns_the_drift_detail_beside_the_boolean(
+        settings, stub_xray, monkeypatch):
+    settings.xray_bin = stub_xray
+    state = build_state(settings, net=DryRunBackend())
+    client = TestClient(create_app(settings, state=state))
+    names = ("provisioning", "segment_addresses", "dnsmasq", "enforcement",
+             "active_node", "xray", "tunnel")
+
+    def drifted(_state, details=None):
+        if details is not None:
+            details["segment_addresses"] = "eth0.2: unexpected 192.168.44.2/24"
+        return {k: k != "segment_addresses" for k in names}
+
+    monkeypatch.setattr(netcheck, "readiness_checks", drifted)
+    response = client.get("/api/ready")
+    assert response.status_code == 503                          # still fail-closed
+    body = response.json()
+    assert body["checks"] == {k: k != "segment_addresses" for k in names}   # names + meaning kept
+    assert body["details"] == {"segment_addresses": "eth0.2: unexpected 192.168.44.2/24"}

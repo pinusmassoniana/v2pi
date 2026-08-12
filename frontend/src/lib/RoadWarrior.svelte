@@ -99,7 +99,7 @@
       case "rebuilt": return "previous config rebuilt and reloaded";
       case "cleaned": return "xray was down — the stored config was rewritten without it, so it cannot come back on the next start";
       case "stopped": return "xray stopped — remote access is down for everyone until you reconnect";
-      case "stop-failed": return "SECURITY WARNING: xray could not be stopped (it survived SIGKILL), so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.";
+      case "stop-failed": return "SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.";
       case "not-live": return "nothing was serving the inbound — no live access to cut";
       default: return "";
     }
@@ -119,7 +119,7 @@
       case "rebuilt": return "previous config rebuilt and reloaded with the narrowed settings";
       case "cleaned": return "xray was down — the stored config was rewritten with the narrowed settings, so the old ones cannot come back on the next start";
       case "stopped": return "xray stopped — remote access is down for everyone until you reconnect";
-      case "stop-failed": return "SECURITY WARNING: xray could not be stopped (it survived SIGKILL), so the settings you just narrowed may still be live. The panel keeps retrying; reboot the gateway if this does not clear.";
+      case "stop-failed": return "SECURITY WARNING: xray's stop could not be confirmed, so the settings you just narrowed may still be live. The panel keeps retrying; reboot the gateway if this does not clear.";
       case "not-live": return "nothing was serving the inbound — nothing live to narrow";
       default: return "";
     }

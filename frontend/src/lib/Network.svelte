@@ -96,6 +96,11 @@
         {#if net.status.enforcement_status && net.status.enforcement_status !== "ok"}
           <div class="warn-row"><span class="sdot bad"></span> Host enforcement is {net.status.enforcement_status}; leak protection is not confirmed.</div>
         {/if}
+        {#if net.status.enforcement_warning}
+          <!-- Applied, minus one secondary part. Amber, not red: enforcement is up, so this must
+               not read as a failed apply — but it used to reach the operator only via the log. -->
+          <div class="warn-row soft"><span class="sdot warn"></span> Applied with a warning — {net.status.enforcement_warning}</div>
+        {/if}
         {#if v.foreign_ra}
           <div class="warn-row"><span class="sdot bad"></span> Another router is advertising IPv6 on the client VLAN — clients will leak. Disable RA for this VLAN on your router.</div>
         {/if}
@@ -183,8 +188,11 @@
   .warn-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--err);
     border: 1px solid color-mix(in srgb, var(--err) 40%, var(--bd)); background: color-mix(in srgb, var(--err) 9%, transparent);
     border-radius: var(--radius-sm); padding: 0.45rem 0.6rem; }
+  .warn-row.soft { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--bd));
+    background: color-mix(in srgb, var(--warn) 9%, transparent); }
   .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--tx3); }
   .sdot.bad { background: var(--err); }
+  .sdot.warn { background: var(--warn); }
 
   .form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
   .fld { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }

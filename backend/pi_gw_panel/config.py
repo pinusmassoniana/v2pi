@@ -305,6 +305,91 @@ def validate_net_settings(data: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
+# Fields whose value only becomes dangerous next to another field's. The caller resolves each of
+# them to what it WOULD BE after the change before handing them to `check_change_safe`.
+NET_CROSS_FIELD_KEYS = ("segment_iface", "segment_ip", "client_dns")
+
+
+def _net24(ip: str) -> str:
+    """The /24 containing `ip` ('' when blank/invalid), through the renderer's own helper.
+
+    Imported at call time, not at module scope: `net_control.plan` imports `Settings` from here,
+    so a top-level import would be a cycle. It has to be THAT function rather than a second
+    reimplementation — this refuses the collisions the nft/dnsmasq render would go on to produce,
+    and a guard that computes the network differently from the thing it is guarding is not a guard.
+    """
+    from pi_gw_panel.net_control.plan import net24
+    return net24(ip)
+
+
+def _same_net24(a: str, b: str) -> bool:
+    net = _net24(a)
+    return bool(net) and net == _net24(b)
+
+
+def _inside(ip: str, network: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(network)
+    except ValueError:
+        return False
+
+
+def check_change_safe(net: Mapping[str, Any], settings: Settings) -> list[str]:
+    """Cross-field refusals for a proposed segment config: the reasons it must NOT be applied.
+
+    Every validator above checks one field on its own, and each way of locking the operator out of
+    their own gateway is a collision *between* two fields — a config the panel would accept, apply,
+    and then no longer be reachable to undo. So these REFUSE rather than warn: the UI that would
+    take the change back is on the far side of the interface the change breaks.
+
+    `net` carries the EFFECTIVE values — each field as it would be after the change, i.e. the
+    request merged over what is already stored — because a partial edit collides just as well with
+    a field it does not mention.
+
+    An unset management leg (`mgmt_iface`/`mgmt_ip` empty) skips the check that needs it instead of
+    refusing everything: a panel that does not know its own management path cannot tell a collision
+    from a legitimate config, and refusing every config is its own lockout.
+    """
+    def value(field: str) -> str:
+        return str(net.get(field) or "").strip()
+
+    seg_iface, seg_ip, dns = (value(f) for f in NET_CROSS_FIELD_KEYS)
+    mgmt_iface = (settings.mgmt_iface or "").strip()
+    mgmt_ip = (settings.mgmt_ip or "").strip()
+    problems: list[str] = []
+    # The kill-switch drop and the tproxy redirect are both scoped `iifname <segment_iface>`
+    # (net_control/render.py), and host provisioning puts the segment address and the panel's own
+    # dnsmasq (DHCP + RA) on that same link. Aimed at the management leg it tunnels and then drops
+    # the network the panel is reached on, serves it DHCP, and `ip addr replace` on it can take the
+    # panel's own address off the box. A VLAN *of* the management NIC is the normal setup, so only
+    # the exact same interface name is refused.
+    if seg_iface and mgmt_iface and seg_iface == mgmt_iface:
+        problems.append(
+            f"segment_iface: '{seg_iface}' is also the management interface (mgmt_iface) — the "
+            "kill-switch drop, the tproxy redirect and the segment's DHCP server would be "
+            "installed on the leg this panel is reached on, and applying that would take away "
+            f"the access needed to undo it. Use a separate link (a VLAN of it, e.g. "
+            f"'{seg_iface}.2', is fine)")
+    # Same /24 = the segment address, the DHCP pool it hands out, and the LAN-access masquerade
+    # (`ip saddr <segment> ip daddr <lan>`) all land in the management network: a duplicate-address
+    # collision with mgmt_ip and a NAT rule that swallows the path to the panel.
+    if seg_ip and mgmt_ip and _same_net24(seg_ip, mgmt_ip):
+        problems.append(
+            f"segment_ip: {seg_ip} is in the management network ({_net24(mgmt_ip)}, which holds "
+            f"mgmt_ip {mgmt_ip}) — the segment, its DHCP pool and the LAN-access NAT would overlap "
+            "the network this panel is reached on. Give the segment its own /24")
+    # A private destination RETURNs above the tproxy rule, so a resolver inside the segment is
+    # never tunneled — it is asked directly, on the clients' own subnet, where nothing listens.
+    # The gateway's own address is the exception: the panel's dnsmasq answers there.
+    seg_net = _net24(seg_ip)
+    if dns and seg_net and dns != seg_ip and _inside(dns, seg_net):
+        problems.append(
+            f"client_dns: {dns} is inside the segment network ({seg_net}) — traffic to a private "
+            "destination is never tunneled, and nothing answers DNS at that address. Use a public "
+            f"resolver, or the gateway itself ({seg_ip})")
+    return problems
+
+
 def _v6_prefix64(value: str, field: str, what: str) -> str:
     try:
         network = ipaddress.IPv6Network(value, strict=False)

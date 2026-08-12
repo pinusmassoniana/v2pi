@@ -6,6 +6,7 @@ from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.net_control.plan import NetPlan
 from pi_gw_panel.net_control.dryrun import DryRunBackend
+from pi_gw_panel.net_control.linux import TIMEOUT_RETURNCODE
 from pi_gw_panel.net_control import pd_client, provision
 
 
@@ -25,6 +26,75 @@ class FakeRun:
 
     def cmds(self):
         return [c for c, _ in self.calls]
+
+
+class FakeHost:
+    """A runner whose `ip link add/delete` actually mutate a set of links, so a test can ask
+    what is left on the host rather than only what was commanded. `ip link show` answers from
+    that same set, so a probe for a link's absence gets the host's real answer."""
+
+    def __init__(self, existing=()):
+        self.links = set(existing)
+        self.calls = []
+
+    def __call__(self, cmd, input=None):
+        self.calls.append(cmd)
+        if cmd[:3] == ["ip", "link", "add"]:
+            self.links.add(cmd[cmd.index("name") + 1])
+        elif cmd[:3] == ["ip", "link", "delete"]:
+            if cmd[3] not in self.links:
+                raise subprocess.CalledProcessError(1, cmd)
+            self.links.discard(cmd[3])
+        elif cmd[:3] == ["ip", "link", "show"] and cmd[3] not in self.links:
+            raise subprocess.CalledProcessError(
+                1, cmd, output="", stderr=f'Device "{cmd[3]}" does not exist.')
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def exists(self, iface):
+        return iface in self.links
+
+
+class RefusingHost(FakeHost):
+    """A host whose `ip link delete` fails for a reason that is NOT "already gone" — the link is
+    still up afterwards. `returncode=TIMEOUT_RETURNCODE` is how the bounded runner reports a
+    delete that never came back, which says nothing at all about the link."""
+
+    def __init__(self, existing=(), refuse=(), returncode=1,
+                 stderr="RTNETLINK answers: Operation not permitted"):
+        super().__init__(existing)
+        self.refuse, self.returncode, self.stderr = set(refuse), returncode, stderr
+
+    def __call__(self, cmd, input=None):
+        if cmd[:3] == ["ip", "link", "delete"] and cmd[3] in self.refuse:
+            self.calls.append(cmd)
+            raise subprocess.CalledProcessError(self.returncode, cmd, output="",
+                                                stderr=self.stderr)
+        return super().__call__(cmd, input)
+
+
+class UnansweringHost(FakeHost):
+    """A host that answers NEITHER half: `ip link delete` and `ip link show` both hit the runner's
+    time limit, which is how a wedged netlink presents. `TIMEOUT_RETURNCODE` + the runner's own
+    synthetic stderr, so this is the exact exception `provision`'s default seam sees in
+    production — no `link_exists` is injected against this fake, deliberately."""
+
+    def __init__(self, existing=(), unanswered=()):
+        super().__init__(existing)
+        self.unanswered = set(unanswered)
+
+    def __call__(self, cmd, input=None):
+        if cmd[:2] == ["ip", "link"] and cmd[2] in ("delete", "show") and cmd[3] in self.unanswered:
+            self.calls.append(cmd)
+            raise subprocess.CalledProcessError(
+                TIMEOUT_RETURNCODE, cmd, output="",
+                stderr=f"command timed out after 10s: {' '.join(cmd)}")
+        return super().__call__(cmd, input)
+
+
+def _plan_for(iface: str) -> NetPlan:
+    plan = NetPlan.from_settings(Settings())
+    plan.segment_iface = iface
+    return plan
 
 
 class LinuxBackend:                 # name + `_run` seam = the provision linux gate
@@ -156,6 +226,268 @@ def test_ensure_segment_link_skips_link_add_and_ownership_when_present():
     assert not any(c[:3] == ["ip", "link", "add"] for c in fake.cmds())
     # a link the panel did not create is never claimed, so disabling never deletes it
     assert store.get_setting("managed_segment_link") in (None, "")
+
+
+def test_retargeting_the_segment_twice_leaves_no_panel_created_link_behind():
+    # A single-valued ledger would overwrite `eth0.2` with `eth0.9` and strand the first link
+    # on the host with no owner — nothing would ever delete it.
+    host = FakeHost(existing=["eth0"])
+    store = _store()
+
+    for iface in ("eth0.2", "eth0.9", "eth0.20"):
+        provision.ensure_segment_link(store, _plan_for(iface), run=host,
+                                      link_exists=host.exists)
+        assert provision._parse_links(store) == [iface]     # the ledger matches the host
+        assert host.links == {"eth0", iface}
+
+    provision.clear_managed_link(store, run=host)
+
+    assert host.links == {"eth0"}
+    assert store.get_setting(provision.LINK_KEY) == ""
+
+
+def test_link_ledger_reads_the_pre_upgrade_single_value_form():
+    # A gateway upgrading from the release that stored one bare name here must still have that
+    # link recognised and cleaned; silently abandoning it would cause the leak this prevents.
+    host = FakeHost(existing=["eth0", "eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+
+    assert provision._parse_links(store) == ["eth0.2"]
+    provision.clear_managed_link(store, run=host)
+
+    assert ["ip", "link", "delete", "eth0.2"] in host.calls
+    assert host.links == {"eth0"}
+    assert store.get_setting(provision.LINK_KEY) == ""
+
+
+def test_retargeting_away_from_a_pre_upgrade_recorded_link_removes_it():
+    host = FakeHost(existing=["eth0", "eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")          # pre-upgrade single value
+
+    provision.ensure_segment_link(store, _plan_for("eth0.9"), run=host,
+                                  link_exists=host.exists)
+
+    assert host.links == {"eth0", "eth0.9"}
+    assert provision._parse_links(store) == ["eth0.9"]
+
+
+def test_a_link_the_panel_did_not_create_is_never_deleted():
+    host = FakeHost(existing=["eth0", "eth0.2"])             # eth0.2 pre-dates the panel
+    store = _store()
+
+    provision.ensure_segment_link(store, _plan_for("eth0.2"), run=host,
+                                  link_exists=host.exists)
+    provision.ensure_segment_link(store, _plan_for("eth0.9"), run=host,
+                                  link_exists=host.exists)
+    provision.clear_managed_link(store, run=host)
+
+    assert ["ip", "link", "delete", "eth0.2"] not in host.calls
+    assert "eth0.2" in host.links
+    assert host.links == {"eth0", "eth0.2"}
+
+
+def test_ensure_segment_link_records_the_new_link_before_creating_it():
+    # A crash between the two must leave a record of a link that may exist, never a link with
+    # no record: the latter is the orphan no later pass would ever delete.
+    host = FakeHost(existing=["eth0"])
+    store = _store()
+    seen: list[str] = []
+    real_set = store.set_setting
+
+    def record(key, value):
+        real_set(key, value)
+        if key == provision.LINK_KEY:
+            seen.append(f"set:{value}")
+
+    def run(cmd, input=None):
+        if cmd[:3] == ["ip", "link", "add"]:
+            seen.append("kernel:add")
+        return host(cmd, input)
+
+    store.set_setting = record
+    provision.ensure_segment_link(store, _plan_for("eth0.2"), run=run,
+                                  link_exists=host.exists)
+    assert seen == ["set:eth0.2", "kernel:add"]
+
+
+def test_a_superseded_link_stays_recorded_until_its_delete_has_run():
+    # Between "the new link exists" and "the old one is gone" BOTH belong to the panel;
+    # forgetting the old one first would strand it if the process died in that window.
+    host = FakeHost(existing=["eth0", "eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+    at_add, at_delete = [], []
+
+    def run(cmd, input=None):
+        if cmd[:3] == ["ip", "link", "add"]:
+            at_add.append(store.get_setting(provision.LINK_KEY) or "")
+        if cmd[:3] == ["ip", "link", "delete"]:
+            at_delete.append(store.get_setting(provision.LINK_KEY) or "")
+        return host(cmd, input)
+
+    provision.ensure_segment_link(store, _plan_for("eth0.9"), run=run,
+                                  link_exists=host.exists)
+
+    assert at_add == ["eth0.2\neth0.9"]
+    assert at_delete == ["eth0.2\neth0.9"]
+    assert store.get_setting(provision.LINK_KEY) == "eth0.9"
+
+
+def test_clear_managed_link_drains_every_recorded_link():
+    host = FakeHost(existing=["eth0", "eth0.2", "eth0.9"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2\neth0.9")
+
+    provision.clear_managed_link(store, run=host)
+
+    assert host.links == {"eth0"}
+    assert store.get_setting(provision.LINK_KEY) == ""
+
+
+def test_clear_managed_link_forgets_an_already_gone_link():
+    # Reboot/manual cleanup: the delete fails, but the ownership entry must still drain or the
+    # ledger grows a name that can never be retired. Absence is what licenses that — the probe
+    # confirms it — and a delete failing for this reason is not a provisioning problem.
+    host = FakeHost(existing=["eth0"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2\neth0.9")
+
+    failed = provision.clear_managed_link(store, run=host)
+
+    assert failed == []
+    assert store.get_setting(provision.LINK_KEY) == ""
+
+
+def test_a_link_that_would_not_delete_stays_owned_and_is_reported():
+    # "Already gone" and "the delete was refused" are different facts. Reading the second as the
+    # first drops ownership of a link that is still up — the very orphan the ledger prevents,
+    # reintroduced through the error path — so absence must be proven before the entry goes.
+    host = RefusingHost(existing=["eth0", "eth0.2"], refuse=["eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+
+    failed = provision.ensure_segment_link(store, _plan_for("eth0.9"), run=host,
+                                           link_exists=host.exists)
+
+    assert host.links == {"eth0", "eth0.2", "eth0.9"}        # the superseded link is still up
+    assert provision._parse_links(store) == ["eth0.2", "eth0.9"]     # so it is still owned
+    assert len(failed) == 1 and failed[0].startswith("eth0.2: ")
+    assert "not permitted" in failed[0]
+
+
+def test_a_timed_out_delete_is_treated_as_unknown_not_as_gone():
+    # The bounded runner reports a delete that never returned as CalledProcessError(124). That
+    # exit status carries no information about the link, so it may not clear ownership.
+    host = RefusingHost(existing=["eth0", "eth0.2"], refuse=["eth0.2"],
+                        returncode=TIMEOUT_RETURNCODE,
+                        stderr="command timed out after 10s: ip link delete eth0.2")
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+
+    failed = provision.clear_managed_link(store, run=host, link_exists=host.exists)
+
+    assert host.links == {"eth0", "eth0.2"}
+    assert provision._parse_links(store) == ["eth0.2"]       # retained, so a later run retries
+    assert len(failed) == 1 and "timed out" in failed[0]
+
+
+def test_host_provision_reports_a_panel_created_link_it_could_not_remove():
+    # The operator has to learn about it: a link the panel owns and left running means the pass
+    # did not reach the host state it would otherwise report as applied.
+    host = RefusingHost(existing=["eth0", "eth0.2"], refuse=["eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+    store.set_setting("segment_iface", "eth0.9")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert not result.ok
+    assert "eth0.2" in result.error and "not removed" in result.error
+    assert state.provision_result is result
+    # The new segment still comes up — the leftover is reported, not allowed to abort the pass.
+    assert "eth0.9" in host.links and state.dnsmasq.applied
+
+
+# --- the DEFAULT probe seam: what "absent" is allowed to mean -------------------------------
+# The tests above inject a bool `link_exists`, which is a test's own authoritative host model.
+# Production injects nothing, and the default seam is where the distinction between "not there"
+# and "could not tell" actually has to be drawn — so these drive it with no seam at all.
+
+
+def test_the_default_probe_calls_only_an_explicit_not_found_absent():
+    # One state per answer `ip link show` can give. A timeout and an EPERM are NOT absence: the
+    # exit status says nothing about the device, and reading either as "gone" is what lets a live
+    # VLAN lose its owner.
+    host = FakeHost(existing=["eth0"])
+    assert provision._probe_link("eth0", run=host)[0] == provision.LINK_PRESENT
+    assert provision._probe_link("eth0.2", run=host)[0] == provision.LINK_ABSENT
+
+    def timed_out(cmd, input=None):
+        raise subprocess.CalledProcessError(
+            TIMEOUT_RETURNCODE, cmd, output="", stderr=f"command timed out: {' '.join(cmd)}")
+
+    def refused(cmd, input=None):
+        raise subprocess.CalledProcessError(
+            1, cmd, output="", stderr="RTNETLINK answers: Operation not permitted")
+
+    def broken(cmd, input=None):
+        raise OSError("ip: command not found")
+
+    for run in (timed_out, refused, broken):
+        state, reason = provision._probe_link("eth0.2", run=run)
+        assert state == provision.LINK_UNKNOWN, f"{run.__name__} was read as an answer"
+        assert reason, f"{run.__name__} reported an unknown with no reason"
+
+
+def test_a_delete_and_a_probe_that_both_time_out_leave_the_link_owned():
+    # The production shape of the bug: the runner's time limit fires on the delete AND on the
+    # `ip link show` that would have proven the link gone. Neither says anything about the
+    # device, so the ledger entry must survive — dropping it strands a live VLAN with no owner
+    # and no later pass would ever look at it again.
+    host = UnansweringHost(existing=["eth0", "eth0.2"], unanswered=["eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+
+    failed = provision.clear_managed_link(store, run=host)          # DEFAULT seam
+
+    assert host.links == {"eth0", "eth0.2"}                          # still up
+    assert provision._parse_links(store) == ["eth0.2"]               # still owned, so it retries
+    assert len(failed) == 1 and failed[0].startswith("eth0.2: ")
+    assert "timed out" in failed[0] and "could not be probed" in failed[0]
+
+
+def test_a_link_proven_absent_through_the_default_seam_is_still_forgotten():
+    # The other direction, on the same fake: a delete that fails because the link really is gone
+    # gets an explicit not-found from `ip link show`, and that entry MUST drain or the ledger
+    # grows a name nothing can ever retire.
+    host = UnansweringHost(existing=["eth0"], unanswered=["eth0.9"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2\neth0.9")
+
+    failed = provision.clear_managed_link(store, run=host)          # DEFAULT seam
+
+    assert provision._parse_links(store) == ["eth0.9"]   # only the unanswerable one is retained
+    assert len(failed) == 1 and failed[0].startswith("eth0.9: ")
+
+
+def test_host_provision_reports_a_link_whose_probe_could_not_answer():
+    # host_provision never injects a seam, so this is the whole chain on the default probe: an
+    # unanswerable link is a failed pass, which is what rolls the candidate settings back.
+    host = UnansweringHost(existing=["eth0", "eth0.2"], unanswered=["eth0.2"])
+    store = _store()
+    store.set_setting(provision.LINK_KEY, "eth0.2")
+    store.set_setting("segment_iface", "eth0.9")
+    state = _State(store, LinuxBackend(host), _Dnsmasq())
+
+    result = provision.host_provision(state)
+
+    assert not result.ok
+    assert "eth0.2" in result.error and "not removed" in result.error
+    assert provision._parse_links(store) == ["eth0.2", "eth0.9"]
+    assert "eth0.9" in host.links                    # the new segment still came up
 
 
 def test_reconcile_segment_addresses_replaces_only_panel_owned_addresses():

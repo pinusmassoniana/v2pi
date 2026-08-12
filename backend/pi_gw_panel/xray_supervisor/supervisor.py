@@ -5,7 +5,7 @@ import threading
 import time
 from typing import TypedDict
 
-from pi_gw_panel.xray_config.validate import scrub_output
+from pi_gw_panel.xray_config.validate import config_digest, scrub_output
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,10 @@ class SupervisorStatus(TypedDict):
     last_exit_code: int | None
     last_error: str
     stderr_tail: str
+    # Digest of the config the RUNNING process actually loaded, or None for "unknown".
+    # None never means "matches" — a comparison against the file on disk may only conclude
+    # "same" from two digests that are both present and equal.
+    loaded_config_digest: str | None
 
 
 class XraySupervisor:
@@ -56,6 +60,9 @@ class XraySupervisor:
         self._stderr_thread: threading.Thread | None = None
         self._stderr_lock = threading.Lock()
         self._redaction_config: dict = {}
+        # Fingerprint of the config the live child loaded at spawn time — the only record of
+        # what the PROCESS is serving, as opposed to what the file now says. None = unknown.
+        self._loaded_digest: str | None = None
 
     def set_start_guard(self, guard) -> None:
         """Install the `() -> bool` consulted before each spawn (see the class docstring). Set
@@ -73,6 +80,9 @@ class XraySupervisor:
                 self._join_stderr()
                 self._proc = None
             self._last_exit_code = None
+            # The previous child is gone, so nothing is loaded until this spawn reads its own
+            # config: a stale digest here would let a caller conclude "same as on disk".
+            self._loaded_digest = None
             with self._stderr_lock:
                 self._stderr_tail = ""
             # Asked here — inside the lock, after the "already running" exit, immediately before
@@ -92,6 +102,13 @@ class XraySupervisor:
             # config being unreadable is exactly when xray is loudest, and dropping to {}
             # switched redaction off wholesale — the uuid/keys of the config it last ran with
             # are still the ones its complaints quote.
+            #
+            # The same read is where the loaded-config fingerprint is taken, because this is the
+            # content the child about to be exec'd will parse. Taken any later — by re-reading the
+            # file when someone asks — it would fingerprint whatever the file says NOW and report
+            # a rewritten-but-not-reloaded config as the one being served, which is the confusion
+            # it exists to prevent. Unlike the redaction vocabulary the digest is NOT carried over
+            # from the previous read: not knowing what was loaded has to read as unknown.
             try:
                 with open(self.config_path) as f:
                     config = json.load(f)
@@ -102,6 +119,7 @@ class XraySupervisor:
             else:
                 if isinstance(config, dict):
                     self._redaction_config = config
+                    self._loaded_digest = config_digest(config)
                 else:
                     logger.warning(
                         "%s is not a JSON object — keeping the previous redaction vocabulary",
@@ -116,6 +134,7 @@ class XraySupervisor:
                 )
             except OSError as exc:
                 self._proc = None
+                self._loaded_digest = None   # no child, so nothing loaded it
                 with self._stderr_lock:
                     if isinstance(exc, FileNotFoundError):
                         self._stderr_tail = "xray executable not found"
@@ -182,6 +201,10 @@ class XraySupervisor:
             self._last_exit_code = proc.returncode
         self._join_stderr()
         self._proc = None
+        # Only a stop we could confirm clears the fingerprint. The `return False` above leaves it
+        # alone on purpose: that child is still alive and still serving what it loaded, which is
+        # precisely when a caller needs to know what that was.
+        self._loaded_digest = None
         return True
 
     def reload(self) -> bool:
@@ -276,6 +299,7 @@ class XraySupervisor:
                 "last_exit_code": self._last_exit_code,
                 "last_error": last_error,
                 "stderr_tail": last_error,
+                "loaded_config_digest": self._loaded_digest,
             }
 
     def state(self) -> str:

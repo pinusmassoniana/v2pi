@@ -772,7 +772,16 @@ def test_a_plain_settings_save_is_not_a_revocation(settings, stub_xray):
 def test_turning_off_an_inbound_that_was_never_live_does_not_stop_xray(settings, stub_xray):
     """The fail-safe path is for cutting LIVE access. Arming with no clients emits no inbound at
     all, so switching the feature back off revokes nothing — and must not take xray down to
-    prove it, even with nothing left to rebuild from."""
+    prove it, even with nothing left to rebuild from.
+
+    It answers `rebuilt` rather than `not-live`, and that changed deliberately. A clean config on
+    disk says nothing about what a RUNNING xray loaded minutes ago: the same clean file is what an
+    irreversible reapply leaves behind when it wrote the new config and could not make the old
+    process take it, and answering "nothing was live" there reported a revocation as complete
+    while the old process went on serving every credential it had. Only an affirmed reload — or
+    an affirmed stop — settles it, so with a running process the file is reloaded and the outcome
+    says so. `not-live` is now reserved for a supervisor observed to be down.
+    """
     c = _client(settings, stub_xray)
     h = {"X-CSRF-Token": _login(c)}
     nid = _add_node(c, h)
@@ -783,8 +792,10 @@ def test_turning_off_an_inbound_that_was_never_live_does_not_stop_xray(settings,
     c.delete(f"/api/nodes/{nid}", headers=h)                              # nothing to rebuild from
 
     body = c.put("/api/rw", json={**RW_ARMED, "enabled": False}, headers=h).json()
-    assert body["revocation"] == "not-live"
+    assert body["revocation"] == "rebuilt"
     assert c.get("/api/status").json()["running"] is True
+    # (`not-live` is still reachable, with xray affirmatively down — see
+    #  test_the_two_no_reload_outcomes_do_not_share_one_value in test_rw_revocation_audit.py.)
 
 
 def _live_inbound(settings) -> dict:

@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -8,6 +9,7 @@ from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
 from pi_gw_panel.net_control.linux import _run
 from pi_gw_panel.net_control.plan import NetPlan
+from pi_gw_panel.xray_config.validate import config_digest
 
 _log = logging.getLogger("pi_gw_panel")
 
@@ -75,11 +77,108 @@ def address_drift(expected: set[str], actual: set[str]) -> set[str]:
     return {addr for addr in actual if addr not in expected and not _kernel_owned(addr)}
 
 
-def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
+def _segment_address_detail(iface: str, expected: list[str | None], actual: set[str],
+                            drift: set[str]) -> str:
+    """Why `segment_addresses` is false, in one line — the same facts the drift log gets.
+
+    Readiness answered with a bare boolean, so the *reason* it computed here was thrown away
+    and reached the operator only through the server log: `false` could not be told apart
+    into "an address the panel installed is gone" and "an address nobody recorded is
+    stranded on the segment", which are different repairs.
+    """
+    parts: list[str] = []
+    if drift:
+        parts.append("unexpected " + ", ".join(sorted(drift)))
+    missing = sorted(value for value in expected if value is not None and value not in actual)
+    if missing:
+        parts.append("missing " + ", ".join(missing))
+    if any(value is None for value in expected):
+        parts.append("no valid managed address is recorded")
+    return f"{iface or '?'}: " + ("; ".join(parts) if parts else "address check failed")
+
+
+# --- what the live xray LOADED, against what the config file now says -----------------
+#
+# Single-slot memo of the on-disk config's digest, keyed by the file's identity: reading and
+# hashing config.json on every `/api/status` would be a re-read every 3s per open dashboard tab
+# (`subscribeStatus(3000)`), for a file that changes only when an apply/revocation rewrites it.
+# The key is (inode, mtime_ns, size): every panel write goes through tempfile + `os.replace`
+# (`ConfigManager._write_atomic`), so the inode changes on each one, and a hand-edit over SSH moves
+# mtime_ns and usually size too. Concurrent readers may both recompute — the slot is replaced
+# with one immutable tuple, never mutated in place — which is wasted work, never a wrong answer.
+_disk_digest_memo: tuple[str, tuple[int, int, int], str | None] | None = None
+
+
+def disk_config_digest(path: str) -> str | None:
+    """`config_digest` of the config file as it is on disk NOW, or None if it cannot be read.
+
+    None means "cannot tell", and callers must keep it distinct from a digest: a truncated or
+    deleted config is not evidence that the running process is serving the right thing.
+    """
+    global _disk_digest_memo
+    if not path:
+        return None
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    key = (info.st_ino, info.st_mtime_ns, info.st_size)
+    memo = _disk_digest_memo
+    if memo is not None and memo[0] == path and memo[1] == key:
+        return memo[2]
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        digest = None
+    else:
+        digest = config_digest(cfg) if isinstance(cfg, dict) else None
+    _disk_digest_memo = (path, key, digest)
+    return digest
+
+
+def config_drift(supervisor, config_path: str = "") -> tuple[str, str]:
+    """Is the running xray serving the config that is on disk? → (verdict, one-line detail).
+
+    "drift"   — proven divergence: the process loaded one config and the file now hashes to
+                another. Nothing reloaded it, so a credential the operator revoked minutes ago
+                is still being admitted; this is the state the whole comparison exists for.
+    "ok"      — both digests are known and equal.
+    "unknown" — either digest is missing: nothing has been started yet (the normal state at
+                boot), the config could not be parsed when it was loaded, or it cannot be read
+                now. Deliberately NOT folded into "ok": an absent digest is not evidence of a
+                match, and reporting it as one is exactly the silence this replaces.
+
+    The comparison is `config_digest`-to-`config_digest` on both sides — the supervisor records
+    the loaded one with that same function — so it is stable under reformatting and comparable
+    to the digests used for apply provenance.
+    """
+    try:
+        loaded = supervisor.status().get("loaded_config_digest")
+    except Exception:
+        return "unknown", ""
+    path = config_path or getattr(supervisor, "config_path", "") or ""
+    on_disk = disk_config_digest(path)
+    if not loaded or not on_disk:
+        return "unknown", ""
+    if loaded == on_disk:
+        return "ok", ""
+    return "drift", (
+        f"{path} was rewritten after the running xray loaded it "
+        f"(loaded {loaded[:12]}, on disk {on_disk[:12]}) — the live process is still serving "
+        "the older config; restart or reload xray to apply it")
+
+
+def readiness_checks(state, address_reader=iface_addresses,
+                     details: dict[str, str] | None = None) -> dict[str, bool]:
     """Truthful gateway readiness, stricter than process liveness.
 
     A migration may commit only when every layer needed to carry client traffic through the
     intended active tunnel is confirmed. Failures and unavailable host probes are fail-closed.
+
+    `details`, when given, is filled with a one-line explanation per failed check that has
+    one. It is strictly additive: the returned booleans keep their exact names and meaning,
+    because the migration script commits on them.
     """
     store = state.store
     provision_result = getattr(state, "provision_result", None)
@@ -106,6 +205,9 @@ def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
         if drift:
             _log.warning("segment address drift on %s: unexpected %s", iface, sorted(drift))
         segment_addresses = bool(expected and complete and not drift)
+        if details is not None and not segment_addresses:
+            details["segment_addresses"] = _segment_address_detail(
+                iface, expected, actual, drift)
 
     dns = getattr(state, "dnsmasq", None)
     try:
@@ -134,6 +236,19 @@ def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
         xray = bool(state.supervisor.status().get("running"))
     except Exception:
         xray = False
+    # A process that is up is not the same as a process that is serving the current config: a
+    # rewrite nobody reloaded (hand-edit, restored backup, an apply whose reload threw) leaves
+    # `xray: true` while the old config — and the credential it still admits — stays live.
+    # Only a PROVEN divergence fails: "unknown" is the normal state before anything has been
+    # started, and failing closed on it would pin /api/ready at 503 on a healthy boot and make
+    # the migration script roll a good cutover back (the same reasoning as `manage_segment=0`
+    # above). Unknown is still reported as unknown on /api/status — it is never called a match.
+    # No try here on purpose: `config_drift` answers "unknown" for every failure it can meet
+    # (a supervisor that raises, an unreadable/unparseable file), so it cannot raise out.
+    drift, drift_detail = config_drift(state.supervisor)
+    xray_config = drift != "drift"
+    if details is not None and not xray_config:
+        details["xray_config"] = drift_detail
     try:
         health = active_health(store)
     except Exception:
@@ -147,6 +262,7 @@ def readiness_checks(state, address_reader=iface_addresses) -> dict[str, bool]:
         "enforcement": enforcement,
         "active_node": active_node,
         "xray": xray,
+        "xray_config": xray_config,
         "tunnel": tunnel,
     }
 
@@ -263,6 +379,19 @@ def _tunnel(store) -> dict:
             "egress_ip": a["egress_ip"], "checked_at": a["checked_at"]}
 
 
+def last_net_warning(store) -> str:
+    """The last network apply's non-fatal warning, as recorded by the controller.
+
+    A `NetResult.warning` (e.g. "LAN access chain not applied") used to have no reader at
+    all: an apply that installed enforcement but silently failed to place the LAN-access
+    rules looked exactly like a clean success everywhere except the server log. The
+    controller parks the last apply's warning on the (long-lived, in-memory) store next to
+    the rest of its enforcement snapshot — nothing is persisted, so a fresh process starts
+    with no warning and the very first apply sets the truthful value.
+    """
+    return getattr(store, "last_net_warning", "") or ""
+
+
 def network_status(store, settings: Settings, *, sysfs: str = "/sys/class/net",
                    leases_path: str | None = None, uplink_check=lambda: None) -> dict:
     """Live gateway status: segment link, uplink, DHCP clients (+ list), tunnel egress.
@@ -277,6 +406,9 @@ def network_status(store, settings: Settings, *, sysfs: str = "/sys/class/net",
         "dhcp_clients": len(clients),
         "clients": clients,
         "tunnel": _tunnel(store),
+        # A partially-applied network is a success WITH a warning; it must reach the operator
+        # without reading as a failed apply (see `enforcement_error` for that).
+        "enforcement_warning": last_net_warning(store),
     }
 
 

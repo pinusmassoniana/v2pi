@@ -25,14 +25,18 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pi_gw_panel.health import probe, failover
 from pi_gw_panel.health.monitor import DEFAULT_PROBE_URL, LoopErrorReporter
-from pi_gw_panel.controller import apply_lock
+from pi_gw_panel.controller import RW_PENDING_KEY, apply_lock
 from pi_gw_panel.net_control import events
 
 log = logging.getLogger("pi_gw_panel")
 DEFAULT_INTERVAL = 20.0        # watchdog + failover-eval cadence
 DEFAULT_PROBE_INTERVAL = 60.0  # active-node real-probe cadence (a throwaway xray each time)
 DEFAULT_PROBE_URL6 = "https://api6.ipify.org?format=json"
-RW_PENDING_KEY = "rw_reconcile_pending"
+# `RW_PENDING_KEY` is imported, never restated. This loop is the ONLY thing that comes back for a
+# revocation whose runtime half never happened, and it finds one by reading that key — so a second
+# literal here is a rename away from a recovery that silently sees nothing pending, forever, while
+# the running xray keeps serving a credential the store has already taken away. The controller
+# owns the name because it owns the clear.
 
 
 def _reconcile_revocation(state) -> bool:
@@ -178,6 +182,13 @@ class LivenessLoop:
         Paced and reported like the watchdog. A marker that cannot be cleared — an xray that
         survives SIGKILL is exactly that case — must degrade into a 10-minute retry with one
         event on the record, not a rebuild every 20 s that flushes the event ring.
+
+        The KEY comes from the controller; the READ is this loop's own on purpose, and is not
+        `controller.rw_reconcile_is_pending`. That helper answers False for an unreadable store,
+        which is right for a caller deciding whether to act, and wrong here: this tick reads False
+        as "the episode is over" and resets the attempt count, the reported flag and the deadline.
+        A database that cannot be read would then wipe the pacing of an episode that is still very
+        much open. So an unreadable store returns early instead, leaving the episode untouched.
         """
         st = self._state
         if stop_event is not None and stop_event.is_set():
@@ -188,8 +199,15 @@ class LivenessLoop:
             log.warning("liveness: could not read the pending-revocation marker", exc_info=True)
             return
         if not pending:
+            # The DEADLINE goes too, not just the counters. It used to survive, so a NEW
+            # revocation interrupted minutes after an old episode cleared inherited the dead
+            # episode's next-attempt time — up to the 600 s ceiling — and the credential it took
+            # away stayed live on the running xray for that whole window with nothing else
+            # looking. There is no episode left to pace: an absent marker means the last one is
+            # finished, and the next one starts from scratch or it is not a new episode at all.
             self._reconcile_attempts = 0
             self._reconcile_reported = False
+            self._next_reconcile_at = 0.0
             return
         now = self._now()
         if now < self._next_reconcile_at:

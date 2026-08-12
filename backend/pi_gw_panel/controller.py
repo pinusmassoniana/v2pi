@@ -74,27 +74,37 @@ class RestoreResult:
     snapshot: str = ""     # the pre-restore copy of the state this replaced
 
 
-def _record_enforcement(net, result: NetResult, *, wan_blocked: bool | None) -> NetResult:
+def _record_enforcement(net, result: NetResult, *, wan_blocked: bool | None,
+                        store=None) -> NetResult:
     """Keep the last *confirmed* host-enforcement outcome on the backend instance.
 
     The API must not infer that a guard exists merely because the corresponding setting is on.
     Backends are long-lived AppState resources, so this tiny status snapshot naturally survives
     across requests without persisting host-specific/transient truth in SQLite.
+
+    `result.warning` is the same snapshot for the parts of an apply that are secondary and so
+    only warn (LAN access). It had no reader, so a network that came up with its LAN-access
+    rules missing was indistinguishable from a clean one outside the server log. It goes on
+    the store — the one long-lived object `netcheck.network_status` is handed — and is always
+    overwritten, never appended: it describes the LAST apply, and a failed apply reports
+    through `enforcement_error` instead, so it must not leave a stale warning behind.
     """
     net.enforcement_status = "ok" if result.ok else "error"
     net.wan_blocked = wan_blocked if result.ok else None
     net.enforcement_error = "" if result.ok else (result.error or "network operation failed")
+    if store is not None:
+        store.last_net_warning = result.warning if result.ok else ""
     return result
 
 
-def _call_net(net, method: str, *args, wan_blocked: bool | None) -> NetResult:
+def _call_net(net, method: str, *args, wan_blocked: bool | None, store=None) -> NetResult:
     try:
         result = getattr(net, method)(*args)
     except Exception as exc:
         result = NetResult(ok=False, error=f"{method} raised: {exc}")
     if not isinstance(result, NetResult):
         result = NetResult(ok=False, error=f"{method} returned no NetResult")
-    return _record_enforcement(net, result, wan_blocked=wan_blocked)
+    return _record_enforcement(net, result, wan_blocked=wan_blocked, store=store)
 
 
 def _require_net(result: NetResult, action: str) -> None:
@@ -107,7 +117,7 @@ def apply_net(settings: Settings, net, store=None) -> NetResult:
     and the kill-switch come from the settings k/v (falling back to config); without
     one it's the pure-config plan. Reused by apply_node and PUT /api/network."""
     plan = NetPlan.from_store(store, settings) if store is not None else NetPlan.from_settings(settings)
-    return _call_net(net, "apply_tproxy", plan, wan_blocked=False)
+    return _call_net(net, "apply_tproxy", plan, wan_blocked=False, store=store)
 
 
 def _kill_switch_on(store) -> bool:
@@ -126,7 +136,7 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
         if not hasattr(net, "apply_guard"):
             return _record_enforcement(
                 net, NetResult(ok=False, error="network backend cannot install fail-closed guard"),
-                wan_blocked=None)
+                wan_blocked=None, store=store)
         # Rendering the plan is INSIDE the guard, not an argument expression. `_call_net` only
         # wraps the backend call, so `NetPlan.from_store(...)` evaluated as an argument raised
         # straight out of stop_net — past every caller, all of which treat this as a function
@@ -141,9 +151,9 @@ def stop_net(settings: Settings, net, store=None) -> NetResult:
         except Exception as exc:
             return _record_enforcement(
                 net, NetResult(ok=False, error=f"could not render the net plan: {exc}"),
-                wan_blocked=None)
-        return _call_net(net, "apply_guard", plan, wan_blocked=True)
-    return _call_net(net, "teardown", wan_blocked=False)
+                wan_blocked=None, store=store)
+        return _call_net(net, "apply_guard", plan, wan_blocked=True, store=store)
+    return _call_net(net, "teardown", wan_blocked=False, store=store)
 
 
 def sync_net(state) -> NetResult:
@@ -192,6 +202,101 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
                         tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept,
                         domain_strategy=domain_strategy, ipv6_tproxy=ipv6, profile_explicit=explicit,
                         rw_inbound=rw)
+
+
+# The durable record that a committed narrowing of remote access has not yet reached the running
+# xray. The API layer sets it inside the mutation's own transaction; what CLEARS it is whatever can
+# prove the runtime caught up, and that is why the key and the clear live down here rather than
+# beside the setter: `apply_node` below is one such proof, and the only place it exists while the
+# lock that makes acting on it safe is still held.
+RW_PENDING_KEY = "rw_reconcile_pending"
+
+
+def rw_reconcile_is_pending(store) -> bool:
+    """Whether a committed narrowing is still waiting for its runtime half.
+
+    A store read that FAILS answers False — "do not act now", not "nothing to do". The marker is
+    durable, so nothing is lost by waiting for the next tick, whereas treating an unreadable
+    store as pending would run a full config rebuild on every pass while the database is broken.
+    """
+    try:
+        return bool(store.get_setting(RW_PENDING_KEY))
+    except Exception:
+        logger.warning("could not read the pending-revocation marker", exc_info=True)
+        return False
+
+
+def rw_clear_reconcile_pending(store) -> bool:
+    """Drop the marker and report whether it is now PROVABLY gone.
+
+    Guarded: failing to clear it costs one redundant reconcile later, while raising here would
+    turn a COMPLETED revocation into a 500.
+
+    The ANSWER is what the background recovery reports as "done", and it may not be inferred from
+    the write. A `set_setting` that raises, or one that returns having written nothing, leaves the
+    marker set and the next tick repeats the whole reconciliation — so a recovery that called
+    itself finished on the outcome alone reset its own backoff and its episode flag and went round
+    again every 20 s, reloading the live tunnel each time. The key is therefore read back, and
+    a read that fails is not proof of anything: the only thing that clears this is seeing it gone.
+    """
+    try:
+        store.set_setting(RW_PENDING_KEY, "")
+    except Exception:
+        logger.warning("could not clear the pending-revocation marker; the reconcile will be "
+                       "retried", exc_info=True)
+        return False
+    try:
+        return not store.get_setting(RW_PENDING_KEY)
+    except Exception:
+        logger.warning("could not confirm the pending-revocation marker was cleared; the "
+                       "reconcile will be retried", exc_info=True)
+        return False
+
+
+def _rw_complete_pending(store) -> None:
+    """Finish a pending revocation that THIS apply has just made true — under `apply_lock`.
+
+    A full apply that returns ok rebuilt the config from the store and reloaded xray onto it,
+    confirming readiness, so the running process is provably serving something the store produced
+    — the whole of what the marker was waiting for. Leaving it set is not free: the next liveness
+    tick reloads a healthy tunnel, and the recovery drops any rollback target it cannot vouch for,
+    so a marker nobody clears keeps taking the operator's undo away.
+
+    THE PROOF IS THE CONFIG AND THE RELOAD, and nothing else in the apply is load-bearing for it.
+    An apply that returns ok can still carry a warning about a secondary step (LAN access — see
+    `_record_enforcement`); that step can only ever grant LESS reachability, never re-list a
+    credential the rebuilt config no longer names, so it does not bear on whether the revocation
+    reached the running process. A step that would — a config that did not validate, a reload that
+    did not come up ready, a net apply that failed outright — makes the apply itself fail, and a
+    failed apply never gets here.
+
+    IT BELONGS HERE, AND INSIDE THIS LOCK. Wrapping the CALLERS instead — one wrapper per apply
+    site — was wrong twice over:
+
+      * It ran after `apply_node` had released `apply_lock`. A revocation can commit a NEWER
+        marker in that gap and then fail with `stop-failed`, and the older apply's wrapper erased
+        that marker afterwards — so nothing would ever come back to finish a revocation whose
+        credential was still being served. Every revocation holds `apply_lock` across both its
+        store half and its runtime half, so a clear taken while the lock is held can only ever
+        belong to a marker whose revocation has already finished.
+      * It only covered the apply sites somebody remembered to wrap. The boot reapply, a
+        subscription refresh and the failover tick reach exactly the same proven success and were
+        not among them, so a successful apply from any of those left the marker set — a needless
+        incident report and reload, and a fresh rollback target destroyed by the retry.
+
+    FAILS CLOSED in every direction. The marker survives unless it is read back absent: a write
+    that raises, one that quietly wrote nothing, and a read that cannot answer all leave it, and
+    the recovery finishes the episode later. Guarded, because clearing a marker may never be the
+    thing that turns a successful apply into a failure — the apply happened either way.
+    """
+    if store is None:
+        return
+    try:
+        if rw_reconcile_is_pending(store) and rw_clear_reconcile_pending(store):
+            logger.warning("a pending remote-access revocation was completed by a full apply")
+    except Exception:
+        logger.warning("could not clear the pending-revocation marker after an apply",
+                       exc_info=True)
 
 
 def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
@@ -324,6 +429,11 @@ def apply_node(node: Node, settings: Settings, supervisor: XraySupervisor,
                 # session" (since (re)connect) = lifetime − baseline, beside the lifetime total.
                 store.set_setting("session_base_up", store.get_setting("data_used_up") or "0")
                 store.set_setting("session_base_down", store.get_setting("data_used_down") or "0")
+        # Still holding `apply_lock`, and deliberately: this is the one thing here whose
+        # correctness depends on no revocation being able to interleave (see
+        # `_rw_complete_pending`). Outside the bookkeeping transaction, though — a raise inside it
+        # marks the whole nested unit rollback-only and would discard the active-node writes above.
+        _rw_complete_pending(store)
         return ApplyResult(ok=True)
 
 
@@ -393,10 +503,26 @@ def reapply_active_node(state, irreversible: bool = False) -> ApplyResult | None
         return ApplyResult(ok=False, error=f"boot reapply failed: {exc}")
 
 
+_CANDIDATE_NET_KEYS = ("segment_iface", "segment_ip", "segment_ip6", "ipv6_enabled",
+                       "manage_segment")
+
+
+def _restore_candidate_data(validated) -> dict:
+    """The net values a restore document is about to import, as the candidate helper reads them.
+
+    `segment_iface` is in the restorable allowlist, so a restore can retarget the segment exactly
+    like `PUT /api/network` does — and its `host_provision` runs inside the same DB transaction,
+    so a failure afterwards leaves the same orphan on the same host with the same nothing looking
+    at it. Same candidate ledger, then, and the same undo.
+    """
+    settings = getattr(validated, "settings", None) or {}
+    return {key: str(settings[key]) for key in _CANDIDATE_NET_KEYS if key in settings}
+
+
 def restore_backup(state, document) -> RestoreResult:
     """Restore validated intent and leave runtime explicitly disconnected + enforced."""
     from pi_gw_panel import backup as backup_mod
-    from pi_gw_panel.net_control.provision import host_provision
+    from pi_gw_panel.net_control import provision
 
     validated = backup_mod.validate_document(document)  # pure preflight before stopping anything
     with apply_lock:
@@ -420,6 +546,21 @@ def restore_backup(state, document) -> RestoreResult:
         if not initial_guard.ok:
             return RestoreResult(
                 ok=False, error=f"could not enforce disconnected state: {initial_guard.error}")
+        # Recorded OUTSIDE the transaction below, for the same reason `PUT /api/network` does it:
+        # a record that rolls back with the transaction it exists to clean up after would never be
+        # readable when it is needed, and a crash in between would strand the candidate interface.
+        try:
+            candidate = provision.provision_candidate(state, _restore_candidate_data(validated))
+        except Exception as exc:
+            # Rendering the candidate reads the CURRENT stored net settings, which are only
+            # validated at the API boundary and so can raise on hand-edited state. That must not
+            # abort a restore which has already stopped the tunnel and installed the guard: the
+            # pass below reports the same broken settings through its own result, which the
+            # recovery here knows how to handle. No candidate simply means no orphan to reclaim.
+            logger.warning("could not record the restore's provisioning candidate: %s", exc)
+            candidate = {}
+        provision.record_provision_candidate(state.store, candidate)
+        installed: dict = {}
         try:
             with state.store.transaction():
                 summary = backup_mod.import_state(state.store, validated)
@@ -427,7 +568,10 @@ def restore_backup(state, document) -> RestoreResult:
                 state.store.set_setting("prev_active_node_id", "")
                 state.store.set_setting("pending_active_node_id", "")
                 state.store.set_setting("active_since", "")
-                provisioned = host_provision(state)
+                provisioned = provision.host_provision(state)
+                # Read back before anything can roll it away: this is what the pass actually put
+                # on the host, including a v6 prefix only it could resolve.
+                installed = provision.managed_host_state(state.store)
                 if getattr(provisioned, "ok", True) is False:
                     raise RuntimeError(provisioned.error or "restored host provisioning failed")
                 guard = stop_net(state.settings, state.net, state.store)
@@ -446,11 +590,18 @@ def restore_backup(state, document) -> RestoreResult:
                 state.store.set_setting("pending_active_node_id", "")
                 state.store.set_setting("active_since", "")
             try:
-                previous_host = host_provision(state)
+                previous_host = provision.host_provision(state)
                 if getattr(previous_host, "ok", True) is False:
                     recovery.append(previous_host.error or "previous host restore failed")
             except Exception as recovery_exc:
                 recovery.append(f"previous host restore raised: {recovery_exc}")
+            # That pass reconciles the interface we went BACK to. A restored document may have
+            # retargeted the segment, and whatever the candidate pass put somewhere else is then
+            # invisible to every later pass and outside the nft guard — so name it and remove it.
+            undone = provision.undo_provision_candidate(state, candidate, installed)
+            recovery.extend(undone.actions)
+            if candidate and not undone.unresolved:
+                provision.clear_provision_candidate(state.store)
             previous_guard = stop_net(state.settings, state.net, state.store)
             if not previous_guard.ok:
                 recovery.append(previous_guard.error or "previous guard restore failed")
@@ -462,4 +613,6 @@ def restore_backup(state, document) -> RestoreResult:
             suffix = f"; recovery: {'; '.join(recovery)}" if recovery else ""
             return RestoreResult(ok=False, error=f"restore apply failed: {exc}{suffix}",
                                  snapshot=snapshot)
+        if candidate:                   # committed, so nothing is left pointing at an undo
+            provision.clear_provision_candidate(state.store)
         return RestoreResult(ok=True, summary=summary, snapshot=snapshot)

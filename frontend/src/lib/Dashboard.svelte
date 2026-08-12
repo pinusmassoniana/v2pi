@@ -46,6 +46,11 @@
   let directDown = $derived(liveDirect.down_bps);
   let directUp = $derived(liveDirect.up_bps);
   let xrayError = $derived(status?.xray_state === "error");
+  // The running process is serving a config the file no longer holds: something rewrote it and
+  // nothing reloaded it, so the client the operator just revoked is still being admitted. Only
+  // the proven case renders — "unknown" (nothing started yet, the normal state at boot) and a
+  // backend too old to answer both leave this quiet.
+  let configDrift = $derived(status?.config_drift === "drift");
   let killArmed = $derived(net?.kill_switch_enabled === false ? false : net?.status.enforcement_status === "ok" ? true : null);
   // A: surface an auto-failover from the last 24h until the operator dismisses it
   let failover = $derived(
@@ -233,6 +238,16 @@
   });
 </script>
 
+<!-- config drift: the process is up, but not on the config on disk. Not dismissible — unlike the
+     failover notice this is a live condition, and it stops the moment xray is restarted. -->
+{#if configDrift}
+  <div class="banner bad" role="alert">
+    <span>⚠ Xray is running on an older configuration than the one on disk — the last change was
+      written but never loaded. Restart Xray to serve it; until then a revoked client may still be
+      admitted.</span>
+  </div>
+{/if}
+
 <!-- failover banner + subscription warnings (kept) -->
 {#if failover}
   <div class="banner warn" role="status">
@@ -253,10 +268,13 @@
   <div class="cell">
     <div class="cell-k">XRAY PROCESS</div>
     <div class="cell-v">
-      <span class="sdot" class:on={status?.running} class:warn={xrayError} class:bad={status?.running === false && !xrayError}></span>
-      <span class="big" class:acc={status?.running} class:err={status?.running === false && !xrayError} class:warnc={xrayError}>
+      <span class="sdot" class:on={status?.running && !configDrift} class:warn={xrayError} class:bad={configDrift || (status?.running === false && !xrayError)}></span>
+      <span class="big" class:acc={status?.running && !configDrift} class:err={configDrift || (status?.running === false && !xrayError)} class:warnc={xrayError && !configDrift}>
         {status?.running ? "RUNNING" : xrayError ? "RECONNECTING" : status?.running === false ? "STOPPED" : "—"}
       </span>
+      {#if configDrift}
+        <span class="cell-sub err" title="The config file was rewritten after this process loaded it — restart Xray to serve it">STALE CONFIG</span>
+      {/if}
     </div>
   </div>
   <div class="cell">
@@ -537,6 +555,9 @@
   /* banners + chips (failover / subscription warnings) */
   .banner { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.85rem; border-radius: var(--radius);
     border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--bg1)); font-size: 0.82rem; }
+  /* the amber banner reports something that HAPPENED (a failover); .bad reports something that
+     is wrong right now and needs an action, so it borrows the error colour instead. */
+  .banner.bad { border-color: var(--err); background: color-mix(in srgb, var(--err) 12%, var(--bg1)); }
   .banner span { margin-right: auto; }
   .banner-x { background: none; border: none; color: var(--tx2); cursor: pointer; font: inherit; padding: 0 0.2rem; }
   .banner-x:hover { color: var(--tx); }

@@ -161,6 +161,12 @@ class StatusOut(BaseModel):
     # deliberately drops that pairing so its effect can never be undone. Advertising only the
     # node id told API consumers a rollback was available that answers {"ok": false}.
     rollback_available: bool = False
+    # Whether the RUNNING xray is serving the config that is on disk. "drift" = it is not: the
+    # file was rewritten and nothing reloaded it, so a revoked credential can still be admitted.
+    # "unknown" is its own answer, never folded into "ok" — nothing started yet (the normal state
+    # at boot), or a config that could not be parsed. Anything rendering this must treat only
+    # "drift" as a problem, or a healthy boot reads as a broken gateway.
+    config_drift: Literal["ok", "drift", "unknown"] = "unknown"
     server_now: float = 0.0   # Pi wall-clock at response time → client clock-skew correction (D4)
     tunnel_online: bool
     active_health_fresh: bool
@@ -537,6 +543,11 @@ class NetworkStatusOut(BaseModel):
     wan_blocked: bool | None = None     # confirmed guard state; None = not yet verified / failed
     enforcement_status: Literal["ok", "unknown", "error"] = "unknown"
     enforcement_error: str = ""
+    # Last apply's non-fatal warning: it SUCCEEDED, except for a secondary part (LAN access).
+    # Empty on a clean or failed apply. Anything rendering this must keep it distinct from
+    # enforcement_error — a partially-applied network is not a broken one, and presenting it
+    # as a failure would make operators roll back a working tunnel.
+    enforcement_warning: str = ""
     ipv6_prefix: str | None = None      # DHCPv6-PD 'auto': the host-delegated segment v6 prefix
     foreign_ra: bool | None = None      # Phase C: another router advertising v6 on the segment (leak)
     ipv6_prefix_source: str | None = None   # "static" | "ula" | "pd" — where the segment /64 came from
@@ -596,12 +607,21 @@ class ReadinessChecksOut(BaseModel):
     enforcement: bool
     active_node: bool
     xray: bool
+    # False only for a PROVEN divergence between the config the live process loaded and the one
+    # on disk. Unknown (nothing started yet, unparseable config) passes: readiness must not fail
+    # a healthy boot. `details["xray_config"]` names the two digests when it does fail.
+    xray_config: bool
     tunnel: bool
 
 
 class ReadinessOut(BaseModel):
     status: Literal["ready", "not_ready"]
     checks: ReadinessChecksOut
+    # Additive companion to `checks`, keyed by the SAME check names: a one-line reason for a
+    # failed check that computed one (e.g. which segment addresses drifted), which readiness
+    # used to compute and then discard to the log. Absent key = no detail; the booleans above
+    # remain the contract external consumers (the host migration script) commit on.
+    details: dict[str, str] = {}
 
 
 # --- road-warrior inbound (reach the gateway from outside) ---

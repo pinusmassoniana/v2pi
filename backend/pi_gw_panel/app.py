@@ -150,12 +150,22 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         try:
             log_handler = logs_mod.setup_app_logging(app_state.settings.app_log)
             from pi_gw_panel.controller import reapply_active_node, boot_guard
-            from pi_gw_panel.net_control.provision import host_provision
+            from pi_gw_panel.net_control.provision import (
+                host_provision, resume_pending_provision_undo)
             # Provisioning can partially start these resources, so register their cleanup first.
             for resource in (getattr(app_state, "dnsmasq", None),
                              getattr(app_state, "pd_client", None)):
                 if resource is not None:
                     owned.append(resource)
+            # A network change that died between provisioning its candidate interface and undoing
+            # it left host state nothing else will ever look at — the ownership metadata rolled
+            # back with the transaction and names the interface we went back to. Reclaim it BEFORE
+            # the pass below, never after: `host_provision` re-asserts the whole configured segment
+            # straight afterwards, so an undo that reaches too far is repaired within this boot,
+            # while an undo running after it would be deleting what that pass had just created and
+            # recorded as its own. Never fatal — it cannot raise, and it must not cost the operator
+            # the screen they would fix the gateway from.
+            resume_pending_provision_undo(app_state)
             host_provision(app_state)
             boot_guard(app_state)
             # A revocation commits the credential change before it can touch the runtime, so a
@@ -254,9 +264,15 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
              responses={503: {"model": ReadinessOut}})
     def ready():
         from pi_gw_panel.net_control import netcheck
-        checks = netcheck.readiness_checks(app_state)
+        # `details` carries the reason a check is false when the check computed one (which
+        # segment addresses drifted). Strictly additive: readiness is still decided by, and
+        # reported through, the same booleans under the same names — the host migration
+        # script commits on those — but "not_ready" no longer means "read the server log".
+        details: dict[str, str] = {}
+        checks = netcheck.readiness_checks(app_state, details=details)
         is_ready = all(checks.values())
-        payload = {"status": "ready" if is_ready else "not_ready", "checks": checks}
+        payload = {"status": "ready" if is_ready else "not_ready", "checks": checks,
+                   "details": details}
         return JSONResponse(payload, status_code=200 if is_ready else 503)
 
     @app.websocket("/api/ws/traffic")

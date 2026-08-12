@@ -80,7 +80,11 @@ class _FailGuardLinuxNet(_FailGuardNet):
     def _run(self, cmd, **kw):
         self.cmds.append(list(cmd))
         if cmd[:3] == ["ip", "link", "show"] and cmd[3] not in self.links:
-            raise subprocess.CalledProcessError(1, cmd)
+            # Speaks like iproute2 does: absence is an explicit not-found on stderr. The panel
+            # reads that text (and only that text) as proof the device is not there — a bare
+            # non-zero exit is "could not tell", which licenses no deletion at all.
+            raise subprocess.CalledProcessError(
+                1, cmd, stderr=f'Device "{cmd[3]}" does not exist.')
         if cmd[:3] == ["ip", "link", "add"]:
             self.links.add(cmd[cmd.index("name") + 1])
         if cmd[:3] == ["ip", "link", "delete"]:
