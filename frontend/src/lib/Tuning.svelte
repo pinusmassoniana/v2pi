@@ -5,6 +5,7 @@
   import { confirmDialog } from "./confirm.svelte";
   import { I } from "./icons";
   import { createMsg } from "./msg.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -109,7 +110,7 @@
   function addNoise() { editor.noises = [...editor.noises, { type: "rand", packet: "50-150", delay: "10-16" }]; }
   function rmNoise(i: number) { editor.noises = editor.noises.filter((_, idx) => idx !== i); }
 
-  $effect(() => { refresh(); });
+  $effect(() => subscribeLive(refresh, 30000));   // the profile editor is a separate copy — safe to reload the list
   $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 </script>
 

@@ -5,6 +5,7 @@
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -49,11 +50,7 @@
   }
 
   // live poll; pauses while dirty (don't clobber edited fields) and while the tab is hidden
-  $effect(() => {
-    load();
-    const t = setInterval(() => { if (!dirty && document.visibilityState === "visible") load(); }, 5000);
-    return () => clearInterval(t);
-  });
+  $effect(() => subscribeLive(load, 5000, () => dirty));
   $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 
   function leaseAge(expiry: number): string {

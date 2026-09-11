@@ -46,6 +46,28 @@ describe("shared status coordinator", () => {
     expect(statusStore.value).toBeNull();
   });
 
+  it("does not let a second subscriber delay the first poll", async () => {
+    // The shell subscribes, then the screen it renders subscribes too. _retime() used to clear the
+    // pending immediate poll and reschedule it a full interval out, so the panel started with no
+    // status at all for 3 s — and an unreachable panel took just as long to admit it.
+    const get = vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    const stopShell = subscribeStatus(4000);
+    const stopScreen = subscribeStatus(3000);          // mounts right behind it
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(get).toHaveBeenCalledTimes(1);
+    stopScreen(); stopShell();
+  });
+
+  it("records when the last poll actually succeeded, and forgets it on reset", async () => {
+    vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    expect(statusStore.lastOkAt).toBeNull();
+    await pollStatusOnce();
+    expect(statusStore.lastOkAt).toBeGreaterThan(0);
+    expect(statusStore.stale).toBe(false);
+    resetStatus();
+    expect(statusStore.lastOkAt).toBeNull();
+  });
+
   it("schedules the next poll only after the current one finishes", async () => {
     vi.useFakeTimers();
     const first = deferred<Status>();

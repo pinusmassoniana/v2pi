@@ -15,8 +15,8 @@ import SettingsScreen from "./Settings.svelte";
 import Setup from "./Setup.svelte";
 import Subscriptions from "./Subscriptions.svelte";
 import Tuning from "./Tuning.svelte";
-import { api, ApiError, type Network, type Node, type Rw, type Settings, type Status, type Subscription, type TuningProfile } from "./api";
-import { pollStatusOnce, resetStatus } from "./status.svelte";
+import { api, ApiError, DATA_CHANGED_EVENT, type Network, type Node, type Rw, type Settings, type Status, type Subscription, type TuningProfile } from "./api";
+import { pollStatusOnce, resetStatus, statusStore } from "./status.svelte";
 
 const mounted: object[] = [];
 
@@ -857,6 +857,223 @@ describe("mounted frontend regressions", () => {
     [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
     await flush();
     expect(document.querySelector<HTMLInputElement>('input[placeholder="name"]')!.value).toBe("p2");
+  });
+
+  it("keeps the Nodes screen alive while a subscription form is being filled in", async () => {
+    // Nodes and Subscriptions mount together and each reports its own dirty flag. While App
+    // combined them by writing one flag and reading the sibling's inside those callbacks, the two
+    // children's $effects invalidated each other forever: typing a single character into the Add
+    // subscription form blew the update depth and froze the whole screen until a reload.
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args); });
+    try {
+      mounted.push(mount(App, { target: document.body }));
+      await flush();
+      [...document.querySelectorAll<HTMLButtonElement>(".nav-item")].find((b) => b.textContent?.includes("Nodes"))!.click();
+      await flush();
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="subscription name"]')!, "sub-a");
+      await flush();
+
+      expect(JSON.stringify(errors)).not.toContain("effect_update_depth_exceeded");
+      // still reactive: the typed-in form is reported dirty, so leaving the screen must ask first
+      [...document.querySelectorAll<HTMLButtonElement>(".nav-item")].find((b) => b.textContent?.includes("Overview"))!.click();
+      await flush();
+      expect(document.body.textContent).toContain("Discard staged changes");
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm")!.click();
+      await flush();
+      expect(document.querySelector(".page-title")?.textContent).toContain("Overview");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("repaints the node table when a subscription refresh brings in new servers", async () => {
+    // The node list and the subscription list are two components sharing one screen, each owning
+    // its own fetch. Refreshing a subscription rewrote the nodes server-side and the table next to
+    // it kept showing the old set until the page was reloaded.
+    vi.mocked(api.listSubs).mockResolvedValue([subscription(1, "sub-a")]);
+    vi.mocked(api.listNodes).mockResolvedValue([]);
+    mounted.push(mount(App, { target: document.body }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>(".nav-item")].find((b) => b.textContent?.includes("Nodes"))!.click();
+    await flush();
+    expect(document.body.textContent).not.toContain("fresh-node");
+
+    // what api.mutate() emits after the subscription refresh lands (api.test.ts covers the emit)
+    vi.mocked(api.listNodes).mockResolvedValue([{ ...node(9, "fresh-node"), subscription_id: 1 }]);
+    document.dispatchEvent(new Event(DATA_CHANGED_EVENT));
+    await flush();
+    expect(document.body.textContent).toContain("fresh-node");   // no reload needed
+  });
+
+  // ---- reactive-loop guard -------------------------------------------------------------------
+  // The Nodes freeze was a Svelte-5 update loop: an $effect that wrote one piece of state and read
+  // another that the write invalidated. It surfaces as effect_update_depth_exceeded, which kills
+  // every later update on the page — a frozen screen that only a reload clears. These two tests
+  // drive the input of every screen the way a user would, so a new loop fails the suite instead of
+  // reaching the operator. A thrown Svelte error fails the test on its own; the explicit console
+  // assertion catches the variants Svelte only warns about.
+  function fillEveryField(root: ParentNode = document.body) {
+    let touched = 0;
+    for (const el of root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea")) {
+      if (el instanceof HTMLInputElement && ["file", "submit", "button", "reset", "hidden"].includes(el.type)) {
+        continue;   // a file picker can't be set programmatically, and the rest aren't fields
+      } else if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+        el.click();
+      } else if (el instanceof HTMLInputElement && el.type === "number") {
+        setValue(el, "7");
+      } else {
+        setValue(el as HTMLInputElement, "loop-probe");
+      }
+      touched++;
+    }
+    for (const sw of root.querySelectorAll<HTMLButtonElement>('button[role="switch"]')) sw.click();
+    return touched;
+  }
+
+  const SCREENS: [string, any][] = [
+    ["Nodes", Nodes], ["Subscriptions", Subscriptions], ["Tuning", Tuning], ["Routing", Routing],
+    ["Settings", SettingsScreen], ["Network", NetworkScreen], ["RoadWarrior", RoadWarrior],
+    ["Operations", Operations], ["Dashboard", Dashboard], ["Health", Health],
+  ];
+
+  it.each(SCREENS)("does not fall into a reactive loop when %s is filled in", async (_name, Screen) => {
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args); });
+    try {
+      mounted.push(mount(Screen, { target: document.body, props: { onDirtyChange: vi.fn() } }));
+      await flush();
+      fillEveryField();
+      await flush();
+      fillEveryField();          // a second pass: the loop needs a state change to feed on
+      await flush();
+      expect(JSON.stringify(errors)).not.toContain("effect_update_depth_exceeded");
+      expect(JSON.stringify(errors)).not.toContain("state_unsafe_mutation");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("does not fall into a reactive loop on any screen reached through the shell", async () => {
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args); });
+    try {
+      mounted.push(mount(App, { target: document.body }));
+      await flush();
+      for (const label of ["Nodes", "Anti-DPI", "Routing", "Network", "Remote Access", "Operations", "Settings", "Health & Traffic", "Overview"]) {
+        [...document.querySelectorAll<HTMLButtonElement>(".nav-item")].find((b) => b.textContent?.includes(label))!.click();
+        await flush();
+        // a staged-changes prompt from the screen we just left — discard and carry on
+        const confirmBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Confirm");
+        if (confirmBtn) { confirmBtn.click(); await flush(); }
+        fillEveryField();
+        await flush();
+        expect(JSON.stringify(errors), `loop while filling in ${label}`).not.toContain("effect_update_depth_exceeded");
+      }
+    } finally { spy.mockRestore(); }
+  });
+
+  it("keeps injected-header rows tied to their own inputs when one is removed", async () => {
+    // Keyed by array index, removing a row made Svelte reuse the deleted row's DOM node for the one
+    // that slid up — the caret, an in-progress IME composition and browser autofill all landed on a
+    // field belonging to a different header.
+    mounted.push(mount(Subscriptions, { target: document.body }));
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "+ header")!.click();
+    await flush();
+    const names = () => [...document.querySelectorAll<HTMLInputElement>('input[placeholder="header"]')];
+    expect(names()).toHaveLength(3);
+    setValue(names()[2], "keep-me");
+    await flush();
+    const thirdInput = names()[2];
+
+    [...document.querySelectorAll<HTMLButtonElement>('button[aria-label="remove"]')][0].click();
+    await flush();
+    expect(names()).toHaveLength(2);
+    expect(names()[1]).toBe(thirdInput);          // same element, not a recycled one
+    expect(names()[1].value).toBe("keep-me");
+  });
+
+  it("keeps every data screen on the shared live subscription", () => {
+    // Guards the second half of the same report: a screen that fetches once on mount goes stale and
+    // needs a page reload to show what the server (or another screen) changed.
+    const sources = import.meta.glob("./*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    const dataScreens = [
+      "./Nodes.svelte", "./Subscriptions.svelte", "./Dashboard.svelte", "./Health.svelte",
+      "./Network.svelte", "./Routing.svelte", "./Tuning.svelte", "./Settings.svelte",
+      "./RoadWarrior.svelte", "./Operations.svelte",
+    ];
+    for (const path of dataScreens) {
+      expect(sources[path], `${path} must load through subscribeLive, not a one-shot $effect`)
+        .toMatch(/subscribeLive\(/);
+    }
+  });
+
+  it("keeps the current screen in the URL, and opens the one the URL names", async () => {
+    history.replaceState(null, "", "/");
+    mounted.push(mount(App, { target: document.body }));
+    await flush();
+    expect(location.hash).toBe("#/dashboard");
+
+    [...document.querySelectorAll<HTMLButtonElement>(".nav-item")].find((b) => b.textContent?.includes("Routing"))!.click();
+    await flush();
+    expect(location.hash).toBe("#/routing");
+    expect(document.querySelector(".page-title")?.textContent).toContain("Routing");
+
+    // Back: the browser has already moved the URL, so the app follows without pushing a new entry
+    history.replaceState(null, "", "#/dashboard");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flush();
+    expect(document.querySelector(".page-title")?.textContent).toContain("Overview");
+    expect(location.hash).toBe("#/dashboard");
+  });
+
+  it("puts the URL back when a Back press is refused by the discard prompt", async () => {
+    history.replaceState(null, "", "#/network");
+    mounted.push(mount(App, { target: document.body }));
+    await flush();
+    expect(document.querySelector(".page-title")?.textContent).toContain("Network");
+    document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="lan-access"]')!.click();
+    await tick();
+
+    history.replaceState(null, "", "#/dashboard");      // as if the operator pressed Back
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flush();
+    expect(document.body.textContent).toContain("Discard staged changes");
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Cancel")!.click();
+    await flush();
+    expect(document.querySelector(".page-title")?.textContent).toContain("Network");
+    expect(location.hash).toBe("#/network");            // URL restored to match what is on screen
+  });
+
+  it("says the panel is unreachable instead of quietly showing old numbers", async () => {
+    history.replaceState(null, "", "/");
+    vi.mocked(api.getStatus).mockResolvedValueOnce(STATUS).mockRejectedValue(new ApiError(0, "network error"));
+    mounted.push(mount(App, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).not.toContain("Can't reach the panel");
+    for (let i = 0; i < 10 && !statusStore.stale; i++) { await new Promise((r) => setTimeout(r, 5)); await tick(); }
+    expect(document.body.textContent).toContain("Can't reach the panel");
+  });
+
+  it("distinguishes a still-loading node table from an empty one", async () => {
+    let release!: (nodes: Node[]) => void;
+    vi.mocked(api.listNodes).mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    mounted.push(mount(Nodes, { target: document.body }));
+    await flush();
+    expect(document.body.textContent).toContain("Loading servers…");
+    expect(document.body.textContent).not.toContain("No servers here");
+    release([]);
+    await flush();
+    expect(document.body.textContent).toContain("No servers here");
+  });
+
+  it("caps a very large node table until the operator asks for all of it", async () => {
+    vi.mocked(api.listNodes).mockResolvedValue(Array.from({ length: 150 }, (_, i) => node(i + 1, `n${i + 1}`)));
+    mounted.push(mount(Nodes, { target: document.body }));
+    await flush();
+    const rows = () => document.querySelectorAll('button[aria-label="Edit node"]').length;
+    expect(rows()).toBe(100);
+    expect(document.body.textContent).toContain("Showing 100 of 150");
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "show all")!.click();
+    await flush();
+    expect(rows()).toBe(150);
   });
 
   it("shares one errText from api.ts — no local copies pasted across screens", () => {

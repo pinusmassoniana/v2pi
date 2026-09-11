@@ -6,20 +6,26 @@
   import { serverNow } from "./status.svelte";
   import { I } from "./icons";
   import { createMsg } from "./msg.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
   let subs = $state<Subscription[]>([]);
+  let loaded = $state(false);       // "none yet" and "not fetched yet" are different answers
   let profiles = $state<TuningProfile[]>([]);
   const msg = createMsg();
   // add form — interval is set here now (F5); 0 = off.
   let form = $state({ name: "", url: "", interval_min: 0 });
+  // Injection rows carry a stable uid. Keying {#each} by array index instead (the old `(i)`) makes
+  // Svelte reuse the DOM node of the row that took the deleted row's place: removing header 1 left
+  // the caret, the IME composition and any browser autofill sitting on a field that now belongs to
+  // a different header. Routing's rules already solved this the same way.
+  type KV = { uid: number; k: string; v: string };
+  let kvUid = 0;
+  const kv = (k = "", v = ""): KV => ({ uid: ++kvUid, k, v });
   // default injection mirrors the backend default_injection() (F6)
-  let headers = $state<{ k: string; v: string }[]>([
-    { k: "x-device-os", v: "{device_os}" },
-    { k: "user-agent", v: "v2pi/1.0" },
-  ]);
-  let queries = $state<{ k: string; v: string }[]>([]);
+  let headers = $state<KV[]>([kv("x-device-os", "{device_os}"), kv("user-agent", "v2pi/1.0")]);
+  let queries = $state<KV[]>([]);
   let preview = $state<Preview | null>(null);
   let previewNodes = $state<PreviewNodes | null>(null);
   let refreshing = $state<Record<number, boolean>>({});
@@ -39,22 +45,22 @@
   let editId = $state<number | null>(null);
   let editForm = $state({ name: "", url: "", interval_min: 0, enabled: true,
                           default_profile_id: null as number | null });
-  let editHeaders = $state<{ k: string; v: string }[]>([]);
-  let editQueries = $state<{ k: string; v: string }[]>([]);
+  let editHeaders = $state<KV[]>([]);
+  let editQueries = $state<KV[]>([]);
   let editSnap = $state("");
   const editDirty = $derived(editId !== null
     && JSON.stringify({ editForm, editHeaders, editQueries }) !== editSnap);
   $effect(() => { onDirtyChange?.(addDirty || editDirty); return () => onDirtyChange?.(false); });
 
-  function buildInjection(hs: { k: string; v: string }[], qs: { k: string; v: string }[]) {
+  function buildInjection(hs: KV[], qs: KV[]) {
     const h: Record<string, string> = {};
     for (const r of hs) if (r.k) h[r.k] = r.v;
     const q: Record<string, string> = {};
     for (const r of qs) if (r.k) q[r.k] = r.v;
     return { headers: h, query: q };
   }
-  const rows = (obj: Record<string, any> | undefined) =>
-    Object.entries(obj ?? {}).map(([k, v]) => ({ k, v: String(v) }));
+  const rows = (obj: Record<string, any> | undefined): KV[] =>
+    Object.entries(obj ?? {}).map(([k, v]) => kv(k, String(v)));
 
   function relTime(iso: string | null): string {
     if (!iso) return "—";
@@ -84,7 +90,7 @@
   async function refresh() {
     try {
       const [ss, ps] = await Promise.all([api.listSubs(), api.listProfiles()]);
-      subs = ss; profiles = ps;
+      subs = ss; profiles = ps; loaded = true;
     } catch (err) { msg.set(errText(err, "load failed"), "err"); }
   }
   async function add(e: Event) {
@@ -96,7 +102,8 @@
       form.name = ""; form.url = ""; form.interval_min = 0;
       preview = null; previewNodes = null;
       msg.set("subscription added", "ok");
-      await refresh();
+      // no refresh() here (nor in the handlers below): api.mutate announced the write and
+      // subscribeLive already reloaded this screen — and the Nodes table next to it.
     } catch (err) { msg.set(errText(err, "add failed"), "err"); }
   }
   async function doPreview() {
@@ -112,7 +119,7 @@
   }
   async function refreshSub(id: number) {
     refreshing = { ...refreshing, [id]: true };
-    try { const r = await api.refreshSub(id); msg.set(r.status ?? r.error ?? "refreshed", r.error ? "err" : "ok"); await refresh(); }
+    try { const r = await api.refreshSub(id); msg.set(r.status ?? r.error ?? "refreshed", r.error ? "err" : "ok"); }
     catch (err) { msg.set(errText(err, "refresh failed"), "err"); }
     finally { refreshing = { ...refreshing, [id]: false }; }
   }
@@ -127,13 +134,12 @@
         `${r.succeeded}/${r.attempted} refreshed${r.failed ? ` · ${r.failed} failed${details ? ` — ${details}` : ""}` : ""}`,
         r.failed ? "err" : "ok",
       );
-      await refresh();
     }
     catch (err) { msg.set(errText(err, "refresh-all failed"), "err"); }
     finally { refreshingAll = false; }
   }
   async function toggleEnabled(s: Subscription) {
-    try { await api.updateSub(s.id, { enabled: !s.enabled }); await refresh(); }
+    try { await api.updateSub(s.id, { enabled: !s.enabled }); }
     catch (err) { msg.set(errText(err, "toggle failed"), "err"); }
   }
   function startEdit(s: Subscription) {
@@ -153,13 +159,13 @@
         enabled: editForm.enabled, default_profile_id: editForm.default_profile_id,
         injection: buildInjection(editHeaders, editQueries),
       });
-      editId = null; msg.set("saved", "ok"); await refresh();
+      editId = null; msg.set("saved", "ok");
     } catch (err) { msg.set(errText(err, "save failed"), "err"); }
   }
   async function del(s: Subscription) {
     if (!(await confirmDialog(`Delete subscription “${s.name}”?\nIts ${s.node_count} node(s) are detached to Servers (an active connection is kept).`)))
       return;
-    try { await api.deleteSub(s.id); editId = null; msg.set("deleted", "ok"); await refresh(); }
+    try { await api.deleteSub(s.id); editId = null; msg.set("deleted", "ok"); }
     catch (err) { msg.set(errText(err, "delete failed"), "err"); }
   }
 
@@ -167,7 +173,9 @@
     preview ? `${preview.method} ${preview.url}\n` +
       Object.entries(preview.headers).map(([k, v]) => `${k}: ${v}`).join("\n") : "");
 
-  $effect(() => { refresh(); });
+  // live: the server refreshes subscriptions on its own schedule (node_count / last_fetched /
+  // quota all move without the operator touching anything), and a sibling write repaints at once.
+  $effect(() => subscribeLive(refresh, 10000));
 </script>
 
 <Alert msg={msg.text} kind={msg.kind} />
@@ -208,7 +216,7 @@
         </tr>
       {/each}
       {#if subs.length === 0}
-        <tr><td colspan="8" class="muted empty">No subscriptions yet — add one below.</td></tr>
+        <tr><td colspan="8" class="muted empty">{loaded ? "No subscriptions yet — add one below." : "Loading subscriptions…"}</td></tr>
       {/if}
     </tbody>
   </table></div>
@@ -223,27 +231,27 @@
 
   <fieldset>
     <legend>Injected headers</legend>
-    {#each headers as row, i (i)}
+    {#each headers as row, i (row.uid)}
       <div class="kv">
         <input class="input" bind:value={row.k} placeholder="header" aria-label={`Header ${i + 1} name`} />
         <input class="input" bind:value={row.v} placeholder="value" aria-label={`Header ${i + 1} value`} />
         <button class="btn btn-ghost" type="button" onclick={() => headers.splice(i, 1)} aria-label="remove">×</button>
       </div>
     {/each}
-    <div><button class="btn" type="button" onclick={() => headers.push({ k: "", v: "" })}>+ header</button></div>
+    <div><button class="btn" type="button" onclick={() => headers.push(kv())}>+ header</button></div>
     <p class="muted privacy">Detailed device fingerprint placeholders are opt-in; the default sends only coarse OS data.</p>
   </fieldset>
 
   <fieldset>
     <legend>Query params</legend>
-    {#each queries as row, i (i)}
+    {#each queries as row, i (row.uid)}
       <div class="kv">
         <input class="input" bind:value={row.k} placeholder="key" aria-label={`Query ${i + 1} name`} />
         <input class="input" bind:value={row.v} placeholder="value" aria-label={`Query ${i + 1} value`} />
         <button class="btn btn-ghost" type="button" onclick={() => queries.splice(i, 1)} aria-label="remove">×</button>
       </div>
     {/each}
-    <div><button class="btn" type="button" onclick={() => queries.push({ k: "", v: "" })}>+ query</button></div>
+    <div><button class="btn" type="button" onclick={() => queries.push(kv())}>+ query</button></div>
   </fieldset>
 
   <div class="actions">
@@ -291,26 +299,26 @@
 
       <fieldset>
         <legend>Injected headers</legend>
-        {#each editHeaders as row, i (i)}
+        {#each editHeaders as row, i (row.uid)}
           <div class="kv">
             <input class="input" bind:value={row.k} placeholder="header" aria-label={`Edit header ${i + 1} name`} />
             <input class="input" bind:value={row.v} placeholder="value" aria-label={`Edit header ${i + 1} value`} />
             <button class="btn btn-ghost" type="button" onclick={() => editHeaders.splice(i, 1)} aria-label="remove">×</button>
           </div>
         {/each}
-        <div><button class="btn" type="button" onclick={() => editHeaders.push({ k: "", v: "" })}>+ header</button></div>
+        <div><button class="btn" type="button" onclick={() => editHeaders.push(kv())}>+ header</button></div>
       </fieldset>
 
       <fieldset>
         <legend>Query params</legend>
-        {#each editQueries as row, i (i)}
+        {#each editQueries as row, i (row.uid)}
           <div class="kv">
             <input class="input" bind:value={row.k} placeholder="key" aria-label={`Edit query ${i + 1} name`} />
             <input class="input" bind:value={row.v} placeholder="value" aria-label={`Edit query ${i + 1} value`} />
             <button class="btn btn-ghost" type="button" onclick={() => editQueries.splice(i, 1)} aria-label="remove">×</button>
           </div>
         {/each}
-        <div><button class="btn" type="button" onclick={() => editQueries.push({ k: "", v: "" })}>+ query</button></div>
+        <div><button class="btn" type="button" onclick={() => editQueries.push(kv())}>+ query</button></div>
       </fieldset>
 
       <div class="actions">

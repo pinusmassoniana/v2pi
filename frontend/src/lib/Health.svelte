@@ -5,6 +5,7 @@
   import { statusStore, subscribeStatus, serverNow } from "./status.svelte";
   import { agoLabel } from "./dashboard";
   import { fmtRate } from "./format";
+  import { subscribeLive } from "./live";
 
   const status = $derived(statusStore.value);
   let nodes = $state<Node[]>([]);
@@ -77,18 +78,8 @@
   function onGraphWindow(sec: number) { graphWindow = sec; if (sec > 3600) loadLong(sec); }
 
   $effect(() => subscribeStatus(3000));
-  $effect(() => { api.listNodes().then((n) => (nodes = n)).catch(() => {}); });
-  $effect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const load = async () => {
-      timer = null;
-      if (document.visibilityState === "visible") { try { net = await api.getNetwork(); } catch {} }
-      if (!stopped) timer = setTimeout(load, 8000);
-    };
-    void load();
-    return () => { stopped = true; if (timer) clearTimeout(timer); };
-  });
+  $effect(() => subscribeLive(async () => { try { nodes = await api.listNodes(); } catch {} }, 15000));
+  $effect(() => subscribeLive(async () => { try { net = await api.getNetwork(); } catch {} }, 8000));
   $effect(() => { seedHistory(); });
   $effect(() => { const t = setInterval(() => { if (document.visibilityState === "visible") tick++; }, 1000); return () => clearInterval(t); });
   $effect(() => {

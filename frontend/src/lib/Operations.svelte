@@ -2,6 +2,7 @@
   import { api, errText, type Diagnostics } from "./api";
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
+  import { subscribeLive } from "./live";
 
   let diag = $state<Diagnostics | null>(null);
   let restoreMsg = $state(""); let restoreKind = $state<"ok" | "err">("ok");
@@ -88,7 +89,7 @@
     finally { resetting = false; }
   }
 
-  $effect(() => { api.getDiagnostics().then((d) => (diag = d)).catch(() => {}); });
+  $effect(() => subscribeLive(async () => { try { diag = await api.getDiagnostics(); } catch {} }, 30000));
 </script>
 
 <div class="ops-grid">

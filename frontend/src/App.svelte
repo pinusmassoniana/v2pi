@@ -20,13 +20,26 @@
   import { applyTheme, toggleTheme, type Theme } from "./lib/theme";
 
   type View = "dashboard" | "health" | "nodes" | "tuning" | "routing" | "network" | "roadwarrior" | "operations" | "settings";
+  const VIEWS: View[] = ["dashboard", "health", "nodes", "tuning", "routing", "network", "roadwarrior", "operations", "settings"];
   let authed = $state(false);
   let needsSetup = $state(false);
   let bootstrapRequired = $state(false);
   let ready = $state(false);
   let bootError = $state(false);   // server unreachable at boot (vs. genuinely unauthenticated)
-  let view = $state<View>("dashboard");
-  let screenDirty = $state(false);
+  // The screen lives in the URL. Without it a reload always dropped the operator back on Overview,
+  // Back walked out of the panel entirely, and no screen could be bookmarked or sent to anyone.
+  function viewFromHash(): View {
+    const h = location.hash.replace(/^#\/?/, "");
+    return (VIEWS as string[]).includes(h) ? (h as View) : "dashboard";
+  }
+  function writeHash(v: View, replace = false) {
+    const h = `#/${v}`;
+    if (location.hash === h) return;
+    // pushState/replaceState rather than location.hash: assigning the hash scrolls the anchor into
+    // view, and each screen is a fresh page anyway.
+    history[replace ? "replaceState" : "pushState"](null, "", h);
+  }
+  let view = $state<View>(viewFromHash());
   let navBusy = $state(false);
   // seeded from the attribute the anti-FOUC/main bootstrap already resolved
   let theme = $state<Theme>((document.documentElement.dataset.theme as Theme) || "dark");
@@ -116,27 +129,43 @@
     authed = false;
     resetStatus();
     view = "dashboard";
-    screenDirty = false;
+    writeHash("dashboard", true);
   }
 
-  async function navigate(next: View) {
-    if (next === view || navBusy) return;
+  // fromHistory: a Back/Forward press already moved the URL, so don't push another entry — and if
+  // the operator then declines to discard their edits, put the URL back where it was.
+  async function navigate(next: View, fromHistory = false) {
+    if (next === view || navBusy) {
+      if (fromHistory && next !== view) writeHash(view, true);
+      return;
+    }
     navBusy = true;
     try {
-      if (screenDirty && !(await confirmDialog("Discard staged changes and leave this screen?"))) return;
-      screenDirty = false;
-      view = next;
+      if (screenDirty && !(await confirmDialog("Discard staged changes and leave this screen?"))) {
+        if (fromHistory) writeHash(view, true);
+        return;
+      }
+      view = next;   // unmounting the old screen runs its effect teardown, which clears its flag
+      if (!fromHistory) writeHash(next);
     } finally { navBusy = false; }
   }
+  function onPopState() { navigate(viewFromHash(), true); }
+  // stamp the canonical hash on first paint so Back from the second screen returns here
+  $effect(() => { writeHash(view, true); });
 
-  function onDirtyChange(dirty: boolean) { screenDirty = dirty; }
   // F9-3: Nodes and Subscriptions mount together on the "nodes" view, so a single shared
   // onDirtyChange would let whichever one settles last clobber the other's true flag with false.
-  // Track each separately and OR them into screenDirty.
+  // Each screen owns one flag; screenDirty is DERIVED from them. It must not be assigned from
+  // inside the reporting callbacks: those run in the children's $effect, so an "a = x; b = a || c"
+  // write-then-read of the sibling flags made the two effects invalidate each other forever
+  // (effect_update_depth_exceeded — the Nodes screen froze the moment a subscription form was typed in).
   let nodesDirty = $state(false);
   let subsDirty = $state(false);
-  function onNodesDirtyChange(dirty: boolean) { nodesDirty = dirty; screenDirty = nodesDirty || subsDirty; }
-  function onSubsDirtyChange(dirty: boolean) { subsDirty = dirty; screenDirty = nodesDirty || subsDirty; }
+  let paneDirty = $state(false);          // the single-component screens (Tuning/Routing/…)
+  const screenDirty = $derived(nodesDirty || subsDirty || paneDirty);
+  function onDirtyChange(dirty: boolean) { paneDirty = dirty; }
+  function onNodesDirtyChange(dirty: boolean) { nodesDirty = dirty; }
+  function onSubsDirtyChange(dirty: boolean) { subsDirty = dirty; }
   function beforeUnload(e: BeforeUnloadEvent) {
     if (!screenDirty) return;
     e.preventDefault();
@@ -144,6 +173,13 @@
   }
 
   let tunnelOnline = $derived(status?.tunnel_online === true && !statusStore.stale);
+  // Every screen's loader swallows its own error, so a panel that has gone away looks exactly like
+  // a live one showing old numbers. The shared status poller already knows; say it out loud once,
+  // globally, with the age of what's on screen.
+  let offline = $derived(authed && statusStore.stale);
+  let lastOkLabel = $derived(statusStore.lastOkAt
+    ? new Date(statusStore.lastOkAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null);
   let connectionLabel = $derived(tunnelOnline ? "TUNNEL ONLINE" : status?.running ? "XRAY RUNNING" : "OFFLINE");
 
   // a11y: move focus to the page heading when the view *changes* so SR users hear the new screen.
@@ -157,7 +193,7 @@
   });
 </script>
 
-<svelte:window onbeforeunload={beforeUnload} />
+<svelte:window onbeforeunload={beforeUnload} onpopstate={onPopState} />
 
 {#if !ready}
   <div class="boot"><span class="spinner" role="status" aria-label="Loading"></span></div>
@@ -217,6 +253,12 @@
           </div>
         {/if}
       </header>
+      {#if offline}
+        <div class="offline" role="status" aria-live="polite">
+          <span class="offline-dot"></span>
+          Can't reach the panel — {lastOkLabel ? `showing data from ${lastOkLabel}` : "no data loaded yet"}. Retrying…
+        </div>
+      {/if}
       <main class="page" class:wide={view === "nodes"}>
         {#if view === "dashboard"}
           <Dashboard />
@@ -339,6 +381,19 @@
      controls off the narrow (60px-rail) mobile topbar. */
   .topbar .page-title { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.01em; }
   .icon-btn { padding: 0.4rem; display: inline-grid; place-items: center; line-height: 0; border-radius: var(--radius-sm); }
+  /* panel-unreachable strip — sits under the topbar, above the screen */
+  .offline {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 1.25rem;
+    background: color-mix(in srgb, var(--err) 14%, var(--bg1));
+    border-bottom: 1px solid color-mix(in srgb, var(--err) 40%, transparent);
+    color: var(--tx); font-size: 0.75rem; font-weight: 500;
+  }
+  .offline-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--err);
+    animation: v2pulse 1.6s infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .offline-dot { animation: none; } }
   /* folded-in section divider (Subscriptions under Nodes) */
   .fold-head { border-top: 1px solid var(--bd); padding-top: 0.9rem; margin-top: 0.3rem; }
   /* online/offline status indicator */

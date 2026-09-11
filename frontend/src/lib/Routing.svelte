@@ -4,6 +4,7 @@
   import { I } from "./icons";
   import { inIPv4Cidr, parseDestination } from "./routing";
   import { createMsg } from "./msg.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -154,7 +155,7 @@
 
   $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 
-  $effect(() => { load(); });
+  $effect(() => subscribeLive(load, 30000, () => dirty));   // live, but never under an edited rule set
 </script>
 
 {#if msg.text && !dirty}<p class="msg" class:err={msg.kind === "err"} role={msg.kind === "err" ? "alert" : "status"} aria-live="polite">{msg.text}</p>{/if}

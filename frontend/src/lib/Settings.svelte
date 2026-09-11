@@ -4,6 +4,7 @@
   import Alert from "./Alert.svelte";
   import { confirmDialog } from "./confirm.svelte";
   import { createMsg } from "./msg.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -126,7 +127,7 @@
     URL.revokeObjectURL(a.href);
   }
 
-  $effect(() => { load(); loadTokens(); });
+  $effect(() => subscribeLive(async () => { await load(); await loadTokens(); }, 30000, () => leaveBlocked));
   $effect(() => { onDirtyChange?.(leaveBlocked); return () => onDirtyChange?.(false); });
   $effect(() => {                       // SN4 auto-refresh
     if (!logAuto) return;

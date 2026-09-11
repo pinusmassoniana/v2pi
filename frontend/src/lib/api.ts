@@ -273,10 +273,24 @@ async function ensureCsrf(): Promise<string> {
   return _csrfInflight;
 }
 
-async function mutate(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<any> {
+async function mutate(method: string, path: string, body?: unknown, timeoutMs?: number,
+                      notify = true): Promise<any> {
   const headers: Record<string, string> = { "X-CSRF-Token": await ensureCsrf() };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  return req(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }, timeoutMs);
+  const result = await req(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }, timeoutMs);
+  // Every write is funnelled through here, so this is the one place that can tell the rest of the
+  // app "something you are showing may have just changed" — see live.ts. Screens that only owned
+  // their own data used to need a page reload to notice a sibling's action.
+  if (notify && typeof document !== "undefined") document.dispatchEvent(new Event(DATA_CHANGED_EVENT));
+  return result;
+}
+
+// A POST that computes an answer without changing anything on the server — preview, validate, or
+// stage-a-preset-for-the-editor. It needs the CSRF token like a write but must NOT announce a data
+// change: the reply is usually staged into a form the operator has not saved, and a refetch
+// triggered by the announcement would wipe it.
+function peek(path: string, body?: unknown, timeoutMs?: number): Promise<any> {
+  return mutate("POST", path, body, timeoutMs, false);
 }
 
 function _postJson(path: string, body: unknown, extraHeaders: Record<string, string> = {}) {
@@ -309,6 +323,8 @@ export function createLatestRequest(): LatestRequest {
 }
 
 export const TRAFFIC_CAPABILITY_EVENT = "v2pi:traffic-capability-change";
+/** Fired after any successful write. live.ts turns it into an immediate refetch on every screen. */
+export const DATA_CHANGED_EVENT = "v2pi:data-changed";
 
 export const api = {
   _reset() { _csrf = null; _csrfInflight = null; },
@@ -322,7 +338,9 @@ export const api = {
   async login(username: string, password: string) { _csrf = null; return _postJson("/login", { username, password }); },
   async logout() {
     // send the CSRF header (logout is now CSRF-protected) THEN clear the cached token
-    try { return await mutate("POST", "/logout"); }
+    // notify:false — the screens are about to unmount; announcing a change here only starts
+    // refetches that come back 401 and flash a load error on the way out.
+    try { return await mutate("POST", "/logout", undefined, undefined, false); }
     finally { _csrf = null; _csrfInflight = null; }
   },
   changePassword(current_password: string, new_password: string) { return mutate("POST", "/password", { current_password, new_password }); },
@@ -347,8 +365,8 @@ export const api = {
   deleteSub(id: number) { return mutate("DELETE", `/subs/${id}`); },
   refreshSub(id: number): Promise<any> { return mutate("POST", `/subs/${id}/refresh`); },
   refreshAllSubs(): Promise<RefreshAllResult> { return mutate("POST", "/subs/refresh-all"); },
-  previewSub(url: string, injection?: Record<string, any>): Promise<Preview> { return mutate("POST", "/subs/preview", { url, injection }); },
-  previewSubNodes(url: string, injection?: Record<string, any>): Promise<PreviewNodes> { return mutate("POST", "/subs/preview-nodes", { url, injection }); },
+  previewSub(url: string, injection?: Record<string, any>): Promise<Preview> { return peek("/subs/preview", { url, injection }); },
+  previewSubNodes(url: string, injection?: Record<string, any>): Promise<PreviewNodes> { return peek("/subs/preview-nodes", { url, injection }); },
   reorderNodes(ids: number[]) { return mutate("POST", "/nodes/reorder", { ids }); },
   connectBest(subscription_id: number | null): Promise<{ ok: boolean; node_id: number }> { return mutate("POST", "/connect-best", { subscription_id }); },
   importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },
@@ -367,22 +385,22 @@ export const api = {
   updateProfile(id: number, patch: ProfileUpdate): Promise<TuningProfile> { return mutate("PATCH", `/profiles/${id}`, patch); },
   deleteProfile(id: number) { return mutate("DELETE", `/profiles/${id}`); },
   setDefaultProfile(id: number): Promise<TuningProfile> { return mutate("PUT", "/profiles/default", { id }); },
-  validateProfile(p: ProfileIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/profiles/validate", p); },
+  validateProfile(p: ProfileIn): Promise<{ ok: boolean; error: string }> { return peek("/profiles/validate", p); },
   listProfilePresets(): Promise<ProfilePreset[]> { return req("/profiles/presets"); },
   applyProfileActive(id: number): Promise<{ ok: boolean; node_id: number }> { return mutate("POST", `/profiles/${id}/apply-active`); },
 
   getRouting(): Promise<Routing> { return req("/routing"); },
   putRouting(r: RoutingIn): Promise<Routing> { return mutate("PUT", "/routing", r); },
   listRoutingPresets(): Promise<PresetInfo[]> { return req("/routing/presets"); },
-  routingPreset(name: string): Promise<Routing> { return mutate("POST", `/routing/preset/${encodeURIComponent(name)}`); },
-  validateRouting(r: RoutingIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/routing/validate", r); },
+  routingPreset(name: string): Promise<Routing> { return peek(`/routing/preset/${encodeURIComponent(name)}`); },
+  validateRouting(r: RoutingIn): Promise<{ ok: boolean; error: string }> { return peek("/routing/validate", r); },
 
   listNodeHealth(): Promise<NodeHealth[]> { return req("/node-health"); },
   probeTcp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/tcp${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`, undefined, PROBE_SWEEP_TIMEOUT_MS); },
   probeHttp(scope?: string): Promise<NodeHealth[]> { return mutate("POST", `/probe/http${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`, undefined, PROBE_SWEEP_TIMEOUT_MS); },
   probeNode(id: number): Promise<NodeHealth> { return mutate("POST", `/nodes/${id}/probe`); },
   detachNodes(ids: number[]) { return mutate("POST", "/nodes/detach", { ids }); },
-  validateNode(n: NodeValidateIn): Promise<{ ok: boolean; error: string }> { return mutate("POST", "/nodes/validate", n); },
+  validateNode(n: NodeValidateIn): Promise<{ ok: boolean; error: string }> { return peek("/nodes/validate", n); },
 
   getNetwork(): Promise<Network> { return req("/network"); },
   putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
@@ -391,7 +409,7 @@ export const api = {
   putRw(patch: RwPatch): Promise<Rw> { return mutate("PUT", "/rw", patch); },
   addRwClient(email: string): Promise<Rw> { return mutate("POST", "/rw/clients", { email }); },
   setRwClientEnabled(id: string, enabled: boolean): Promise<Rw> { return mutate("PATCH", `/rw/clients/${encodeURIComponent(id)}`, { enabled }); },
-  newRwShortId(): Promise<{ short_id: string }> { return mutate("POST", "/rw/short-id"); },
+  newRwShortId(): Promise<{ short_id: string }> { return peek("/rw/short-id"); },
   deleteRwClient(id: string): Promise<Rw> { return mutate("DELETE", `/rw/clients/${encodeURIComponent(id)}`); },
   rwClientLink(id: string): Promise<{ link: string }> { return req(`/rw/clients/${encodeURIComponent(id)}/link`); },
   rwClientConfig(id: string): Promise<RwClientConfig> { return req(`/rw/clients/${encodeURIComponent(id)}/config`); },

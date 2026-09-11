@@ -9,6 +9,7 @@
   import { I } from "./icons";
   import { formatUriHost } from "./format";
   import { createMsg } from "./msg.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -25,8 +26,21 @@
   let sortDir = $state<1 | -1>(1);
   let selected = $state<Set<number>>(new Set());         // NN3 bulk selection
   // N-E: row density, persisted
-  let dense = $state(typeof localStorage !== "undefined" && localStorage.getItem("nodes-density") === "1");
+  // reading localStorage THROWS when site data is blocked (Safari private mode, hardened Chrome) —
+  // a bare read here took the whole screen down before it rendered a single row
+  const readDense = () => { try { return localStorage.getItem("nodes-density") === "1"; } catch { return false; } };
+  let dense = $state(readDense());
   function toggleDensity() { dense = !dense; try { localStorage.setItem("nodes-density", dense ? "1" : "0"); } catch {} }
+
+  // "no servers" and "not loaded yet" are different answers. Rendering the empty state off
+  // length===0 told the operator the gateway had nothing configured while the first fetch was
+  // still in flight.
+  let loaded = $state(false);
+  // A subscription can carry hundreds of nodes and every row draws ~8 icon buttons; cap the render
+  // and let the operator ask for the rest. Only the *render* is capped — selection, reordering and
+  // the probes all still work over the full scope.
+  const ROW_CAP = 100;
+  let showAllRows = $state(false);
 
   let addOpen = $state(false);
   const blankForm = () => ({ name: "", address: "", port: 443, uuid: "", transport: "vision",
@@ -76,6 +90,7 @@
     };
     return sortKey === "pos" ? list : [...list].sort((a, b) => cmp(a, b) * sortDir);
   });
+  const visibleRows = $derived(showAllRows || shown.length <= ROW_CAP ? shown : shown.slice(0, ROW_CAP));
   const scope = $derived(tab === "servers" ? "servers" : tab === null ? undefined : String(tab));
   // C2: reordering is only coherent over the full, unfiltered scope in pos order
   const canReorder = $derived(tab === "servers" && sortKey === "pos" && query.trim() === "");
@@ -120,7 +135,6 @@
   // createLatestRequest() means a slow response can no longer clobber a newer one — only the
   // most recently *started* request's result is ever applied.
   const dataRequest = createLatestRequest();
-
   async function refresh() {
     try {
       await dataRequest.run(
@@ -132,6 +146,7 @@
           profiles = ps; subs = ss; status = st; settings = se;
           if (tab === null || (tab !== "servers" && !ss.some((s) => s.id === tab)))
             tab = ss[0]?.id ?? "servers";
+          loaded = true;
         },
       );
     } catch (err) { msg.set(errText(err, "load failed"), "err"); }
@@ -149,17 +164,6 @@
       );
     } catch { /* transient */ }
   }
-  async function pollHealth() {
-    try {
-      await dataRequest.run(
-        () => Promise.all([api.listNodeHealth(), api.getStatus()]),
-        ([hs, st]) => {
-          health = Object.fromEntries(hs.map((h) => [h.node_id, h]));
-          status = st;
-        },
-      );
-    } catch { /* transient; keep last values */ }
-  }
 
   // --- CRUD / connect ---
   async function add(e: Event) {
@@ -167,8 +171,7 @@
     try {
       await api.addNode({ ...form }); form = blankForm(); validateMsg = ""; addOpen = false;
       tab = "servers";   // NN9: manual nodes land under Servers — switch there so the new one is visible
-      await refresh();
-    }
+    }   // no refresh() here (nor below): the write already announced itself and subscribeLive reloaded
     catch (err) { msg.set(errText(err, "add failed"), "err"); }
   }
   function startEdit(n: Node) {
@@ -182,7 +185,7 @@
   async function saveEdit(e: Event) {
     e.preventDefault();
     if (editId === null) return;
-    try { await api.updateNode(editId, { ...edit }); editId = null; await refresh(); }
+    try { await api.updateNode(editId, { ...edit }); editId = null; }
     catch (err) { msg.set(nodeMutationError(err, "save failed"), "err"); }
   }
   function cloneNode(n: Node) {   // NN9
@@ -194,7 +197,7 @@
   }
   async function del(n: Node) {
     if (!(await confirmDialog(`Delete server “${n.name}” (${n.address})?`))) return;
-    try { await api.deleteNode(n.id); await refresh(); }
+    try { await api.deleteNode(n.id); }
     catch (err) { msg.set(nodeMutationError(err, "delete failed"), "err"); }
   }
   async function validateForm(f: typeof form | typeof edit) {   // NN10
@@ -237,7 +240,7 @@
     try {
       const r = await api.importNodes(importText);
       msg.set(`imported ${r.added}/${r.total} node(s) (${r.format})`, "ok");
-      importText = ""; importOpen = false; await refresh();
+      importText = ""; importOpen = false;
     } catch (err) { msg.set(errText(err, "import failed"), "err"); }
     finally { importing = false; }
   }
@@ -245,7 +248,7 @@
   let connectingBest = $state(false);
   async function connectBest() {
     connectingBest = true;
-    try { const r = await api.connectBest(tab === "servers" ? null : (tab as number)); msg.set(`connected to node ${r.node_id}`, "ok"); await refresh(); }
+    try { const r = await api.connectBest(tab === "servers" ? null : (tab as number)); msg.set(`connected to node ${r.node_id}`, "ok"); }
     catch (err) { msg.set(errText(err, "connect-best failed"), "err"); }
     finally { connectingBest = false; }
   }
@@ -285,29 +288,29 @@
   const selIds = $derived([...selected].filter((id) => shown.some((n) => n.id === id)));
   async function bulkDelete() {
     if (!selIds.length || !(await confirmDialog(`Delete ${selIds.length} server(s)?`))) return;
-    try { for (const id of selIds) await api.deleteNode(id); clearSel(); await refresh(); }
+    try { for (const id of selIds) await api.deleteNode(id); clearSel(); }
     catch (err) { msg.set(nodeMutationError(err, "bulk delete failed"), "err"); }
   }
   async function bulkDetach() {
     if (!selIds.length) return;
-    try { await api.detachNodes(selIds); clearSel(); await refresh(); }
+    try { await api.detachNodes(selIds); clearSel(); }
     catch (err) { msg.set(errText(err, "detach failed"), "err"); }
   }
   async function bulkProfile(v: string) {
     if (!selIds.length) return;
     const pid = v === "" ? null : Number(v);
-    try { for (const id of selIds) await api.updateNode(id, { tuning_profile_id: pid }); clearSel(); await refresh(); }
+    try { for (const id of selIds) await api.updateNode(id, { tuning_profile_id: pid }); clearSel(); }
     catch (err) { msg.set(errText(err, "assign failed"), "err"); }
   }
 
   // NN6 export
   let exportNode = $state<Node | null>(null);
 
-  $effect(() => {
-    refresh();
-    const id = setInterval(() => { if (!document.hidden) pollHealth(); }, 20000);   // NN1 auto-poll
-    return () => clearInterval(id);
-  });
+  // NN1: the whole screen stays live — a subscription refresh (manual, from the section below, or
+  // the server's own scheduled one) rewrites this node list, and a failover moves the active node.
+  // Polling the full refresh() rather than health alone is what makes those visible without a
+  // page reload; subscribeLive also refetches the moment anything in the app writes.
+  $effect(() => subscribeLive(refresh, 10000));
 
   const failoverArmed = $derived(settings?.failover_enabled ?? false);
 </script>
@@ -382,7 +385,7 @@
       {@render sortTh("tcp", "TCP")}{@render sortTh("http", "HTTP")}<th>real</th><th class="col-egress">egress</th><th class="col-trend">trend</th><th class="col-checked">checked</th><th><span class="sr-only">actions</span></th>
     </tr></thead>
     <tbody>
-      {#each shown as n, i (n.id)}
+      {#each visibleRows as n, i (n.id)}
         <tr class:stale={n.stale} class:active={n.id === activeId}>
           <td class="ck" data-label=""><input type="checkbox" checked={selected.has(n.id)} onchange={() => toggleSel(n.id)} aria-label={`select ${n.name}`} /></td>
           <td class="col-id" data-label="id">{n.id}</td>
@@ -416,7 +419,14 @@
         </tr>
       {/each}
       {#if shown.length === 0}
-        <tr><td colspan="13" class="muted empty">No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}</td></tr>
+        <tr><td colspan="13" class="muted empty">
+          {#if !loaded}Loading servers…{:else}No servers here{#if tab === "servers"} — add one with “+ Add server”.{/if}{/if}
+        </td></tr>
+      {:else if visibleRows.length < shown.length}
+        <tr><td colspan="13" class="muted empty">
+          Showing {visibleRows.length} of {shown.length} —
+          <button class="btn btn-ghost show-all" onclick={() => (showAllRows = true)}>show all</button>
+        </td></tr>
       {/if}
     </tbody>
   </table></div>
@@ -584,6 +594,7 @@
   .trend { color: var(--accent); }
   .small { font-size: 0.72rem; }
   .empty { text-align: center; padding: 1.2rem; }
+  .show-all { padding: 0.1rem 0.35rem; font-size: inherit; text-decoration: underline; }
   .fo { font-size: 0.74rem; margin-top: 0.5rem; }
   .grid-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.6rem; }
   .grid-form .note-input, .grid-form .note-field { grid-column: 1 / -1; }

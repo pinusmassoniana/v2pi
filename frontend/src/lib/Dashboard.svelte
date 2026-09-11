@@ -8,6 +8,7 @@
   import { subWarnings, agoLabel } from "./dashboard";
   import { flagEmoji } from "./flag";
   import { fmtRate, fmtBytes } from "./format";
+  import { subscribeLive } from "./live";
 
   const UNTUNNELED_WARN_BPS = 50_000;   // D10: throughput leaking outside the tunnel above this → warn
 
@@ -24,7 +25,11 @@
   // U3: remember the dismissed failover across reloads. F9-2: guarded like Nodes.svelte's
   // nodes-density flag (typeof check + try/catch) and theme.ts (?.) — localStorage is absent
   // under SSR/jsdom and can throw in private-browsing/quota-exceeded contexts.
-  let failoverDismissed = $state<number | null>(Number(globalThis.localStorage?.getItem("failoverDismissed")) || null);
+  // `?.` guards a missing localStorage, not a throwing one — blocked site data raises on access
+  const readDismissed = () => {
+    try { return Number(globalThis.localStorage?.getItem("failoverDismissed")) || null; } catch { return null; }
+  };
+  let failoverDismissed = $state<number | null>(readDismissed());
   const seedRequest = createLatestRequest();
   const longRequest = createLatestRequest();
 
@@ -162,48 +167,23 @@
     return () => clearInterval(t);
   });
 
-  // Interval poller that pauses while the tab is hidden AND refetches immediately when it returns
-  // (so a backgrounded panel isn't stale for a whole interval after the operator comes back — FB).
-  function poll(load: () => void | Promise<void>, ms: number): () => void {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let stopped = false;
-    let running = false;
-    const run = async () => {
-      if (running || stopped) return;
-      running = true;
-      timer = null;
-      try { if (document.visibilityState === "visible") await load(); }
-      finally {
-        running = false;
-        if (!stopped) timer = setTimeout(run, ms);
-      }
-    };
-    const visible = () => {
-      if (document.visibilityState !== "visible") return;
-      if (running) return;
-      if (timer) clearTimeout(timer);
-      void run();
-    };
-    void run();
-    document.addEventListener("visibilitychange", visible);
-    return () => { stopped = true; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
-  }
-
   // shared status poller + a nodes refresh, both paused while the tab is hidden
+  // (the local poll() this used to carry now lives in live.ts, shared by every screen — and it
+  // additionally refetches the instant anything in the app writes)
   $effect(() => {
     const stop = subscribeStatus(3000);
-    const stopRefresh = poll(refresh, 3000);
+    const stopRefresh = subscribeLive(refresh, 3000);
     return () => { stopRefresh(); stop(); };
   });
 
   // network poll — drives the status strip (kill-switch/clients), ConnFlow, network summary, event log
-  $effect(() => poll(async () => { try { net = await api.getNetwork(); } catch {} }, 4000));
+  $effect(() => subscribeLive(async () => { try { net = await api.getNetwork(); } catch {} }, 4000));
 
-  // routing summary — rules change rarely, poll slowly
-  $effect(() => poll(async () => { try { routing = await api.getRouting(); } catch {} }, 30000));
+  // routing summary — rules change rarely, poll slowly (a write to them repaints immediately anyway)
+  $effect(() => subscribeLive(async () => { try { routing = await api.getRouting(); } catch {} }, 30000));
 
   // E: subscription expiry / data-cap warnings — subs change rarely, poll slowly
-  $effect(() => poll(async () => { try { subs = await api.listSubs(); } catch {} }, 30000));
+  $effect(() => subscribeLive(async () => { try { subs = await api.listSubs(); } catch {} }, 30000));
 
   // 1s heartbeat for live uptime / freshness, paused while hidden
   $effect(() => {

@@ -4,6 +4,7 @@
   import { statusStore } from "./status.svelte";
   import Toggle from "./Toggle.svelte";
   import Alert from "./Alert.svelte";
+  import { subscribeLive } from "./live";
 
   let { onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = $props();
 
@@ -191,7 +192,7 @@
     finally { busy = ""; }
   }
 
-  $effect(() => { load(); });
+  $effect(() => subscribeLive(load, 15000, () => dirty));
   $effect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); });
 
   // Enabled but clientless emits NO inbound at all: xray refuses to start on a vless inbound

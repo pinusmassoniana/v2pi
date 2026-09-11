@@ -14,6 +14,9 @@ let _scheduleGeneration = 0;
 // D4: Date.now() − (server wall-clock). Lets time labels (freshness/uptime) render against the
 // Pi's clock instead of a possibly-skewed browser clock. Updated on every status poll.
 let _skewMs = 0;
+// When the last poll actually succeeded. The offline banner shows it so "the panel is unreachable"
+// comes with "…and what you are looking at is from 21:14" instead of a bare warning.
+let _lastOkAt = $state<number | null>(null);
 
 export const statusStore = {
   get value(): Status | null {
@@ -22,6 +25,10 @@ export const statusStore = {
   /** true when the last poll failed — the value is the last-good snapshot, not current. */
   get stale(): boolean {
     return _stale;
+  },
+  /** Browser-clock ms of the last successful poll, or null if none has landed yet. */
+  get lastOkAt(): number | null {
+    return _lastOkAt;
   },
 };
 
@@ -41,6 +48,7 @@ export async function pollStatusOnce(): Promise<void> {
       if (generation !== _generation) return;
       _status = status;
       _stale = false;
+      _lastOkAt = Date.now();
       // server_now===0 is a valid (epoch) value — test presence by type, not truthiness
       if (typeof status.server_now === "number") _skewMs = Date.now() - status.server_now * 1000;
     } catch {
@@ -62,12 +70,14 @@ export function resetStatus(): void {
   _inflight = null;
   if (_timer) clearTimeout(_timer);
   _timer = null;
+  _dueAt = 0;
   _refs = 0;
   _wanted.length = 0;
   document.removeEventListener("visibilitychange", onVisible);
   _status = null;
   _skewMs = 0;
   _stale = false;
+  _lastOkAt = null;
 }
 
 function onVisible() {
@@ -78,17 +88,34 @@ function onVisible() {
 // fastest one (previously the first subscriber's interval silently won for everyone).
 const _wanted: number[] = [];
 
+// When the pending poll is due (browser clock). Rescheduling must never push it further out.
+let _dueAt = 0;
+
 function _retime(immediate = false) {
+  if (!_wanted.length) {
+    _scheduleGeneration++;
+    if (_timer) { clearTimeout(_timer); _timer = null; }
+    return;
+  }
+  const ms = Math.min(..._wanted);
+  const wantAt = immediate ? 0 : Date.now() + ms;
+  // A second subscriber used to cancel the first one's *immediate* poll and reschedule it a full
+  // interval out: mounting the Dashboard (which subscribes after the shell does) left the whole
+  // panel without a status for 3 s at every start, and the offline banner just as long to appear.
+  // Only ever reschedule to something sooner.
+  if (_timer && _dueAt <= wantAt) return;
   const scheduleGeneration = ++_scheduleGeneration;
   if (_timer) { clearTimeout(_timer); _timer = null; }
-  if (!_wanted.length) return;
-  const ms = Math.min(..._wanted);
   const run = async () => {
     _timer = null;
     if (document.visibilityState === "visible") await pollStatusOnce();
-    if (_wanted.length && scheduleGeneration === _scheduleGeneration)
-      _timer = setTimeout(run, Math.min(..._wanted));
+    if (_wanted.length && scheduleGeneration === _scheduleGeneration) {
+      const next = Math.min(..._wanted);
+      _dueAt = Date.now() + next;
+      _timer = setTimeout(run, next);
+    }
   };
+  _dueAt = wantAt;
   _timer = setTimeout(run, immediate ? 0 : ms);
 }
 
@@ -108,6 +135,7 @@ export function subscribeStatus(intervalMs = 3000): () => void {
       _scheduleGeneration++;
       if (_timer) clearTimeout(_timer);
       _timer = null;
+      _dueAt = 0;
       document.removeEventListener("visibilitychange", onVisible);
     } else {
       _retime();

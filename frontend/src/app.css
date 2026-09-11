@@ -214,12 +214,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-v
   background: var(--surface-2); border: 1px solid var(--border);
   color: var(--muted); font-size: 0.72rem; font-weight: 500;
 }
-.dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; display: inline-block; background: var(--muted); vertical-align: middle; }
-.dot.ok, .dot.live { background: var(--success); }
-.dot.bad { background: var(--danger); }
-.dot.unknown { background: var(--muted); }
-/* live/ok dots breathe so the panel feels alive (disabled for reduced-motion) */
-.dot.ok, .dot.live { animation: pulse-ring 2.4s ease-out infinite; }
+/* pulse-ring is the sidebar xray-core dot (App.svelte). The old global `.dot` classes it was
+   written for are gone — every screen draws its own scoped `.sdot` now. */
 @keyframes pulse-ring {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
   70%  { box-shadow: 0 0 0 5px transparent; }
@@ -228,7 +224,6 @@ table.table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-v
 /* NOC live-dot/badge breathing (spec) — opacity 1 → .32 → 1 */
 @keyframes v2pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.32; } }
 @media (prefers-reduced-motion: reduce) {
-  .dot.ok, .dot.live { animation: none; }
   .btn:active { transform: none; }
 }
 

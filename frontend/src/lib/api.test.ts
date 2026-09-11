@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { api, ApiError, createLatestRequest, setOnUnauthorized, TRAFFIC_CAPABILITY_EVENT } from "./api";
+import { api, ApiError, createLatestRequest, DATA_CHANGED_EVENT, setOnUnauthorized, TRAFFIC_CAPABILITY_EVENT } from "./api";
 
 function mockFetch() {
   const calls: any[] = [];
@@ -108,6 +108,22 @@ function jsonRes(body: any, status = 200) {
 beforeEach(() => { api._reset(); });
 
 describe("api client", () => {
+  it("announces a data change after a write, and stays quiet after a preview", async () => {
+    // live.ts turns this event into an immediate refetch on every mounted screen. A preview or a
+    // validate must not fire it: those answers get staged into a form the operator hasn't saved,
+    // and the refetch would wipe it.
+    mockFetch();
+    let seen = 0;
+    const onChange = () => { seen++; };
+    document.addEventListener(DATA_CHANGED_EVENT, onChange);
+    try {
+      await api.addNode({ name: "n", address: "a", port: 1, uuid: "u" });
+      expect(seen).toBe(1);
+      await api.previewSub("https://example.org/sub");
+      expect(seen).toBe(1);
+    } finally { document.removeEventListener(DATA_CHANGED_EVENT, onChange); }
+  });
+
   it("login then csrf caches the token", async () => {
     mockFetch();
     await api.login("admin", "pw");
