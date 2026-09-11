@@ -1,6 +1,6 @@
 [project]
 name = "pi-gw-panel"
-version = "1.17.26"
+version = "1.17.26.1"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -20,7 +20,10 @@ dependencies = [
 # as `httpx2`. Dev-only, never shipped. Don't "simplify" this to `httpx`.
 dev = [
     "pytest>=8.2",
-    "httpx2",
+    # >=2.12: 2.3.0 carries eight advisories (multipart header injection, unbounded
+    # decompression, CL/TE smuggling, WebSocket-over-SOCKS sent without TLS). Dev-only, but the
+    # advisory gate is repo-wide and blocks the image build.
+    "httpx2>=2.12",
     "grpcio-tools>=1.81.0",
     "setuptools>=83.0.0",
 ]
