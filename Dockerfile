@@ -9,8 +9,10 @@ ARG PYTHON_IMAGE_DIGEST=sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c
 ARG XRAY_VERSION=v26.3.27
 ARG UV_VERSION=0.11.6
 ARG UV_IMAGE_DIGEST=sha256:b1e699368d24c57cda93c338a57a8c5a119009ba809305cc8e86986d4a006754
-ARG DBIP_VERSION=2026-07
-ARG DBIP_SHA256=989c57a9ad1c1c93032e28acc643afdf03597ea28480520f6f1c76ea6420507f
+# db-ip keeps only the last couple of monthly builds; an older pin starts 404ing and takes the
+# image build down with it. Bump version and checksum together.
+ARG DBIP_VERSION=2026-09
+ARG DBIP_SHA256=cb0578ce59f569f2c933bb40feb820804a334855a60739011b0a89cab1d6e4ed
 # SHA256 of the pinned release assets (from the release's .dgst files) — release assets are
 # mutable on GitHub, so the version pin alone doesn't guarantee the bytes. Bump together
 # with XRAY_VERSION.
