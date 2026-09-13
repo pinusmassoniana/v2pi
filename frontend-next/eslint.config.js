@@ -27,4 +27,14 @@ export default defineConfig([
       "@typescript-eslint/no-this-alias": "off",
     },
   },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/api/live.ts", "src/**/*.test.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": ["error", {
+        selector: "Property[key.name='refetchInterval']",
+        message: "Poll through usePolledQuery (src/api/live.ts): one polling owner per query key.",
+      }],
+    },
+  },
 ]);
