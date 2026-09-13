@@ -2,8 +2,13 @@ export type Theme = "light" | "dark";
 export const THEME_KEY = "v2pi-theme";
 
 export function getStoredTheme(): Theme | null {
-  const v = globalThis.localStorage?.getItem(THEME_KEY);
-  return v === "light" || v === "dark" ? v : null;
+  try {
+    const v = globalThis.localStorage?.getItem(THEME_KEY);
+    return v === "light" || v === "dark" ? v : null;
+  } catch {
+    // Storage access throws when site data is blocked.
+    return null;
+  }
 }
 
 export function resolveInitialTheme(stored: Theme | null, system: Theme): Theme {
@@ -16,7 +21,11 @@ const THEME_BG: Record<Theme, string> = { dark: "#0a0d0f", light: "#eceff1" };
 
 export function applyTheme(t: Theme): void {
   document.documentElement.dataset.theme = t;
-  globalThis.localStorage?.setItem(THEME_KEY, t);
+  try {
+    globalThis.localStorage?.setItem(THEME_KEY, t);
+  } catch {
+    // Storage access throws when site data is blocked.
+  }
   document.getElementById("theme-color-meta")?.setAttribute("content", THEME_BG[t]);
 }
 

@@ -34,4 +34,22 @@ describe("theme", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(localStorage.getItem(THEME_KEY)).toBe("light");
   });
+
+  it("getStoredTheme and applyTheme handle blocked site storage", () => {
+    const own = Object.getOwnPropertyDescriptor(window, "localStorage");
+    try {
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        get() {
+          throw new DOMException("blocked", "SecurityError");
+        },
+      });
+      expect(getStoredTheme()).toBeNull();
+      expect(() => applyTheme("dark")).not.toThrow();
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    } finally {
+      if (own) Object.defineProperty(window, "localStorage", own);
+      else delete (window as { localStorage?: Storage }).localStorage;
+    }
+  });
 });
