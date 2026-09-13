@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>v2pi — Pi VPN gateway</title>
+    <meta name="application-name" content="v2pi" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" id="theme-color-meta" content="#07060d" />
+    <link rel="stylesheet" href="/fonts/plex.css" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-title" content="v2pi" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <script>
+      // Set the theme before the bundle loads so there is no flash. Storage access can throw
+      // when site data is blocked — fall back to dark.
+      (function () {
+        var t = "dark";
+        try {
+          var s = localStorage.getItem("v2pi-theme");
+          if (s === "light" || s === "dark") t = s;
+        } catch (e) {}
+        document.documentElement.dataset.theme = t;
+        var m = document.getElementById("theme-color-meta");
+        if (m) m.setAttribute("content", t === "light" ? "#f4f3fb" : "#07060d");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

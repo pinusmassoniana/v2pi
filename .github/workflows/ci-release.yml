@@ -149,6 +149,31 @@ jobs:
           path: e2e/playwright-report
           retention-days: 7
 
+  frontend-next-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend-next/package-lock.json
+      - name: Install locked dependencies
+        working-directory: frontend-next
+        run: npm ci
+      - name: Types and lint
+        working-directory: frontend-next
+        run: npm run check
+      - name: Vitest
+        working-directory: frontend-next
+        run: npm test
+      - name: Build SPA
+        working-directory: frontend-next
+        run: npm run build
+      - name: npm advisory gate (high and critical)
+        working-directory: frontend-next
+        run: npm audit --audit-level=high
+
   build-image:
     needs: [backend-tests, frontend-tests, dep-audit, secret-scan, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

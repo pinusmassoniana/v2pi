@@ -11,6 +11,7 @@ venv/
 # Node / Vite
 node_modules/
 frontend/dist/
+frontend-next/dist/
 .vite/
 
 # e2e (Playwright)
