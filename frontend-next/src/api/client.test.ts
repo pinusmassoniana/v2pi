@@ -1,0 +1,457 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { api, ApiError, setOnUnauthorized, TRAFFIC_CAPABILITY_EVENT } from "./client";
+
+function mockFetch() {
+  const calls: any[] = [];
+  const f = vi.fn(async (url: string, opts: any = {}) => {
+    calls.push({ url, opts });
+    if (url.endsWith("/api/login")) return jsonRes({ ok: true });
+    if (url.endsWith("/api/csrf")) return jsonRes({ csrf: "tok-123" });
+    if (url.endsWith("/api/status")) return jsonRes({ running: true, pid: 7, active_node_id: 2 });
+    if (url.endsWith("/api/nodes") && opts.method === "POST") return jsonRes({ id: 5, name: "n", address: "a", port: 1, transport: "vision" });
+    if (url.endsWith("/api/nodes")) return jsonRes([{ id: 5, name: "n", address: "a", port: 1, transport: "vision" }]);
+    if (url.match(/\/api\/nodes\/\d+\/apply/)) return jsonRes({ ok: true });
+    if (url.endsWith("/api/subs/preview")) return jsonRes({ method: "GET", url: "u", headers: { "x-hwid": "m" }, query: {} });
+    if (url.endsWith("/api/subs") && opts.method === "POST") return jsonRes(subFixture());
+    if (url.endsWith("/api/subs")) return jsonRes([subFixture()]);
+    if (url.endsWith("/api/settings") && opts.method === "PUT") return jsonRes(settingsFixture(true));
+    if (url.endsWith("/api/settings")) return jsonRes(settingsFixture(false));
+    if (url.endsWith("/api/profiles/default")) return jsonRes({ ...profileFixture(), is_default: true });
+    if (url.match(/\/api\/profiles\/\d+$/) && opts.method === "PATCH") return jsonRes({ ...profileFixture(), name: "renamed" });
+    if (url.match(/\/api\/profiles\/\d+$/) && opts.method === "DELETE") return jsonRes({ ok: true });
+    if (url.endsWith("/api/profiles") && opts.method === "POST") return jsonRes(profileFixture());
+    if (url.endsWith("/api/profiles")) return jsonRes([profileFixture()]);
+    if (url.endsWith("/api/routing/preset/ru-direct")) return jsonRes(routingFixture(true));
+    if (url.endsWith("/api/routing") && opts.method === "PUT") return jsonRes(routingFixture(true));
+    if (url.endsWith("/api/routing")) return jsonRes(routingFixture(false));
+    if (url.endsWith("/api/node-health")) return jsonRes([nodeHealthFixture()]);
+    if (url.endsWith("/api/network") && opts.method === "PUT") return jsonRes(networkFixture(true));
+    if (url.endsWith("/api/network")) return jsonRes(networkFixture(false));
+    if (url.match(/\/api\/rw\/clients\/[^/]+\/link$/)) return jsonRes({ link: "vless://cid@home.example.org:443?security=reality#iphone" });
+    if (url.match(/\/api\/rw\/clients\/[^/]+\/config$/)) return jsonRes({ filename: "iphone.conf", config: "[Proxy]\niphone = vless, home.example.org, 443\n" });
+    if (url.match(/\/api\/rw\/clients\/[^/]+$/) && opts.method === "DELETE") return jsonRes(rwFixture([]));
+    if (url.match(/\/api\/rw\/clients\/[^/]+$/) && opts.method === "PATCH") return jsonRes(rwFixture([{ id: "cid", email: "iphone", enabled: false }]));
+    if (url.endsWith("/api/rw/short-id")) return jsonRes({ short_id: "0011223344556677" });
+    if (url.endsWith("/api/rw/clients") && opts.method === "POST") return jsonRes(rwFixture([{ id: "cid", email: "iphone", enabled: true }]));
+    if (url.endsWith("/api/rw") && opts.method === "PUT") return jsonRes(rwFixture([], { enabled: true, has_private_key: true }));
+    if (url.endsWith("/api/rw")) return jsonRes(rwFixture([]));
+    if (url.match(/\/api\/tokens\/\d+$/) && opts.method === "DELETE") return jsonRes({}, 204);
+    if (url.endsWith("/api/tokens") && opts.method === "POST") return jsonRes(tokenCreatedFixture());
+    if (url.endsWith("/api/tokens")) return jsonRes([tokenFixture()]);
+    if (url.endsWith("/api/setup") && opts.method === "POST") return jsonRes({ ok: true });
+    if (url.endsWith("/api/setup")) return jsonRes({ needs_setup: false });
+    if (url.endsWith("/api/password")) return jsonRes({ ok: true });
+    if (url.endsWith("/api/backup")) return jsonRes(backupFixture());
+    if (url.endsWith("/api/restore")) return jsonRes({ ok: true, restored: { nodes: 1 } });
+    if (url.includes("/api/logs")) return jsonRes({ source: "xray-error", lines: ["a", "b"] });
+    return jsonRes({ ok: true });
+  });
+  (globalThis as any).fetch = f;
+  return { f, calls };
+}
+function backupFixture() {
+  return { schema_version: 1, nodes: [], subscriptions: [], profiles: [],
+           routing: { rules: [], default_action: "proxy" }, settings: {} };
+}
+function subFixture() {
+  return { id: 9, name: "s", url: "u", injection: {}, interval_sec: 0, last_fetched: null, last_status: null, last_path: null, node_count: 0 };
+}
+function settingsFixture(changed: boolean) {
+  return { tunneled_fetch: true, routing_default_action: changed ? "direct" : "proxy",
+           health_enabled: true, health_interval: changed ? 15 : 30, health_hysteresis: 3,
+           health_probe_url: "https://api.ipify.org?format=json", failover_enabled: true, failover_cooldown: 120,
+           stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000 };
+}
+function profileFixture() {
+  return { id: 3, name: "p", fingerprint: "chrome", frag_enabled: false, frag_packets: "tlshello",
+           frag_length: "100-200", frag_interval: "10-20", mux_enabled: false, doh_enabled: true,
+           doh_url: "", quic: "allow", is_default: false };
+}
+function routingFixture(custom: boolean) {
+  return { rules: custom ? [{ id: 1, position: 0, type: "geoip", value: "ru", action: "direct" }] : [],
+           default_action: custom ? "direct" : "proxy" };
+}
+function nodeHealthFixture() {
+  return { node_id: 5, last_tcp_ok: true, last_tcp_ms: 10, last_real_ok: true, last_real_ms: 20,
+           egress_ip: "9.9.9.9", checked_at: "t", fail_count: 0 };
+}
+function rwFixture(clients: any[], over: Record<string, any> = {}) {
+  return {
+    enabled: false, port: 443, dest: "www.microsoft.com:443", server_names: "www.microsoft.com",
+    short_ids: "ab12cd34", public_key: "PUB", endpoint: "home.example.org",
+    has_private_key: false, state_error: "", hosts: { "nas.v2pi": "192.168.1.88" },
+    routed_nets: ["192.168.1.0/24", "192.168.10.0/24"], routed_nets_override: "",
+    clients, live: false, ...over,
+  };
+}
+
+function networkFixture(changed: boolean) {
+  return {
+    segment: { iface: "eth0.2", ip: "192.168.10.2", dhcp_start: "192.168.10.30",
+               dhcp_end: changed ? "192.168.10.250" : "192.168.10.200", dhcp_lease: "12h", client_dns: "1.1.1.1" },
+    kill_switch_enabled: changed, lan_access_enabled: true,
+    status: { segment_up: null, dhcp_clients: 0, tunnel: { real_ok: null, latency_ms: null, egress_ip: null } },
+    recommendations: [{ title: "Create VLAN 2", detail: "tag the client port to eth0.2" }],
+  };
+}
+function tokenFixture() {
+  return { id: 1, name: "monitor", scope: "read", prefix: "pgwp_AbC12", created_at: 1700000000, last_used_at: null };
+}
+function tokenCreatedFixture() {
+  return { id: 2, name: "ci", scope: "readwrite", prefix: "pgwp_XyZ98", created_at: 1700000001, last_used_at: null,
+           token: "pgwp_full-secret-shown-once" };   // fake — test fixture, not a real secret
+}
+function jsonRes(body: any, status = 200) {
+  return { ok: status < 400, status, json: async () => body } as Response;
+}
+
+beforeEach(() => { api._reset(); });
+
+describe("api client", () => {
+  it("login then csrf caches the token", async () => {
+    mockFetch();
+    await api.login("admin", "pw");
+    const tok = await api.ensureCsrf();
+    expect(tok).toBe("tok-123");
+  });
+
+  it("sends credentials and X-CSRF-Token on mutations", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    await api.addNode({ name: "n", address: "a", port: 1, uuid: "u" });
+    const post = calls.find((c) => c.url.endsWith("/api/nodes") && c.opts.method === "POST");
+    expect(post.opts.credentials).toBe("include");
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+  });
+
+  it("getStatus returns typed status", async () => {
+    mockFetch();
+    await api.login("admin", "pw");
+    const st = await api.getStatus();
+    expect(st).toEqual({ running: true, pid: 7, active_node_id: 2 });
+  });
+
+  it("throws ApiError on non-ok", async () => {
+    (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail: "bad password" }, 401));
+    await expect(api.login("admin", "x")).rejects.toThrow("bad password");
+  });
+
+  it("formats FastAPI validation details and retains the raw payload", async () => {
+    const detail = [
+      { loc: ["body", "traffic_sample_ms"], msg: "Input should be greater than or equal to 500", type: "greater_than_equal" },
+      { loc: ["body", "unknown"], msg: "Extra inputs are not permitted", type: "extra_forbidden" },
+    ];
+    (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail }, 422));
+    const error = await api.putSettings({ traffic_sample_ms: 250 }).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toContain("body.traffic_sample_ms: Input should be greater than or equal to 500");
+    expect(error.detail).toEqual(detail);
+  });
+
+  it("subs: list + add carry the contract and CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const subs = await api.listSubs();
+    expect(subs[0].node_count).toBe(0);
+    await api.addSub({ name: "s", url: "u" });
+    const post = calls.find((c) => c.url.endsWith("/api/subs") && c.opts.method === "POST");
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+  });
+
+  it("node update/delete use PATCH/DELETE with CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    await api.updateNode(5, { name: "x" });
+    await api.deleteNode(5);
+    expect(calls.find((c) => c.url.endsWith("/api/nodes/5") && c.opts.method === "PATCH")).toBeTruthy();
+    const del = calls.find((c) => c.url.endsWith("/api/nodes/5") && c.opts.method === "DELETE");
+    expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+  });
+
+  it("putSettings sends PUT and previewSub posts", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const s = await api.putSettings({ health_interval: 15 });
+    expect(s.health_interval).toBe(15);
+    const prev = await api.previewSub("u", { headers: { "x-hwid": "{machine_id}" } });
+    expect(prev.method).toBe("GET");
+    expect(calls.find((c) => c.url.endsWith("/api/settings") && c.opts.method === "PUT")).toBeTruthy();
+  });
+
+  it("profiles: list/add/update/delete/setDefault carry the contract + CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    expect((await api.listProfiles())[0].name).toBe("p");
+    await api.addProfile({ name: "x", quic: "drop" });
+    expect((await api.updateProfile(3, { name: "renamed" })).name).toBe("renamed");
+    expect((await api.setDefaultProfile(3)).is_default).toBe(true);
+    await api.deleteProfile(3);
+    const post = calls.find((c) => c.url.endsWith("/api/profiles") && c.opts.method === "POST");
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    expect(calls.find((c) => c.url.endsWith("/api/profiles/default") && c.opts.method === "PUT")).toBeTruthy();
+  });
+
+  it("routing: get/put/preset carry the contract + CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    expect((await api.getRouting()).default_action).toBe("proxy");
+    const r = await api.putRouting({ rules: [{ type: "geoip", value: "ru", action: "direct" }], default_action: "direct" });
+    expect(r.default_action).toBe("direct");
+    expect((await api.routingPreset("ru-direct")).rules.length).toBeGreaterThan(0);
+    expect(calls.find((c) => c.url.endsWith("/api/routing") && c.opts.method === "PUT")).toBeTruthy();
+  });
+
+  it("listNodeHealth returns typed rows", async () => {
+    mockFetch();
+    const h = await api.listNodeHealth();
+    expect(h[0].egress_ip).toBe("9.9.9.9");
+    expect(h[0].last_real_ok).toBe(true);
+  });
+
+  it("network: get + put(partial) carry the contract + CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const net = await api.getNetwork();
+    expect(net.segment.iface).toBe("eth0.2");
+    expect(net.kill_switch_enabled).toBe(false);
+    expect(net.lan_access_enabled).toBe(true);
+    expect(net.status.tunnel.egress_ip).toBeNull();
+    expect(net.recommendations[0].title).toBe("Create VLAN 2");
+    const updated = await api.putNetwork({ dhcp_end: "192.168.10.250", kill_switch_enabled: true });
+    expect(updated.segment.dhcp_end).toBe("192.168.10.250");
+    expect(updated.kill_switch_enabled).toBe(true);
+    const put = calls.find((c) => c.url.endsWith("/api/network") && c.opts.method === "PUT");
+    expect(put.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    expect(JSON.parse(put.opts.body)).toEqual({ dhcp_end: "192.168.10.250", kill_switch_enabled: true });
+  });
+
+  it("road-warrior: reads state, sends CSRF on mutations, and never carries a private key back", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const rw = await api.getRw();
+    expect(rw.enabled).toBe(false);
+    // the browser only learns WHETHER a key is stored — never the key itself
+    expect(rw.has_private_key).toBe(false);
+    expect(Object.keys(rw)).not.toContain("private_key");
+    expect(rw.routed_nets).toEqual(["192.168.1.0/24", "192.168.10.0/24"]);
+    expect(rw.hosts["nas.v2pi"]).toBe("192.168.1.88");
+
+    const saved = await api.putRw({ enabled: true, private_key: "PRIV", port: 443 });
+    expect(saved.enabled).toBe(true);
+    expect(saved.has_private_key).toBe(true);
+    const put = calls.find((c) => c.url.endsWith("/api/rw") && c.opts.method === "PUT");
+    expect(put.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    expect(JSON.parse(put.opts.body)).toEqual({ enabled: true, private_key: "PRIV", port: 443 });
+  });
+
+  it("road-warrior clients: add, delete, link and .conf all hit the right endpoints", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const added = await api.addRwClient("iphone");
+    expect(added.clients.map((c) => c.email)).toEqual(["iphone"]);
+    const post = calls.find((c) => c.url.endsWith("/api/rw/clients") && c.opts.method === "POST");
+    expect(JSON.parse(post.opts.body)).toEqual({ email: "iphone" });
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+
+    expect((await api.rwClientLink("cid")).link).toContain("security=reality");
+    const conf = await api.rwClientConfig("cid");
+    expect(conf.filename).toBe("iphone.conf");
+    expect(conf.config).toContain("[Proxy]");
+
+    const suspended = await api.setRwClientEnabled("cid", false);
+    expect(suspended.clients[0].enabled).toBe(false);
+    expect(suspended.clients[0].id).toBe("cid");          // suspend keeps the uuid, unlike delete
+    const patch = calls.find((c) => c.url.endsWith("/api/rw/clients/cid") && c.opts.method === "PATCH");
+    expect(JSON.parse(patch.opts.body)).toEqual({ enabled: false });
+    expect(patch.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+
+    expect((await api.newRwShortId()).short_id).toBe("0011223344556677");
+
+    expect((await api.deleteRwClient("cid")).clients).toEqual([]);
+    const del = calls.find((c) => c.url.endsWith("/api/rw/clients/cid") && c.opts.method === "DELETE");
+    expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+  });
+
+  it("api tokens: list (no secret), create reveals secret once, delete sends DELETE", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const list = await api.listTokens();
+    expect(list[0].scope).toBe("read");
+    expect(list[0]).not.toHaveProperty("token");                 // list never carries the secret
+    const created = await api.createToken("ci", "readwrite");
+    expect(created.token).toBe("pgwp_full-secret-shown-once");   // returned once
+    expect(created.scope).toBe("readwrite");
+    const post = calls.find((c) => c.url.endsWith("/api/tokens") && c.opts.method === "POST");
+    expect(JSON.parse(post.opts.body)).toEqual({ name: "ci", scope: "readwrite" });
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    await api.deleteToken(2);
+    const del = calls.find((c) => c.url.endsWith("/api/tokens/2") && c.opts.method === "DELETE");
+    expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+  });
+
+  it("setup: reads bootstrap policy and sends the one-time proof as a header", async () => {
+    const { calls } = mockFetch();
+    expect((await api.getSetup()).needs_setup).toBe(false);
+    await api.setup("admin", "s3cret", "proof-123");
+    const post = calls.find((c) => c.url.endsWith("/api/setup") && c.opts.method === "POST");
+    expect(JSON.parse(post.opts.body)).toEqual({ username: "admin", password: "s3cret" });
+    expect(post.opts.headers["X-Bootstrap-Token"]).toBe("proof-123");
+  });
+
+  it("changePassword posts current+new with CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    await api.changePassword("old", "new");
+    const post = calls.find((c) => c.url.endsWith("/api/password"));
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+    expect(JSON.parse(post.opts.body)).toEqual({ current_password: "old", new_password: "new" });
+  });
+
+  it("backup/restore: get + post with CSRF", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const doc = await api.getBackup();
+    expect(doc.schema_version).toBe(1);
+    const r = await api.restore(doc);
+    expect(r.restored.nodes).toBe(1);
+    const post = calls.find((c) => c.url.endsWith("/api/restore"));
+    expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
+  });
+
+  it("getLogs passes source + lines", async () => {
+    const { calls } = mockFetch();
+    const out = await api.getLogs("xray-error", 50);
+    expect(out.lines).toEqual(["a", "b"]);
+    expect(calls.find((c) => c.url.includes("source=xray-error") && c.url.includes("lines=50"))).toBeTruthy();
+  });
+
+  it("openTraffic builds a ws and forwards parsed frames", () => {
+    let inst: any;
+    class FakeWS { onmessage: any = null; constructor(public url: string) { inst = this; } close() {} }
+    (globalThis as any).WebSocket = FakeWS;
+    const got: any[] = [];
+    const ws = api.openTraffic((m) => got.push(m));
+    expect(ws.url.startsWith("ws://") && ws.url.endsWith("/api/ws/traffic")).toBe(true);
+    inst.onmessage({ data: JSON.stringify({ ts: 1, outbounds: { proxy: { up_bps: 8, down_bps: 16 } }, active: null }) });
+    expect(got[0].outbounds.proxy.up_bps).toBe(8);
+  });
+
+  it("closes a live socket while hidden and backfills before reopening", () => {
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onmessage: ((e: { data: string }) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn(() => this.onclose?.());
+      constructor(public url: string) { sockets.push(this); }
+    }
+    (globalThis as any).WebSocket = FakeSocket;
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    const gap = vi.fn();
+    const handle = api.connectTraffic(() => {}, gap);
+    expect(sockets).toHaveLength(1);
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(sockets[0].close).toHaveBeenCalledOnce();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(gap).toHaveBeenCalledOnce();
+    expect(sockets).toHaveLength(2);
+    handle.close();
+  });
+
+  it("wraps a raw fetch rejection as a network-error ApiError, not an uncaught throw (F13-5)", async () => {
+    (globalThis as any).fetch = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const err = await api.getStatus().catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(0);
+    expect(err.message).toBe("network error");
+  });
+
+  it("wraps an aborted-by-timeout request as a request-timed-out ApiError (F13-5)", async () => {
+    vi.useFakeTimers();
+    (globalThis as any).fetch = vi.fn((_url: string, opts: any) => new Promise((_resolve, reject) => {
+      opts.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    const pending = api.getStatus().catch((e) => e);
+    await vi.advanceTimersByTimeAsync(20000);   // REQUEST_TIMEOUT_MS
+    const err = await pending;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(0);
+    expect(err.message).toBe("request timed out");
+    vi.useRealTimers();
+  });
+
+  it("fires the registered onUnauthorized callback on a mid-session 401 outside /login (F13-6)", async () => {
+    mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail: "session expired" }, 401));
+    const onUnauthorized = vi.fn();
+    setOnUnauthorized(onUnauthorized);
+    try {
+      await expect(api.getStatus()).rejects.toThrow("session expired");
+      expect(onUnauthorized).toHaveBeenCalledTimes(1);
+      // a failed /login itself must NOT be treated as a lost session (existing behaviour, e2e-covered
+      // at auth.spec.ts:55-61) — assert the unit-level branch doesn't regress that distinction either.
+      onUnauthorized.mockClear();
+      (globalThis as any).fetch = vi.fn(async () => jsonRes({ detail: "bad password" }, 401));
+      await expect(api.login("admin", "wrong")).rejects.toThrow("bad password");
+      expect(onUnauthorized).not.toHaveBeenCalled();
+    } finally {
+      setOnUnauthorized(null);
+    }
+  });
+
+  it("keeps a disabled traffic stream idle until an explicit capability change", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onmessage: ((e: { data: string }) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn(() => this.onclose?.());
+      constructor(public url: string) { sockets.push(this); }
+    }
+    (globalThis as any).WebSocket = FakeSocket;
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    const got: any[] = [];
+    const handle = api.connectTraffic((m) => got.push(m));
+    sockets[0].onmessage?.({ data: JSON.stringify({ disabled: true }) });
+    sockets[0].onclose?.();
+    vi.advanceTimersByTime(60_000);
+    expect(got).toEqual([{ disabled: true }]);
+    expect(sockets).toHaveLength(1);
+    document.dispatchEvent(new Event(TRAFFIC_CAPABILITY_EVENT));
+    expect(sockets).toHaveLength(2);
+    handle.close();
+    vi.useRealTimers();
+  });
+
+  it("does not broadcast a data-change event after a write — query invalidation owns refetching", async () => {
+    mockFetch();
+    let seen = 0;
+    const onChange = () => { seen++; };
+    document.addEventListener("v2pi:data-changed", onChange);
+    try {
+      await api.addNode({ name: "n", address: "a", port: 1, uuid: "u" });
+      expect(seen).toBe(0);
+    } finally {
+      document.removeEventListener("v2pi:data-changed", onChange);
+    }
+  });
+});

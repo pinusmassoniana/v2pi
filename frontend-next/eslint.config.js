@@ -16,4 +16,15 @@ export default defineConfig([
     rules: { "no-empty": ["error", { allowEmptyCatch: true }] },
   },
   { files: ["*.config.{js,ts}"], languageOptions: { globals: globals.node } },
+  {
+    // Ported verbatim from the Svelte client; untyped responses are narrowed at call sites.
+    files: ["src/api/client.ts", "src/api/client.test.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": ["error", { caughtErrors: "none" }],
+      // A fake WebSocket constructor in client.test.ts captures `this` for the test to reach the
+      // instance the client code created internally — ported verbatim from the Svelte client.
+      "@typescript-eslint/no-this-alias": "off",
+    },
+  },
 ]);
