@@ -31,6 +31,8 @@ export function createTrafficStore(
   let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0 };
   const listeners = new Set<() => void>();
   let handle: TrafficHandle | null = null;
+  // Bumped by reset(), so a history request from the ended session cannot refill the window.
+  let epoch = 0;
 
   const emit = (patch: Partial<Pick<TrafficSnapshot, "live" | "disabled">>) => {
     snapshot = { ...snapshot, ...patch, samples, version: snapshot.version + 1 };
@@ -43,8 +45,10 @@ export function createTrafficStore(
 
   // Fill the window from recorded history after the first connect and after every gap.
   const backfill = async () => {
+    const started = epoch;
     try {
       const history = await loadHistory();
+      if (started !== epoch) return;
       const byTs = new Map<number, TrafficSample>();
       for (const [ts, up, down] of history.samples) byTs.set(ts, { ts, up, down });
       for (const sample of samples) byTs.set(sample.ts, sample);   // live samples win a tie
@@ -81,6 +85,14 @@ export function createTrafficStore(
           handle = null;
         }
       };
+    },
+    /** End of session: close the socket now and forget the frame, the samples and the disabled flag. */
+    reset(): void {
+      epoch += 1;
+      handle?.close();
+      handle = null;
+      samples.length = 0;
+      emit({ live: null, disabled: false });
     },
     getSnapshot(): TrafficSnapshot {
       return snapshot;

@@ -70,6 +70,26 @@ describe("traffic store", () => {
     expect(store.getSnapshot().disabled).toBe(true);
   });
 
+  it("reset closes the socket at once and forgets the frame, the samples and the disabled flag", async () => {
+    const c = fakeConnection();
+    let answer: (h: TrafficHistoryResp) => void = () => {};
+    const loadHistory = vi.fn(() => new Promise<TrafficHistoryResp>((resolve) => { answer = resolve; }));
+    const store = createTrafficStore(c.connect, loadHistory);
+    store.subscribe(() => {});
+    c.push(frame(1000));
+    c.push({ disabled: true });
+    store.reset();
+    expect(c.handle.close).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot()).toMatchObject({ live: null, samples: [], disabled: false });
+    // a history reply from the ended session does not refill the window
+    answer({ samples: [[900, 1, 1]], interval_ms: 1000 });
+    await flush();
+    expect(store.getSnapshot().samples).toEqual([]);
+    // the next subscriber opens a fresh socket
+    store.subscribe(() => {});
+    expect(c.connect).toHaveBeenCalledTimes(2);
+  });
+
   it("backfills recorded history on connect and after a gap; live samples win a tie", async () => {
     const c = fakeConnection();
     const loadHistory = vi.fn(() => Promise.resolve<TrafficHistoryResp>({

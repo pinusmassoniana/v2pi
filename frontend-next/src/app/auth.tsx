@@ -1,12 +1,15 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { api, setOnUnauthorized } from "../api/client";
 import { resetClock } from "../api/clock";
-import { confirm } from "../components/confirm";
+import { trafficStore } from "../api/traffic";
+import { confirm, settleConfirm } from "../components/confirm";
 import { Button } from "../components/ui/Button";
 import { LoginScreen } from "../features/auth/LoginScreen";
 import { SetupScreen } from "../features/auth/SetupScreen";
 import { hasUnsavedEdits } from "./guard";
+import { closePalette } from "./shell/palette";
 
 export type Phase =
   | { kind: "booting" }
@@ -32,6 +35,20 @@ export async function resolvePhase(): Promise<Phase> {
   }
 }
 
+/**
+ * Forget everything the old session left in memory, so none of it reappears after the next login:
+ * the query cache, the clock skew, a pending confirmation (answered "no", so a queued risky action
+ * never runs), the command palette, the live traffic stream and any toasts.
+ */
+export function endSession(queryClient: QueryClient): void {
+  queryClient.clear();
+  resetClock();
+  settleConfirm(false);
+  closePalette();
+  trafficStore.reset();
+  toast.dismiss();
+}
+
 interface AuthValue { logout: () => Promise<void> }
 
 export const AuthContext = createContext<AuthValue | null>(null);
@@ -54,10 +71,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // A 401 anywhere mid-session (idle timeout, password changed elsewhere) drops back to Login
-    // with nothing of the old session left in the cache.
+    // with nothing of the old session left behind.
     setOnUnauthorized(() => {
-      queryClient.clear();
-      resetClock();
+      endSession(queryClient);
       setPhase({ kind: "login" });
     });
     return () => setOnUnauthorized(null);
@@ -70,8 +86,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     } catch {
       // the session may already be gone; drop local state regardless
     }
-    queryClient.clear();
-    resetClock();
+    endSession(queryClient);
     setPhase({ kind: "login" });
   }, [queryClient]);
 

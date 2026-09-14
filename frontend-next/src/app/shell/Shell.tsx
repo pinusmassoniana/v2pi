@@ -1,8 +1,6 @@
 import { Outlet, useRouterState } from "@tanstack/react-router";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
-import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
-import { Toaster } from "../../components/ui/Toaster";
 import { sectionForPath, titleForPath } from "../nav";
 import { BottomTabBar } from "./BottomTabBar";
 import { CommandPalette } from "./CommandPalette";
@@ -42,8 +40,6 @@ export function Shell() {
       </div>
       <BottomTabBar pathname={pathname} className="md:hidden" />
       <CommandPalette />
-      <ConfirmDialog />
-      <Toaster />
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { Dialog as Primitive } from "radix-ui";
 import { settleConfirm, useConfirmRequest } from "../confirm";
 import { Button } from "./Button";
 
-/** Mounted once by the shell. Sits above sheets and dialogs (z-60). */
+/** Mounted once at the app root, outside the auth gate. Sits above sheets and dialogs (z-60). */
 export function ConfirmDialog() {
   const request = useConfirmRequest();
   return (
