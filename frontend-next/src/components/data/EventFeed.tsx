@@ -1,4 +1,5 @@
 import { cn } from "../../lib/cn";
+import { TINT } from "./Chip";
 import type { EventLevel } from "./types";
 
 export interface EventFeedItem {
@@ -11,9 +12,9 @@ export interface EventFeedItem {
 }
 
 const LEVEL: Record<EventLevel, string> = {
-  ok: "bg-ok/12 text-ok",
-  warn: "bg-warn/12 text-warn",
-  bad: "bg-bad/12 text-bad",
+  ok: TINT.ok,
+  warn: TINT.warn,
+  bad: TINT.bad,
   info: "bg-g2/15 text-g2",
 };
 

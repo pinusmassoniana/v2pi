@@ -9,7 +9,7 @@ const DOT: Record<Tone, string> = {
   neutral: "before:bg-t3",
 };
 
-const TINT: Record<Tone, string> = {
+export const TINT: Record<Tone, string> = {
   ok: "bg-ok/12 text-ok",
   warn: "bg-warn/12 text-warn",
   bad: "bg-bad/12 text-bad",
