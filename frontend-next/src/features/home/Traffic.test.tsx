@@ -1,10 +1,23 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
-import { ApiError, type Status, type TrafficFrame } from "../../api/client";
+import { describe, expect, it, vi } from "vitest";
+import { ApiError, type Status, type TrafficFrame, type TrafficHistoryResp } from "../../api/client";
 import { createQueryClient } from "../../api/queryClient";
+import { latencyGeometry } from "../../components/data/latencyGeometry";
 import { NETWORK, NOW_SEC, STATUS, TRAFFIC_FRAME, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
+import { failoverHistory } from "./derive";
+
+// Pass-through spies: failoverHistory runs only when the page itself renders, latencyGeometry only when the
+// latency chart rebuilds its paths — so their call counts show what a live frame re-renders.
+vi.mock("./derive", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./derive")>();
+  return { ...actual, failoverHistory: vi.fn(actual.failoverHistory) };
+});
+vi.mock("../../components/data/latencyGeometry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../components/data/latencyGeometry")>();
+  return { ...actual, latencyGeometry: vi.fn(actual.latencyGeometry) };
+});
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const clock = (ms: number) => {
@@ -75,6 +88,37 @@ describe("Traffic › KPIs", () => {
     api$.emitTraffic(probe({ real_ok: false }));
     expect(region("Uptime")).toHaveTextContent("Uptime—not connected");
     expect(screen.getByText("Tunnel offline")).toBeInTheDocument();
+  });
+});
+
+describe("Traffic › live frames", () => {
+  it("a live frame re-renders the cards that show it, not the page", async () => {
+    const { api$ } = await openTraffic();
+    api$.emitTraffic({ ...TRAFFIC_FRAME, ts: TRAFFIC_FRAME.ts - 1_000 });
+    const pageRenders = vi.mocked(failoverHistory).mock.calls.length;
+    for (let i = 0; i < 5; i++) api$.emitTraffic({ ...TRAFFIC_FRAME, ts: TRAFFIC_FRAME.ts + i * 1_000 });
+    expect(region("Active latency")).toHaveTextContent("42ms");
+    expect(vi.mocked(failoverHistory).mock.calls.length).toBe(pageRenders);
+  });
+
+  it("the latency chart keeps its geometry while frames repeat the same probe history", async () => {
+    const { api$ } = await openTraffic();
+    api$.emitTraffic(TRAFFIC_FRAME);
+    const builds = vi.mocked(latencyGeometry).mock.calls.length;
+    for (let i = 1; i <= 5; i++) {
+      api$.emitTraffic({ ...TRAFFIC_FRAME, ts: TRAFFIC_FRAME.ts + i * 1_000, active: { ...TRAFFIC_FRAME.active!, lat_history: [...TRAFFIC_FRAME.active!.lat_history] } });
+    }
+    expect(vi.mocked(latencyGeometry).mock.calls.length).toBe(builds);
+    api$.emitTraffic(probe({ lat_history: [...TRAFFIC_FRAME.active!.lat_history, 60] }, TRAFFIC_FRAME.ts + 6_000));
+    expect(vi.mocked(latencyGeometry).mock.calls.length).toBe(builds + 1);
+    expect(region("Active node latency")).toHaveTextContent("last 10 probes");
+  });
+
+  it("while the recorded 24 h window loads, the peak reads — rather than no traffic", async () => {
+    const { api$ } = await openTraffic();
+    api$.getTrafficHistory.mockReturnValue(new Promise<TrafficHistoryResp>(() => {}));
+    await userEvent.click(within(region("Throughput")).getByRole("button", { name: "24h" }));
+    expect(region("Peak download · 24h")).toHaveTextContent(/^Peak download · 24h——$/);
   });
 });
 

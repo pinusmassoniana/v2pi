@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import type { ConnEvent } from "../../api/client";
+import { useMemo, useState, type ReactNode } from "react";
+import type { ConnEvent, Node, NodeHealth, Status } from "../../api/client";
 import { serverNow } from "../../api/clock";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
+import { useTraffic } from "../../api/traffic";
 import { CardHeader } from "../../components/data/CardHeader";
 import { Kpi } from "../../components/data/Kpi";
 import { LatencyBars } from "../../components/data/LatencyBars";
@@ -13,7 +14,7 @@ import { Uptime } from "../../components/data/Uptime";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { fmtRate, splitUnit } from "../../lib/format";
 import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
-import { cardFallback, staleNotice } from "./CardState";
+import { cardFallback, staleNotice, type CardQuery } from "./CardState";
 import {
   activeFlag, activeNode, activeRow, clockTime, failoverHistory, latencyStats, peakOf, probeFor, sinceLabel, standbyRows,
   tunnelLabel, whenLabel,
@@ -60,94 +61,136 @@ function FailoverRows({ events, nowMs }: { events: readonly ConnEvent[]; nowMs: 
   );
 }
 
+/** The live probe of the active node, from the store; null while stats are off or no frame is about that node. */
+function useActiveProbe(activeNodeId: number | null) {
+  const traffic = useTraffic();
+  return probeFor(traffic.disabled ? null : traffic.live, activeNodeId);
+}
+
+/**
+ * The window switcher's state, its series and the two things drawn from it — the peak KPI and the throughput
+ * chart. A live frame re-renders this and the cards that show live values, never the page: `children` (the KPIs
+ * between the two) are the page's elements, unchanged when only this re-renders.
+ */
+function TrafficTop({ activeNodeId, children }: { activeNodeId: number | null; children: ReactNode }) {
+  const [windowSec, setWindowSec] = useState<TrafficWindowSec>(600);
+  const series = useTrafficSeries(windowSec);
+  const peak = useMemo(() => (series.disabled ? null : peakOf(series.samples)), [series.disabled, series.samples]);
+  const peakValue = peak ? splitUnit(fmtRate(peak.bps)) : { value: "—", unit: "" };
+  let peakSub: ReactNode = "no traffic in this window";
+  if (peak) peakSub = <>at <span className="font-mono text-t2">{clockTime(peak.ts / 1000)}</span></>;
+  else if (!series.disabled && (series.pending || series.error)) peakSub = "—";   // the recorded window has not loaded
+  return (
+    <>
+      <Kpi label={`Peak download · ${windowLabel(windowSec)}`} value={peakValue.value} unit={peakValue.unit} sub={peakSub} className="xl:col-span-3" />
+      {children}
+      <ThroughputCard windowSec={windowSec} onWindowChange={setWindowSec} series={series} activeNodeId={activeNodeId} className="md:col-span-2 xl:col-span-12" />
+    </>
+  );
+}
+
+function ActiveLatencyKpi({ activeNodeId }: { activeNodeId: number | null }) {
+  const probe = useActiveProbe(activeNodeId);
+  const latency = latencyStats(probe, serverNow());
+  return (
+    <Kpi
+      label="Active latency"
+      value={latency.ms ?? "—"}
+      unit={latency.ms !== null ? "ms" : undefined}
+      sub={<span className={latency.fresh ? undefined : probe?.stale ? "text-warn" : undefined}>{latency.sub}</span>}
+      className="xl:col-span-3"
+    />
+  );
+}
+
+function UptimeKpi({ status, statusError }: { status: Status | undefined; statusError: boolean }) {
+  const probe = useActiveProbe(status?.active_node_id ?? null);
+  const tunnel = tunnelLabel(status, statusError, probe);
+  const online = tunnel.label === "ONLINE";
+  const since = status?.active_since ?? null;
+  let sub: ReactNode = tunnel.label === "UNKNOWN" ? "unknown" : "not connected";
+  if (online && since !== null) sub = <>since <span className="font-mono text-t2">{sinceLabel(since)}</span></>;
+  return <Kpi label="Uptime" value={<Uptime since={since} running={online} coarse />} sub={sub} className="xl:col-span-3" />;
+}
+
+function LatencyBarsCard({ activeNodeId, nodes, health }: {
+  activeNodeId: number | null;
+  nodes: CardQuery & { data: Node[] | undefined };
+  health: CardQuery & { data: NodeHealth[] | undefined };
+}) {
+  const probe = useActiveProbe(activeNodeId);
+  const fallback = cardFallback([nodes, health], "Node health did not load", "h-48");
+  const rows = [
+    activeRow(activeNode(nodes.data, activeNodeId), probe),
+    ...standbyRows(nodes.data ?? [], health.data ?? [], activeNodeId, serverNow(), Infinity),
+  ].filter((row) => row !== null);
+  return (
+    <GlassCard aria-label="Probe latency by node" aria-busy={(fallback !== null && !nodes.isError && !health.isError) || undefined} className="md:col-span-2 xl:col-span-6">
+      <CardHeader
+        title="Probe latency by node"
+        aside={<span className="inline-flex items-center gap-1.5 text-[11px] text-t2"><i aria-hidden className="h-2.5 w-px bg-warn/70" />slow &gt; 150 ms</span>}
+      />
+      {fallback ?? (
+        <>
+          {staleNotice([nodes, health], "Node health did not refresh")}
+          {rows.length === 0 ? <p className="py-2 text-sm text-t3">No nodes yet.</p> : <LatencyBars rows={rows} label="Nodes by latency" ticks={H3_TICKS} thresholdLine />}
+        </>
+      )}
+    </GlassCard>
+  );
+}
+
+function ActiveLatencyCard({ activeNodeId, active }: { activeNodeId: number | null; active: Node | undefined }) {
+  const probe = useActiveProbe(activeNodeId);
+  // Every frame carries a new lat_history array, even when no probe ran since the last one. Key the chart's input
+  // on what the history holds, so LatencyChart's geometry memo rebuilds only when a probe actually changed it.
+  const historyKey = probe?.lat_history.join(",") ?? "";
+  const history = useMemo(() => (historyKey ? historyKey.split(",").map(Number) : []), [historyKey]);
+  const flag = activeFlag(probe);
+  return (
+    <GlassCard aria-label="Active node latency" className="md:col-span-2 xl:col-span-6">
+      <CardHeader
+        title="Active node latency"
+        detail={active ? `${flag ? `${flag} ` : ""}${active.name}${history.length ? ` · last ${history.length} probes` : ""}` : undefined}
+      />
+      <LatencyChart values={history} failed={probe?.real_ok === false} dim={probe?.stale !== false || probe?.real_ok === false} />
+    </GlassCard>
+  );
+}
+
 /**
  * Home › Traffic: trends rather than "right now". Polls network and node health (the same cadence Overview
- * uses — only one of the two pages is ever mounted); node names are read once when it opens.
+ * uses — only one of the two pages is ever mounted); node names are read once when it opens. The page reads no
+ * live traffic itself, so a frame re-renders only the cards that show it.
  */
 export function Traffic() {
   const status = useQuery(queries.status());
   const network = usePolledQuery(queries.network(), NETWORK_POLL_MS);
   const health = usePolledQuery(queries.nodeHealth(), SLOW_POLL_MS);
   const nodes = useQuery(queries.nodes());
-  const [windowSec, setWindowSec] = useState<TrafficWindowSec>(600);
-  const series = useTrafficSeries(windowSec);
 
   const nowMs = serverNow();
   const activeId = status.data?.active_node_id ?? null;
-  const probe = probeFor(series.live, activeId);
-  const active = activeNode(nodes.data, activeId);
-  const tunnel = tunnelLabel(status.data, status.isError, probe);
-  const online = tunnel.label === "ONLINE";
-  const peak = series.disabled ? null : peakOf(series.samples);
-  const peakValue = peak ? splitUnit(fmtRate(peak.bps)) : { value: "—", unit: "" };
-  const latency = latencyStats(probe, nowMs);
   const history = network.data ? failoverHistory(network.data.events, status.data?.last_failover_at) : [];
   const failovers = network.data?.status.failovers_24h ?? status.data?.failovers_24h ?? 0;
-  const since = status.data?.active_since ?? null;
-
-  const barsFallback = cardFallback([nodes, health], "Node health did not load", "h-48");
-  const rows = [
-    activeRow(active, probe),
-    ...standbyRows(nodes.data ?? [], health.data ?? [], activeId, nowMs, Infinity),
-  ].filter((row) => row !== null);
-  const probeHistory = probe?.lat_history ?? [];
-  const flag = activeFlag(probe);
   const historyFallback = cardFallback([network], "Failover history did not load", "h-32");
 
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-12">
-      <Kpi
-        label={`Peak download · ${windowLabel(windowSec)}`}
-        value={peakValue.value}
-        unit={peakValue.unit}
-        sub={peak ? <>at <span className="font-mono text-t2">{clockTime(peak.ts / 1000)}</span></> : "no traffic in this window"}
-        className="xl:col-span-3"
-      />
-      <Kpi
-        label="Active latency"
-        value={latency.ms ?? "—"}
-        unit={latency.ms !== null ? "ms" : undefined}
-        sub={<span className={latency.fresh ? undefined : probe?.stale ? "text-warn" : undefined}>{latency.sub}</span>}
-        className="xl:col-span-3"
-      />
-      <Kpi
-        label="Failovers · 24h"
-        value={String(failovers)}
-        tone={failovers > 0 ? "warn" : "neutral"}
-        sub={history[0] ? <>last <span className="font-mono text-t2">{whenLabel(history[0].ts, nowMs)}</span></> : "none recorded"}
-        className="xl:col-span-3"
-      />
-      <Kpi
-        label="Uptime"
-        value={<Uptime since={since} running={online} coarse />}
-        sub={online && since !== null
-          ? <>since <span className="font-mono text-t2">{sinceLabel(since)}</span></>
-          : tunnel.label === "UNKNOWN" ? "unknown" : "not connected"}
-        className="xl:col-span-3"
-      />
-
-      <ThroughputCard windowSec={windowSec} onWindowChange={setWindowSec} series={series} activeNodeId={activeId} className="md:col-span-2 xl:col-span-12" />
-
-      <GlassCard aria-label="Probe latency by node" aria-busy={(barsFallback !== null && !nodes.isError && !health.isError) || undefined} className="md:col-span-2 xl:col-span-6">
-        <CardHeader
-          title="Probe latency by node"
-          aside={<span className="inline-flex items-center gap-1.5 text-[11px] text-t2"><i aria-hidden className="h-2.5 w-px bg-warn/70" />slow &gt; 150 ms</span>}
+      <TrafficTop activeNodeId={activeId}>
+        <ActiveLatencyKpi activeNodeId={activeId} />
+        <Kpi
+          label="Failovers · 24h"
+          value={String(failovers)}
+          tone={failovers > 0 ? "warn" : "neutral"}
+          sub={history[0] ? <>last <span className="font-mono text-t2">{whenLabel(history[0].ts, nowMs)}</span></> : "none recorded"}
+          className="xl:col-span-3"
         />
-        {barsFallback ?? (
-          <>
-            {staleNotice([nodes, health], "Node health did not refresh")}
-            {rows.length === 0 ? <p className="py-2 text-sm text-t3">No nodes yet.</p> : <LatencyBars rows={rows} label="Nodes by latency" ticks={H3_TICKS} thresholdLine />}
-          </>
-        )}
-      </GlassCard>
+        <UptimeKpi status={status.data} statusError={status.isError} />
+      </TrafficTop>
 
-      <GlassCard aria-label="Active node latency" className="md:col-span-2 xl:col-span-6">
-        <CardHeader
-          title="Active node latency"
-          detail={active ? `${flag ? `${flag} ` : ""}${active.name}${probeHistory.length ? ` · last ${probeHistory.length} probes` : ""}` : undefined}
-        />
-        <LatencyChart values={probeHistory} failed={probe?.real_ok === false} dim={probe?.stale !== false || probe?.real_ok === false} />
-      </GlassCard>
+      <LatencyBarsCard activeNodeId={activeId} nodes={nodes} health={health} />
+      <ActiveLatencyCard activeNodeId={activeId} active={activeNode(nodes.data, activeId)} />
 
       <GlassCard aria-label="Failover history" aria-busy={(historyFallback !== null && !network.isError) || undefined} className="md:col-span-2 xl:col-span-12">
         <CardHeader title="Failover history" detail="last 8" />
