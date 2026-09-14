@@ -1,6 +1,6 @@
-// How often each Home read is refreshed by its one polling owner (see src/api/live.ts).
+// How often each read is refreshed by its one polling owner (see src/api/live.ts), for every screen.
 
-/** Network: the status block, the connection path, the summaries and the event tail. */
+/** Network: Home's status block, connection path, summaries and event tail. */
 export const NETWORK_POLL_MS = 4_000;
 /** Nodes, node health, subscriptions and routing change rarely; a write refreshes them at once anyway. */
 export const SLOW_POLL_MS = 30_000;

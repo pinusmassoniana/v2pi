@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Network, Node, Status } from "../../../api/client";
-import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../../api/invalidation";
+import { CONNECTION_BUSY, CONNECTION_WRITE, isConnectionBusy, useApiWrite, useConnectionBusy } from "../../../api/invalidation";
 import { keys } from "../../../api/keys";
 import { useTraffic } from "../../../api/traffic";
 import { openPalette } from "../../../app/shell/palette";
@@ -84,6 +84,11 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
 
   async function onRollback(target: string, targetId: number | null) {
     if (!(await confirm(`Roll back the live config to ${target}?`, { confirmLabel: "Roll back" }))) return;
+    // Another connection write may have started while the dialog was open.
+    if (isConnectionBusy(queryClient)) {
+      notifyError(null, CONNECTION_BUSY);
+      return;
+    }
     // The status poll kept running while the dialog was open: roll back only to what was confirmed.
     if (!rollbackStillValid(queryClient.getQueryData<Status>(keys.status), targetId)) {
       notifyError(null, ROLLBACK_TARGET_CHANGED);
@@ -93,9 +98,12 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   }
 
   async function onDisconnect(id: number, name: string) {
-    if (await confirm(`Disconnect from ${name}? Devices lose the tunnel until a node is connected again.`, { confirmLabel: "Disconnect" })) {
-      disconnect.mutate({ id, name });
+    if (!(await confirm(`Disconnect from ${name}? Devices lose the tunnel until a node is connected again.`, { confirmLabel: "Disconnect" }))) return;
+    if (isConnectionBusy(queryClient)) {
+      notifyError(null, CONNECTION_BUSY);
+      return;
     }
+    disconnect.mutate({ id, name });
   }
 
   return (

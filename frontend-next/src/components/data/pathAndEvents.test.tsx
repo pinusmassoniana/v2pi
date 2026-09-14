@@ -59,7 +59,7 @@ describe("ConnectionPath", () => {
   it("hides the v6 uplink without IPv6, and copes with nothing known yet", () => {
     const { container } = render(
       <ConnectionPath {...PATH} ipv6Enabled={false} clients={null} poolSize={null} gatewayIp={null} gatewayIface={null}
-        nodeName={null} nodeFlag="" latencyMs={null} egressIp={null} egressIp6={null} uplink={null} leg="off" killSwitch={{ label: "UNKNOWN", tone: "neutral" }} />,
+        nodeName="No node" nodeFlag="" latencyMs={null} egressIp={null} egressIp6={null} uplink={null} leg="off" killSwitch={{ label: "UNKNOWN", tone: "neutral" }} />,
     );
     expect([...container.querySelector("svg + div")!.children].map((c) => c.textContent)).toEqual([
       "Devices · — clientspool —", "Gateway—", "Node · egress—", "Internet · uplinkv4 ?",

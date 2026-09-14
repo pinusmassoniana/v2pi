@@ -3,7 +3,7 @@ import type { Network } from "../../../api/client";
 import { CardHeader } from "../../../components/data/CardHeader";
 import { EventFeed } from "../../../components/data/EventFeed";
 import { GlassCard } from "../../../components/ui/GlassCard";
-import { cardFallback, staleNotice, type CardQuery } from "../CardState";
+import { cardFallback, staleNotice, type CardQuery } from "../../../components/data/CardState";
 import { clockTime, eventLevel, recentEvents } from "../derive";
 
 /** O11: the last six gateway events, newest first. */

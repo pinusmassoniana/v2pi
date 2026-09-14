@@ -1,8 +1,10 @@
+import type { QueryClient } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi } from "vitest";
 import type { Network, Node, NodeHealth, Routing, Status, Subscription, TrafficFrame, TrafficMessage } from "../api/client";
 import { api } from "../api/client";
 import { recordServerNow } from "../api/clock";
+import { CONNECTION_WRITE } from "../api/invalidation";
 import { trafficStore } from "../api/traffic";
 
 /** Gateway time for every fixture: 2023-11-14 22:15:00 UTC, in epoch seconds. */
@@ -149,4 +151,15 @@ export function mockApi() {
       act(() => send(message));
     },
   };
+}
+
+/**
+ * Start a connection write (CONNECTION_WRITE) that runs until the returned function is called: every connection
+ * control waits meanwhile, as it would for a connect started elsewhere in the app.
+ */
+export function holdConnectionWrite(client: QueryClient): () => Promise<void> {
+  let release: () => void = () => {};
+  const done = new Promise<void>((resolve) => { release = resolve; });
+  const running = client.getMutationCache().build(client, { mutationKey: CONNECTION_WRITE, mutationFn: () => done }).execute(undefined);
+  return () => act(async () => { release(); await running; });
 }

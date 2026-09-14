@@ -18,10 +18,13 @@ export interface KpiProps {
   tone?: Tone;
   /** The value is stale: shown, but dimmed. */
   dim?: boolean;
+  /** Heading level of the label: 2 for a card on the page, 3 inside a section that already has an h2. */
+  level?: 2 | 3;
   className?: string;
 }
 
-export function Kpi({ label, value, unit, sub, spark, sparkSeries = "down", aside, tone = "neutral", dim = false, className }: KpiProps) {
+export function Kpi({ label, value, unit, sub, spark, sparkSeries = "down", aside, tone = "neutral", dim = false, level = 2, className }: KpiProps) {
+  const Heading = level === 2 ? "h2" : "h3";
   return (
     <section
       aria-label={label}
@@ -29,7 +32,7 @@ export function Kpi({ label, value, unit, sub, spark, sparkSeries = "down", asid
       className={cn("glass flex min-w-0 flex-col gap-1 p-3.5 transition-opacity duration-200", dim && "opacity-60", className)}
     >
       <div className="flex items-center justify-between gap-2">
-        <h3 className="truncate text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{label}</h3>
+        <Heading className="truncate text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{label}</Heading>
         {aside}
       </div>
       <p className={cn("truncate text-[26px] font-bold leading-tight tracking-tight tabular-nums", VALUE[tone])}>

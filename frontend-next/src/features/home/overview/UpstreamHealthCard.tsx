@@ -6,7 +6,7 @@ import { CardHeader } from "../../../components/data/CardHeader";
 import { LatencyBars } from "../../../components/data/LatencyBars";
 import { GlassCard } from "../../../components/ui/GlassCard";
 import { Pill } from "../../../components/ui/Pill";
-import { cardFallback, staleNotice, type CardQuery } from "../CardState";
+import { cardFallback, staleNotice, type CardQuery } from "../../../components/data/CardState";
 import { activeNode, activeRow, failoverPill, probeFor, standbyRows, tunnelLabel } from "../derive";
 
 export interface UpstreamHealthCardProps {

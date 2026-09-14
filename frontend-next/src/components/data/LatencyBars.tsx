@@ -1,4 +1,5 @@
 import { cn } from "../../lib/cn";
+import { SLOW_LATENCY_MS } from "../../lib/nodeHealth";
 import type { LatencyRowData } from "./types";
 
 export interface LatencyBarsProps {
@@ -49,8 +50,8 @@ function BarRow({ row, scaleMs, warnMs, thresholdLine }: { row: LatencyRowData; 
       </span>
       {row.state === "live" ? (
         <>
-          <span className="text-right font-semibold tabular-nums">{row.ms} ms</span>
-          <span className="text-[11px] text-ok">live</span>
+          <span className={cn("text-right font-semibold tabular-nums", row.dim && "opacity-45")}>{row.ms} ms</span>
+          <span className={cn("text-[11px] text-ok", row.dim && "opacity-45")}>live</span>
         </>
       ) : row.state === "measured" ? (
         <>
@@ -74,7 +75,7 @@ function BarRow({ row, scaleMs, warnMs, thresholdLine }: { row: LatencyRowData; 
 }
 
 /** Latency per node on one shared scale: the active node in the brand gradient, standbys with the age of their probe. */
-export function LatencyBars({ rows, label, scaleMs = 250, warnMs = 150, ticks = [0, 125, 250], thresholdLine = false }: LatencyBarsProps) {
+export function LatencyBars({ rows, label, scaleMs = 250, warnMs = SLOW_LATENCY_MS, ticks = [0, 125, 250], thresholdLine = false }: LatencyBarsProps) {
   return (
     <div>
       <ul aria-label={label} className="flex flex-col">

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ErrorState, Skeleton } from "../../components/ui/States";
+import { ErrorState, Skeleton } from "../ui/States";
 
 /** The parts of a query result a card needs to decide what to show. */
 export interface CardQuery {

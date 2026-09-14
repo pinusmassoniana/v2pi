@@ -6,7 +6,7 @@ import { ApiError } from "../../api/client";
 import { createQueryClient } from "../../api/queryClient";
 import type { TrafficWindowSec } from "../../components/data/TrafficChart";
 import { TRAFFIC_FRAME, mockApi } from "../../test/fixtures";
-import { HISTORY_POLL_MS } from "./cadence";
+import { HISTORY_POLL_MS } from "../../api/cadence";
 import { useTrafficSeries, type TrafficSeries } from "./useTrafficSeries";
 
 let latest: TrafficSeries | null = null;

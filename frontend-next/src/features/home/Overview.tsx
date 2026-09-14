@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { XrayCard } from "../../app/shell/XrayCard";
-import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
+import { NETWORK_POLL_MS, SLOW_POLL_MS } from "../../api/cadence";
 import { activeNodeLabel } from "./derive";
 import { Alerts } from "./overview/Alerts";
 import { ConnectionCard } from "./overview/ConnectionCard";

@@ -53,6 +53,13 @@ describe("LatencyBars", () => {
     expect(items()[5]!.querySelector("i")).toHaveStyle({ width: "100%" });
   });
 
+  it("a live row whose frames stopped dims its value and its live mark with the name and bar", () => {
+    render(<LatencyBars rows={[row({ id: 1, name: "nl-ams-03", state: "live", ms: 42, active: true, dim: true })]} label="Upstream latency" />);
+    expect(screen.getByText("42 ms")).toHaveClass("opacity-45");
+    expect(screen.getByText("live")).toHaveClass("opacity-45");
+    expect(screen.getByText("nl-ams-03")).toHaveClass("opacity-45");
+  });
+
   it("the active node's own failure and staleness read as sentences", () => {
     render(
       <LatencyBars

@@ -1,11 +1,11 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NETWORK_POLL_MS, SLOW_POLL_MS } from "../features/home/cadence";
 import "../features/home/screens";   // loaded up front: the route's lazy import must not wait on fake timers
 import { STATUS_POLL_MS } from "../app/shell/Shell";
 import { NOW_SEC, STATUS, mockApi } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
+import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
 import { ApiError, api } from "./client";
 import { keys, queries } from "./keys";
 import { usePolledQuery } from "./live";

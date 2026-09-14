@@ -9,7 +9,8 @@ export interface ConnectionPathProps {
   poolSize: number | null;
   gatewayIp: string | null;
   gatewayIface: string | null;
-  nodeName: string | null;
+  /** The active node as every surface names it (activeNodeLabel): "No node" when none is active. */
+  nodeName: string;
   nodeFlag: string;
   /** Fresh, passing latency of the tunnel; null otherwise. */
   latencyMs: number | null;
@@ -48,14 +49,14 @@ export function ConnectionPath(props: ConnectionPathProps) {
   const liveClass = cn("transition-opacity duration-200", dim && "opacity-50");
   const id = useSvgId("path");
   const leaking = bypassBps > 0;
-  const nodeLabel = nodeName ? `${nodeFlag ? `${nodeFlag} ` : ""}${nodeName}` : "No node";
+  const nodeLabel = `${nodeFlag ? `${nodeFlag} ` : ""}${nodeName}`;
   const legStroke = leg === "ok" ? `url(#${id}-brand)` : leg === "bad" ? "var(--bad)" : "var(--t3)";
 
   return (
     <div>
       <svg
         role="img"
-        aria-label={`Connection path: devices, gateway, ${nodeName ?? "no node"}, internet. Tunnel leg ${LEG_LABEL[leg]}; bypass ${leaking ? fmtRate(bypassBps) : "idle"}.`}
+        aria-label={`Connection path: devices, gateway, ${nodeName}, internet. Tunnel leg ${LEG_LABEL[leg]}; bypass ${leaking ? fmtRate(bypassBps) : "idle"}.`}
         viewBox="0 0 560 150"
         className="block h-auto w-full overflow-visible"
       >

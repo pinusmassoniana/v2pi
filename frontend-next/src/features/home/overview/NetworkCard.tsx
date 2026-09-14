@@ -3,7 +3,7 @@ import type { Network } from "../../../api/client";
 import { CardHeader } from "../../../components/data/CardHeader";
 import { KeyValueRows } from "../../../components/data/KeyValueRows";
 import { GlassCard } from "../../../components/ui/GlassCard";
-import { cardFallback, staleNotice, type CardQuery } from "../CardState";
+import { cardFallback, staleNotice, type CardQuery } from "../../../components/data/CardState";
 import { ipv6Source, poolSize } from "../derive";
 
 /** O10: the client segment, its DHCP pool, the DNS handed out, and where IPv6 comes from. */

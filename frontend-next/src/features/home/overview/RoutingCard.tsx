@@ -3,7 +3,7 @@ import type { Routing } from "../../../api/client";
 import { CardHeader } from "../../../components/data/CardHeader";
 import { GlassCard } from "../../../components/ui/GlassCard";
 import { cn } from "../../../lib/cn";
-import { cardFallback, staleNotice, type CardQuery } from "../CardState";
+import { cardFallback, staleNotice, type CardQuery } from "../../../components/data/CardState";
 import { routingSummary, type RouteBadge } from "../derive";
 
 const BADGE: Record<RouteBadge, string> = {

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { api, type Status } from "../../api/client";
-import { STATUS, mockApi } from "../../test/fixtures";
+import { STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { closePalette, openPalette } from "./palette";
 
@@ -88,6 +88,23 @@ describe("command palette", () => {
     act(() => openPalette());
     expect(await screen.findByText("Refresh all subscriptions")).toBeInTheDocument();
     expect(screen.queryByText("Roll back to previous node")).toBeNull();
+  });
+
+  it("roll back refuses when another connection write started while the dialog was open", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2 });
+    const rollback = vi.spyOn(api, "rollback").mockResolvedValue({ ok: true });
+    const error = vi.spyOn(toast, "error");
+    const { client } = renderApp("/");
+    await screen.findByText("Tunnel online");
+    act(() => openPalette());
+    await userEvent.click(await screen.findByText("Roll back to previous node"));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    const release = holdConnectionWrite(client);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
+    expect(rollback).not.toHaveBeenCalled();
+    await release();
   });
 
   it("roll back refuses when the target changed while the dialog was open", async () => {

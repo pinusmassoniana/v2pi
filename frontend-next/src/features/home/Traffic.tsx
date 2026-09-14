@@ -13,8 +13,8 @@ import { windowLabel, type TrafficWindowSec } from "../../components/data/Traffi
 import { Uptime } from "../../components/data/Uptime";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { fmtRate, splitUnit } from "../../lib/format";
-import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
-import { cardFallback, staleNotice, type CardQuery } from "./CardState";
+import { NETWORK_POLL_MS, SLOW_POLL_MS } from "../../api/cadence";
+import { cardFallback, staleNotice, type CardQuery } from "../../components/data/CardState";
 import {
   activeFlag, activeNode, activeRow, clockTime, failoverHistory, latencyStats, peakOf, probeFor, sinceLabel, standbyRows,
   tunnelLabel, whenLabel,

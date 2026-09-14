@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import { useEffect } from "react";
 import type { Status } from "../../api/client";
-import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../api/invalidation";
+import { CONNECTION_BUSY, CONNECTION_WRITE, isConnectionBusy, useApiWrite, useConnectionBusy } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -69,6 +69,10 @@ export function CommandPalette() {
     const targetId = queryClient.getQueryData<Status>(keys.status)?.prev_active_node_id ?? null;
     closePalette();
     if (!(await confirm("Roll back the live config to the previously applied node?", { confirmLabel: "Roll back" }))) return;
+    if (isConnectionBusy(queryClient)) {
+      notifyError(null, CONNECTION_BUSY);
+      return;
+    }
     if (!rollbackStillValid(queryClient.getQueryData<Status>(keys.status), targetId)) {
       notifyError(null, ROLLBACK_TARGET_CHANGED);
       return;

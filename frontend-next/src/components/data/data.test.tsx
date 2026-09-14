@@ -28,6 +28,7 @@ describe("Kpi", () => {
   it("is a region named by its label, with value, unit, sub-line and an aside", () => {
     render(<Kpi label="↓ Download" value="12.4" unit="Mbit/s" sub="last 5 min" aside={<Chip tone="ok">live</Chip>} />);
     const card = screen.getByRole("region", { name: "↓ Download" });
+    expect(within(card).getByRole("heading", { level: 2, name: "↓ Download" })).toBeInTheDocument();
     expect(card).toHaveTextContent("12.4Mbit/s");
     expect(card).toHaveTextContent("last 5 min");
     expect(within(card).getByText("live")).toHaveAttribute("data-tone", "ok");
@@ -40,6 +41,11 @@ describe("Kpi", () => {
     expect(screen.getByRole("region", { name: "Latency" })).toHaveAttribute("data-dim", "true");
     rerender(<Kpi label="Latency" value="42" spark={[40, 42, 41]} />);
     expect(container.querySelector("svg path")).not.toBeNull();
+  });
+
+  it("a KPI inside a section with its own h2 titles itself one level down", () => {
+    render(<Kpi label="Real" value="42" level={3} />);
+    expect(screen.getByRole("heading", { level: 3, name: "Real" })).toBeInTheDocument();
   });
 
   it("colours the value by tone", () => {
@@ -127,6 +133,11 @@ describe("CardHeader", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Routing" })).toBeInTheDocument();
     expect(screen.getByText("· 4 of 6 rules")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tunnel › Routing →" })).toBeInTheDocument();
+  });
+
+  it("a card inside a sheet or a page part titles itself with a level-3 heading", () => {
+    render(<CardHeader title="Health" level={3} />);
+    expect(screen.getByRole("heading", { level: 3, name: "Health" })).toBeInTheDocument();
   });
 });
 

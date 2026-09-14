@@ -75,6 +75,17 @@ export function useConnectionBusy(): boolean {
   return useIsMutating({ mutationKey: CONNECTION_WRITE }) > 0;
 }
 
+/** Said when another connection write started while a confirmation was open, so nothing was sent. */
+export const CONNECTION_BUSY = "Another connection change is still running — try again when it finishes";
+
+/**
+ * A connection write is running right now. For code that awaited something first (a confirmation): the busy flag
+ * it rendered with may be out of date, so it checks again before starting its own write.
+ */
+export function isConnectionBusy(client: QueryClient): boolean {
+  return client.isMutating({ mutationKey: CONNECTION_WRITE }) > 0;
+}
+
 /**
  * The api write `name`, bound to its invalidation: call it like `api[name]`; once it succeeds, the
  * queries it changes are invalidated. Refetching is started, not awaited, so a success message

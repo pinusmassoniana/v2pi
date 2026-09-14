@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, type Status, type TrafficFrame } from "../../api/client";
 import { closePalette } from "../../app/shell/palette";
 import { settleConfirm } from "../../components/confirm";
-import { NETWORK, NOW_SEC, STATUS, SUBS, TRAFFIC_FRAME, mockApi } from "../../test/fixtures";
+import { NETWORK, NOW_SEC, STATUS, SUBS, TRAFFIC_FRAME, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
 afterEach(() => {
@@ -236,6 +236,28 @@ describe("Overview › roll back and disconnect", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
     await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed — try again", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
+  });
+
+  it("O12: a connection write that starts while the confirmation is open stops the roll back and the disconnect", async () => {
+    const { client, block } = await openOverview({ prev_active_node_id: 2 });
+    const rollback = vi.spyOn(api, "rollback").mockResolvedValue({ ok: true });
+    const disconnect = vi.spyOn(api, "disconnect").mockResolvedValue({ ok: true });
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(within(block).getByRole("button", { name: "Roll back to de-fra-01" }));
+    let dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    const release = holdConnectionWrite(client);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
+    expect(rollback).not.toHaveBeenCalled();
+    await release();
+
+    await userEvent.click(within(block).getByRole("button", { name: "Disconnect" }));
+    dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    const releaseAgain = holdConnectionWrite(client);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(error).toHaveBeenCalledTimes(2));
+    expect(disconnect).not.toHaveBeenCalled();
+    await releaseAgain();
   });
 
   it("O12: Roll back asks first, then rolls back and refreshes the connection state", async () => {

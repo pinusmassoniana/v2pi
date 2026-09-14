@@ -5,7 +5,7 @@ import { usePolledQuery } from "../../api/live";
 import { useTraffic, type TrafficSample } from "../../api/traffic";
 import type { TrafficWindowSec } from "../../components/data/TrafficChart";
 import { windowSlice } from "../../components/data/trafficGeometry";
-import { HISTORY_POLL_MS, LIVE_WINDOW_MAX_SEC } from "./cadence";
+import { HISTORY_POLL_MS, LIVE_WINDOW_MAX_SEC } from "../../api/cadence";
 
 export interface TrafficSeries {
   /** The selected window, oldest first. */
