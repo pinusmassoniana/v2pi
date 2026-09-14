@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { api, type TrafficFrame, type TrafficHandle, type TrafficHistoryResp, type TrafficMessage } from "./client";
 
 export interface TrafficSample { ts: number; up: number; down: number }
@@ -158,4 +158,28 @@ export function useTraffic(): TrafficSnapshot {
  */
 export function useTrafficIfOpen(): TrafficSnapshot {
   return useSyncExternalStore(trafficStore.observe, trafficStore.getSnapshot);
+}
+
+/** A getSnapshot for useSyncExternalStore that caches its selection per store version and keeps an equal one. */
+function selectionReader<T>(select: (snapshot: TrafficSnapshot) => T, isEqual: (a: T, b: T) => boolean): () => T {
+  let last: { version: number; value: T } | null = null;
+  return () => {
+    const snapshot = trafficStore.getSnapshot();
+    if (last !== null && last.version === snapshot.version) return last.value;
+    const value = select(snapshot);
+    last = { version: snapshot.version, value: last !== null && isEqual(last.value, value) ? last.value : value };
+    return last.value;
+  };
+}
+
+/**
+ * One value derived from the store, re-rendering only when that value changes: a node row reads "the live probe of
+ * this node" through it, so a frame every second re-renders the active row and nothing else. `isEqual` decides
+ * when a new selection is the same as the last one (the last one is then kept, identity included). Pass a stable
+ * `select` — declared at module scope or memoised — or the cached selection is rebuilt on every render. Opens the
+ * live stream like useTraffic.
+ */
+export function useTrafficSelect<T>(select: (snapshot: TrafficSnapshot) => T, isEqual: (a: T, b: T) => boolean = Object.is): T {
+  const getSelection = useMemo(() => selectionReader(select, isEqual), [select, isEqual]);
+  return useSyncExternalStore(trafficStore.subscribe, getSelection);
 }
