@@ -1,6 +1,8 @@
 import {
-  createHashHistory, createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect, type RouterHistory,
+  RouterProvider, createHashHistory, createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect,
+  type AnyRouter, type RouterHistory,
 } from "@tanstack/react-router";
+import { useLayoutEffect } from "react";
 import { LEGACY_REDIRECTS } from "./nav";
 import { Shell } from "./shell/Shell";
 
@@ -49,6 +51,20 @@ export function createAppRouter(history: RouterHistory = createHashHistory()) {
 }
 
 export const router = createAppRouter();
+
+// The router is a single long-lived instance, but `<RouterProvider>` only mounts while authed:
+// AuthGate swaps it out for Login/Setup/Offline UI, which unsubscribes the router from the
+// history. If the URL changes while logged out (session expiry, an explicit logout that lands
+// elsewhere, a bookmark), the router's resolved location goes stale and does not self-correct on
+// remount. Reconcile before paint, and only when the URL really moved on.
+export function RouterMount({ router }: { router: AnyRouter }) {
+  useLayoutEffect(() => {
+    router.updateLatestLocation();
+    const resolved = router.state.resolvedLocation;
+    if (resolved && resolved.href !== router.latestLocation.href) router.load().catch(console.error);
+  }, [router]);
+  return <RouterProvider router={router} />;
+}
 
 declare module "@tanstack/react-router" {
   interface Register {
