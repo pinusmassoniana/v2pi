@@ -114,9 +114,10 @@ describe("Overview › upstream health", () => {
     const { api$, client } = await openOverview({ failover_ready: false });
     const active = () => within(within(region("Upstream health")).getByRole("list", { name: "Active node" })).getByRole("listitem");
     expect(active()).toHaveTextContent("health stale");
+    expect(within(region("Upstream health")).getByText("NO ELIGIBLE STANDBY")).toBeInTheDocument();
     api$.emitTraffic(frame({ real_ok: false }));
     expect(active()).toHaveTextContent("probe failed");
-    expect(within(region("Upstream health")).getByText("NO ELIGIBLE STANDBY")).toBeInTheDocument();
+    expect(within(region("Upstream health")).getByText("OFFLINE")).toBeInTheDocument();   // a fresh failed probe
     api$.getStatus.mockResolvedValue({ ...STATUS, tunnel_online: false, active_node_id: null });
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
     expect(await within(region("Upstream health")).findByText("OFFLINE")).toBeInTheDocument();

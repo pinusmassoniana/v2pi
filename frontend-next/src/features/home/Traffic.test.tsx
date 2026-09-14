@@ -54,12 +54,27 @@ describe("Traffic › KPIs", () => {
 
   it("H1: failovers fall back to the status count, and there is no uptime while offline", async () => {
     const api$ = mockApi();
-    api$.getStatus.mockResolvedValue({ ...STATUS, tunnel_online: false, failovers_24h: 0 });
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null, tunnel_online: false, failovers_24h: 0 });
     api$.getNetwork.mockResolvedValue({ ...NETWORK, events: [], status: { ...NETWORK.status, failovers_24h: undefined } });
     renderApp("/traffic");
     const failovers = await screen.findByRole("region", { name: "Failovers · 24h" });
     await waitFor(() => expect(failovers).toHaveTextContent("0none recorded"));
     expect(region("Uptime")).toHaveTextContent("Uptime—not connected");
+  });
+
+  it("H1: uptime reads unknown while health is not fresh, as the topbar does", async () => {
+    await openTraffic({ tunnel_online: false, active_health_fresh: false });
+    await waitFor(() => expect(region("Uptime")).toHaveTextContent("Uptime—unknown"));
+    expect(screen.getByText("Tunnel unknown")).toBeInTheDocument();
+  });
+
+  it("H1: a fresh failed probe of the active node stops the uptime, as the topbar does", async () => {
+    const { api$ } = await openTraffic();
+    api$.emitTraffic(TRAFFIC_FRAME);
+    expect(region("Uptime")).toHaveTextContent(/^Uptime1msince/);
+    api$.emitTraffic(probe({ real_ok: false }));
+    expect(region("Uptime")).toHaveTextContent("Uptime—not connected");
+    expect(screen.getByText("Tunnel offline")).toBeInTheDocument();
   });
 });
 

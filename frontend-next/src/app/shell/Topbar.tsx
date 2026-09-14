@@ -1,17 +1,19 @@
 import { Moon, Search, Sun } from "lucide-react";
 import { useState } from "react";
 import type { Status } from "../../api/client";
+import { useTrafficIfOpen } from "../../api/traffic";
 import { Button } from "../../components/ui/Button";
 import { Pill } from "../../components/ui/Pill";
+import { probeFor, tunnelLabel } from "../../features/home/derive";
 import { applyTheme, toggleTheme, type Theme } from "../../lib/theme";
 import { LogoutButton } from "./LogoutButton";
 import { openPalette } from "./palette";
 
 export function Topbar({ title, status, stale }: { title: string; status?: Status; stale: boolean }) {
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme === "light" ? "light" : "dark"));
-  const tunnelOnline = status?.tunnel_online === true && !stale;
-  const label = tunnelOnline ? "Tunnel online" : status?.running ? "Xray running" : "Offline";
-  const tone = tunnelOnline ? "ok" : status?.running ? "warn" : "bad";
+  const traffic = useTrafficIfOpen();
+  // The same answer as Home's status block, including a failed live probe while a Home screen streams one.
+  const tunnel = tunnelLabel(status, stale, probeFor(traffic.disabled ? null : traffic.live, status?.active_node_id));
 
   const flipTheme = () => {
     const next = toggleTheme(theme);
@@ -22,7 +24,7 @@ export function Topbar({ title, status, stale }: { title: string; status?: Statu
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-line bg-chrome px-4 backdrop-blur-md md:px-5">
       <h1 className="page-title mr-auto min-w-0 truncate text-[17px] font-bold tracking-tight text-t1">{title}</h1>
-      <span aria-live="polite"><Pill tone={tone} dot>{label}</Pill></span>
+      <span aria-live="polite"><Pill tone={tunnel.tone} dot>Tunnel {tunnel.label.toLowerCase()}</Pill></span>
       <Button variant="secondary" size="sm" aria-label="Search and commands" onClick={() => openPalette()}>
         <Search size={14} aria-hidden />
         <span className="hidden text-t3 md:inline">Search…</span>

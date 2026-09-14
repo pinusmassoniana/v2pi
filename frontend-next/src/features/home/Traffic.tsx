@@ -76,7 +76,8 @@ export function Traffic() {
   const activeId = status.data?.active_node_id ?? null;
   const probe = probeFor(series.live, activeId);
   const active = activeNode(nodes.data, activeId);
-  const online = tunnelLabel(status.data, status.isError).label === "ONLINE";
+  const tunnel = tunnelLabel(status.data, status.isError, probe);
+  const online = tunnel.label === "ONLINE";
   const peak = series.disabled ? null : peakOf(series.samples);
   const peakValue = peak ? splitUnit(fmtRate(peak.bps)) : { value: "—", unit: "" };
   const latency = latencyStats(probe, nowMs);
@@ -119,7 +120,9 @@ export function Traffic() {
       <Kpi
         label="Uptime"
         value={<Uptime since={since} running={online} coarse />}
-        sub={online && since !== null ? <>since <span className="font-mono text-t2">{sinceLabel(since)}</span></> : "not connected"}
+        sub={online && since !== null
+          ? <>since <span className="font-mono text-t2">{sinceLabel(since)}</span></>
+          : tunnel.label === "UNKNOWN" ? "unknown" : "not connected"}
         className="xl:col-span-3"
       />
 

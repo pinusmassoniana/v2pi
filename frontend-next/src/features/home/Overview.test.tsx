@@ -121,7 +121,7 @@ describe("Overview › status block", () => {
     expect(within(block).queryByText("stale config")).toBeNull();
   });
 
-  it("O4: xray reconnecting, kill-switch open, tunnel unknown with an active node but not online", async () => {
+  it("O4: xray reconnecting, kill-switch open, and a stopped xray is an offline tunnel", async () => {
     const api$ = mockApi();
     api$.getStatus.mockResolvedValue({ ...STATUS, running: false, xray_state: "error", tunnel_online: false });
     api$.getNetwork.mockResolvedValue({ ...NETWORK, kill_switch_enabled: false });
@@ -129,9 +129,26 @@ describe("Overview › status block", () => {
     const block = await screen.findByRole("region", { name: "Status" });
     expect(await within(block).findByText("RECONNECTING")).toBeInTheDocument();
     expect(await within(block).findByText("OPEN")).toBeInTheDocument();
+    expect(within(block).getByText("Tunnel OFFLINE")).toBeInTheDocument();
+    expect(within(block).getByRole("img", { name: "× OFFLINE" })).toBeInTheDocument();
+    expect(within(block).getByText("—", { selector: "span" })).toBeInTheDocument();   // no uptime while not online
+  });
+
+  it("O4: xray running with an active node but health not fresh is unknown — in the block, the health pill and the topbar", async () => {
+    const { block } = await openOverview({ tunnel_online: false, active_health_fresh: false });
     expect(within(block).getByText("Tunnel UNKNOWN")).toBeInTheDocument();
     expect(within(block).getByRole("img", { name: "— UNKNOWN" })).toBeInTheDocument();
-    expect(within(block).getByText("—", { selector: "span" })).toBeInTheDocument();   // no uptime while not online
+    expect(await within(screen.getByRole("region", { name: "Upstream health" })).findByText("UNKNOWN")).toBeInTheDocument();
+    expect(screen.getByText("Tunnel unknown")).toHaveClass("text-t2");
+  });
+
+  it("O4: a fresh failed probe of the active node turns every tunnel surface offline at once", async () => {
+    const { api$, block } = await openOverview();
+    expect(screen.getByText("Tunnel online")).toBeInTheDocument();
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, real_ok: false } });
+    expect(within(block).getByText("Tunnel OFFLINE")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Upstream health" })).getByText("OFFLINE")).toBeInTheDocument();
+    expect(screen.getByText("Tunnel offline")).toHaveClass("text-bad");
   });
 
   it("O4: with no active node the tunnel is offline and there is nothing to disconnect", async () => {

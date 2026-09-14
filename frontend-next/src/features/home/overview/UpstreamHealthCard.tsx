@@ -24,8 +24,9 @@ export function UpstreamHealthCard({ status, statusError, nodes, health, classNa
   const traffic = useTraffic();
   const queries = [nodes, health];
   const fallback = cardFallback(queries, "Node health did not load", "h-44");
-  const online = tunnelLabel(status, statusError).label === "ONLINE";
-  const pill = failoverPill(status, online);
+  const activeId = status?.active_node_id ?? null;
+  const probe = probeFor(traffic.disabled ? null : traffic.live, activeId);
+  const pill = failoverPill(status, tunnelLabel(status, statusError, probe));
   const header = <CardHeader title="Upstream health" aside={<Pill tone={pill.tone} dot>{pill.label}</Pill>} />;
 
   if (fallback) {
@@ -34,8 +35,7 @@ export function UpstreamHealthCard({ status, statusError, nodes, health, classNa
 
   const allNodes = nodes.data ?? [];
   const now = serverNow();
-  const activeId = status?.active_node_id ?? null;
-  const active = activeRow(activeNode(allNodes, activeId), probeFor(traffic.disabled ? null : traffic.live, activeId));
+  const active = activeRow(activeNode(allNodes, activeId), probe);
   const standby = standbyRows(allNodes, health.data ?? [], activeId, now);
 
   return (

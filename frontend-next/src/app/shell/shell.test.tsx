@@ -34,10 +34,24 @@ describe("shell", () => {
   });
 
   it("topbar: the title follows the route and the tunnel state is spelled out", async () => {
-    mockApi();
+    const api$ = mockApi();
     renderApp("/gateway/remote-access");
     expect(await screen.findByRole("heading", { level: 1, name: "Remote access" })).toHaveClass("page-title");
-    expect(await screen.findByText("Tunnel online")).toBeInTheDocument();
+    expect(await screen.findByText("Tunnel online")).toHaveClass("text-ok");
+    expect(api$.connectTraffic).not.toHaveBeenCalled();   // the pill never opens the traffic socket itself
+  });
+
+  it("topbar: offline with no active node or with xray stopped, unknown while health is not fresh", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null, tunnel_online: false });
+    const { client } = renderApp("/nodes");
+    expect(await screen.findByText("Tunnel offline")).toHaveClass("text-bad");
+    api$.getStatus.mockResolvedValue({ ...STATUS, running: false, tunnel_online: false });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    expect(screen.getByText("Tunnel offline")).toHaveClass("text-bad");
+    api$.getStatus.mockResolvedValue({ ...STATUS, tunnel_online: false, active_health_fresh: false });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    expect(await screen.findByText("Tunnel unknown")).toHaveClass("text-t2");
   });
 
   it("xray-core toggle stops the engine and refreshes the connection state", async () => {
@@ -97,6 +111,7 @@ describe("shell", () => {
     api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
     expect(await screen.findByText(/Can't reach the panel — showing data from/)).toBeInTheDocument();
+    expect(screen.getByText("Tunnel unknown")).toHaveClass("text-t2");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Overview");
   });
 

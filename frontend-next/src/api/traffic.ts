@@ -32,6 +32,8 @@ export function createTrafficStore(
   const samples: TrafficSample[] = [];
   let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0 };
   const listeners = new Set<() => void>();
+  // Follow the store without holding the socket open (see useTrafficIfOpen).
+  const observers = new Set<() => void>();
   let handle: TrafficHandle | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   // Bumped by reset(), so a history request from the ended session cannot refill the window.
@@ -40,6 +42,7 @@ export function createTrafficStore(
   const emit = (patch: Partial<Pick<TrafficSnapshot, "live" | "disabled">>) => {
     snapshot = { ...snapshot, ...patch, samples, version: snapshot.version + 1 };
     for (const listener of listeners) listener();
+    for (const observer of observers) observer();
   };
 
   const trim = () => {
@@ -101,6 +104,11 @@ export function createTrafficStore(
         }
       };
     },
+    /** Hear every change without opening the socket or keeping it open. */
+    observe(observer: () => void): () => void {
+      observers.add(observer);
+      return () => { observers.delete(observer); };
+    },
     /** End of session: close the socket now and forget the frame, the samples and the disabled flag. */
     reset(): void {
       epoch += 1;
@@ -119,4 +127,12 @@ export const trafficStore = createTrafficStore();
 
 export function useTraffic(): TrafficSnapshot {
   return useSyncExternalStore(trafficStore.subscribe, trafficStore.getSnapshot);
+}
+
+/**
+ * The store as it is, without connecting: for the shell, which reflects what a live screen is already streaming
+ * but must not open the traffic socket on every screen.
+ */
+export function useTrafficIfOpen(): TrafficSnapshot {
+  return useSyncExternalStore(trafficStore.observe, trafficStore.getSnapshot);
 }

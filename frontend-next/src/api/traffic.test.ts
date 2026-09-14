@@ -38,6 +38,25 @@ describe("traffic store", () => {
     expect(c.handle.close).toHaveBeenCalledTimes(1);
   });
 
+  it("an observer hears every change but never opens the socket or keeps it open", () => {
+    vi.useFakeTimers();
+    const c = fakeConnection();
+    const store = createTrafficStore(c.connect, noHistory);
+    const heard = vi.fn();
+    const stop = store.observe(heard);
+    expect(c.connect).not.toHaveBeenCalled();
+    const leave = store.subscribe(() => {});
+    c.push(frame(1000));
+    expect(heard).toHaveBeenCalled();
+    leave();
+    vi.advanceTimersByTime(IDLE_CLOSE_MS);
+    expect(c.handle.close).toHaveBeenCalledTimes(1);   // the observer did not hold it
+    stop();
+    heard.mockClear();
+    store.reset();
+    expect(heard).not.toHaveBeenCalled();
+  });
+
   it("a subscriber back within the idle delay keeps the same socket and its samples", () => {
     vi.useFakeTimers();
     const c = fakeConnection();

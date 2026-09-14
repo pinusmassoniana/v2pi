@@ -51,7 +51,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   }
 
   const probe = probeFor(traffic.disabled ? null : traffic.live, status.active_node_id);
-  const tunnel = tunnelLabel(status, statusError);
+  const tunnel = tunnelLabel(status, statusError, probe);
   const online = tunnel.label === "ONLINE";
   const latency = liveLatency(probe);
   const active = activeNode(nodes, status.active_node_id);

@@ -33,13 +33,29 @@ describe("status block", () => {
     expect(hasConfigDrift(undefined)).toBe(false);
   });
 
-  it("tunnel: online, unknown with an active node, offline without one, unknown while the status poll fails", () => {
-    expect(tunnelLabel(STATUS, false)).toEqual({ label: "ONLINE", tone: "ok" });
-    expect(tunnelLabel(status({ tunnel_online: false }), false)).toEqual({ label: "UNKNOWN", tone: "neutral" });
-    expect(tunnelLabel(status({ tunnel_online: null }), false).label).toBe("UNKNOWN");
-    expect(tunnelLabel(status({ tunnel_online: false, active_node_id: null }), false)).toEqual({ label: "OFFLINE", tone: "bad" });
-    expect(tunnelLabel(STATUS, true)).toEqual({ label: "UNKNOWN", tone: "neutral" });
-    expect(tunnelLabel(undefined, false).label).toBe("UNKNOWN");
+  it("tunnel: unknown while the status poll fails or before it answers, whatever it said last", () => {
+    expect(tunnelLabel(STATUS, true, active)).toEqual({ label: "UNKNOWN", tone: "neutral" });
+    expect(tunnelLabel(status({ active_node_id: null }), true, null).label).toBe("UNKNOWN");
+    expect(tunnelLabel(undefined, false, active)).toEqual({ label: "UNKNOWN", tone: "neutral" });
+  });
+
+  it("tunnel: offline with no active node, with xray stopped, or on a fresh failed probe of the active node", () => {
+    expect(tunnelLabel(status({ active_node_id: null, tunnel_online: false }), false, null)).toEqual({ label: "OFFLINE", tone: "bad" });
+    expect(tunnelLabel(status({ running: false }), false, active)).toEqual({ label: "OFFLINE", tone: "bad" });
+    expect(tunnelLabel(STATUS, false, probe({ real_ok: false }))).toEqual({ label: "OFFLINE", tone: "bad" });
+    // a failed probe that is stale, or about another node, proves nothing
+    expect(tunnelLabel(STATUS, false, probe({ real_ok: false, stale: true })).label).toBe("UNKNOWN");
+    expect(tunnelLabel(STATUS, false, probe({ real_ok: false, node_id: 2 })).label).toBe("ONLINE");
+  });
+
+  it("tunnel: unknown while health is not fresh; online when the gateway says so; unknown otherwise", () => {
+    expect(tunnelLabel(STATUS, false, probe({ stale: true }))).toEqual({ label: "UNKNOWN", tone: "neutral" });
+    expect(tunnelLabel(status({ active_health_fresh: false }), false, null).label).toBe("UNKNOWN");
+    expect(tunnelLabel(STATUS, false, active)).toEqual({ label: "ONLINE", tone: "ok" });
+    expect(tunnelLabel(STATUS, false, null)).toEqual({ label: "ONLINE", tone: "ok" });
+    expect(tunnelLabel(status({ tunnel_online: false }), false, active)).toEqual({ label: "UNKNOWN", tone: "neutral" });
+    expect(tunnelLabel(status({ tunnel_online: null }), false, null).label).toBe("UNKNOWN");
+    expect(tunnelLabel(status({ tunnel_online: undefined }), false, null).label).toBe("UNKNOWN");
   });
 
   it("kill-switch: disabled is open, armed only on confirmed enforcement", () => {
@@ -192,11 +208,13 @@ describe("upstream health", () => {
     expect(standbyRows([], NODE_HEALTH, 1, NOW_MS)).toEqual([]);
   });
 
-  it("failover pill", () => {
-    expect(failoverPill(STATUS, true)).toEqual({ label: "FAILOVER READY", tone: "ok" });
-    expect(failoverPill(status({ failover_ready: false }), true)).toEqual({ label: "NO ELIGIBLE STANDBY", tone: "warn" });
-    expect(failoverPill(status({ failover_ready: undefined }), true).label).toBe("NO ELIGIBLE STANDBY");
-    expect(failoverPill(STATUS, false)).toEqual({ label: "OFFLINE", tone: "bad" });
+  it("failover pill: ready or not while online, unknown while the tunnel is, otherwise offline", () => {
+    const online = { label: "ONLINE", tone: "ok" } as const;
+    expect(failoverPill(STATUS, online)).toEqual({ label: "FAILOVER READY", tone: "ok" });
+    expect(failoverPill(status({ failover_ready: false }), online)).toEqual({ label: "NO ELIGIBLE STANDBY", tone: "warn" });
+    expect(failoverPill(status({ failover_ready: undefined }), online).label).toBe("NO ELIGIBLE STANDBY");
+    expect(failoverPill(STATUS, { label: "UNKNOWN", tone: "neutral" })).toEqual({ label: "UNKNOWN", tone: "neutral" });
+    expect(failoverPill(STATUS, { label: "OFFLINE", tone: "bad" })).toEqual({ label: "OFFLINE", tone: "bad" });
   });
 });
 

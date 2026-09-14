@@ -39,12 +39,22 @@ export function hasConfigDrift(status: Status | undefined): boolean {
   return status?.config_drift === "drift";
 }
 
-/** O4 tunnel. While the status poll is failing nothing is known, whatever the last answer said. */
-export function tunnelLabel(status: Status | undefined, statusError: boolean): Labelled<"ONLINE" | "UNKNOWN" | "OFFLINE"> {
+export type TunnelLabel = Labelled<"ONLINE" | "UNKNOWN" | "OFFLINE">;
+
+/**
+ * O4 tunnel — the one answer the status block, the upstream health pill, Traffic's uptime and the topbar all
+ * show. Nothing is known while the status poll fails or before its first answer, whatever the last one said.
+ * OFFLINE with no active node, with xray stopped, or when a fresh probe of the active node failed; UNKNOWN while
+ * health is not fresh; ONLINE when the gateway says so; UNKNOWN otherwise. `probe` is the live probe matched to
+ * the active node (probeFor).
+ */
+export function tunnelLabel(status: Status | undefined, statusError: boolean, probe: ActiveProbe): TunnelLabel {
   if (statusError || !status) return { label: "UNKNOWN", tone: "neutral" };
-  if (status.tunnel_online === true) return { label: "ONLINE", tone: "ok" };
-  if (status.active_node_id !== null) return { label: "UNKNOWN", tone: "neutral" };
-  return { label: "OFFLINE", tone: "bad" };
+  if (status.active_node_id === null || status.running === false) return { label: "OFFLINE", tone: "bad" };
+  const matched = probe && probe.node_id === status.active_node_id ? probe : null;
+  if (matched?.stale === false && matched.real_ok === false) return { label: "OFFLINE", tone: "bad" };
+  if (matched?.stale === true || status.active_health_fresh === false) return { label: "UNKNOWN", tone: "neutral" };
+  return status.tunnel_online === true ? { label: "ONLINE", tone: "ok" } : { label: "UNKNOWN", tone: "neutral" };
 }
 
 /** O4 kill-switch: switched off is OPEN; ARMED only when the host confirms enforcement. */
@@ -211,9 +221,12 @@ export function standbyRows(
   return rows.slice(0, limit);
 }
 
-/** O7 pill: FAILOVER READY / NO ELIGIBLE STANDBY while online, otherwise OFFLINE. */
-export function failoverPill(status: Status | undefined, online: boolean): Labelled<"FAILOVER READY" | "NO ELIGIBLE STANDBY" | "OFFLINE"> {
-  if (!online) return { label: "OFFLINE", tone: "bad" };
+/** O7 pill: FAILOVER READY / NO ELIGIBLE STANDBY while online, UNKNOWN while the tunnel is, otherwise OFFLINE. */
+export function failoverPill(
+  status: Status | undefined, tunnel: TunnelLabel,
+): Labelled<"FAILOVER READY" | "NO ELIGIBLE STANDBY" | "UNKNOWN" | "OFFLINE"> {
+  if (tunnel.label === "UNKNOWN") return { label: "UNKNOWN", tone: "neutral" };
+  if (tunnel.label === "OFFLINE") return { label: "OFFLINE", tone: "bad" };
   return status?.failover_ready ? { label: "FAILOVER READY", tone: "ok" } : { label: "NO ELIGIBLE STANDBY", tone: "warn" };
 }
 
