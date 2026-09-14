@@ -6,7 +6,7 @@ import { TrafficChart, type TrafficWindowSec } from "../../components/data/Traff
 import { CardHeader } from "../../components/data/CardHeader";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
-import { peakOf, probeFor } from "./derive";
+import { chartStale, peakOf, probeFor } from "./derive";
 import { useTrafficSeries, type TrafficSeries } from "./useTrafficSeries";
 
 export interface ThroughputCardProps {
@@ -43,7 +43,7 @@ export function ThroughputCard({ windowSec, onWindowChange, series, activeNodeId
         windowSec={windowSec}
         onWindowChange={onWindowChange}
         peak={peak}
-        stale={probeFor(series.live, activeNodeId)?.stale !== false}
+        stale={chartStale(windowSec, activeNodeId, probeFor(series.live, activeNodeId))}
         body={body}
       />
     </GlassCard>

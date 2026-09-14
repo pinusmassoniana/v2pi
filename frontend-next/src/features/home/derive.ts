@@ -6,6 +6,7 @@ import type { EventLevel, LatencyRowData, PathLeg, Tone } from "../../components
 import { agoLabel } from "../../lib/dashboard";
 import { flagEmoji } from "../../lib/flag";
 import { formatUriHost } from "../../lib/format";
+import { LIVE_WINDOW_MAX_SEC } from "./cadence";
 
 type ActiveProbe = TrafficFrame["active"];
 
@@ -157,6 +158,16 @@ export function peakOf(samples: readonly TrafficSample[]): { bps: number; ts: nu
   let best: TrafficSample | null = null;
   for (const sample of samples) if (sample.down > 0 && (best === null || sample.down > best.down)) best = sample;
   return best ? { bps: best.down, ts: best.ts } : null;
+}
+
+/**
+ * O6 (§12.3): dim the throughput chart as "tunnel health is stale" only when there is a tunnel to judge — an active
+ * node whose matched live probe is not known fresh — and only on the live windows: recorded 24 h / 7 d history is
+ * never judged by the current probe.
+ */
+export function chartStale(windowSec: number, activeId: number | null | undefined, probe: ActiveProbe): boolean {
+  if (activeId === null || activeId === undefined || windowSec > LIVE_WINDOW_MAX_SEC) return false;
+  return probe?.stale !== false;
 }
 
 /** O8 tunnel leg: off while xray is down or health is stale, bad on a failed real check, ok on a passing one. */

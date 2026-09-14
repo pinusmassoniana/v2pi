@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnEvent, Network, NodeHealth, Routing, Status, TrafficFrame } from "../../api/client";
 import { NETWORK, NODES, NODE_HEALTH, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
-  FAILOVER_DISMISSED_KEY, activeFlag, activeNode, activeRow, bypassState, clockTime, eventLevel, failoverBanner,
+  FAILOVER_DISMISSED_KEY, activeFlag, activeNode, activeRow, bypassState, chartStale, clockTime, eventLevel, failoverBanner,
   failoverHistory, failoverPill, hasConfigDrift, ipv6Source, killSwitchState, latencyStats, liveLatency, nodeEndpoint,
   peakOf, poolSize, probeAge, probeFor, readFailoverDismissed, rollbackStillValid, recentEvents, recentValues, routeBadge, routingSummary,
   sessionTotals, sinceLabel, standbyRows, tunnelLabel, tunnelLeg, whenLabel, writeFailoverDismissed, xrayLabel,
@@ -143,6 +143,16 @@ describe("live traffic", () => {
     expect(peakOf([{ ts: 1, up: 9, down: 5 }, { ts: 2, up: 0, down: 8 }, { ts: 3, up: 0, down: 8 }])).toEqual({ bps: 8, ts: 2 });
     expect(peakOf([{ ts: 1, up: 100, down: 0 }])).toBeNull();
     expect(peakOf([])).toBeNull();
+  });
+
+  it("chart stale: only with an active node whose probe is not fresh, and never on the recorded windows", () => {
+    expect(chartStale(600, 1, active)).toBe(false);
+    expect(chartStale(600, 1, probe({ stale: true }))).toBe(true);
+    expect(chartStale(3_600, 1, null)).toBe(true);            // no probe of the active node yet: not known fresh
+    expect(chartStale(600, null, null)).toBe(false);          // no tunnel to judge
+    expect(chartStale(600, undefined, probe({ stale: true }))).toBe(false);
+    expect(chartStale(86_400, 1, probe({ stale: true }))).toBe(false);
+    expect(chartStale(604_800, 1, null)).toBe(false);
   });
 
   it("tunnel leg: off when xray is down or health is stale, bad on a failed check, ok on a passing one", () => {

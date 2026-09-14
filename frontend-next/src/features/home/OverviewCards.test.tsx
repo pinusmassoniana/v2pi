@@ -88,6 +88,28 @@ describe("Overview › traffic chart", () => {
     expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale — rates are not proof of a healthy tunnel");
   });
 
+  it("O6: with no active node there is no tunnel to judge — no stale caption, no dimming", async () => {
+    const { api$ } = await openOverview({ active_node_id: null, tunnel_online: false });
+    api$.emitTraffic({ ...TRAFFIC_FRAME, ts: TRAFFIC_FRAME.ts - 1_000, active: null });
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: null });
+    const card = region("Throughput");
+    expect(within(card).getByRole("img", { name: "Throughput over the last 10m" })).toBeInTheDocument();
+    expect(card.querySelector("[data-stale]")).toBeNull();
+    expect(within(card).queryByText(/Tunnel health is stale/)).toBeNull();
+  });
+
+  it("O6: the recorded 24 h window is never dimmed by the current probe", async () => {
+    const { api$ } = await openOverview();
+    api$.emitTraffic(frame({ stale: true }));
+    api$.getTrafficHistory.mockResolvedValue({ samples: [[TRAFFIC_FRAME.ts - 60_000, 5, 7_000_000], [TRAFFIC_FRAME.ts, 5, 9_000_000]], interval_ms: 60_000 });
+    const card = region("Throughput");
+    expect(within(card).getByText(/Tunnel health is stale/)).toBeInTheDocument();   // the live window is judged
+    await userEvent.click(within(card).getByRole("button", { name: "24h" }));
+    expect(await within(card).findByRole("img", { name: "Throughput over the last 24h" })).toBeInTheDocument();
+    expect(card.querySelector("[data-stale]")).toBeNull();
+    expect(within(card).queryByText(/Tunnel health is stale/)).toBeNull();
+  });
+
   it("stats off: the chart says so and points to System › Panel", async () => {
     const { api$ } = await openOverview();
     api$.emitTraffic({ disabled: true });
