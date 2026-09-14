@@ -47,7 +47,8 @@ const routeTree = rootRoute.addChildren([
 ]);
 
 export function createAppRouter(history: RouterHistory = createHashHistory()) {
-  return createRouter({ routeTree, history });
+  // Hovering or focusing a link starts loading its section's chunk, so the click rarely waits for it.
+  return createRouter({ routeTree, history, defaultPreload: "intent" });
 }
 
 export const router = createAppRouter();

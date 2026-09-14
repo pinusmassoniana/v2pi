@@ -1,8 +1,9 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
-import { ApiError } from "../../api/client";
-import { mockApi } from "../../test/fixtures";
+import { ApiError, type Status } from "../../api/client";
+import { STATUS, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { SECTIONS } from "../nav";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -48,6 +49,37 @@ describe("shell", () => {
     await userEvent.click(toggle!);
     await waitFor(() => expect(api$.xrayStop).toHaveBeenCalled());
     await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["status"] }));
+  });
+
+  it("xray-core toggle shows the new state at once and stays disabled until the status refetch lands", async () => {
+    const api$ = mockApi();
+    renderApp("/nodes");   // one card: the sidebar's
+    const toggle = await screen.findByRole("switch", { name: "xray-core" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    let land: (status: Status) => void = () => {};
+    api$.getStatus.mockImplementation(() => new Promise<Status>((resolve) => { land = resolve; }));
+
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api$.xrayStop).toHaveBeenCalled());
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(toggle).toBeDisabled();
+
+    await act(async () => land({ ...STATUS, running: false, xray_state: "stopped" }));
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("a failed xray-core toggle keeps the old state and says why", async () => {
+    const api$ = mockApi();
+    api$.xrayStop.mockRejectedValue(new ApiError(500, "xray did not stop"));
+    const error = vi.spyOn(toast, "error");
+    renderApp("/nodes");
+    const toggle = await screen.findByRole("switch", { name: "xray-core" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    await userEvent.click(toggle);
+    await waitFor(() => expect(error).toHaveBeenCalledWith("xray did not stop", { duration: 20000 }));
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toBeEnabled();
   });
 
   it("theme toggle flips the document theme", async () => {

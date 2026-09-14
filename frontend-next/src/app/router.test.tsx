@@ -1,5 +1,6 @@
 import { screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import { mockApi } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
 import { LEGACY_REDIRECTS, SECTIONS, isTabActive, sectionForPath, titleForPath } from "./nav";
@@ -48,6 +49,14 @@ describe("router", () => {
   it.each(Object.entries(LEGACY_REDIRECTS))("old bookmark %s lands on %s", async (from, to) => {
     const router = renderAt(from);
     await waitFor(() => expect(router.state.location.pathname).toBe(to));
+  });
+
+  it("starts loading a section's screens when its link is hovered or focused", async () => {
+    const router = renderAt("/nodes");
+    expect(router.options.defaultPreload).toBe("intent");
+    const preload = vi.spyOn(router, "preloadRoute");
+    await userEvent.hover(await screen.findByRole("link", { name: "Anti-DPI" }));
+    await waitFor(() => expect(preload).toHaveBeenCalledWith(expect.objectContaining({ to: "/tunnel/anti-dpi" })));
   });
 
   it("sends an unknown screen to Home", async () => {
