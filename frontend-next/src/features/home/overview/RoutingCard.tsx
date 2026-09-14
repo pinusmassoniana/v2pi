@@ -17,7 +17,7 @@ function Badge({ badge }: { badge: RouteBadge }) {
 }
 
 /** O9: the first four enabled rules and where everything else goes. */
-export function RoutingCard({ routing, activeName, className }: { routing: CardQuery & { data: Routing | undefined }; activeName: string | null; className?: string }) {
+export function RoutingCard({ routing, activeLabel, className }: { routing: CardQuery & { data: Routing | undefined }; activeLabel: string; className?: string }) {
   const fallback = cardFallback([routing], "Routing did not load", "h-40");
   const link = <Link to="/tunnel/routing" className="text-[11.5px] text-t2 hover:text-t1">Tunnel › Routing <span className="text-t3">→</span></Link>;
   if (fallback || !routing.data) {
@@ -28,7 +28,7 @@ export function RoutingCard({ routing, activeName, className }: { routing: CardQ
       </GlassCard>
     );
   }
-  const summary = routingSummary(routing.data, activeName);
+  const summary = routingSummary(routing.data, activeLabel);
   return (
     <GlassCard aria-label="Routing" className={className}>
       <CardHeader title="Routing" detail={`· ${summary.header}`} aside={link} />
@@ -44,7 +44,7 @@ export function RoutingCard({ routing, activeName, className }: { routing: CardQ
         <li data-default className="mt-0.5 flex items-center gap-2.5 rounded-xl border border-line bg-glass px-2.5 py-2 text-xs">
           <span className="text-t3">default:</span>
           <Badge badge={summary.defaultBadge} />
-          <span className="truncate text-t1">{summary.defaultTarget}</span>
+          {summary.defaultTarget ? <span className="truncate text-t1">{summary.defaultTarget}</span> : null}
         </li>
       </ul>
     </GlassCard>

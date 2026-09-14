@@ -222,7 +222,7 @@ describe("Overview › connection path, events and summaries", () => {
     renderApp("/");
     const card = await screen.findByRole("region", { name: "Routing" });
     expect(await within(card).findByText("No enabled rules.")).toBeInTheDocument();
-    expect(card.querySelector("li[data-default]")).toHaveTextContent("default:direct→");
+    expect(card.querySelector("li[data-default]")).toHaveTextContent(/^default:direct$/);   // only a proxy default names the node
   });
 
   it("O10: segment, DHCP pool with its size, client DNS and the IPv6 source", async () => {
@@ -231,6 +231,33 @@ describe("Overview › connection path, events and summaries", () => {
     const values = within(card).getAllByRole("definition").map((d) => d.textContent);
     expect(values).toEqual(["10.0.2.1 · eth0.2", "10.0.2.100–10.0.2.149", "12 clients · pool 50", "10.0.2.1", "static"]);
     expect(within(card).getByRole("link", { name: /Gateway › Network/ })).toHaveAttribute("href", expect.stringContaining("/gateway/network"));
+  });
+});
+
+describe("Overview › naming the active node", () => {
+  it("before the node list loads every surface says node #N, the same way", async () => {
+    const api$ = mockApi();
+    api$.listNodes.mockReturnValue(new Promise(() => {}));
+    api$.getStatus.mockResolvedValue({ ...STATUS, last_failover_at: STATUS.server_now - 600 });
+    renderApp("/");
+    const status = await screen.findByRole("region", { name: "Status" });
+    expect(await within(status).findByText("node #1")).toBeInTheDocument();
+    await screen.findByRole("status", { name: "Auto-failover" });
+    expect(screen.getByRole("group", { name: "Auto-failover" })).toHaveTextContent("to node #1 · 10m ago");
+    await within(region("Routing")).findByText("domain:netflix.com");
+    expect(region("Routing").querySelector("li[data-default]")).toHaveTextContent("default:proxy→ node #1");
+    await waitFor(() => expect(within(region("Connection path")).getByRole("img")).toHaveAccessibleName(/gateway, node #1, internet/));
+  });
+
+  it("with no active node every surface says No node", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null, tunnel_online: false });
+    renderApp("/");
+    const status = await screen.findByRole("region", { name: "Status" });
+    expect(await within(status).findByText("No node")).toBeInTheDocument();
+    await within(region("Routing")).findByText("domain:netflix.com");
+    expect(region("Routing").querySelector("li[data-default]")).toHaveTextContent("default:proxy→ No node");
+    await waitFor(() => expect(within(region("Connection path")).getByRole("img")).toHaveAccessibleName(/gateway, No node, internet/));
   });
 });
 

@@ -2,12 +2,18 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Status } from "../../api/client";
 import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../api/invalidation";
 import { keys } from "../../api/keys";
+import type { Tone } from "../../components/data/types";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError } from "../../components/ui/Toaster";
+import { xrayLabel } from "../../features/home/derive";
 import { cn } from "../../lib/cn";
 
+const TEXT: Record<Tone, string> = { ok: "text-ok", warn: "text-warn", bad: "text-bad", neutral: "text-t3" };
+
 export function XrayCard({ status, className }: { status?: Status; className?: string }) {
-  const running = status?.xray_state === "working";
+  // The same reading as Home's xray chip: running wins, then a supervisor error, then stopped.
+  const xray = xrayLabel(status);
+  const running = xray.label === "RUNNING";
   const queryClient = useQueryClient();
   const start = useApiWrite("xrayStart");
   const stop = useApiWrite("xrayStop");
@@ -27,7 +33,7 @@ export function XrayCard({ status, className }: { status?: Status; className?: s
     <div className={cn("glass flex items-center gap-3 rounded-2xl p-3", className)}>
       <div className="min-w-0">
         <p className="text-xs font-semibold text-t1">xray-core</p>
-        <p className={cn("text-[11px]", running ? "text-ok" : "text-t3")}>{status?.xray_state ?? "—"}</p>
+        <p className={cn("text-[11px] font-semibold tracking-wide", TEXT[xray.tone])}>{xray.label}</p>
       </div>
       <div className="ml-auto">
         <Toggle label="xray-core" checked={running} disabled={!status || busy} onCheckedChange={(on) => toggle.mutate(on)} />

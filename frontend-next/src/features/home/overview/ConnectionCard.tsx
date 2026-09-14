@@ -4,7 +4,7 @@ import { CardHeader } from "../../../components/data/CardHeader";
 import { ConnectionPath } from "../../../components/data/ConnectionPath";
 import { GlassCard } from "../../../components/ui/GlassCard";
 import { cardFallback, staleNotice, type CardQuery } from "../CardState";
-import { activeFlag, activeNode, bypassState, killSwitchState, liveLatency, poolSize, probeFor, tunnelLeg } from "../derive";
+import { activeFlag, activeNodeLabel, bypassState, killSwitchState, liveLatency, poolSize, probeFor, tunnelLeg } from "../derive";
 
 export interface ConnectionCardProps {
   status: Status | undefined;
@@ -35,7 +35,7 @@ export function ConnectionCard({ status, network, nodes, className }: Connection
         poolSize={poolSize(net.segment)}
         gatewayIp={net.segment.ip || null}
         gatewayIface={net.segment.iface || null}
-        nodeName={activeNode(nodes, activeId)?.name ?? null}
+        nodeName={activeNodeLabel(status, nodes)}
         nodeFlag={activeFlag(probe)}
         latencyMs={liveLatency(probe)}
         egressIp={probe?.egress_ip ?? null}

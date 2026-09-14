@@ -100,6 +100,20 @@ describe.each(["/", "/traffic"] as const)("Home %s after the gateway switches no
   });
 });
 
+describe("Home › Traffic polls each key at its owner's cadence and no faster", () => {
+  it("status 3 s (shell), network 4 s, node health 30 s; node names are read once, not polled", async () => {
+    const api$ = await mountHome("/traffic");
+    const reads = { status: api$.getStatus, network: api$.getNetwork, nodes: api$.listNodes, nodeHealth: api$.listNodeHealth };
+    const before = Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length]));
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    const during = Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length - before[key]!]));
+    expect(during).toEqual({ status: 60_000 / STATUS_POLL_MS, network: 60_000 / NETWORK_POLL_MS, nodes: 0, nodeHealth: 60_000 / SLOW_POLL_MS });
+    expect(api$.listSubs).not.toHaveBeenCalled();
+    expect(api$.getRouting).not.toHaveBeenCalled();
+    expect(api$.getTrafficHistory.mock.calls.filter(([sec]) => sec === 86_400 || sec === 604_800)).toHaveLength(0);
+  });
+});
+
 describe("Home › Overview polls each key at its owner's cadence and no faster", () => {
   it("status 3 s (shell), network 4 s, nodes / node health / subscriptions / routing 30 s, long history never", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });

@@ -15,8 +15,8 @@ import { Skeleton } from "../../../components/ui/States";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
 import {
-  ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor,
-  rollbackStillValid, tunnelLabel, xrayLabel,
+  ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, activeNodeLabel, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor,
+  nodeLabel, rollbackStillValid, tunnelLabel, xrayLabel,
 } from "../derive";
 
 export interface StatusBlockProps {
@@ -63,12 +63,12 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const online = tunnel.label === "ONLINE";
   const latency = liveLatency(probe);
   const active = activeNode(nodes, status.active_node_id);
-  const activeName = active?.name ?? (status.active_node_id === null ? null : `node ${status.active_node_id}`);
+  const activeName = activeNodeLabel(status, nodes);
   const flag = activeFlag(probe);
   const prevId = status.prev_active_node_id;
   // Offered only when the gateway says a rollback would work (§12.5); the previous node only supplies the name.
   const prevName = status.rollback_available === true && prevId !== null && prevId !== status.active_node_id
-    ? (activeNode(nodes, prevId)?.name ?? `node ${prevId}`)
+    ? nodeLabel(nodes, prevId)
     : null;
   const xray = xrayLabel(status);
   const kill = killSwitchState(network);
@@ -108,7 +108,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
             <span className="text-[11.5px] text-t3">uptime <Uptime since={status.active_since} running={online} className="text-t1" /></span>
           </div>
           <p className="mt-1.5 truncate text-[19px] font-bold tracking-tight md:text-[21px]">
-            {flag ? `${flag} ` : ""}{activeName ?? "No node connected"}
+            {flag ? `${flag} ` : ""}{activeName}
           </p>
           {active ? <p className="truncate text-xs text-t2">{nodeEndpoint(active)}</p> : null}
           <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -129,7 +129,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
           </Button>
         ) : null}
         {status.active_node_id !== null ? (
-          <Button variant="danger" className="md:ml-auto" disabled={busy} onClick={() => void onDisconnect(status.active_node_id!, activeName!)}>
+          <Button variant="danger" className="md:ml-auto" disabled={busy} onClick={() => void onDisconnect(status.active_node_id!, activeName)}>
             {disconnect.isPending ? "Disconnecting…" : "Disconnect"}
           </Button>
         ) : null}

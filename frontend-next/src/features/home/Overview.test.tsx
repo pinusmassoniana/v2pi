@@ -27,7 +27,7 @@ async function openOverview(status: Partial<Status> = {}) {
   api$.getStatus.mockResolvedValue({ ...STATUS, ...status });
   const view = renderApp("/");
   const block = await screen.findByRole("region", { name: "Status" });
-  await within(block).findByText(/^(\S+ )?nl-ams-03$|^No node connected$/);
+  await within(block).findByText(/^(\S+ )?nl-ams-03$|^No node$/);
   return { api$, block, ...view };
 }
 
@@ -54,7 +54,7 @@ describe("Overview › alerts", () => {
     expect(screen.queryByRole("alert", { name: "Config drift" })).toBeNull();
     api$.getStatus.mockResolvedValue({ ...STATUS, config_drift: "drift", active_node_id: null, tunnel_online: false });
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
-    await screen.findByText("No node connected");
+    await within(screen.getByRole("region", { name: "Status" })).findByText("No node");
     expect(screen.queryByRole("alert", { name: "Config drift" })).toBeNull();
   });
 
@@ -173,7 +173,7 @@ describe("Overview › status block", () => {
 
   it("O4: with no active node the tunnel is offline and there is nothing to disconnect", async () => {
     const { block } = await openOverview({ active_node_id: null, tunnel_online: false, running: false, xray_state: "stopped" });
-    expect(within(block).getByText("No node connected")).toBeInTheDocument();
+    expect(within(block).getByText("No node")).toBeInTheDocument();
     expect(within(block).getByRole("img", { name: "× OFFLINE" })).toBeInTheDocument();
     expect(within(block).getByText("STOPPED")).toBeInTheDocument();
     expect(within(block).queryByRole("button", { name: "Disconnect" })).toBeNull();

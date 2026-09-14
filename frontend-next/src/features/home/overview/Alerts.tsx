@@ -18,12 +18,13 @@ import {
 export interface AlertsProps {
   status: Status | undefined;
   subs: Subscription[] | undefined;
-  activeName: string | null;
+  /** activeNodeLabel(): the node the gateway failed over to. */
+  activeLabel: string;
   className?: string;
 }
 
 /** O1 config drift, O2 auto-failover, O3 subscriptions, O5 untunneled traffic. Nothing renders when all is well. */
-export function Alerts({ status, subs, activeName, className }: AlertsProps) {
+export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
   const traffic = useTraffic();
   const [dismissed, setDismissed] = useState<number | null>(readFailoverDismissed);
   const queryClient = useQueryClient();
@@ -67,7 +68,7 @@ export function Alerts({ status, subs, activeName, className }: AlertsProps) {
           tone="warn"
           icon="⇄"
           title="Auto-failover"
-          text={`to ${activeName ?? "another node"} · ${agoLabel(failoverAt, nowMs / 1000)}`}
+          text={`to ${activeLabel} · ${agoLabel(failoverAt, nowMs / 1000)}`}
           onDismiss={() => {
             setDismissed(failoverAt);
             writeFailoverDismissed(failoverAt);

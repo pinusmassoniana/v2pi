@@ -85,6 +85,17 @@ export function activeNode(nodes: readonly Node[] | undefined, activeId: number 
   return activeId === null || activeId === undefined ? undefined : nodes?.find((n) => n.id === activeId);
 }
 
+/** A node's name; "node #N" while the node list has not loaded (or no longer lists it). */
+export function nodeLabel(nodes: readonly Node[] | undefined, id: number): string {
+  return nodes?.find((n) => n.id === id)?.name ?? `node #${id}`;
+}
+
+/** The active node as every Home surface names it: its name, "node #N" before the list loads, "No node" when none is active. */
+export function activeNodeLabel(status: Status | undefined, nodes: readonly Node[] | undefined): string {
+  const id = status?.active_node_id ?? null;
+  return id === null ? "No node" : nodeLabel(nodes, id);
+}
+
 const SECURITY: Record<string, string> = { reality: "Reality", tls: "TLS", none: "no TLS" };
 
 /** "VLESS · Reality · host:443" under the node name. */
@@ -294,21 +305,22 @@ export interface RoutingSummary {
   /** "4 of 6 rules" */
   header: string;
   defaultBadge: RouteBadge;
-  /** "→ nl-ams-03" */
-  defaultTarget: string;
+  /** "→ nl-ams-03" when the default is to proxy; null otherwise (direct and block go nowhere near a node). */
+  defaultTarget: string | null;
 }
 
-/** O9: the first four enabled rules by position, and the default action towards the active node. */
-export function routingSummary(routing: Routing, activeName: string | null): RoutingSummary {
+/** O9 (§12.4): the first four enabled rules by position, and the default action — towards the active node only when it proxies. */
+export function routingSummary(routing: Routing, activeLabel: string): RoutingSummary {
   const enabled = routing.rules.filter((r) => r.enabled).sort((a, b) => a.position - b.position);
   const rows = enabled.slice(0, ROUTING_SUMMARY_RULES).map((r) => ({
     id: r.id, badge: routeBadge(r.action), text: r.type ? `${r.type}:${r.value}` : r.value,
   }));
+  const defaultBadge = routeBadge(routing.default_action);
   return {
     rows,
     header: `${rows.length} of ${routing.rules.length} rules`,
-    defaultBadge: routeBadge(routing.default_action),
-    defaultTarget: `→ ${activeName ?? "—"}`,
+    defaultBadge,
+    defaultTarget: defaultBadge === "proxy" ? `→ ${activeLabel}` : null,
   };
 }
 

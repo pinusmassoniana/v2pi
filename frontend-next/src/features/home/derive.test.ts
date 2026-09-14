@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnEvent, Network, NodeHealth, Routing, Status, TrafficFrame } from "../../api/client";
 import { NETWORK, NODES, NODE_HEALTH, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
-  FAILOVER_DISMISSED_KEY, activeFlag, activeNode, activeRow, bypassState, chartStale, clockTime, eventLevel, failoverBanner,
+  FAILOVER_DISMISSED_KEY, activeFlag, activeNode, activeNodeLabel, activeRow, bypassState, chartStale, clockTime, eventLevel, failoverBanner,
   failoverHistory, failoverPill, hasConfigDrift, ipv6Source, killSwitchState, latencyStats, liveLatency, nodeEndpoint,
-  peakOf, poolSize, probeAge, probeFor, readFailoverDismissed, rollbackStillValid, recentEvents, recentValues, routeBadge, routingSummary,
+  nodeLabel, peakOf, poolSize, probeAge, probeFor, readFailoverDismissed, rollbackStillValid, recentEvents, recentValues, routeBadge, routingSummary,
   sessionTotals, sinceLabel, standbyRows, tunnelLabel, tunnelLeg, whenLabel, writeFailoverDismissed, xrayLabel,
 } from "./derive";
 
@@ -267,6 +267,16 @@ describe("failover alert", () => {
 });
 
 describe("summaries", () => {
+  it("node labels: the name, node #N before the list loads or once it no longer lists the node, No node when none is active", () => {
+    expect(activeNodeLabel(STATUS, NODES)).toBe("nl-ams-03");
+    expect(activeNodeLabel(STATUS, undefined)).toBe("node #1");
+    expect(activeNodeLabel(status({ active_node_id: 9 }), NODES)).toBe("node #9");
+    expect(activeNodeLabel(status({ active_node_id: null }), NODES)).toBe("No node");
+    expect(activeNodeLabel(undefined, NODES)).toBe("No node");
+    expect(nodeLabel(NODES, 2)).toBe("de-fra-01");
+    expect(nodeLabel([], 2)).toBe("node #2");
+  });
+
   it("routing: first four enabled rules by position, the total, and the default towards the active node", () => {
     const summary = routingSummary(ROUTING, "nl-ams-03");
     expect(summary.rows.map((r) => [r.badge, r.text])).toEqual([
@@ -277,7 +287,7 @@ describe("summaries", () => {
     expect(summary.defaultTarget).toBe("→ nl-ams-03");
   });
 
-  it("routing: position order, not array order; a value without a type; no active node", () => {
+  it("routing: position order, not array order; a value without a type; a direct default names no node", () => {
     const routing: Routing = {
       default_action: "direct", domain_strategy: "AsIs",
       rules: [
@@ -285,11 +295,14 @@ describe("summaries", () => {
         { id: 1, position: 1, type: "port", value: "443", action: "proxy", enabled: true, label: "" },
       ],
     };
-    const summary = routingSummary(routing, null);
+    const summary = routingSummary(routing, "nl-ams-03");
     expect(summary.rows.map((r) => [r.badge, r.text])).toEqual([["proxy", "port:443"], ["block", "10.0.0.1"]]);
     expect(summary.header).toBe("2 of 2 rules");
-    expect(summary.defaultTarget).toBe("→ —");
-    expect(routingSummary({ ...routing, rules: [] }, null).header).toBe("0 of 0 rules");
+    expect(summary.defaultBadge).toBe("direct");
+    expect(summary.defaultTarget).toBeNull();
+    expect(routingSummary({ ...routing, default_action: "block" }, "nl-ams-03").defaultTarget).toBeNull();
+    expect(routingSummary({ ...routing, default_action: "proxy" }, "No node").defaultTarget).toBe("→ No node");
+    expect(routingSummary({ ...routing, rules: [] }, "No node").header).toBe("0 of 0 rules");
     expect(routeBadge("Direct")).toBe("direct");
   });
 

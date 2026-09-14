@@ -96,6 +96,22 @@ describe("shell", () => {
     expect(toggle).toBeEnabled();
   });
 
+  it("xray-core reads the engine the same way as Home's xray chip", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, running: true, xray_state: "error" });
+    const { client } = renderApp("/nodes");
+    const toggle = await screen.findByRole("switch", { name: "xray-core" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));   // running wins, as the chip's RUNNING
+    expect(screen.getByText("RUNNING")).toHaveClass("text-ok");
+    api$.getStatus.mockResolvedValue({ ...STATUS, running: false, xray_state: "error" });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    expect(await screen.findByText("RECONNECTING")).toHaveClass("text-warn");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    api$.getStatus.mockResolvedValue({ ...STATUS, running: false, xray_state: "stopped" });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    expect(await screen.findByText("STOPPED")).toHaveClass("text-bad");
+  });
+
   it("theme toggle flips the document theme", async () => {
     mockApi();
     document.documentElement.dataset.theme = "dark";

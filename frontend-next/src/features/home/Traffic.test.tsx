@@ -53,6 +53,15 @@ describe("Traffic › KPIs", () => {
     expect(region("Uptime")).toHaveTextContent(/^Uptime1msince \d{2} [A-Z][a-z]{2} \d{2}:\d{2}$/);
   });
 
+  it("H1: the last failover under the count is the newest failover, not a manual switch", async () => {
+    const api$ = mockApi();
+    api$.getNetwork.mockResolvedValue({ ...NETWORK, events: [...NETWORK.events, { ts: NOW_SEC - 30, kind: "switch", detail: "manual switch to de-fra-01" }] });
+    renderApp("/traffic");
+    const failovers = await screen.findByRole("region", { name: "Failovers · 24h" });
+    await waitFor(() => expect(failovers).toHaveTextContent(`2last ${clock((NOW_SEC - 600) * 1000)}`));
+    expect(within(within(region("Failover history")).getByRole("table")).getByText("manual switch to de-fra-01")).toBeInTheDocument();   // the history still lists it
+  });
+
   it("H1: the peak follows the selected window", async () => {
     const { api$ } = await openTraffic();
     api$.emitTraffic(TRAFFIC_FRAME);
