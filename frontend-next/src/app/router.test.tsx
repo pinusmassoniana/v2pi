@@ -1,13 +1,13 @@
-import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { mockApi } from "../test/fixtures";
+import { renderApp } from "../test/renderApp";
 import { LEGACY_REDIRECTS, SECTIONS, isTabActive, sectionForPath, titleForPath } from "./nav";
-import { createAppRouter } from "./router";
 
+// The shell needs the query client, auth context and a backend.
 function renderAt(path: string) {
-  const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
-  render(<RouterProvider router={router} />);
-  return router;
+  mockApi();
+  return renderApp(path).router;
 }
 
 const TABS = SECTIONS.flatMap((s) => s.tabs.map((t) => [s.label, t.label, t.to] as const));

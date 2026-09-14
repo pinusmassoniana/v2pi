@@ -1,14 +1,11 @@
 import {
-  Outlet, createHashHistory, createRootRoute, createRoute, createRouter, redirect, type RouterHistory,
+  createHashHistory, createRootRoute, createRoute, createRouter, redirect, type RouterHistory,
 } from "@tanstack/react-router";
 import { LEGACY_REDIRECTS } from "./nav";
 import { NodeDetailPlaceholder, TabPlaceholder } from "./pages/Placeholder";
+import { Shell } from "./shell/Shell";
 
-function RootLayout() {
-  return <Outlet />;
-}
-
-export const rootRoute = createRootRoute({ component: RootLayout });
+export const rootRoute = createRootRoute({ component: Shell });
 
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => <TabPlaceholder path="/" /> });
 const trafficRoute = createRoute({ getParentRoute: () => rootRoute, path: "/traffic", component: () => <TabPlaceholder path="/traffic" /> });
