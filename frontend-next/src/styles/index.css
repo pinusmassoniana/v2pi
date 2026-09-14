@@ -1,1 +1,123 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/* Aurora × Precision. Component code never uses a colour literal: only these tokens.
+   Light is provisional — its final palette is designed at the Home screen's visual checkpoint. */
+:root,
+[data-theme="dark"] {
+  --bg: #07060d;
+  --glass: rgba(255, 255, 255, 0.065);
+  --glass-2: rgba(255, 255, 255, 0.1);
+  --line: rgba(255, 255, 255, 0.11);
+  --chrome: rgba(7, 6, 13, 0.62);
+  --solid: #15131f;
+  --t1: #f4f2ff;
+  --t2: #b6aee0;
+  --t3: #8a82b6;
+  --g1: #5ef2d6;
+  --g2: #7c5cff;
+  --g3: #c65cff;
+  --ok: #5ef2d6;
+  --warn: #f5b544;
+  --bad: #ff6b8a;
+  --aurora-1: #3b1f7a;
+  --aurora-2: #0f5b66;
+  --aurora-3: #2a1454;
+}
+
+[data-theme="light"] {
+  --bg: #f4f3fb;
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-2: rgba(255, 255, 255, 0.92);
+  --line: rgba(28, 20, 60, 0.12);
+  --chrome: rgba(244, 243, 251, 0.78);
+  --solid: #ffffff;
+  --t1: #16132a;
+  --t2: #4d4870;
+  --t3: #676289;
+  --g1: #0f9f8a;
+  --g2: #6a4cf0;
+  --g3: #a13fd0;
+  --ok: #0b8a77;
+  --warn: #9a6207;
+  --bad: #c62a55;
+  --aurora-1: #e4dcff;
+  --aurora-2: #d2f2ee;
+  --aurora-3: #efe3fb;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-glass: var(--glass);
+  --color-glass-2: var(--glass-2);
+  --color-line: var(--line);
+  --color-chrome: var(--chrome);
+  --color-solid: var(--solid);
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-g1: var(--g1);
+  --color-g2: var(--g2);
+  --color-g3: var(--g3);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@utility bg-brand {
+  background-image: linear-gradient(135deg, var(--g1), var(--g2) 55%, var(--g3));
+}
+
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+  }
+  body {
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(60% 70% at 8% 0%, var(--aurora-1) 0%, transparent 60%),
+      radial-gradient(50% 60% at 100% 20%, var(--aurora-2) 0%, transparent 62%),
+      radial-gradient(40% 50% at 60% 100%, var(--aurora-3) 0%, transparent 60%);
+    background-attachment: fixed;
+    color: var(--t1);
+    font-family: var(--font-sans);
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+  @media (max-width: 767px) {
+    .glass {
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .glass {
+      background: var(--solid);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
