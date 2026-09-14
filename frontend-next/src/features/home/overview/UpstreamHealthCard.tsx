@@ -7,7 +7,7 @@ import { LatencyBars } from "../../../components/data/LatencyBars";
 import { GlassCard } from "../../../components/ui/GlassCard";
 import { Pill } from "../../../components/ui/Pill";
 import { cardFallback, staleNotice, type CardQuery } from "../CardState";
-import { activeNode, activeRow, failoverPill, standbyRows, tunnelLabel } from "../derive";
+import { activeNode, activeRow, failoverPill, probeFor, standbyRows, tunnelLabel } from "../derive";
 
 export interface UpstreamHealthCardProps {
   status: Status | undefined;
@@ -35,7 +35,7 @@ export function UpstreamHealthCard({ status, statusError, nodes, health, classNa
   const allNodes = nodes.data ?? [];
   const now = serverNow();
   const activeId = status?.active_node_id ?? null;
-  const active = activeRow(activeNode(allNodes, activeId), traffic.disabled ? null : (traffic.live?.active ?? null));
+  const active = activeRow(activeNode(allNodes, activeId), probeFor(traffic.disabled ? null : traffic.live, activeId));
   const standby = standbyRows(allNodes, health.data ?? [], activeId, now);
 
   return (

@@ -82,9 +82,18 @@ export function nodeEndpoint(node: Node): string {
   return `VLESS · ${security} · ${formatUriHost(node.address)}:${node.port}`;
 }
 
-/** The flag of the active node's egress, only when the live probe is about that node. */
-export function activeFlag(activeId: number | null | undefined, active: ActiveProbe): string {
-  return active && active.node_id === activeId ? flagEmoji(active.egress_cc) : "";
+/**
+ * The live probe, only when it is about the active node: right after a switch the frame can still
+ * describe the node before it, and its latency, egress and health must not be shown as the new one's.
+ */
+export function probeFor(frame: TrafficFrame | null | undefined, activeId: number | null | undefined): ActiveProbe {
+  const probe = frame?.active ?? null;
+  return probe !== null && activeId !== null && activeId !== undefined && probe.node_id === activeId ? probe : null;
+}
+
+/** The flag of the active node's egress, from its matched probe (see probeFor). */
+export function activeFlag(probe: ActiveProbe): string {
+  return probe ? flagEmoji(probe.egress_cc) : "";
 }
 
 // ---- live traffic ----------------------------------------------------------------------------

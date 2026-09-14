@@ -108,6 +108,19 @@ describe("Traffic › charts", () => {
     expect(card.querySelector("[data-dim]")).not.toBeNull();
   });
 
+  it("a live frame about another node shows the active node's latency as unknown", async () => {
+    const { api$ } = await openTraffic();
+    api$.emitTraffic(probe({ node_id: 2 }));
+    expect(region("Active latency")).toHaveTextContent(/^Active latency—unknown$/);
+    const card = region("Active node latency");
+    expect(card).toHaveTextContent("nl-ams-03");
+    expect(card).not.toHaveTextContent("🇳🇱");
+    expect(within(card).getByText("no probe history yet")).toBeInTheDocument();
+    const bars = within(region("Probe latency by node")).getByRole("list", { name: "Nodes by latency" });
+    expect(within(bars).getAllByRole("listitem")[0]).toHaveTextContent("nl-ams-03health stale");
+    expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale");
+  });
+
   it("stats off: no peak, and the chart points to System › Panel", async () => {
     const { api$ } = await openTraffic();
     api$.emitTraffic(TRAFFIC_FRAME);

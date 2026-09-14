@@ -14,7 +14,7 @@ import { Skeleton } from "../../../components/ui/States";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
 import {
-  activeFlag, activeNode, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, tunnelLabel, xrayLabel,
+  activeFlag, activeNode, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor, tunnelLabel, xrayLabel,
 } from "../derive";
 
 export interface StatusBlockProps {
@@ -50,13 +50,13 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
     );
   }
 
-  const frame = traffic.disabled ? null : traffic.live;
+  const probe = probeFor(traffic.disabled ? null : traffic.live, status.active_node_id);
   const tunnel = tunnelLabel(status, statusError);
   const online = tunnel.label === "ONLINE";
-  const latency = liveLatency(frame?.active ?? null);
+  const latency = liveLatency(probe);
   const active = activeNode(nodes, status.active_node_id);
   const activeName = active?.name ?? (status.active_node_id === null ? null : `node ${status.active_node_id}`);
-  const flag = activeFlag(status.active_node_id, frame?.active ?? null);
+  const flag = activeFlag(probe);
   const prevId = status.prev_active_node_id;
   const prevName = prevId !== null && prevId !== status.active_node_id
     ? (activeNode(nodes, prevId)?.name ?? `node ${prevId}`)

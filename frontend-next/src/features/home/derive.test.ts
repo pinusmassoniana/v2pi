@@ -4,7 +4,7 @@ import { NETWORK, NODES, NODE_HEALTH, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, n
 import {
   FAILOVER_DISMISSED_KEY, activeFlag, activeNode, activeRow, bypassState, clockTime, eventLevel, failoverBanner,
   failoverHistory, failoverPill, hasConfigDrift, ipv6Source, killSwitchState, latencyStats, liveLatency, nodeEndpoint,
-  peakOf, poolSize, probeAge, readFailoverDismissed, recentEvents, recentValues, routeBadge, routingSummary,
+  peakOf, poolSize, probeAge, probeFor, readFailoverDismissed, recentEvents, recentValues, routeBadge, routingSummary,
   sessionTotals, sinceLabel, standbyRows, tunnelLabel, tunnelLeg, whenLabel, writeFailoverDismissed, xrayLabel,
 } from "./derive";
 
@@ -73,9 +73,18 @@ describe("status block", () => {
     expect(activeNode(undefined, 1)).toBeUndefined();
     expect(nodeEndpoint(node(1, "nl-ams-03"))).toBe("VLESS · Reality · nl-ams-03.example.org:443");
     expect(nodeEndpoint({ ...node(2, "v6"), security: "tls", address: "2001:db8::1", port: 8443 })).toBe("VLESS · TLS · [2001:db8::1]:8443");
-    expect(activeFlag(1, active)).toBe("🇳🇱");
-    expect(activeFlag(2, active)).toBe("");
-    expect(activeFlag(null, active)).toBe("");
+    expect(activeFlag(probeFor(TRAFFIC_FRAME, 1))).toBe("🇳🇱");
+    expect(activeFlag(probeFor(TRAFFIC_FRAME, 2))).toBe("");
+    expect(activeFlag(null)).toBe("");
+  });
+
+  it("probeFor: the live probe only when it is about the active node", () => {
+    expect(probeFor(TRAFFIC_FRAME, 1)).toBe(active);
+    expect(probeFor(TRAFFIC_FRAME, 2)).toBeNull();          // the frame still describes the previous node
+    expect(probeFor(TRAFFIC_FRAME, null)).toBeNull();
+    expect(probeFor(TRAFFIC_FRAME, undefined)).toBeNull();
+    expect(probeFor({ ...TRAFFIC_FRAME, active: null }, 1)).toBeNull();
+    expect(probeFor(null, 1)).toBeNull();
   });
 });
 

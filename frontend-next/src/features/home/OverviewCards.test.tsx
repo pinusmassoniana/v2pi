@@ -141,6 +141,21 @@ describe("Overview › upstream health", () => {
 });
 
 describe("Overview › connection path, events and summaries", () => {
+  it("a live frame about another node lends none of its latency, egress or health to the active one", async () => {
+    const { api$ } = await openOverview();
+    api$.emitTraffic(frame({ node_id: 2 }));
+    const status = region("Status");
+    expect(within(status).getByRole("img", { name: "— ONLINE" })).toBeInTheDocument();
+    expect(within(status).getByText("nl-ams-03")).toBeInTheDocument();   // no flag from the other node's egress
+    const path = region("Connection path");
+    expect(path).toHaveTextContent("Node · egress—");
+    expect(path).not.toHaveTextContent("185.107.56.21");
+    expect(path.querySelector("path[data-leg]")).toHaveAttribute("data-leg", "off");
+    const active = within(within(region("Upstream health")).getByRole("list", { name: "Active node" })).getByRole("listitem");
+    expect(active).toHaveTextContent("health stale");
+    expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale");
+  });
+
   it("O8: the path from the network read and the live frame; the bypass turns amber with any direct traffic", async () => {
     const { api$ } = await openOverview();
     api$.emitTraffic(TRAFFIC_FRAME);

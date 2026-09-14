@@ -4,7 +4,7 @@ import { CardHeader } from "../../../components/data/CardHeader";
 import { ConnectionPath } from "../../../components/data/ConnectionPath";
 import { GlassCard } from "../../../components/ui/GlassCard";
 import { cardFallback, staleNotice, type CardQuery } from "../CardState";
-import { activeFlag, activeNode, bypassState, killSwitchState, liveLatency, poolSize, tunnelLeg } from "../derive";
+import { activeFlag, activeNode, bypassState, killSwitchState, liveLatency, poolSize, probeFor, tunnelLeg } from "../derive";
 
 export interface ConnectionCardProps {
   status: Status | undefined;
@@ -25,6 +25,7 @@ export function ConnectionCard({ status, network, nodes, className }: Connection
   const net = network.data;
   const frame = traffic.disabled ? null : traffic.live;
   const activeId = status?.active_node_id ?? null;
+  const probe = probeFor(frame, activeId);
   return (
     <GlassCard aria-label="Connection path" className={className}>
       {header}
@@ -35,14 +36,14 @@ export function ConnectionCard({ status, network, nodes, className }: Connection
         gatewayIp={net.segment.ip || null}
         gatewayIface={net.segment.iface || null}
         nodeName={activeNode(nodes, activeId)?.name ?? null}
-        nodeFlag={activeFlag(activeId, frame?.active ?? null)}
-        latencyMs={liveLatency(frame?.active ?? null)}
-        egressIp={frame?.active?.egress_ip ?? null}
-        egressIp6={frame?.active?.egress_ip6 ?? null}
+        nodeFlag={activeFlag(probe)}
+        latencyMs={liveLatency(probe)}
+        egressIp={probe?.egress_ip ?? null}
+        egressIp6={probe?.egress_ip6 ?? null}
         uplink={net.status.uplink}
         uplink6={net.status.uplink6}
         ipv6Enabled={net.ipv6_enabled}
-        leg={tunnelLeg(status, frame?.active ?? null)}
+        leg={tunnelLeg(status, probe)}
         bypassBps={bypassState(frame).total}
         killSwitch={killSwitchState(net)}
       />

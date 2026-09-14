@@ -15,7 +15,7 @@ import { fmtRate, splitUnit } from "../../lib/format";
 import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
 import { cardFallback, staleNotice } from "./CardState";
 import {
-  activeFlag, activeNode, activeRow, clockTime, failoverHistory, latencyStats, peakOf, sinceLabel, standbyRows,
+  activeFlag, activeNode, activeRow, clockTime, failoverHistory, latencyStats, peakOf, probeFor, sinceLabel, standbyRows,
   tunnelLabel, whenLabel,
 } from "./derive";
 import { ThroughputCard } from "./ThroughputCard";
@@ -73,8 +73,8 @@ export function Traffic() {
   const series = useTrafficSeries(windowSec);
 
   const nowMs = serverNow();
-  const probe = series.live?.active ?? null;
   const activeId = status.data?.active_node_id ?? null;
+  const probe = probeFor(series.live, activeId);
   const active = activeNode(nodes.data, activeId);
   const online = tunnelLabel(status.data, status.isError).label === "ONLINE";
   const peak = series.disabled ? null : peakOf(series.samples);
@@ -89,8 +89,8 @@ export function Traffic() {
     activeRow(active, probe),
     ...standbyRows(nodes.data ?? [], health.data ?? [], activeId, nowMs, Infinity),
   ].filter((row) => row !== null);
-  const probeHistory = probe && probe.node_id === activeId ? probe.lat_history : [];
-  const flag = activeFlag(activeId, probe);
+  const probeHistory = probe?.lat_history ?? [];
+  const flag = activeFlag(probe);
   const historyFallback = cardFallback([network], "Failover history did not load", "h-32");
 
   return (
@@ -123,7 +123,7 @@ export function Traffic() {
         className="xl:col-span-3"
       />
 
-      <ThroughputCard windowSec={windowSec} onWindowChange={setWindowSec} series={series} className="md:col-span-2 xl:col-span-12" />
+      <ThroughputCard windowSec={windowSec} onWindowChange={setWindowSec} series={series} activeNodeId={activeId} className="md:col-span-2 xl:col-span-12" />
 
       <GlassCard aria-label="Probe latency by node" aria-busy={(barsFallback !== null && !nodes.isError && !health.isError) || undefined} className="md:col-span-2 xl:col-span-6">
         <CardHeader
