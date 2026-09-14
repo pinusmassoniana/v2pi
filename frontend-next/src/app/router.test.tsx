@@ -29,10 +29,15 @@ describe("navigation model", () => {
   });
 });
 
+// Rebuilt screens show a card of their own instead of the placeholder.
+const BUILT: Readonly<Record<string, string>> = { "/": "Status" };
+
 describe("router", () => {
   it.each(TABS)("%s › %s renders at %s", async (section, tab, path) => {
     renderAt(path);
-    expect(await screen.findByText(`${section} › ${tab}`)).toBeInTheDocument();
+    const card = BUILT[path];
+    if (card) expect(await screen.findByRole("region", { name: card })).toBeInTheDocument();
+    else expect(await screen.findByText(`${section} › ${tab}`)).toBeInTheDocument();
   });
 
   it("renders a node detail, while the static subscriptions route wins over the node id", async () => {

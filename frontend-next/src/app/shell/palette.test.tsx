@@ -24,7 +24,8 @@ describe("command palette", () => {
     const { router } = renderApp("/");
     await userEvent.click(await screen.findByRole("button", { name: "Search and commands" }));
     await userEvent.type(await screen.findByPlaceholderText("Search nodes, screens and actions…"), "de-fra");
-    await userEvent.click(await screen.findByText("de-fra-01"));
+    // Home shows node names too: pick the palette's own option.
+    await userEvent.click(await screen.findByRole("option", { name: /^de-fra-01/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/nodes/2"));
   });
 
@@ -35,7 +36,7 @@ describe("command palette", () => {
     const invalidateQueries = vi.spyOn(client, "invalidateQueries");
     await screen.findByRole("heading", { level: 1 });
     act(() => openPalette("nodes"));
-    await userEvent.click(await screen.findByText("nl-ams-03"));
+    await userEvent.click(await screen.findByRole("option", { name: /^nl-ams-03/ }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith(1));
     await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["status"] }));
   });
