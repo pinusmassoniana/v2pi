@@ -11,7 +11,6 @@ import { OfflineBanner } from "./OfflineBanner";
 import { SegmentedTabs } from "./SegmentedTabs";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
-import { XrayCard } from "./XrayCard";
 
 export const STATUS_POLL_MS = 3_000;
 
@@ -30,8 +29,7 @@ export function Shell() {
         <OfflineBanner />
         <SegmentedTabs section={section} pathname={pathname} className="md:hidden" />
         <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col gap-3 p-4 md:p-5">
-          {/* Phone homes for shell controls: xray-core on Home › Overview, log out in System. */}
-          {pathname === "/" ? <XrayCard status={status.data} className="md:hidden" /> : null}
+          {/* Phone home for log out: the System section. xray-core's is the last card of Home › Overview. */}
           {section.id === "system" ? (
             <div className="flex justify-end md:hidden"><LogoutButton /></div>
           ) : null}
