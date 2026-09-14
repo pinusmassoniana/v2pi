@@ -30,7 +30,7 @@ describe("navigation model", () => {
 });
 
 // Rebuilt screens show a card of their own instead of the placeholder.
-const BUILT: Readonly<Record<string, string>> = { "/": "Status" };
+const BUILT: Readonly<Record<string, string>> = { "/": "Status", "/traffic": "Failover history" };
 
 describe("router", () => {
   it.each(TABS)("%s › %s renders at %s", async (section, tab, path) => {
