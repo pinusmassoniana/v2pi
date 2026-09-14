@@ -1,6 +1,7 @@
 import { Outlet, useRouterState } from "@tanstack/react-router";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
+import { useUnsavedEditsBlocker } from "../guard";
 import { sectionForPath, titleForPath } from "../nav";
 import { BottomTabBar } from "./BottomTabBar";
 import { CommandPalette } from "./CommandPalette";
@@ -17,6 +18,7 @@ export const STATUS_POLL_MS = 3_000;
 export function Shell() {
   // The shell is the one polling owner for `status`; everyone else reads the cache.
   const status = usePolledQuery(queries.status(), STATUS_POLL_MS);
+  useUnsavedEditsBlocker();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const section = sectionForPath(pathname);
 

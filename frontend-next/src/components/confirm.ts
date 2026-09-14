@@ -21,6 +21,11 @@ export function confirm(message: string, options: { confirmLabel?: string; dange
   });
 }
 
+/** Close a sheet or dialog, asking first when it holds unsaved edits. */
+export async function closeGuarded(dirty: boolean, close: () => void): Promise<void> {
+  if (!dirty || (await confirm("Discard unsaved changes?", { confirmLabel: "Discard" }))) close();
+}
+
 export function settleConfirm(ok: boolean): void {
   const request = current;
   current = null;

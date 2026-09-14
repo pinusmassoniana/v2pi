@@ -1,14 +1,14 @@
 import { Dialog as Primitive } from "radix-ui";
 import { settleConfirm, useConfirmRequest } from "../confirm";
 import { Button } from "./Button";
+import { OverlayPortal } from "./Dialog";
 
 /** Mounted once at the app root, outside the auth gate. Sits above sheets and dialogs (z-60). */
 export function ConfirmDialog() {
   const request = useConfirmRequest();
   return (
     <Primitive.Root open={request !== null} onOpenChange={(open) => { if (!open) settleConfirm(false); }}>
-      <Primitive.Portal>
-        <Primitive.Overlay className="fixed inset-0 z-[60] bg-[rgba(4,3,10,.6)] backdrop-blur-sm" />
+      <OverlayPortal className="z-[60]">
         <Primitive.Content
           aria-describedby={undefined}
           className="glass fixed left-1/2 top-1/2 z-[60] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 p-5"
@@ -22,7 +22,7 @@ export function ConfirmDialog() {
             </Button>
           </div>
         </Primitive.Content>
-      </Primitive.Portal>
+      </OverlayPortal>
     </Primitive.Root>
   );
 }

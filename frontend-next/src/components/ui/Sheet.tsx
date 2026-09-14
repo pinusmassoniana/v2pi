@@ -1,14 +1,15 @@
 import { Dialog as Primitive } from "radix-ui";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
+import { Dialog, OverlayPortal } from "./Dialog";
 
-export const Sheet = Primitive.Root;
+/** A sheet root; `dirty` guards closing exactly as on Dialog. */
+export const Sheet = Dialog;
 
 /** Bottom sheet on a phone; a right-hand panel over the page from 768 px (node detail, forms). */
 export function SheetContent({ title, className, children }: { title: string; className?: string; children: ReactNode }) {
   return (
-    <Primitive.Portal>
-      <Primitive.Overlay className="fixed inset-0 z-50 bg-[rgba(4,3,10,.5)] backdrop-blur-sm" />
+    <OverlayPortal className="bg-[rgba(4,3,10,.5)]">
       <Primitive.Content
         aria-describedby={undefined}
         className={cn(
@@ -20,6 +21,6 @@ export function SheetContent({ title, className, children }: { title: string; cl
         <Primitive.Title className="text-base font-bold text-t1">{title}</Primitive.Title>
         <div className="mt-4">{children}</div>
       </Primitive.Content>
-    </Primitive.Portal>
+    </OverlayPortal>
   );
 }

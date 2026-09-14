@@ -65,6 +65,26 @@ describe("Dialog and Sheet", () => {
     expect(screen.getByRole("dialog", { name: "Add server" })).toBeInTheDocument();
   });
 
+  it("a dirty dialog asks before closing: Cancel keeps it open, Discard closes it", async () => {
+    render(<ConfirmDialog />);
+    const onOpenChange = vi.fn();
+    const view = render(<Dialog open dirty onOpenChange={onOpenChange}><DialogContent title="Edit node"><p>form</p></DialogContent></Dialog>);
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    // clean, it closes at once
+    onOpenChange.mockClear();
+    view.rerender(<Sheet open onOpenChange={onOpenChange}><SheetContent title="Node 12"><p>detail</p></SheetContent></Sheet>);
+    await userEvent.keyboard("{Escape}");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(screen.queryByRole("dialog", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
   it("a sheet is a dialog too", () => {
     render(<Sheet open><SheetContent title="Node 12"><p>detail</p></SheetContent></Sheet>);
     expect(screen.getByRole("dialog", { name: "Node 12" })).toHaveTextContent("detail");

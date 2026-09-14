@@ -5,21 +5,28 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { settleConfirm } from "../components/confirm";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
-import { closeGuarded, hasUnsavedEdits, useUnsavedGuard } from "./guard";
+import { closeGuarded, hasUnsavedEdits, useUnsavedEditsBlocker, useUnsavedGuard } from "./guard";
 
 afterEach(() => act(() => settleConfirm(false)));
 
-function Editor() {
+function Editor({ label = "edited" }: { label?: string }) {
   const [dirty, setDirty] = useState(false);
   useUnsavedGuard(dirty);
   return (
     <label>
-      <input type="checkbox" checked={dirty} onChange={(event) => setDirty(event.target.checked)} /> edited
+      <input type="checkbox" checked={dirty} onChange={(event) => setDirty(event.target.checked)} /> {label}
     </label>
   );
 }
 
+// A screen with a sheet open over it, both holding edits.
+function TwoEditors() {
+  return (<><Editor label="screen edited" /><Editor label="sheet edited" /></>);
+}
+
+// Stands in for the shell, which owns the one blocker.
 function TestLayout() {
+  useUnsavedEditsBlocker();
   return (<><Outlet /><ConfirmDialog /></>);
 }
 
@@ -27,11 +34,15 @@ function OtherScreen() {
   return <p>other screen</p>;
 }
 
-function buildRouter() {
+function buildRouter(initialPath = "/edit") {
   const root = createRootRoute({ component: TestLayout });
   const editor = createRoute({ getParentRoute: () => root, path: "/edit", component: Editor });
   const other = createRoute({ getParentRoute: () => root, path: "/other", component: OtherScreen });
-  return createRouter({ routeTree: root.addChildren([editor, other]), history: createMemoryHistory({ initialEntries: ["/edit"] }) });
+  const both = createRoute({ getParentRoute: () => root, path: "/both", component: TwoEditors });
+  return createRouter({
+    routeTree: root.addChildren([editor, other, both]),
+    history: createMemoryHistory({ initialEntries: [initialPath] }),
+  });
 }
 
 describe("useUnsavedGuard", () => {
@@ -57,6 +68,18 @@ describe("useUnsavedGuard", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Discard" }));
     expect(await screen.findByText("other screen")).toBeInTheDocument();
     expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  it("asks once per navigation however many guards hold edits", async () => {
+    const router = buildRouter("/both");
+    render(<RouterProvider router={router} />);
+    await userEvent.click(await screen.findByLabelText("screen edited"));
+    await userEvent.click(screen.getByLabelText("sheet edited"));
+
+    act(() => router.history.push("/other"));
+    await userEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    expect(await screen.findByText("other screen")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Confirm" })).not.toBeInTheDocument();
   });
 });
 
