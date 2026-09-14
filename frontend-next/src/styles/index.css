@@ -155,6 +155,14 @@
   [data-theme="light"] .orb[data-tone] {
     box-shadow: var(--shadow);
   }
+
+  /* LatencyBars tracks without a bar: hatched rose for a failed probe, dashed for none yet. */
+  .track-failed {
+    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bad) 28%, transparent) 0 4px, transparent 4px 8px);
+  }
+  .track-none {
+    background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 8px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
