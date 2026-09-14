@@ -9,17 +9,24 @@ const SUBSCRIPTION = [keys.subs, keys.nodes, keys.nodeHealth];
 // (subs/reconcile.py: reconcile), so a refresh reaches further than a plain edit of the
 // subscription row does.
 const SUBSCRIPTION_REFRESH = [...SUBSCRIPTION, keys.status, keys.network, keys.profiles];
-const PROFILE = [keys.profiles, keys.nodes, keys.status];
+// Every profile write can end up re-applying the active node when it turns out to use the
+// profile being changed (add can't; the other four can, conditionally — routes.py:
+// set_default_profile:899, update_profile:918, delete_profile:954, apply_profile_active:938
+// unconditionally). One group, one cheap extra GET on addProfile, no per-row special case.
+const PROFILE = [keys.profiles, keys.nodes, keys.status, keys.network];
+// Every remote-access write reaches reapply_active_node, either through _rw_apply (grants) or
+// _rw_revoke -> _rw_revoke_apply (revocations) — routes.py:1783,2618.
+const RW = [keys.rw, keys.status, keys.network];
 
 /**
  * What each write changes, named after its api method. "all" invalidates every query: a restore
  * replaces the whole configuration. Preview / validate / preset / short-id reads are absent on
  * purpose — invalidating after them would overwrite the form their reply was staged into.
  *
- * A few rows reach further than their own resource because the backend re-applies the live
- * tunnel as a side effect: applyProfileActive, putRouting, putSettings and resetSettings can all
- * call reapply_active_node -> apply_node -> apply_net (routes.py), so each also invalidates
- * keys.network on top of its own resource.
+ * Several groups reach further than their own resource because the backend re-applies the live
+ * tunnel as a side effect (reapply_active_node -> apply_node -> apply_net, routes.py): see the
+ * PROFILE, RW and SUBSCRIPTION_REFRESH comments above, plus putRouting/putSettings/resetSettings
+ * below, which reapply unconditionally or conditionally on their own.
  */
 export const INVALIDATES = {
   addNode: NODE_LIST, updateNode: NODE_LIST, deleteNode: NODE_LIST,
@@ -30,10 +37,10 @@ export const INVALIDATES = {
   addSub: SUBSCRIPTION, updateSub: SUBSCRIPTION, deleteSub: SUBSCRIPTION,
   refreshSub: SUBSCRIPTION_REFRESH, refreshAllSubs: SUBSCRIPTION_REFRESH,
   addProfile: PROFILE, updateProfile: PROFILE, deleteProfile: PROFILE,
-  setDefaultProfile: PROFILE, applyProfileActive: [...PROFILE, keys.network],
+  setDefaultProfile: PROFILE, applyProfileActive: PROFILE,
   putRouting: [keys.routing, keys.status, keys.network],
   putNetwork: [keys.network, keys.status],
-  putRw: [keys.rw], addRwClient: [keys.rw], setRwClientEnabled: [keys.rw], deleteRwClient: [keys.rw],
+  putRw: RW, addRwClient: RW, setRwClientEnabled: RW, deleteRwClient: RW,
   putSettings: [keys.settings, keys.status, keys.network],
   resetSettings: [keys.settings, keys.status, keys.network],
   createToken: [keys.tokens], deleteToken: [keys.tokens],

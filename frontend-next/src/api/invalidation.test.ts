@@ -38,14 +38,28 @@ describe("invalidation map", () => {
     // subscription's default profile (subs/service.py + subs/reconcile.py).
     expect(INVALIDATES.refreshSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth, keys.status, keys.network, keys.profiles]);
     expect(INVALIDATES.refreshAllSubs).toEqual([keys.subs, keys.nodes, keys.nodeHealth, keys.status, keys.network, keys.profiles]);
-    // applyProfileActive, putRouting, putSettings and resetSettings can all re-apply the live
-    // tunnel server-side (routes.py: reapply_active_node -> apply_node -> apply_net).
-    expect(INVALIDATES.applyProfileActive).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    // putRouting, putSettings and resetSettings each re-apply the live tunnel server-side on
+    // their own (routes.py: reapply_active_node -> apply_node -> apply_net).
     expect(INVALIDATES.putRouting).toEqual([keys.routing, keys.status, keys.network]);
     expect(INVALIDATES.putSettings).toEqual([keys.settings, keys.status, keys.network]);
     expect(INVALIDATES.resetSettings).toEqual([keys.settings, keys.status, keys.network]);
-    // addSub/updateSub/deleteSub and the other profile writes stay unchanged: routes.py shows
-    // none of them call refresh/reapply.
+    // Every profile write can re-apply the active node when it turns out to use the profile
+    // being changed (set_default_profile/update_profile/delete_profile conditionally,
+    // apply_profile_active unconditionally) — one shared group, so addProfile (which never
+    // re-applies) also invalidates network as a cheap accepted side effect.
+    expect(INVALIDATES.addProfile).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    expect(INVALIDATES.updateProfile).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    expect(INVALIDATES.deleteProfile).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    expect(INVALIDATES.setDefaultProfile).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    expect(INVALIDATES.applyProfileActive).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    // Every remote-access write reaches reapply_active_node too, via _rw_apply (grants) or
+    // _rw_revoke -> _rw_revoke_apply (revocations) — routes.py:1783,2618.
+    expect(INVALIDATES.putRw).toEqual([keys.rw, keys.status, keys.network]);
+    expect(INVALIDATES.addRwClient).toEqual([keys.rw, keys.status, keys.network]);
+    expect(INVALIDATES.setRwClientEnabled).toEqual([keys.rw, keys.status, keys.network]);
+    expect(INVALIDATES.deleteRwClient).toEqual([keys.rw, keys.status, keys.network]);
+    // addSub/updateSub/deleteSub stay unchanged: routes.py shows none of them call
+    // refresh/reapply.
     expect(INVALIDATES.addSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
     expect(INVALIDATES.updateSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
     expect(INVALIDATES.deleteSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
