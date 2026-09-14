@@ -121,6 +121,40 @@
       -webkit-backdrop-filter: none;
     }
   }
+
+  /* StatusOrb: a ring in the state's colours around a solid disc. Dark glows; light casts --shadow. */
+  .orb {
+    position: relative;
+    display: grid;
+    flex: none;
+    place-items: center;
+    border-radius: 9999px;
+    transition: box-shadow 200ms ease, background 200ms ease;
+  }
+  .orb::before {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border-radius: inherit;
+    background: var(--solid);
+  }
+  .orb > * {
+    position: relative;
+  }
+  .orb[data-tone="ok"] {
+    background: conic-gradient(from 210deg, var(--g1), var(--g2), var(--g3), var(--g1));
+    box-shadow: 0 0 46px color-mix(in srgb, var(--g2) 45%, transparent);
+  }
+  .orb[data-tone="neutral"] {
+    background: conic-gradient(from 210deg, var(--t3), var(--line), var(--t3));
+  }
+  .orb[data-tone="bad"] {
+    background: conic-gradient(from 210deg, var(--bad), color-mix(in srgb, var(--bad) 35%, var(--bg)), var(--bad));
+    box-shadow: 0 0 30px color-mix(in srgb, var(--bad) 30%, transparent);
+  }
+  [data-theme="light"] .orb[data-tone] {
+    box-shadow: var(--shadow);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
