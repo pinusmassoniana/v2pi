@@ -22,10 +22,10 @@ describe("invalidation map", () => {
   });
 
   it("covers every write the API client can make, and nothing else", () => {
-    // One-line methods whose body calls mutate(…); putSettings is the one multi-line write.
+    // One-line methods whose body calls mutate(…) — every write is written that way.
     // logout is excluded on purpose: the auth gate clears the whole cache instead.
     const oneLine = [...clientSource.matchAll(/^ {2}(?:async )?(\w+)\([^\n]*\bmutate\(/gm)].map((m) => m[1]);
-    const writes = [...new Set([...oneLine, "putSettings"])].sort();
+    const writes = [...new Set(oneLine)].sort();
     expect(writes).toEqual(Object.keys(INVALIDATES).sort());
   });
 

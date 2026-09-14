@@ -442,6 +442,25 @@ describe("api client", () => {
     vi.useRealTimers();
   });
 
+  it("announces a traffic capability change after every write that can change the stats settings", async () => {
+    mockFetch();
+    let seen = 0;
+    const onChange = () => { seen++; };
+    document.addEventListener(TRAFFIC_CAPABILITY_EVENT, onChange);
+    try {
+      await api.putSettings({ stats_enabled: true });
+      expect(seen).toBe(1);
+      await api.resetSettings();
+      expect(seen).toBe(2);
+      await api.restore(await api.getBackup());
+      expect(seen).toBe(3);
+      await api.addNode({ name: "n", address: "a", port: 1, uuid: "u" });
+      expect(seen).toBe(3);
+    } finally {
+      document.removeEventListener(TRAFFIC_CAPABILITY_EVENT, onChange);
+    }
+  });
+
   it("does not broadcast a data-change event after a write — query invalidation owns refetching", async () => {
     mockFetch();
     let seen = 0;

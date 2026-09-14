@@ -292,6 +292,12 @@ function _postJson(path: string, body: unknown, extraHeaders: Record<string, str
 
 export const TRAFFIC_CAPABILITY_EVENT = "v2pi:traffic-capability-change";
 
+// The write may have changed the stats settings: a traffic stream parked on "disabled" checks again.
+function announceCapabilityChange<T>(result: T): T {
+  if (typeof document !== "undefined") document.dispatchEvent(new Event(TRAFFIC_CAPABILITY_EVENT));
+  return result;
+}
+
 export const api = {
   _reset() { _csrf = null; _csrfInflight = null; },
   ensureCsrf,
@@ -336,12 +342,8 @@ export const api = {
   importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },
 
   getSettings(): Promise<Settings> { return req("/settings"); },
-  async putSettings(patch: Partial<Settings>): Promise<Settings> {
-    const result = await mutate("PUT", "/settings", patch);
-    if (typeof document !== "undefined") document.dispatchEvent(new Event(TRAFFIC_CAPABILITY_EVENT));
-    return result;
-  },
-  resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset"); },
+  putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch).then(announceCapabilityChange); },
+  resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset").then(announceCapabilityChange); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
 
   listProfiles(): Promise<TuningProfile[]> { return req("/profiles"); },
@@ -385,7 +387,7 @@ export const api = {
   listAudit(limit = 100): Promise<AuditEntry[]> { return req(`/audit?limit=${limit}`); },
 
   getBackup(): Promise<BackupDoc> { return req("/backup"); },
-  restore(doc: BackupDoc): Promise<any> { return mutate("POST", "/restore", doc); },
+  restore(doc: BackupDoc): Promise<any> { return mutate("POST", "/restore", doc).then(announceCapabilityChange); },
   getLogs(source: string, lines = 200): Promise<{ source: string; lines: string[] }> {
     return req(`/logs?source=${encodeURIComponent(source)}&lines=${lines}`);
   },
