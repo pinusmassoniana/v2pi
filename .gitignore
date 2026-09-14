@@ -28,7 +28,7 @@ backend/**/static/
 *.sqlite
 *.sqlite3
 *.db
-data/
+/backend/data/
 *.log
 
 # Secrets / env
