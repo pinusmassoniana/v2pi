@@ -2,9 +2,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, setOnUnauthorized } from "../api/client";
 import { resetClock } from "../api/clock";
+import { confirm } from "../components/confirm";
 import { Button } from "../components/ui/Button";
 import { LoginScreen } from "../features/auth/LoginScreen";
 import { SetupScreen } from "../features/auth/SetupScreen";
+import { hasUnsavedEdits } from "./guard";
 
 export type Phase =
   | { kind: "booting" }
@@ -62,6 +64,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const logout = useCallback(async () => {
+    if (hasUnsavedEdits() && !(await confirm("Discard unsaved changes and log out?", { confirmLabel: "Log out" }))) return;
     try {
       await api.logout();
     } catch {
