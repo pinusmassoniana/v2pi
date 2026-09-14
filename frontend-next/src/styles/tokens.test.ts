@@ -39,6 +39,29 @@ describe("design tokens", () => {
     }
   });
 
+  it.each(Object.entries(themes))("%s theme: the upload series meets 3:1 on the ground and on a solid card", (_name, src) => {
+    expect(contrast(token(src, "series-up"), token(src, "bg")), "--series-up on --bg").toBeGreaterThanOrEqual(3);
+    expect(contrast(token(src, "series-up"), token(src, "solid")), "--series-up on --solid").toBeGreaterThanOrEqual(3);
+  });
+
+  it("light theme: softer aurora, and a card shadow in place of the dark theme's glow", () => {
+    const strength = (src: string) => Number(src.match(/--aurora-strength:\s*(\d+)%/)?.[1]);
+    expect(strength(themes.dark)).toBe(100);
+    expect(strength(themes.light)).toBeGreaterThan(0);
+    expect(strength(themes.light)).toBeLessThan(100);
+    expect(themes.dark).toMatch(/--shadow:\s*none;/);
+    expect(themes.light).toMatch(/--shadow:\s*0 [^;]*rgba\(/);
+  });
+
+  it("chart gridlines are a hairline in both themes", () => {
+    for (const src of Object.values(themes)) expect(src).toMatch(/--grid:\s*rgba\([^)]*,\s*0\.0\d\);/);
+  });
+
+  it("the page ground uses the aurora strength, and glass cards carry the theme's shadow", () => {
+    expect(css).toMatch(/color-mix\(in srgb, var\(--aurora-1\) var\(--aurora-strength\), transparent\)/);
+    expect(css).toMatch(/\.glass \{[^}]*box-shadow: var\(--shadow\);/);
+  });
+
   it("defines the same token names in both themes", () => {
     const names = (src: string) => [...src.matchAll(/--([a-z0-9-]+):/g)].map((m) => m[1]).sort();
     expect(names(themes.light)).toEqual(names(themes.dark));

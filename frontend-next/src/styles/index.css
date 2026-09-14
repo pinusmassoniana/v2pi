@@ -2,7 +2,7 @@
 @import "@fontsource-variable/inter";
 
 /* Aurora × Precision. Component code never uses a colour literal: only these tokens.
-   Light is provisional — its final palette is designed at the Home screen's visual checkpoint. */
+   Both themes are final. Dark glows; light replaces the glow with a soft card shadow. */
 :root,
 [data-theme="dark"] {
   --bg: #07060d;
@@ -23,6 +23,10 @@
   --aurora-1: #3b1f7a;
   --aurora-2: #0f5b66;
   --aurora-3: #2a1454;
+  --aurora-strength: 100%;
+  --series-up: #c65cff;
+  --grid: rgba(255, 255, 255, 0.07);
+  --shadow: none;
 }
 
 [data-theme="light"] {
@@ -44,6 +48,10 @@
   --aurora-1: #e4dcff;
   --aurora-2: #d2f2ee;
   --aurora-3: #efe3fb;
+  --aurora-strength: 60%;
+  --series-up: #8a3fd1;
+  --grid: rgba(28, 20, 60, 0.08);
+  --shadow: 0 1px 2px rgba(28, 20, 60, 0.06), 0 8px 24px rgba(28, 20, 60, 0.08);
 }
 
 @theme inline {
@@ -62,6 +70,8 @@
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
+  --color-series-up: var(--series-up);
+  --color-grid: var(--grid);
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
@@ -78,9 +88,9 @@
   body {
     background-color: var(--bg);
     background-image:
-      radial-gradient(60% 70% at 8% 0%, var(--aurora-1) 0%, transparent 60%),
-      radial-gradient(50% 60% at 100% 20%, var(--aurora-2) 0%, transparent 62%),
-      radial-gradient(40% 50% at 60% 100%, var(--aurora-3) 0%, transparent 60%);
+      radial-gradient(60% 70% at 8% 0%, color-mix(in srgb, var(--aurora-1) var(--aurora-strength), transparent) 0%, transparent 60%),
+      radial-gradient(50% 60% at 100% 20%, color-mix(in srgb, var(--aurora-2) var(--aurora-strength), transparent) 0%, transparent 62%),
+      radial-gradient(40% 50% at 60% 100%, color-mix(in srgb, var(--aurora-3) var(--aurora-strength), transparent) 0%, transparent 60%);
     background-attachment: fixed;
     color: var(--t1);
     font-family: var(--font-sans);
@@ -94,6 +104,7 @@
     background: var(--glass);
     border: 1px solid var(--line);
     border-radius: 18px;
+    box-shadow: var(--shadow);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
   }
