@@ -23,6 +23,8 @@ export interface ConnectionPathProps {
   /** Direct (untunneled) throughput, bits per second. Any amount turns the bypass line amber. */
   bypassBps: number;
   killSwitch: { label: string; tone: Tone };
+  /** The live values (latency, egress, tunnel leg, bypass) come from a frame that stopped updating: dim them. */
+  dim?: boolean;
 }
 
 const LEG_LABEL: Record<PathLeg, string> = { ok: "OK", bad: "DOWN", off: "OFF" };
@@ -42,7 +44,8 @@ function Uplink({ label, up }: { label: string; up: boolean | null }) {
 
 /** Devices → gateway → node → internet, with the tunnel leg's health and the bypass around it. */
 export function ConnectionPath(props: ConnectionPathProps) {
-  const { clients, poolSize, gatewayIp, gatewayIface, nodeName, nodeFlag, latencyMs, egressIp, egressIp6, uplink, uplink6, ipv6Enabled, leg, bypassBps, killSwitch } = props;
+  const { clients, poolSize, gatewayIp, gatewayIface, nodeName, nodeFlag, latencyMs, egressIp, egressIp6, uplink, uplink6, ipv6Enabled, leg, bypassBps, killSwitch, dim = false } = props;
+  const liveClass = cn("transition-opacity duration-200", dim && "opacity-50");
   const id = useSvgId("path");
   const leaking = bypassBps > 0;
   const nodeLabel = nodeName ? `${nodeFlag ? `${nodeFlag} ` : ""}${nodeName}` : "No node";
@@ -108,7 +111,7 @@ export function ConnectionPath(props: ConnectionPathProps) {
           <b className="block text-[11.5px] font-semibold text-t1">Gateway</b>
           <span className="font-mono">{gatewayIp ?? "—"}{gatewayIface ? ` · ${gatewayIface}` : ""}</span>
         </div>
-        <div className="min-w-0">
+        <div data-live data-dim={dim || undefined} className={cn("min-w-0", liveClass)}>
           <b className="block text-[11.5px] font-semibold text-t1">Node{latencyMs !== null ? ` · ${latencyMs} ms` : ""} · egress</b>
           <span className="block truncate font-mono">{egressIp ?? "—"}</span>
           {egressIp6 ? <span className="block truncate font-mono">{egressIp6}</span> : null}
@@ -121,8 +124,8 @@ export function ConnectionPath(props: ConnectionPathProps) {
       </div>
 
       <div className="mt-2.5 flex flex-wrap gap-1.5">
-        <Chip tone={LEG_TONE[leg]}>tunnel leg <b>{LEG_LABEL[leg]}</b></Chip>
-        <Chip tone={leaking ? "warn" : "neutral"}>bypass <b>{leaking ? fmtRate(bypassBps) : "idle"}</b></Chip>
+        <Chip tone={LEG_TONE[leg]} data-dim={dim || undefined} className={liveClass}>tunnel leg <b>{LEG_LABEL[leg]}</b></Chip>
+        <Chip tone={leaking ? "warn" : "neutral"} data-dim={dim || undefined} className={liveClass}>bypass <b>{leaking ? fmtRate(bypassBps) : "idle"}</b></Chip>
         <Chip tone={killSwitch.tone} className={cn(killSwitch.tone === "neutral" && "text-t2")}>kill-switch <b>{killSwitch.label}</b></Chip>
       </div>
     </div>

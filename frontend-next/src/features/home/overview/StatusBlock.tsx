@@ -51,7 +51,9 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   }
 
   const probe = probeFor(traffic.disabled ? null : traffic.live, status.active_node_id);
-  const tunnel = tunnelLabel(status, statusError, probe);
+  // A frame that stopped updating still shows its latency, dimmed, but decides nothing about the tunnel.
+  const liveStale = !traffic.disabled && !traffic.fresh;
+  const tunnel = tunnelLabel(status, statusError, traffic.fresh ? probe : null);
   const online = tunnel.label === "ONLINE";
   const latency = liveLatency(probe);
   const active = activeNode(nodes, status.active_node_id);
@@ -86,7 +88,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   return (
     <GlassCard aria-label="Status" data-stale={statusError || undefined} className={cn("transition-opacity duration-200", statusError && "opacity-60", className)}>
       <div className="flex items-center gap-4">
-        <StatusOrb value={orb.value} caption={orb.caption} tone={orb.tone} />
+        <StatusOrb value={orb.value} caption={orb.caption} tone={orb.tone} dim={online && liveStale} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <Pill tone={tunnel.tone} dot>Tunnel {tunnel.label}</Pill>

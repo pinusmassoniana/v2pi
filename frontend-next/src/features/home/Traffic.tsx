@@ -62,10 +62,13 @@ function FailoverRows({ events, nowMs }: { events: readonly ConnEvent[]; nowMs: 
   );
 }
 
-/** The live probe of the active node, from the store; null while stats are off or no frame is about that node. */
+/**
+ * The live probe of the active node, from the store — null while stats are off or no frame is about that node —
+ * and whether it stopped updating (`stale`: shown dimmed, but deciding nothing).
+ */
 function useActiveProbe(activeNodeId: number | null) {
   const traffic = useTraffic();
-  return probeFor(traffic.disabled ? null : traffic.live, activeNodeId);
+  return { probe: probeFor(traffic.disabled ? null : traffic.live, activeNodeId), stale: !traffic.disabled && !traffic.fresh };
 }
 
 /**
@@ -91,7 +94,7 @@ function TrafficTop({ activeNodeId, children }: { activeNodeId: number | null; c
 }
 
 function ActiveLatencyKpi({ activeNodeId }: { activeNodeId: number | null }) {
-  const probe = useActiveProbe(activeNodeId);
+  const { probe, stale } = useActiveProbe(activeNodeId);
   const latency = latencyStats(probe, serverNow());
   return (
     <Kpi
@@ -99,14 +102,15 @@ function ActiveLatencyKpi({ activeNodeId }: { activeNodeId: number | null }) {
       value={latency.ms ?? "—"}
       unit={latency.ms !== null ? "ms" : undefined}
       sub={<span className={latency.fresh ? undefined : probe?.stale ? "text-warn" : undefined}>{latency.sub}</span>}
+      dim={stale}
       className="xl:col-span-3"
     />
   );
 }
 
 function UptimeKpi({ status, statusError }: { status: Status | undefined; statusError: boolean }) {
-  const probe = useActiveProbe(status?.active_node_id ?? null);
-  const tunnel = tunnelLabel(status, statusError, probe);
+  const { probe, stale } = useActiveProbe(status?.active_node_id ?? null);
+  const tunnel = tunnelLabel(status, statusError, stale ? null : probe);
   const online = tunnel.label === "ONLINE";
   const since = status?.active_since ?? null;
   let sub: ReactNode = tunnel.label === "UNKNOWN" ? "unknown" : "not connected";
@@ -119,10 +123,10 @@ function LatencyBarsCard({ activeNodeId, nodes, health }: {
   nodes: CardQuery & { data: Node[] | undefined };
   health: CardQuery & { data: NodeHealth[] | undefined };
 }) {
-  const probe = useActiveProbe(activeNodeId);
+  const { probe, stale } = useActiveProbe(activeNodeId);
   const fallback = cardFallback([nodes, health], "Node health did not load", "h-48");
   const rows = [
-    activeRow(activeNode(nodes.data, activeNodeId), probe),
+    activeRow(activeNode(nodes.data, activeNodeId), probe, stale),
     ...standbyRows(nodes.data ?? [], health.data ?? [], activeNodeId, serverNow(), Infinity),
   ].filter((row) => row !== null);
   return (
@@ -142,7 +146,7 @@ function LatencyBarsCard({ activeNodeId, nodes, health }: {
 }
 
 function ActiveLatencyCard({ activeNodeId, active }: { activeNodeId: number | null; active: Node | undefined }) {
-  const probe = useActiveProbe(activeNodeId);
+  const { probe } = useActiveProbe(activeNodeId);
   // Every frame carries a new lat_history array, even when no probe ran since the last one. Key the chart's input
   // on what the history holds, so LatencyChart's geometry memo rebuilds only when a probe actually changed it.
   const historyKey = probe?.lat_history.join(",") ?? "";

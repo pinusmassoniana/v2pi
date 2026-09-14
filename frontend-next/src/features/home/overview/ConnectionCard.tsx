@@ -46,6 +46,7 @@ export function ConnectionCard({ status, network, nodes, className }: Connection
         leg={tunnelLeg(status, probe)}
         bypassBps={bypassState(frame).total}
         killSwitch={killSwitchState(net)}
+        dim={!traffic.disabled && !traffic.fresh}
       />
     </GlassCard>
   );

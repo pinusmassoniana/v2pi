@@ -185,11 +185,11 @@ export function probeAge(ageMs: number): string {
   return h < 48 ? `${h} h` : `${Math.floor(h / 24)} d`;
 }
 
-/** O7 / H3 active row: "42 ms · live", "probe failed", or "health stale". */
-export function activeRow(node: Node | undefined, active: ActiveProbe): LatencyRowData | null {
+/** O7 / H3 active row: "42 ms · live", "probe failed", or "health stale"; dimmed while the frame is not live. */
+export function activeRow(node: Node | undefined, active: ActiveProbe, dim = false): LatencyRowData | null {
   if (!node) return null;
   const about = active && active.node_id === node.id ? active : null;
-  const base = { id: node.id, name: node.name, flag: flagEmoji(about?.egress_cc), active: true, dim: false, age: null };
+  const base = { id: node.id, name: node.name, flag: flagEmoji(about?.egress_cc), active: true, dim, age: null };
   if (!about || about.stale !== false) return { ...base, ms: null, state: "stale" };
   if (about.real_ok === false) return { ...base, ms: null, state: "failed" };
   if (about.real_ok !== true || about.latency_ms === null) return { ...base, ms: null, state: "stale" };

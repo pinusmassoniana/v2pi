@@ -1,6 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type Status, type TrafficFrame, type TrafficHistoryResp } from "../../api/client";
 import { createQueryClient } from "../../api/queryClient";
 import { latencyGeometry } from "../../components/data/latencyGeometry";
@@ -18,6 +18,8 @@ vi.mock("../../components/data/latencyGeometry", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../components/data/latencyGeometry")>();
   return { ...actual, latencyGeometry: vi.fn(actual.latencyGeometry) };
 });
+
+afterEach(() => vi.useRealTimers());
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const clock = (ms: number) => {
@@ -99,6 +101,20 @@ describe("Traffic › live frames", () => {
     for (let i = 0; i < 5; i++) api$.emitTraffic({ ...TRAFFIC_FRAME, ts: TRAFFIC_FRAME.ts + i * 1_000 });
     expect(region("Active latency")).toHaveTextContent("42ms");
     expect(vi.mocked(failoverHistory).mock.calls.length).toBe(pageRenders);
+  });
+
+  it("the active latency dims once frames stop, and its row stops reading live", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const api$ = mockApi();
+    renderApp("/traffic");
+    for (let i = 0; i < 80 && !screen.queryByRole("list", { name: "Nodes by latency" }); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+    api$.emitTraffic(TRAFFIC_FRAME);
+    expect(region("Active latency")).not.toHaveAttribute("data-dim");
+    const activeBar = () => within(screen.getByRole("list", { name: "Nodes by latency" })).getAllByRole("listitem")[0]!;
+    expect(activeBar()).not.toHaveAttribute("data-dim");
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(region("Active latency")).toHaveAttribute("data-dim", "true");
+    expect(activeBar()).toHaveAttribute("data-dim", "true");
   });
 
   it("the latency chart keeps its geometry while frames repeat the same probe history", async () => {

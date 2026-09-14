@@ -13,7 +13,7 @@ const SOURCE: Record<SessionTotals["source"], string> = {
 };
 const NONE = { value: "—", unit: "" };
 
-/** O5: live download / upload with a five-minute trend, and the session's totals. "—" while stats are off. */
+/** O5: live download / upload with a five-minute trend, and the session's totals. "—" while stats are off; dimmed while not live. */
 export function KpiGrid({ className }: { className?: string }) {
   const traffic = useTraffic();
   const frame = traffic.disabled ? null : traffic.live;
@@ -24,14 +24,17 @@ export function KpiGrid({ className }: { className?: string }) {
   const totalDown = totals ? splitUnit(fmtBytes(totals.down)) : NONE;
   const totalUp = totals ? splitUnit(fmtBytes(totals.up)) : NONE;
   const trend = (key: "up" | "down") => (traffic.disabled ? undefined : recentValues(traffic.samples, SPARK_WINDOW_MS, key));
-  const live = traffic.disabled ? <Chip tone="neutral">stats off</Chip> : <Chip tone="ok">live</Chip>;
+  const stale = !traffic.disabled && !traffic.fresh;
+  let live = <Chip tone="ok">live</Chip>;
+  if (traffic.disabled) live = <Chip tone="neutral">stats off</Chip>;
+  else if (stale) live = <Chip tone="neutral">connecting…</Chip>;
 
   return (
     <div className={cn("grid grid-cols-2 gap-3", className)}>
-      <Kpi label="↓ Download" value={down.value} unit={down.unit} sub="last 5 min" spark={trend("down")} />
-      <Kpi label="↑ Upload" value={up.value} unit={up.unit} sub="last 5 min" spark={trend("up")} sparkSeries="up" />
-      <Kpi label="↓ Session total" value={totalDown.value} unit={totalDown.unit} sub={totals ? SOURCE[totals.source] : "traffic stats feed"} aside={live} />
-      <Kpi label="↑ Session total" value={totalUp.value} unit={totalUp.unit} sub={totals ? SOURCE[totals.source] : "traffic stats feed"} />
+      <Kpi label="↓ Download" value={down.value} unit={down.unit} sub="last 5 min" spark={trend("down")} dim={stale} />
+      <Kpi label="↑ Upload" value={up.value} unit={up.unit} sub="last 5 min" spark={trend("up")} sparkSeries="up" dim={stale} />
+      <Kpi label="↓ Session total" value={totalDown.value} unit={totalDown.unit} sub={totals ? SOURCE[totals.source] : "traffic stats feed"} aside={live} dim={stale} />
+      <Kpi label="↑ Session total" value={totalUp.value} unit={totalUp.unit} sub={totals ? SOURCE[totals.source] : "traffic stats feed"} dim={stale} />
     </div>
   );
 }

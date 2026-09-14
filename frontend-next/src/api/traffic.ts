@@ -12,11 +12,18 @@ export interface TrafficSnapshot {
   disabled: boolean;
   /** Bumps on every change; the snapshot object is replaced with it. */
   version: number;
+  /**
+   * `live` is current: it arrived less than LIVE_STALE_MS ago and the socket has not dropped since. False before
+   * the first frame. The store keeps the last frame when the stream stops, so screens must not show it as live.
+   */
+  fresh: boolean;
 }
 
 export const RING_SIZE = 4000;
 /** How long the socket outlives its last subscriber, so switching screens does not reconnect. */
 export const IDLE_CLOSE_MS = 15_000;
+/** Frames come every second: one this old means the socket dropped or the stats feed stalled. */
+export const LIVE_STALE_MS = 5_000;
 const HISTORY_WINDOW_SEC = 3600;
 const HISTORY_MAX_POINTS = 1200;
 
@@ -30,19 +37,32 @@ export function createTrafficStore(
   // One array for the life of the store: copying 4000 samples every second is what the Svelte
   // dashboard learned to avoid. Subscribers re-render off `version` instead.
   const samples: TrafficSample[] = [];
-  let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0 };
+  let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0, fresh: false };
   const listeners = new Set<() => void>();
   // Follow the store without holding the socket open (see useTrafficIfOpen).
   const observers = new Set<() => void>();
   let handle: TrafficHandle | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let staleTimer: ReturnType<typeof setTimeout> | null = null;
   // Bumped by reset(), so a history request from the ended session cannot refill the window.
   let epoch = 0;
 
-  const emit = (patch: Partial<Pick<TrafficSnapshot, "live" | "disabled">>) => {
+  const emit = (patch: Partial<Pick<TrafficSnapshot, "live" | "disabled" | "fresh">>) => {
     snapshot = { ...snapshot, ...patch, samples, version: snapshot.version + 1 };
     for (const listener of listeners) listener();
     for (const observer of observers) observer();
+  };
+
+  const cancelStale = () => {
+    if (staleTimer) clearTimeout(staleTimer);
+    staleTimer = null;
+  };
+
+  // The last frame stops being live when the socket drops (the connection's gap signal) or, if no frame follows
+  // it, LIVE_STALE_MS after it arrived — a stats error keeps the socket open while the frames stop.
+  const goStale = () => {
+    cancelStale();
+    if (snapshot.fresh) emit({ fresh: false });
   };
 
   const trim = () => {
@@ -69,12 +89,14 @@ export function createTrafficStore(
   };
 
   const onMessage = (message: TrafficMessage) => {
-    if ("disabled" in message) { emit({ disabled: true }); return; }
+    if ("disabled" in message) { cancelStale(); emit({ disabled: true, fresh: false }); return; }
     if ("error" in message) return;   // a transient stats error just leaves a gap
     const proxy = message.outbounds.proxy ?? { up_bps: 0, down_bps: 0 };
     samples.push({ ts: message.ts, up: proxy.up_bps, down: proxy.down_bps });
     trim();
-    emit({ live: message, disabled: false });
+    cancelStale();
+    staleTimer = setTimeout(goStale, LIVE_STALE_MS);
+    emit({ live: message, disabled: false, fresh: true });
   };
 
   const close = () => {
@@ -92,7 +114,7 @@ export function createTrafficStore(
       listeners.add(listener);
       cancelIdleClose();
       if (!handle) {
-        handle = connect(onMessage, () => { void backfill(); });
+        handle = connect(onMessage, () => { goStale(); void backfill(); });
         void backfill();
       }
       return () => {
@@ -113,9 +135,10 @@ export function createTrafficStore(
     reset(): void {
       epoch += 1;
       cancelIdleClose();
+      cancelStale();
       close();
       samples.length = 0;
-      emit({ live: null, disabled: false });
+      emit({ live: null, disabled: false, fresh: false });
     },
     getSnapshot(): TrafficSnapshot {
       return snapshot;

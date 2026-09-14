@@ -11,7 +11,16 @@ import { renderApp } from "../../test/renderApp";
 afterEach(() => {
   act(() => { settleConfirm(false); closePalette(); });
   localStorage.clear();
+  vi.useRealTimers();
 });
+
+/** On fake timers Testing Library's findBy never polls: step the clock until `check` holds. */
+async function stepUntil(check: () => unknown) {
+  for (let i = 0; i < 80 && !check(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(check()).toBeTruthy();
+}
+
+const FAKE_TIMERS = { toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] } as const;
 
 async function openOverview(status: Partial<Status> = {}) {
   const api$ = mockApi();
@@ -255,6 +264,47 @@ describe("Overview › KPIs", () => {
     expect(sessionDown).toHaveTextContent("since the last connect");
     expect(within(sessionDown).getByText("live")).toHaveAttribute("data-tone", "ok");
     expect(screen.getByRole("region", { name: "↑ Session total" })).toHaveTextContent("1.24GB");
+  });
+
+  it("connecting… until a frame arrives; five seconds without one dims the KPIs, the orb and the path's live values", async () => {
+    vi.useFakeTimers({ toFake: [...FAKE_TIMERS.toFake] });
+    const api$ = mockApi();
+    renderApp("/");
+    await stepUntil(() => screen.queryByRole("region", { name: "Connection path" })?.querySelector("[data-live]"));
+    const kpis = ["↓ Download", "↑ Upload", "↓ Session total", "↑ Session total"].map((name) => screen.getByRole("region", { name }));
+    const sessionDown = kpis[2]!;
+    expect(within(sessionDown).getByText("connecting…")).toHaveAttribute("data-tone", "neutral");
+
+    api$.emitTraffic(TRAFFIC_FRAME);
+    expect(within(sessionDown).getByText("live")).toHaveAttribute("data-tone", "ok");
+    for (const kpi of kpis) expect(kpi).not.toHaveAttribute("data-dim");
+    const orb = within(screen.getByRole("region", { name: "Status" })).getByRole("img", { name: "42 ms · ONLINE" });
+    const live = screen.getByRole("region", { name: "Connection path" }).querySelector("[data-live]")!;
+    expect(orb).not.toHaveAttribute("data-dim");
+    expect(live).not.toHaveAttribute("data-dim");
+
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(within(sessionDown).getByText("connecting…")).toBeInTheDocument();
+    for (const kpi of kpis) expect(kpi).toHaveAttribute("data-dim", "true");
+    expect(orb).toHaveAttribute("data-dim", "true");
+    expect(live).toHaveAttribute("data-dim", "true");
+    expect(live).toHaveTextContent("Node · 42 ms · egress");   // still shown, just not as live
+
+    api$.emitTraffic(TRAFFIC_FRAME);
+    expect(within(sessionDown).getByText("live")).toBeInTheDocument();
+    expect(orb).not.toHaveAttribute("data-dim");
+  });
+
+  it("a frozen failed probe stops deciding the tunnel once frames stop", async () => {
+    vi.useFakeTimers({ toFake: [...FAKE_TIMERS.toFake] });
+    const api$ = mockApi();
+    renderApp("/");
+    await stepUntil(() => screen.queryByText("Tunnel online"));
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, real_ok: false } });
+    expect(screen.getByText("Tunnel offline")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(screen.getByText("Tunnel online")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Status" })).getByText("Tunnel ONLINE")).toBeInTheDocument();
   });
 
   it("stats off: every KPI reads —, and the chip says so", async () => {

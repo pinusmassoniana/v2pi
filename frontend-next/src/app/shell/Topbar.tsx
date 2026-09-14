@@ -13,7 +13,8 @@ export function Topbar({ title, status, stale }: { title: string; status?: Statu
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme === "light" ? "light" : "dark"));
   const traffic = useTrafficIfOpen();
   // The same answer as Home's status block, including a failed live probe while a Home screen streams one.
-  const tunnel = tunnelLabel(status, stale, probeFor(traffic.disabled ? null : traffic.live, status?.active_node_id));
+  const probe = traffic.fresh ? probeFor(traffic.live, status?.active_node_id) : null;   // a frame that stopped updating decides nothing
+  const tunnel = tunnelLabel(status, stale, probe);
 
   const flipTheme = () => {
     const next = toggleTheme(theme);

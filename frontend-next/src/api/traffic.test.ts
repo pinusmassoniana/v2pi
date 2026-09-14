@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TrafficFrame, TrafficHistoryResp, TrafficMessage } from "./client";
-import { IDLE_CLOSE_MS, RING_SIZE, createTrafficStore } from "./traffic";
+import { IDLE_CLOSE_MS, LIVE_STALE_MS, RING_SIZE, createTrafficStore } from "./traffic";
 
 afterEach(() => vi.useRealTimers());
 
@@ -92,6 +92,39 @@ describe("traffic store", () => {
     expect(after.samples.at(-1)).toEqual({ ts: 1000, up: 5, down: 50 });
     expect(listener).toHaveBeenCalled();
     expect(store.getSnapshot()).toBe(after);
+  });
+
+  it("a frame is live until the next one is overdue or the socket drops; never before the first", () => {
+    vi.useFakeTimers();
+    const c = fakeConnection();
+    const store = createTrafficStore(c.connect, noHistory);
+    const listener = vi.fn();
+    store.subscribe(listener);
+    expect(store.getSnapshot().fresh).toBe(false);
+    c.push(frame(1000));
+    expect(store.getSnapshot().fresh).toBe(true);
+    vi.advanceTimersByTime(LIVE_STALE_MS - 1);
+    c.push(frame(2000));   // the next frame restarts the wait
+    vi.advanceTimersByTime(LIVE_STALE_MS - 1);
+    expect(store.getSnapshot().fresh).toBe(true);
+    c.push({ error: "stats unavailable" });   // the socket is up, but no frame comes
+    listener.mockClear();
+    vi.advanceTimersByTime(1);
+    expect(store.getSnapshot()).toMatchObject({ fresh: false, live: { ts: 2000 } });   // kept, but not live
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    c.push(frame(3000));
+    c.gap();
+    expect(store.getSnapshot().fresh).toBe(false);
+    c.push(frame(4000));
+    c.push({ disabled: true });
+    expect(store.getSnapshot().fresh).toBe(false);
+    c.push(frame(5000));
+    store.reset();
+    expect(store.getSnapshot().fresh).toBe(false);
+    listener.mockClear();
+    vi.advanceTimersByTime(LIVE_STALE_MS);
+    expect(listener).not.toHaveBeenCalled();   // reset cancelled the pending check
   });
 
   it("keeps at most RING_SIZE samples, dropping the oldest", () => {
