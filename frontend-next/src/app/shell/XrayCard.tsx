@@ -1,16 +1,16 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type Status } from "../../api/client";
-import { invalidate } from "../../api/invalidation";
+import { useMutation } from "@tanstack/react-query";
+import type { Status } from "../../api/client";
+import { useApiWrite } from "../../api/invalidation";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
 
 export function XrayCard({ status, className }: { status?: Status; className?: string }) {
-  const queryClient = useQueryClient();
   const running = status?.xray_state === "working";
+  const start = useApiWrite("xrayStart");
+  const stop = useApiWrite("xrayStop");
   const toggle = useMutation({
-    mutationFn: (on: boolean) => (on ? api.xrayStart() : api.xrayStop()),
-    onSuccess: (_result, on) => invalidate(queryClient, on ? "xrayStart" : "xrayStop"),
+    mutationFn: (on: boolean) => (on ? start() : stop()),
     onError: (error) => notifyError(error, "xray-core toggle failed"),
   });
   return (

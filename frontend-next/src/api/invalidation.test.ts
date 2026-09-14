@@ -1,7 +1,10 @@
-import { QueryClient, type QueryKey } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, type QueryKey } from "@tanstack/react-query";
+import { renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { api } from "./client";
 import clientSource from "./client.ts?raw";
-import { INVALIDATES, invalidate, type MutationName } from "./invalidation";
+import { INVALIDATES, invalidate, useApiWrite, type MutationName } from "./invalidation";
 import { keys } from "./keys";
 
 describe("invalidation map", () => {
@@ -63,5 +66,31 @@ describe("invalidation map", () => {
     expect(INVALIDATES.addSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
     expect(INVALIDATES.updateSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
     expect(INVALIDATES.deleteSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
+  });
+});
+
+describe("useApiWrite", () => {
+  it("calls the api write with its arguments, returns its reply, and invalidates that write's queries without waiting for them", async () => {
+    const client = new QueryClient();
+    // refetches that never finish must not hold up the caller
+    const invalidateQueries = vi.spyOn(client, "invalidateQueries").mockReturnValue(new Promise<void>(() => {}));
+    const apply = vi.spyOn(api, "apply").mockResolvedValue({ ok: true });
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useApiWrite("apply"), { wrapper });
+
+    await expect(result.current(7)).resolves.toEqual({ ok: true });
+    expect(apply).toHaveBeenCalledWith(7);
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters)).toEqual(INVALIDATES.apply.map((queryKey) => ({ queryKey })));
+  });
+
+  it("does not invalidate when the write fails", async () => {
+    const client = new QueryClient();
+    const invalidateQueries = vi.spyOn(client, "invalidateQueries");
+    vi.spyOn(api, "rollback").mockRejectedValue(new Error("nope"));
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useApiWrite("rollback"), { wrapper });
+
+    await expect(result.current()).rejects.toThrow("nope");
+    expect(invalidateQueries).not.toHaveBeenCalled();
   });
 });

@@ -1,9 +1,8 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import { useEffect } from "react";
-import { api } from "../../api/client";
-import { invalidate, type MutationName } from "../../api/invalidation";
+import { useApiWrite } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -18,9 +17,14 @@ const GROUP =
 export function CommandPalette() {
   const { open, mode } = usePalette();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   // Fetched when opened; this component never polls.
   const nodes = useQuery({ ...queries.nodes(), enabled: open });
+  const apply = useApiWrite("apply");
+  const connectBest = useApiWrite("connectBest");
+  const refreshAllSubs = useApiWrite("refreshAllSubs");
+  const rollback = useApiWrite("rollback");
+  const probeTcp = useApiWrite("probeTcp");
+  const probeHttp = useApiWrite("probeHttp");
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -43,12 +47,10 @@ export function CommandPalette() {
     void navigate({ to: "/nodes/$nodeId", params: { nodeId: String(id) } });
   };
 
-  async function run(name: MutationName, action: () => Promise<string>, failure: string) {
+  async function run(action: () => Promise<string>, failure: string) {
     closePalette();
     try {
-      const message = await action();
-      await invalidate(queryClient, name);
-      notifyOk(message);
+      notifyOk(await action());
     } catch (error) {
       notifyError(error, failure);
     }
@@ -57,7 +59,7 @@ export function CommandPalette() {
   async function rollBack() {
     closePalette();
     if (!(await confirm("Roll back the live config to the previously applied node?", { confirmLabel: "Roll back" }))) return;
-    await run("rollback", async () => ((await api.rollback()).ok ? "Rolled back to the previous node" : "Nothing to roll back"), "roll back failed");
+    await run(async () => ((await rollback()).ok ? "Rolled back to the previous node" : "Nothing to roll back"), "roll back failed");
   }
 
   return (
@@ -81,7 +83,7 @@ export function CommandPalette() {
               key={n.id}
               value={`node ${n.id} ${n.name} ${n.address} ${n.note}`}
               onSelect={() => (mode === "nodes"
-                ? void run("apply", async () => { await api.apply(n.id); return `Connected to ${n.name}`; }, "connect failed")
+                ? void run(async () => { await apply(n.id); return `Connected to ${n.name}`; }, "connect failed")
                 : openNode(n.id))}
               className={ITEM}
             >
@@ -103,15 +105,15 @@ export function CommandPalette() {
             <Command.Group heading="Actions" className={GROUP}>
               <Command.Item
                 value="action connect best healthiest"
-                onSelect={() => void run("connectBest", async () => `Connected to node ${(await api.connectBest(null)).node_id}`, "connect best failed")}
+                onSelect={() => void run(async () => `Connected to node ${(await connectBest(null)).node_id}`, "connect best failed")}
                 className={ITEM}
               >
                 Connect best
               </Command.Item>
               <Command.Item
                 value="action refresh all subscriptions"
-                onSelect={() => void run("refreshAllSubs", async () => {
-                  const result = await api.refreshAllSubs();
+                onSelect={() => void run(async () => {
+                  const result = await refreshAllSubs();
                   return `${result.succeeded}/${result.attempted} subscriptions refreshed`;
                 }, "refresh failed")}
                 className={ITEM}
@@ -123,14 +125,14 @@ export function CommandPalette() {
               </Command.Item>
               <Command.Item
                 value="action tcp ping all nodes"
-                onSelect={() => void run("probeTcp", async () => { await api.probeTcp(); return "TCP ping finished"; }, "TCP ping failed")}
+                onSelect={() => void run(async () => { await probeTcp(); return "TCP ping finished"; }, "TCP ping failed")}
                 className={ITEM}
               >
                 TCP ping all nodes
               </Command.Item>
               <Command.Item
                 value="action http ping all nodes"
-                onSelect={() => void run("probeHttp", async () => { await api.probeHttp(); return "HTTP ping finished"; }, "HTTP ping failed")}
+                onSelect={() => void run(async () => { await probeHttp(); return "HTTP ping finished"; }, "HTTP ping failed")}
                 className={ITEM}
               >
                 HTTP ping all nodes

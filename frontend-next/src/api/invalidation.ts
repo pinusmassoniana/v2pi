@@ -1,4 +1,6 @@
-import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { useCallback } from "react";
+import { api } from "./client";
 import { keys } from "./keys";
 
 const NODE_LIST = [keys.nodes, keys.nodeHealth, keys.profiles, keys.subs];
@@ -57,4 +59,24 @@ export async function invalidate(client: QueryClient, name: MutationName): Promi
     return;
   }
   await Promise.all(targets.map((queryKey) => client.invalidateQueries({ queryKey })));
+}
+
+type Api = typeof api;
+
+/**
+ * The api write `name`, bound to its invalidation: call it like `api[name]`; once it succeeds, the
+ * queries it changes are invalidated. Refetching is started, not awaited, so a success message
+ * does not wait for the screens to reload.
+ */
+export function useApiWrite<N extends MutationName>(name: N) {
+  const queryClient = useQueryClient();
+  return useCallback(
+    async (...args: Parameters<Api[N]>): Promise<Awaited<ReturnType<Api[N]>>> => {
+      const write = api[name] as (...params: Parameters<Api[N]>) => ReturnType<Api[N]>;
+      const result = await write(...args);
+      void invalidate(queryClient, name);
+      return result;
+    },
+    [queryClient, name],
+  );
 }
