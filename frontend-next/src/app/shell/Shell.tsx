@@ -5,6 +5,7 @@ import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { Toaster } from "../../components/ui/Toaster";
 import { sectionForPath, titleForPath } from "../nav";
 import { BottomTabBar } from "./BottomTabBar";
+import { CommandPalette } from "./CommandPalette";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LogoutButton } from "./LogoutButton";
 import { OfflineBanner } from "./OfflineBanner";
@@ -40,6 +41,7 @@ export function Shell() {
         </main>
       </div>
       <BottomTabBar pathname={pathname} className="md:hidden" />
+      <CommandPalette />
       <ConfirmDialog />
       <Toaster />
     </div>
