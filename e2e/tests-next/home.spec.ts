@@ -32,16 +32,24 @@ test("Overview shows the status block, KPIs, chart and summaries of a fresh gate
 test("Overview lays the chart beside upstream health on a desktop and above it on a phone", async ({ page }, info) => {
   await ensureLoggedIn(page);
   await page.goto("/#/");
-  const chart = await page.getByRole("region", { name: "Throughput" }).boundingBox();
-  const health = await page.getByRole("region", { name: "Upstream health" }).boundingBox();
-  expect(chart && health).toBeTruthy();
-  if (info.project.name === "desktop") {
-    expect(health!.x).toBeGreaterThanOrEqual(chart!.x + chart!.width);
-    expect(Math.abs(health!.y - chart!.y)).toBeLessThan(2);
-  } else {
-    expect(health!.y).toBeGreaterThanOrEqual(chart!.y + chart!.height);
-    expect(Math.abs(health!.x - chart!.x)).toBeLessThan(2);
-  }
+  // Both cards render a skeleton first; StatusBlock/UpstreamHealthCard change height once their data lands.
+  // Wait for each card's loaded content — not just the region existing — so a React commit between the two
+  // boundingBox() reads below can't shift only one of them.
+  await expect(page.getByRole("region", { name: "Status", exact: true }).getByText("No node connected")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Upstream health" }).getByRole("link", { name: "Nodes › Servers" })).toBeVisible();
+
+  await expect(async () => {
+    const chart = await page.getByRole("region", { name: "Throughput" }).boundingBox();
+    const health = await page.getByRole("region", { name: "Upstream health" }).boundingBox();
+    expect(chart && health).toBeTruthy();
+    if (info.project.name === "desktop") {
+      expect(health!.x).toBeGreaterThanOrEqual(chart!.x + chart!.width);
+      expect(Math.abs(health!.y - chart!.y)).toBeLessThan(2);
+    } else {
+      expect(health!.y).toBeGreaterThanOrEqual(chart!.y + chart!.height);
+      expect(Math.abs(health!.x - chart!.x)).toBeLessThan(2);
+    }
+  }).toPass();
 });
 
 test("the throughput chart switches to the recorded 24 h window", async ({ page }) => {
