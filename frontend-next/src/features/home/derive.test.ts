@@ -4,7 +4,7 @@ import { NETWORK, NODES, NODE_HEALTH, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, n
 import {
   FAILOVER_DISMISSED_KEY, activeFlag, activeNode, activeRow, bypassState, clockTime, eventLevel, failoverBanner,
   failoverHistory, failoverPill, hasConfigDrift, ipv6Source, killSwitchState, latencyStats, liveLatency, nodeEndpoint,
-  peakOf, poolSize, probeAge, probeFor, readFailoverDismissed, recentEvents, recentValues, routeBadge, routingSummary,
+  peakOf, poolSize, probeAge, probeFor, readFailoverDismissed, rollbackStillValid, recentEvents, recentValues, routeBadge, routingSummary,
   sessionTotals, sinceLabel, standbyRows, tunnelLabel, tunnelLeg, whenLabel, writeFailoverDismissed, xrayLabel,
 } from "./derive";
 
@@ -56,6 +56,14 @@ describe("status block", () => {
     expect(tunnelLabel(status({ tunnel_online: false }), false, active)).toEqual({ label: "UNKNOWN", tone: "neutral" });
     expect(tunnelLabel(status({ tunnel_online: null }), false, null).label).toBe("UNKNOWN");
     expect(tunnelLabel(status({ tunnel_online: undefined }), false, null).label).toBe("UNKNOWN");
+  });
+
+  it("roll back is valid only while the gateway offers it and it still goes to the confirmed node", () => {
+    expect(rollbackStillValid(status({ prev_active_node_id: 2 }), 2)).toBe(true);
+    expect(rollbackStillValid(status({ prev_active_node_id: 2, rollback_available: false }), 2)).toBe(false);
+    expect(rollbackStillValid(status({ prev_active_node_id: 2, rollback_available: undefined }), 2)).toBe(false);
+    expect(rollbackStillValid(status({ prev_active_node_id: 3 }), 2)).toBe(false);
+    expect(rollbackStillValid(undefined, 2)).toBe(false);
   });
 
   it("kill-switch: disabled is open, armed only on confirmed enforcement", () => {

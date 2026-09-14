@@ -106,6 +106,17 @@ export function activeFlag(probe: ActiveProbe): string {
   return probe ? flagEmoji(probe.egress_cc) : "";
 }
 
+/** Said when a confirmed rollback no longer matches what the gateway offers. */
+export const ROLLBACK_TARGET_CHANGED = "The rollback target changed — try again";
+
+/**
+ * O12 (§12.5): the gateway says a rollback would work, and it would still go back to `prevId` — the node the user
+ * was asked to confirm. `prev_active_node_id` alone only names that node; it is no promise the rollback succeeds.
+ */
+export function rollbackStillValid(status: Status | undefined, prevId: number | null): boolean {
+  return status?.rollback_available === true && status.prev_active_node_id === prevId;
+}
+
 // ---- live traffic ----------------------------------------------------------------------------
 
 export interface SessionTotals { up: number; down: number; source: "session" | "lifetime" | "totals" }

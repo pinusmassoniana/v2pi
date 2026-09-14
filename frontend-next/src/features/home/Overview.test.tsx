@@ -212,6 +212,32 @@ describe("Overview › roll back and disconnect", () => {
     expect(within(block).queryByRole("button", { name: /Roll back/ })).toBeNull();
   });
 
+  it("O12: no Roll back when the gateway says it would not work, even with a previous node recorded", async () => {
+    const { api$, client, block } = await openOverview({ prev_active_node_id: 2, rollback_available: false });
+    expect(within(block).queryByRole("button", { name: /Roll back/ })).toBeNull();
+    api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2, rollback_available: undefined });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    expect(within(block).queryByRole("button", { name: /Roll back/ })).toBeNull();
+    api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2 });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    expect(await within(block).findByRole("button", { name: "Roll back to de-fra-01" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["is no longer available", { rollback_available: false }],
+    ["is another node", { prev_active_node_id: 3 }],
+  ])("O12: a confirmed roll back whose target %s by then does not call the gateway", async (_what, change) => {
+    const { client, block } = await openOverview({ prev_active_node_id: 2 });
+    const rollback = vi.spyOn(api, "rollback").mockResolvedValue({ ok: true });
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(within(block).getByRole("button", { name: "Roll back to de-fra-01" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    act(() => { client.setQueryData<Status>(["status"], (old) => ({ ...old!, ...change })); });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed — try again", { duration: 20000 }));
+    expect(rollback).not.toHaveBeenCalled();
+  });
+
   it("O12: Roll back asks first, then rolls back and refreshes the connection state", async () => {
     const { client, block } = await openOverview({ prev_active_node_id: 2 });
     const rollback = vi.spyOn(api, "rollback").mockResolvedValue({ ok: true });

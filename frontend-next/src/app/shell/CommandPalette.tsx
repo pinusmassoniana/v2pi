@@ -1,11 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import { useEffect } from "react";
+import type { Status } from "../../api/client";
 import { useApiWrite } from "../../api/invalidation";
-import { queries } from "../../api/keys";
+import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
+import { ROLLBACK_TARGET_CHANGED, rollbackStillValid } from "../../features/home/derive";
 import { SECTIONS, type AppPath } from "../nav";
 import { closePalette, openPalette, usePalette } from "./palette";
 
@@ -19,6 +21,8 @@ export function CommandPalette() {
   const navigate = useNavigate();
   // Fetched when opened; this component never polls.
   const nodes = useQuery({ ...queries.nodes(), enabled: open });
+  const queryClient = useQueryClient();
+  const rollbackAvailable = useQuery(queries.status()).data?.rollback_available === true;   // the shell polls it
   const apply = useApiWrite("apply");
   const connectBest = useApiWrite("connectBest");
   const refreshAllSubs = useApiWrite("refreshAllSubs");
@@ -57,8 +61,13 @@ export function CommandPalette() {
   }
 
   async function rollBack() {
+    const targetId = queryClient.getQueryData<Status>(keys.status)?.prev_active_node_id ?? null;
     closePalette();
     if (!(await confirm("Roll back the live config to the previously applied node?", { confirmLabel: "Roll back" }))) return;
+    if (!rollbackStillValid(queryClient.getQueryData<Status>(keys.status), targetId)) {
+      notifyError(null, ROLLBACK_TARGET_CHANGED);
+      return;
+    }
     await run(async () => ((await rollback()).ok ? "Rolled back to the previous node" : "Nothing to roll back"), "roll back failed");
   }
 
@@ -120,9 +129,11 @@ export function CommandPalette() {
               >
                 Refresh all subscriptions
               </Command.Item>
-              <Command.Item value="action roll back previous node" onSelect={() => void rollBack()} className={ITEM}>
-                Roll back to previous node
-              </Command.Item>
+              {rollbackAvailable ? (
+                <Command.Item value="action roll back previous node" onSelect={() => void rollBack()} className={ITEM}>
+                  Roll back to previous node
+                </Command.Item>
+              ) : null}
               <Command.Item
                 value="action tcp ping all nodes"
                 onSelect={() => void run(async () => { await probeTcp(); return "TCP ping finished"; }, "TCP ping failed")}

@@ -1,8 +1,9 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../../api/client";
-import { mockApi } from "../../test/fixtures";
+import { toast } from "sonner";
+import { api, type Status } from "../../api/client";
+import { STATUS, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { closePalette, openPalette } from "./palette";
 
@@ -57,5 +58,31 @@ describe("command palette", () => {
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
     await waitFor(() => expect(rollback).toHaveBeenCalledTimes(1));
+  });
+
+  it("roll back is not offered when the gateway says it would not work", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2, rollback_available: false });
+    renderApp("/");
+    await screen.findByText("Tunnel online");
+    act(() => openPalette());
+    expect(await screen.findByText("Refresh all subscriptions")).toBeInTheDocument();
+    expect(screen.queryByText("Roll back to previous node")).toBeNull();
+  });
+
+  it("roll back refuses when the target changed while the dialog was open", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2 });
+    const rollback = vi.spyOn(api, "rollback").mockResolvedValue({ ok: true });
+    const error = vi.spyOn(toast, "error");
+    const { client } = renderApp("/");
+    await screen.findByText("Tunnel online");
+    act(() => openPalette());
+    await userEvent.click(await screen.findByText("Roll back to previous node"));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    act(() => { client.setQueryData<Status>(["status"], (old) => ({ ...old!, prev_active_node_id: 3 })); });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed — try again", { duration: 20000 }));
+    expect(rollback).not.toHaveBeenCalled();
   });
 });

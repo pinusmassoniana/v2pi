@@ -1,6 +1,9 @@
 export interface Status {
   running: boolean; pid: number | null; active_node_id: number | null; xray_state: string;
   active_since: number | null; last_failover_at: number | null; prev_active_node_id: number | null; server_now: number;
+  // Would POST /rollback succeed? Not implied by prev_active_node_id, which only names the node: a revocation
+  // drops the snapshot pairing on purpose, so a rollback can be refused while a previous node is still recorded.
+  rollback_available?: boolean;
   // Is the RUNNING xray serving the config on disk? "drift" = it is not (the file was rewritten
   // and nothing reloaded it, so a revoked client can still be admitted). "unknown" is its own
   // answer — nothing started yet, the normal state at boot — and must never render as a problem.

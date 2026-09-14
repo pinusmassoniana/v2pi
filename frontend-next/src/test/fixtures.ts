@@ -11,7 +11,7 @@ const iso = (epochSec: number) => new Date(epochSec * 1000).toISOString().replac
 
 export const STATUS: Status = {
   running: true, pid: 7, active_node_id: 1, xray_state: "working", active_since: 1_700_000_000,
-  last_failover_at: null, prev_active_node_id: null, server_now: NOW_SEC, tunnel_online: true,
+  last_failover_at: null, prev_active_node_id: null, rollback_available: true, server_now: NOW_SEC, tunnel_online: true,
   config_drift: "ok", failover_ready: true, eligible_standby_count: 3, active_health_fresh: true,
   health_enabled: true, failover_enabled: true, failovers_24h: 2,
 };

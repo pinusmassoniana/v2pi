@@ -1,6 +1,7 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Network, Node, Status } from "../../../api/client";
 import { useApiWrite } from "../../../api/invalidation";
+import { keys } from "../../../api/keys";
 import { useTraffic } from "../../../api/traffic";
 import { openPalette } from "../../../app/shell/palette";
 import { confirm } from "../../../components/confirm";
@@ -14,7 +15,8 @@ import { Skeleton } from "../../../components/ui/States";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
 import {
-  activeFlag, activeNode, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor, tunnelLabel, xrayLabel,
+  ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor,
+  rollbackStillValid, tunnelLabel, xrayLabel,
 } from "../derive";
 
 export interface StatusBlockProps {
@@ -29,6 +31,7 @@ export interface StatusBlockProps {
 /** O4 + O12: the tunnel, the node, the chips, and Switch node / Roll back / Disconnect. */
 export function StatusBlock({ status, statusError, network, nodes, className }: StatusBlockProps) {
   const traffic = useTraffic();
+  const queryClient = useQueryClient();
   const rollbackWrite = useApiWrite("rollback");
   const disconnectWrite = useApiWrite("disconnect");
   const rollback = useMutation({
@@ -60,7 +63,8 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const activeName = active?.name ?? (status.active_node_id === null ? null : `node ${status.active_node_id}`);
   const flag = activeFlag(probe);
   const prevId = status.prev_active_node_id;
-  const prevName = prevId !== null && prevId !== status.active_node_id
+  // Offered only when the gateway says a rollback would work (§12.5); the previous node only supplies the name.
+  const prevName = status.rollback_available === true && prevId !== null && prevId !== status.active_node_id
     ? (activeNode(nodes, prevId)?.name ?? `node ${prevId}`)
     : null;
   const xray = xrayLabel(status);
@@ -75,8 +79,14 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
       ? { value: "—", caption: "UNKNOWN", tone: "neutral" as const }
       : { value: "×", caption: "OFFLINE", tone: "bad" as const };
 
-  async function onRollback(target: string) {
-    if (await confirm(`Roll back the live config to ${target}?`, { confirmLabel: "Roll back" })) rollback.mutate(target);
+  async function onRollback(target: string, targetId: number | null) {
+    if (!(await confirm(`Roll back the live config to ${target}?`, { confirmLabel: "Roll back" }))) return;
+    // The status poll kept running while the dialog was open: roll back only to what was confirmed.
+    if (!rollbackStillValid(queryClient.getQueryData<Status>(keys.status), targetId)) {
+      notifyError(null, ROLLBACK_TARGET_CHANGED);
+      return;
+    }
+    rollback.mutate(target);
   }
 
   async function onDisconnect(id: number, name: string) {
@@ -111,7 +121,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
           Switch node <kbd aria-hidden className="hidden rounded-md bg-bg/20 px-1.5 text-[10.5px] md:inline">⌘K</kbd>
         </Button>
         {prevName !== null ? (
-          <Button disabled={busy} onClick={() => void onRollback(prevName)}>
+          <Button disabled={busy} onClick={() => void onRollback(prevName, prevId)}>
             <span aria-hidden>↺</span> {rollback.isPending ? "Rolling back…" : `Roll back to ${prevName}`}
           </Button>
         ) : null}
