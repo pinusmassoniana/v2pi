@@ -46,7 +46,8 @@ describe("ending a session", () => {
     expect(screen.getByTestId("palette")).toHaveTextContent("open");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
-    await expect(api.getSettings()).rejects.toMatchObject({ status: 401 });
+    // any read mockApi() does not answer reaches the stubbed fetch
+    await expect(api.getDiagnostics()).rejects.toMatchObject({ status: 401 });
     expect(await screen.findByRole("button", { name: "Log in" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Confirm" })).not.toBeInTheDocument();
     expect(dismiss).toHaveBeenCalled();

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { api } from "../api/client";
 import { serverNow } from "../api/clock";
 import { trafficStore } from "../api/traffic";
-import { NETWORK, NODES, NODE_HEALTH, ROUTING, STATUS, SUBS, TRAFFIC_FRAME, mockApi } from "./fixtures";
+import {
+  ALL_NODES, ALL_NODE_HEALTH, NETWORK, NODES, NODE_HEALTH, PREVIEW, PREVIEW_NODES, PROFILES, REFRESH_ALL, ROUTING, SETTINGS, STATUS, SUBS,
+  TRAFFIC_FRAME, mockApi, mockNodeGroups,
+} from "./fixtures";
 
 describe("gateway fixtures", () => {
   it("mockApi answers every read the Home screens make", async () => {
@@ -55,5 +58,50 @@ describe("gateway fixtures", () => {
     api$.emitTraffic({ disabled: true });
     expect(trafficStore.getSnapshot().disabled).toBe(true);
     unsubscribe();
+  });
+
+  it("mockApi answers the Nodes screens' reads, and mockNodeGroups serves every group", async () => {
+    const api$ = mockApi();
+    await expect(api.listProfiles()).resolves.toBe(PROFILES);
+    await expect(api.getSettings()).resolves.toBe(SETTINGS);
+    await expect(api.previewSub("https://x.example", {})).resolves.toBe(PREVIEW);
+    await expect(api.previewSubNodes("https://x.example", {})).resolves.toBe(PREVIEW_NODES);
+    await expect(api.refreshAllSubs()).resolves.toBe(REFRESH_ALL);
+    mockNodeGroups(api$);
+    await expect(api.listNodes()).resolves.toBe(ALL_NODES);
+    await expect(api.listNodeHealth()).resolves.toBe(ALL_NODE_HEALTH);
+  });
+
+  it("writes answer like the gateway without reaching the network", async () => {
+    mockApi();
+    await expect(api.putSettings({ tunneled_fetch: false })).resolves.toMatchObject({ tunneled_fetch: false, subs_auto_switch: true });
+    await expect(api.probeNode(7)).resolves.toMatchObject({ node_id: 7, last_real_ms: 69 });
+    await expect(api.probeNode(99)).resolves.toMatchObject({ node_id: 99, last_real_ms: null });
+    await expect(api.addNode({ name: "vps-ams-02", address: "198.51.100.77", port: 443, uuid: "u" })).resolves.toMatchObject({ id: 11, name: "vps-ams-02", subscription_id: null });
+    await expect(api.updateNode(2, { note: "n" })).resolves.toMatchObject({ id: 2, name: "de-fra-01", note: "n" });
+    await expect(api.addSub({ name: "big-feed", url: "https://feed.example" })).resolves.toMatchObject({ id: 4, name: "big-feed", node_count: 0 });
+    await expect(api.updateSub(3, { enabled: true })).resolves.toMatchObject({ id: 3, name: "old", enabled: true });
+    await expect(api.validateNode({ name: "a", address: "b", port: 1, uuid: "c" })).resolves.toEqual({ ok: true, error: "" });
+  });
+
+  it("node groups: work 6 · home 1 · old 0 · Servers 3, matching each subscription's node count", () => {
+    const count = (subscriptionId: number | null) => ALL_NODES.filter((n) => n.subscription_id === subscriptionId).length;
+    expect(SUBS.map((s) => [s.name, count(s.id), s.node_count])).toEqual([["work", 6, 6], ["home", 1, 1], ["old", 0, 0]]);
+    expect(count(null)).toBe(3);
+    expect(new Set(ALL_NODES.map((n) => n.id)).size).toBe(ALL_NODES.length);
+    expect(NODES.every((n) => n.subscription_id === 1)).toBe(true);
+  });
+
+  it("covers every node state the Nodes screens draw", () => {
+    const byId = new Map(ALL_NODE_HEALTH.map((h) => [h.node_id, h]));
+    expect(ALL_NODES.filter((n) => n.stale).map((n) => n.name)).toEqual(["us-nyc-01"]);
+    expect(ALL_NODES.filter((n) => !byId.has(n.id)).map((n) => n.name)).toEqual(["ch-zrh-02", "kz-ala-01"]);
+    expect(ALL_NODE_HEALTH.filter((h) => h.last_real_ok === false).map((h) => h.node_id)).toEqual([6]);
+    expect(ALL_NODE_HEALTH.filter((h) => (h.last_http_ms ?? 0) > 150).map((h) => h.node_id)).toEqual([4, 10]);
+    expect(new Set(ALL_NODES.map((n) => `${n.transport}·${n.security}`))).toEqual(new Set(["vision·reality", "xhttp·reality", "xhttp·tls"]));
+    expect(ALL_NODE_HEALTH.every((h) => ALL_NODES.some((n) => n.id === h.node_id))).toBe(true);
+    expect(PROFILES.filter((profile) => profile.is_default).map((profile) => profile.name)).toEqual(["balanced"]);
+    expect(SUBS.filter((s) => s.last_error).map((s) => s.name)).toEqual(["home"]);
+    expect(SUBS.filter((s) => !s.enabled).map((s) => s.name)).toEqual(["old"]);
   });
 });

@@ -1,7 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi } from "vitest";
-import type { Network, Node, NodeHealth, Routing, Status, Subscription, TrafficFrame, TrafficMessage } from "../api/client";
+import type {
+  Network, Node, NodeHealth, NodeIn, NodeUpdate, PreviewNodes, Preview, RefreshAllResult, Routing, Settings, Status, Subscription,
+  SubscriptionIn, TrafficFrame, TrafficMessage, TuningProfile,
+} from "../api/client";
 import { api } from "../api/client";
 import { recordServerNow } from "../api/clock";
 import { CONNECTION_WRITE } from "../api/invalidation";
@@ -27,11 +30,31 @@ export function node(id: number, name: string): Node {
   };
 }
 
-/** Six servers: the active one, three probed standbys (one slow and old), one failed, one never probed. */
+/**
+ * The "work" subscription's six nodes: the active one (reality, with a tuning profile), three probed standbys (an
+ * xhttp·reality one, and a slow, old xhttp·tls one), one never probed, one whose real check failed.
+ */
 export const NODES: Node[] = [
-  node(1, "nl-ams-03"), node(2, "de-fra-01"), node(3, "fi-hel-02"),
-  node(4, "pl-waw-01"), node(5, "ch-zrh-02"), node(6, "se-sto-01"),
+  { ...node(1, "nl-ams-03"), subscription_id: 1, sni: "www.microsoft.com", public_key: "Zm9vX3JlYWxpdHlfcHViX2tleQ", short_id: "6ba85179e3", tuning_profile_id: 2 },
+  { ...node(2, "de-fra-01"), subscription_id: 1, note: "streaming backup" },
+  { ...node(3, "fi-hel-02"), subscription_id: 1, transport: "xhttp", network: "xhttp", public_key: "cHVia2V5LWZpLWhlbA", path: "/xh", host: "cdn.example.net", mode: "auto" },
+  { ...node(4, "pl-waw-01"), subscription_id: 1, port: 8443, transport: "xhttp", network: "xhttp", security: "tls", alpn: "h2,http/1.1" },
+  { ...node(5, "ch-zrh-02"), subscription_id: 1 },
+  { ...node(6, "se-sto-01"), subscription_id: 1 },
 ];
+
+/** Manual servers (no subscription), in position order. */
+export const SERVER_NODES: Node[] = [
+  { ...node(7, "vps-hel"), address: "198.51.100.23", note: "own VPS", public_key: "dnBzLWhlbC1wdWI" },
+  { ...node(8, "lab-lan"), address: "192.168.1.50", port: 8443, transport: "xhttp", network: "xhttp", security: "tls", note: "LAN test box" },
+  { ...node(9, "kz-ala-01"), address: "5.34.180.9" },
+];
+
+/** The "home" subscription's one node: it vanished from the feed and was kept. */
+export const HOME_NODES: Node[] = [{ ...node(10, "us-nyc-01"), subscription_id: 2, stale: true, transport: "xhttp", network: "xhttp", security: "tls" }];
+
+/** Every group at once — work 6 · home 1 · old 0 · Servers 3. mockApi() serves NODES; mockNodeGroups() serves these. */
+export const ALL_NODES: Node[] = [...NODES, ...SERVER_NODES, ...HOME_NODES];
 
 function health(nodeId: number, patch: Partial<NodeHealth>): NodeHealth {
   return {
@@ -43,11 +66,19 @@ function health(nodeId: number, patch: Partial<NodeHealth>): NodeHealth {
 
 /** Background-sweep results. ch-zrh-02 (id 5) has never been probed. */
 export const NODE_HEALTH: NodeHealth[] = [
-  health(1, { last_tcp_ms: 31, last_real_ms: 45, egress_ip: "185.107.56.21", egress_cc: "NL", checked_at: iso(NOW_SEC - 5), lat_history: [44, 45] }),
-  health(2, { last_tcp_ms: 40, last_real_ms: 58, egress_ip: "91.198.10.4", egress_cc: "DE", checked_at: iso(NOW_SEC - 240) }),
-  health(3, { last_tcp_ms: 52, last_real_ms: 71, egress_ip: "95.216.3.9", egress_cc: "FI", checked_at: iso(NOW_SEC - 360) }),
-  health(4, { last_tcp_ms: 120, last_real_ms: 164, egress_ip: "51.68.22.7", egress_cc: "PL", checked_at: iso(NOW_SEC - 1_380) }),
-  health(6, { last_tcp_ok: true, last_tcp_ms: 80, last_real_ok: false, last_real_ms: null, egress_cc: "SE", checked_at: iso(NOW_SEC - 720), fail_count: 3 }),
+  health(1, { last_tcp_ms: 31, last_http_ms: 142, last_real_ms: 45, egress_ip: "185.107.56.21", egress_cc: "NL", checked_at: iso(NOW_SEC - 5), lat_history: [44, 45] }),
+  health(2, { last_tcp_ms: 40, last_http_ms: 118, last_real_ms: 58, egress_ip: "91.198.10.4", egress_cc: "DE", checked_at: iso(NOW_SEC - 240) }),
+  health(3, { last_tcp_ms: 52, last_http_ms: 131, last_real_ms: 71, egress_ip: "95.216.3.9", egress_cc: "FI", checked_at: iso(NOW_SEC - 360) }),
+  health(4, { last_tcp_ms: 120, last_http_ms: 164, last_real_ms: 164, egress_ip: "51.68.22.7", egress_cc: "PL", checked_at: iso(NOW_SEC - 1_380) }),
+  health(6, { last_tcp_ok: true, last_tcp_ms: 80, last_http_ms: 139, last_real_ok: false, last_real_ms: null, egress_cc: "SE", checked_at: iso(NOW_SEC - 720), fail_count: 3 }),
+];
+
+/** Health of the other groups' nodes: vps-hel probed, lab-lan TCP only (its HTTP check failed), us-nyc-01 three hours ago. */
+export const ALL_NODE_HEALTH: NodeHealth[] = [
+  ...NODE_HEALTH,
+  health(7, { last_tcp_ms: 46, last_http_ms: 128, last_real_ms: 69, egress_ip: "198.51.100.23", egress_ip6: "2001:db8::23", egress_cc: "FI", egress_cc6: "FI", checked_at: iso(NOW_SEC - 420), lat_history: [70, 68, 69] }),
+  health(8, { last_tcp_ms: 2, last_http_ok: false, last_real_ok: null, checked_at: iso(NOW_SEC - 540) }),
+  health(10, { last_tcp_ms: 96, last_http_ms: 212, last_real_ms: 118, egress_ip: "23.105.160.4", egress_cc: "US", checked_at: iso(NOW_SEC - 10_800) }),
 ];
 
 export const NETWORK: Network = {
@@ -87,12 +118,76 @@ function sub(patch: Partial<Subscription> & Pick<Subscription, "id" | "name">): 
   };
 }
 
-/** "work" expires in two days, "home" is at 86 % of its allowance, "old" is disabled (never warns). */
+/**
+ * "work" expires in two days and refreshes hourly through the tunnel; "home" is at 86 % of its allowance and its last
+ * fetch failed; "old" is paused (never warns), expired, never refreshes on its own and has no nodes left.
+ */
 export const SUBS: Subscription[] = [
-  sub({ id: 1, name: "work", expire_at: NOW_SEC + 2 * 86_400, up_bytes: 2e9, down_bytes: 18e9, total_bytes: 100e9 }),
-  sub({ id: 2, name: "home", up_bytes: 6e9, down_bytes: 80e9, total_bytes: 100e9 }),
-  sub({ id: 3, name: "old", enabled: false, expire_at: NOW_SEC - 86_400 }),
+  sub({
+    id: 1, name: "work", url: "https://sub.work-vpn.example/api/v1/client/subscribe?token=9f2c7a1e", interval_sec: 3_600,
+    injection: { headers: { "x-device-os": "{device_os}", "user-agent": "v2pi/1.0" }, query: { type: "vless" } },
+    expire_at: NOW_SEC + 2 * 86_400, up_bytes: 2e9, down_bytes: 18e9, total_bytes: 100e9,
+    last_status: "ok: +0 ~6 -0", last_path: "tunnel", last_fetched: iso(NOW_SEC - 240), node_count: 6,
+  }),
+  sub({
+    id: 2, name: "home", interval_sec: 21_600, default_profile_id: 2, up_bytes: 6e9, down_bytes: 80e9, total_bytes: 100e9,
+    last_status: "error: fetch failed: timeout", last_path: "tunnel", last_error: "fetch failed: timeout", node_count: 1,
+  }),
+  sub({ id: 3, name: "old", enabled: false, interval_sec: 0, expire_at: NOW_SEC - 86_400, last_path: "direct", node_count: 0 }),
 ];
+
+/** Two tuning profiles: the global default and the one nl-ams-03 uses. */
+export const PROFILES: TuningProfile[] = [
+  {
+    id: 1, name: "balanced", fingerprint: "chrome", frag_enabled: false, frag_packets: "", frag_length: "", frag_interval: "",
+    mux_enabled: false, doh_enabled: false, doh_url: "", quic: "", noise_enabled: false, noises: [], xhttp_padding: "",
+    xmux_max_concurrency: "", xmux_max_connections: "", mux_concurrency: "", xudp_proxy_udp443: "", alpn: "", tls_min: "", tls_max: "",
+    is_default: true, is_active: false, node_count: 9,
+  },
+  {
+    id: 2, name: "fragment-tls", fingerprint: "firefox", frag_enabled: true, frag_packets: "tlshello", frag_length: "100-200", frag_interval: "10-20",
+    mux_enabled: false, doh_enabled: false, doh_url: "", quic: "", noise_enabled: false, noises: [], xhttp_padding: "",
+    xmux_max_concurrency: "", xmux_max_connections: "", mux_concurrency: "", xudp_proxy_udp443: "", alpn: "", tls_min: "", tls_max: "",
+    is_default: false, is_active: true, node_count: 1,
+  },
+];
+
+/** Gateway settings: both subscription toggles on, health and auto-failover armed. */
+export const SETTINGS: Settings = {
+  tunneled_fetch: true, subs_auto_switch: true, routing_default_action: "proxy",
+  health_enabled: true, health_sweep_enabled: true, health_interval: 600, health_active_interval: 30,
+  health_hysteresis: 3, health_probe_url: "https://www.gstatic.com/generate_204",
+  failover_enabled: true, failover_cooldown: 300,
+  stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000,
+  dns_intercept: false, session_timeout_min: 60, auto_backup_enabled: true,
+};
+
+/** What previewSub answers for "work": the request it would send. */
+export const PREVIEW: Preview = {
+  method: "GET",
+  url: "https://sub.work-vpn.example/api/v1/client/subscribe?token=9f2c7a1e&type=vless",
+  headers: { "x-device-os": "linux", "user-agent": "v2pi/1.0" },
+  query: { type: "vless" },
+};
+
+/** What previewSubNodes answers: a big feed, truncated to its first 200 of 214 nodes (three shown here). */
+export const PREVIEW_NODES: PreviewNodes = {
+  format: "base64/vless", count: 214, returned_count: 200, truncated: true,
+  nodes: [
+    { name: "fra-edge-01", address: "91.203.150.4", port: 443, transport: "vision", network: "tcp", security: "reality" },
+    { name: "ams-edge-07", address: "45.83.141.9", port: 443, transport: "xhttp", network: "xhttp", security: "reality" },
+    { name: "sto-edge-03", address: "185.195.72.8", port: 8443, transport: "xhttp", network: "xhttp", security: "tls" },
+  ],
+};
+
+/** Refresh all over the two enabled subscriptions: work succeeds, home times out. */
+export const REFRESH_ALL: RefreshAllResult = {
+  attempted: 2, succeeded: 1, failed: 1,
+  results: [
+    { id: 1, name: "work", ok: true, status: "ok: +0 ~6 -0", error: null },
+    { id: 2, name: "home", ok: false, status: "error: fetch failed: timeout", error: "fetch failed: timeout" },
+  ],
+};
 
 /** Six rules; the fourth is disabled, so the first four enabled ones skip it. */
 export const ROUTING: Routing = {
@@ -144,6 +239,30 @@ export function mockApi() {
       return { close: vi.fn(), resume: vi.fn() };
     }),
     getTrafficHistory: vi.spyOn(api, "getTrafficHistory").mockResolvedValue({ samples: [], interval_ms: 1000 }),
+    listProfiles: vi.spyOn(api, "listProfiles").mockResolvedValue(PROFILES),
+    getSettings: vi.spyOn(api, "getSettings").mockResolvedValue(SETTINGS),
+    putSettings: vi.spyOn(api, "putSettings").mockImplementation(async (patch: Partial<Settings>) => ({ ...SETTINGS, ...patch })),
+    // Writes answer like the gateway, so a screen test never reaches the network by accident.
+    apply: vi.spyOn(api, "apply").mockResolvedValue({ ok: true }),
+    disconnect: vi.spyOn(api, "disconnect").mockResolvedValue({ ok: true }),
+    connectBest: vi.spyOn(api, "connectBest").mockResolvedValue({ ok: true, node_id: 2 }),
+    probeNode: vi.spyOn(api, "probeNode").mockImplementation(async (id: number) => ALL_NODE_HEALTH.find((h) => h.node_id === id) ?? health(id, { checked_at: iso(NOW_SEC) })),
+    probeTcp: vi.spyOn(api, "probeTcp").mockResolvedValue(NODE_HEALTH),
+    probeHttp: vi.spyOn(api, "probeHttp").mockResolvedValue(NODE_HEALTH),
+    reorderNodes: vi.spyOn(api, "reorderNodes").mockResolvedValue({ ok: true }),
+    addNode: vi.spyOn(api, "addNode").mockImplementation(async (input: NodeIn) => ({ ...node(11, input.name), ...input })),
+    updateNode: vi.spyOn(api, "updateNode").mockImplementation(async (id: number, patch: NodeUpdate) => ({ ...(ALL_NODES.find((n) => n.id === id) ?? node(id, `node-${id}`)), ...patch })),
+    deleteNode: vi.spyOn(api, "deleteNode").mockResolvedValue({ ok: true }),
+    importNodes: vi.spyOn(api, "importNodes").mockResolvedValue({ added: 2, total: 3, format: "clash" }),
+    detachNodes: vi.spyOn(api, "detachNodes").mockResolvedValue({ ok: true }),
+    validateNode: vi.spyOn(api, "validateNode").mockResolvedValue({ ok: true, error: "" }),
+    addSub: vi.spyOn(api, "addSub").mockImplementation(async (input: SubscriptionIn) => sub({ id: 4, ...input, node_count: 0 })),
+    updateSub: vi.spyOn(api, "updateSub").mockImplementation(async (id: number, patch: Partial<SubscriptionIn>) => ({ ...(SUBS.find((s) => s.id === id) ?? sub({ id, name: `sub-${id}` })), ...patch })),
+    deleteSub: vi.spyOn(api, "deleteSub").mockResolvedValue({ ok: true }),
+    refreshSub: vi.spyOn(api, "refreshSub").mockResolvedValue({ ok: true, status: "ok: +0 ~6 -0", error: null, path: "tunnel" }),
+    refreshAllSubs: vi.spyOn(api, "refreshAllSubs").mockResolvedValue(REFRESH_ALL),
+    previewSub: vi.spyOn(api, "previewSub").mockResolvedValue(PREVIEW),
+    previewSubNodes: vi.spyOn(api, "previewSubNodes").mockResolvedValue(PREVIEW_NODES),
     /** Push one WebSocket message into the live-traffic store, as the socket would. */
     emitTraffic(message: TrafficMessage): void {
       const send = deliver;
@@ -151,6 +270,15 @@ export function mockApi() {
       act(() => send(message));
     },
   };
+}
+
+export type MockApi = ReturnType<typeof mockApi>;
+
+/** Serve every group's nodes and their health instead of just "work" (see ALL_NODES). */
+export function mockNodeGroups(api$: MockApi): MockApi {
+  api$.listNodes.mockResolvedValue(ALL_NODES);
+  api$.listNodeHealth.mockResolvedValue(ALL_NODE_HEALTH);
+  return api$;
 }
 
 /**
