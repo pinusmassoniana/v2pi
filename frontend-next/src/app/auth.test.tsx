@@ -3,6 +3,9 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/client";
+import { keys, queries } from "../api/keys";
+import { usePolledQuery } from "../api/live";
+import { createQueryClient } from "../api/queryClient";
 import { STATUS } from "../test/fixtures";
 import { AuthGate, resolvePhase, useAuth } from "./auth";
 
@@ -21,22 +24,24 @@ afterEach(() => vi.unstubAllGlobals());
 describe("resolvePhase", () => {
   it("server unreachable → offline", async () => {
     vi.spyOn(api, "getSetup").mockRejectedValue(new ApiError(0, "network error"));
-    await expect(resolvePhase()).resolves.toEqual({ kind: "offline" });
+    await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "offline" });
   });
 
   it("first run → setup; the bootstrap proof is required unless the server says otherwise", async () => {
     const getSetup = vi.spyOn(api, "getSetup").mockResolvedValue({ needs_setup: true });
-    await expect(resolvePhase()).resolves.toEqual({ kind: "setup", bootstrapRequired: true });
+    await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "setup", bootstrapRequired: true });
     getSetup.mockResolvedValue({ needs_setup: true, bootstrap_required: false });
-    await expect(resolvePhase()).resolves.toEqual({ kind: "setup", bootstrapRequired: false });
+    await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "setup", bootstrapRequired: false });
   });
 
   it("provisioned with a live session → authed; without one → login", async () => {
     vi.spyOn(api, "getSetup").mockResolvedValue({ needs_setup: false });
     const getStatus = vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
-    await expect(resolvePhase()).resolves.toEqual({ kind: "authed" });
+    const client = new QueryClient();
+    await expect(resolvePhase(client)).resolves.toEqual({ kind: "authed" });
+    expect(client.getQueryData(keys.status)).toEqual(STATUS);
     getStatus.mockRejectedValue(new ApiError(401, "unauthorized"));
-    await expect(resolvePhase()).resolves.toEqual({ kind: "login" });
+    await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "login" });
   });
 });
 
@@ -88,6 +93,19 @@ describe("AuthGate", () => {
     await userEvent.click(screen.getByRole("button", { name: "Log in" }));
     expect(await screen.findByRole("button", { name: "Log out" })).toBeInTheDocument();
     expect(login).toHaveBeenCalledTimes(2);
+  });
+
+  it("boot seeds the status it probed, so the shell's poll does not fetch it again at once", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue({ needs_setup: false });
+    const getStatus = vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    function StatusOwner() {
+      const status = usePolledQuery(queries.status(), 3_000);
+      return <p>{status.data ? "status shown" : "no status"}</p>;
+    }
+    render(<QueryClientProvider client={createQueryClient()}><AuthGate><StatusOwner /></AuthGate></QueryClientProvider>);
+    expect(await screen.findByText("status shown")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(getStatus).toHaveBeenCalledTimes(1);
   });
 
   it("a 401 mid-session returns to Login with nothing of the old session cached", async () => {

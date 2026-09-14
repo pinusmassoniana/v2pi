@@ -4,7 +4,7 @@ import { queries } from "../../api/keys";
 
 /** Every screen keeps its last data on a failed read, so a dead panel would look alive. Say it once. */
 export function OfflineBanner() {
-  const status = useQuery(queries.status());   // reads the cache; the shell owns polling
+  const status = useQuery(queries.status());   // the shell polls; fresh for its interval, so this does not fetch
   const unreachable = status.isError && !(status.error instanceof ApiError && status.error.status === 401);
   if (!unreachable) return null;
   const since = status.dataUpdatedAt

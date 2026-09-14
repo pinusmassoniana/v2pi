@@ -1,6 +1,5 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
-import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { STATUS } from "../test/fixtures";
 import { ApiError, api } from "./client";
@@ -10,17 +9,8 @@ import { createQueryClient } from "./queryClient";
 
 afterEach(() => vi.useRealTimers());
 
-function Owner() { usePolledQuery(queries.status(), 3000); return null; }
+function Owner({ intervalMs = 3000 }: { intervalMs?: number }) { usePolledQuery(queries.status(), intervalMs); return null; }
 function Reader() { useQuery(queries.status()); return null; }
-// Mounts a second polling owner one second later, so the two timers are out of phase.
-function LateOwner() {
-  const [on, setOn] = useState(false);
-  useEffect(() => {
-    const timer = setTimeout(() => setOn(true), 1_000);
-    return () => clearTimeout(timer);
-  }, []);
-  return on ? <Owner /> : null;
-}
 
 describe("one polling owner per key", () => {
   it("fetches once per interval however many components show the resource", async () => {
@@ -37,16 +27,39 @@ describe("one polling owner per key", () => {
     expect(get).toHaveBeenCalledTimes(4);
   });
 
-  it("multiplies requests when two mounted components both poll — why the rule exists", async () => {
+  it("a reader mounted between two polls shows the cache instead of fetching", async () => {
     vi.useFakeTimers();
     const get = vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
-    render(
-      <QueryClientProvider client={createQueryClient()}>
-        <Owner /><LateOwner />
-      </QueryClientProvider>,
-    );
-    await act(() => vi.advanceTimersByTimeAsync(10_000));
-    expect(get.mock.calls.length).toBeGreaterThan(4);
+    const client = createQueryClient();
+    const view = render(<QueryClientProvider client={client}><Owner /></QueryClientProvider>);
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    view.rerender(<QueryClientProvider client={client}><Owner /><Reader /></QueryClientProvider>);
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(get).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("a key nobody polls is refetched by the next component that mounts it", async () => {
+    const get = vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    const client = createQueryClient();
+    const first = render(<QueryClientProvider client={client}><Reader /></QueryClientProvider>);
+    await act(() => client.getQueryCache().find({ queryKey: keys.status })!.promise);
+    first.unmount();
+    render(<QueryClientProvider client={client}><Reader /></QueryClientProvider>);
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
+
+  it("a second polling owner overrides the first one's cadence — why each key has one owner", async () => {
+    vi.useFakeTimers();
+    const get = vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    const client = createQueryClient();
+    const view = render(<QueryClientProvider client={client}><Owner intervalMs={10_000} /></QueryClientProvider>);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    // Every query update re-arms both timers, so the key polls every 3 s, not every 10 s.
+    view.rerender(<QueryClientProvider client={client}><Owner intervalMs={10_000} /><Owner intervalMs={3_000} /></QueryClientProvider>);
+    await act(() => vi.advanceTimersByTimeAsync(20_000));
+    expect(get).toHaveBeenCalledTimes(7);
   });
 
   it("does not retry a 401 — the auth gate owns a lost session", async () => {

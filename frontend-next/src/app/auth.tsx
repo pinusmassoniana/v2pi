@@ -2,7 +2,8 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api, setOnUnauthorized } from "../api/client";
-import { resetClock } from "../api/clock";
+import { recordServerNow, resetClock } from "../api/clock";
+import { keys } from "../api/keys";
 import { trafficStore } from "../api/traffic";
 import { confirm, settleConfirm } from "../components/confirm";
 import { Button } from "../components/ui/Button";
@@ -18,8 +19,11 @@ export type Phase =
   | { kind: "login" }
   | { kind: "authed" };
 
-/** First-run setup, then the session probe. A failed /setup probe means the server is unreachable. */
-export async function resolvePhase(): Promise<Phase> {
+/**
+ * First-run setup, then the session probe. A failed /setup probe means the server is unreachable.
+ * The probe's status reply goes into the cache, so the shell does not fetch it again at once.
+ */
+export async function resolvePhase(queryClient: QueryClient): Promise<Phase> {
   let setup: { needs_setup: boolean; bootstrap_required?: boolean };
   try {
     setup = await api.getSetup();
@@ -28,7 +32,9 @@ export async function resolvePhase(): Promise<Phase> {
   }
   if (setup.needs_setup) return { kind: "setup", bootstrapRequired: setup.bootstrap_required ?? true };
   try {
-    await api.getStatus();
+    const status = await api.getStatus();
+    recordServerNow(status.server_now);
+    queryClient.setQueryData(keys.status, status);
     return { kind: "authed" };
   } catch {
     return { kind: "login" };
@@ -65,9 +71,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    void resolvePhase().then((next) => { if (!cancelled) setPhase(next); });
+    void resolvePhase(queryClient).then((next) => { if (!cancelled) setPhase(next); });
     return () => { cancelled = true; };
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     // A 401 anywhere mid-session (idle timeout, password changed elsewhere) drops back to Login
@@ -92,7 +98,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   const retry = () => {
     setPhase({ kind: "booting" });
-    void resolvePhase().then(setPhase);
+    void resolvePhase(queryClient).then(setPhase);
   };
 
   switch (phase.kind) {
