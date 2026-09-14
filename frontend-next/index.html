@@ -28,6 +28,12 @@
         if (m) m.setAttribute("content", t === "light" ? "#f4f3fb" : "#07060d");
       })();
     </script>
+    <script>
+      // The hash router only writes "#/…" into the address bar on an actual route change, so a
+      // bare load (no hash at all — a fresh visit, not a bookmark) would leave the bar showing no
+      // hash even though Home is what's rendered. Normalize it before the bundle loads.
+      if (!location.hash) history.replaceState(null, "", location.pathname + location.search + "#/");
+    </script>
   </head>
   <body>
     <div id="root"></div>

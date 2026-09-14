@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
-import { StrictMode } from "react";
+import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles/index.css";
 import { createQueryClient } from "./api/queryClient";
@@ -13,11 +13,22 @@ applyTheme(resolveInitialTheme(getStoredTheme(), "dark"));
 
 const queryClient = createQueryClient();
 
+// The router is a single long-lived instance, but `<RouterProvider>` only mounts while authed:
+// AuthGate swaps it out for Login/Setup/Offline UI, which unsubscribes the router from the
+// hash history. If the hash changes while logged out (session expiry, an explicit logout that
+// lands elsewhere, a bookmark), the router's own matched location goes stale and does not
+// self-correct on remount. Force a fresh reconcile against the real current hash every time
+// this remounts, so the screen shown always matches the URL.
+function RouterMount() {
+  useEffect(() => { void router.load(); }, []);
+  return <RouterProvider router={router} />;
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthGate>
-        <RouterProvider router={router} />
+        <RouterMount />
       </AuthGate>
     </QueryClientProvider>
   </StrictMode>,

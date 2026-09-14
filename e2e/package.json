@@ -2,10 +2,12 @@
   "name": "v2pi-e2e",
   "private": true,
   "version": "0.0.0",
-  "description": "Full-stack Playwright smoke for the v2pi panel (first-run setup → login → dashboard).",
+  "description": "Full-stack Playwright smoke for the v2pi panel (first-run setup \u2192 login \u2192 dashboard).",
   "scripts": {
     "build:spa": "npm --prefix ../frontend ci && npm --prefix ../frontend run build",
-    "test": "playwright test"
+    "test": "playwright test",
+    "build:spa-next": "npm --prefix ../frontend-next ci && npm --prefix ../frontend-next run build",
+    "test:next": "playwright test -c playwright.next.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"
