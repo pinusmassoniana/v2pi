@@ -13,6 +13,7 @@ import { RoutingCard } from "./overview/RoutingCard";
 import { StatusBlock } from "./overview/StatusBlock";
 import { UpstreamHealthCard } from "./overview/UpstreamHealthCard";
 import { OverviewThroughput } from "./ThroughputCard";
+import { useRefreshOnSwitch } from "./useRefreshOnSwitch";
 
 /**
  * Home › Overview. This page is the one polling owner of every read it shows except `status`, which the
@@ -26,6 +27,7 @@ export function Overview() {
   const health = usePolledQuery(queries.nodeHealth(), SLOW_POLL_MS);
   const subs = usePolledQuery(queries.subs(), SLOW_POLL_MS);
   const routing = usePolledQuery(queries.routing(), SLOW_POLL_MS);
+  useRefreshOnSwitch(status.data);
   const activeName = activeNode(nodes.data, status.data?.active_node_id)?.name ?? null;
 
   return (

@@ -20,6 +20,7 @@ import {
   tunnelLabel, whenLabel,
 } from "./derive";
 import { ThroughputCard } from "./ThroughputCard";
+import { useRefreshOnSwitch } from "./useRefreshOnSwitch";
 import { useTrafficSeries } from "./useTrafficSeries";
 
 const H3_TICKS = [0, 50, 100, 150, 200, 250];
@@ -168,6 +169,7 @@ export function Traffic() {
   const network = usePolledQuery(queries.network(), NETWORK_POLL_MS);
   const health = usePolledQuery(queries.nodeHealth(), SLOW_POLL_MS);
   const nodes = useQuery(queries.nodes());
+  useRefreshOnSwitch(status.data);
 
   const nowMs = serverNow();
   const activeId = status.data?.active_node_id ?? null;

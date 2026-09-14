@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NETWORK_POLL_MS, SLOW_POLL_MS } from "../features/home/cadence";
 import "../features/home/screens";   // loaded up front: the route's lazy import must not wait on fake timers
 import { STATUS_POLL_MS } from "../app/shell/Shell";
-import { STATUS, mockApi } from "../test/fixtures";
+import { NOW_SEC, STATUS, mockApi } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
 import { ApiError, api } from "./client";
 import { keys, queries } from "./keys";
@@ -72,6 +72,31 @@ describe("one polling owner per key", () => {
     await expect(client.fetchQuery(queries.nodes())).rejects.toThrow("unauthorized");
     expect(get).toHaveBeenCalledTimes(1);
     expect(client.getQueryState(keys.nodes)?.status).toBe("error");
+  });
+});
+
+/** Mount `path` on fake timers and let its node health land. */
+async function mountHome(path: "/" | "/traffic") {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const api$ = mockApi();
+  renderApp(path);
+  const loaded = () => screen.queryByRole("list", { name: path === "/" ? "Standby nodes" : "Nodes by latency" });
+  for (let i = 0; i < 40 && !loaded(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(loaded()).toBeInTheDocument();
+  return api$;
+}
+
+describe.each(["/", "/traffic"] as const)("Home %s after the gateway switches node on its own", (path) => {
+  it("refetches node health and the network read as soon as the status poll shows it", async () => {
+    const api$ = await mountHome(path);
+    const health = api$.listNodeHealth.mock.calls.length;
+    const network = api$.getNetwork.mock.calls.length;
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: 2, prev_active_node_id: 1, last_failover_at: NOW_SEC + 3 });
+    // The next status poll lands well before network's 4 s poll and node health's 30 s one.
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_MS));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(api$.listNodeHealth.mock.calls.length).toBe(health + 1);
+    expect(api$.getNetwork.mock.calls.length).toBe(network + 1);
   });
 });
 
