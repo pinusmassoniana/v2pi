@@ -28,7 +28,8 @@ backend/**/static/
 *.sqlite
 *.sqlite3
 *.db
-/backend/data/
+data/
+!frontend-next/src/components/data/
 *.log
 
 # Secrets / env
