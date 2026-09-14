@@ -28,9 +28,26 @@ describe("invalidation map", () => {
 
   it("matches the spec's table for the rows later screens depend on", () => {
     expect(INVALIDATES.apply).toEqual([keys.status, keys.nodes, keys.nodeHealth, keys.network]);
-    expect(INVALIDATES.refreshSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
     expect(INVALIDATES.probeNode).toEqual([keys.nodeHealth]);
     expect(INVALIDATES.changePassword).toEqual([]);
     expect(INVALIDATES.restore).toBe("all");
+  });
+
+  it("also invalidates the tunnel-reapplying side effects a plain resource write does not have", () => {
+    // refreshSub/refreshAllSubs can restart the active tunnel and give new nodes the
+    // subscription's default profile (subs/service.py + subs/reconcile.py).
+    expect(INVALIDATES.refreshSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth, keys.status, keys.network, keys.profiles]);
+    expect(INVALIDATES.refreshAllSubs).toEqual([keys.subs, keys.nodes, keys.nodeHealth, keys.status, keys.network, keys.profiles]);
+    // applyProfileActive, putRouting, putSettings and resetSettings can all re-apply the live
+    // tunnel server-side (routes.py: reapply_active_node -> apply_node -> apply_net).
+    expect(INVALIDATES.applyProfileActive).toEqual([keys.profiles, keys.nodes, keys.status, keys.network]);
+    expect(INVALIDATES.putRouting).toEqual([keys.routing, keys.status, keys.network]);
+    expect(INVALIDATES.putSettings).toEqual([keys.settings, keys.status, keys.network]);
+    expect(INVALIDATES.resetSettings).toEqual([keys.settings, keys.status, keys.network]);
+    // addSub/updateSub/deleteSub and the other profile writes stay unchanged: routes.py shows
+    // none of them call refresh/reapply.
+    expect(INVALIDATES.addSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
+    expect(INVALIDATES.updateSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
+    expect(INVALIDATES.deleteSub).toEqual([keys.subs, keys.nodes, keys.nodeHealth]);
   });
 });
