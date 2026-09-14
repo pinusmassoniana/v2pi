@@ -248,7 +248,8 @@ describe("Overview › card states", () => {
     await within(card).findByText("domain:netflix.com");
     api$.getRouting.mockRejectedValue(new ApiError(500, "boom"));
     await act(() => client.refetchQueries({ queryKey: ["routing"] }));
-    expect(await within(card).findByRole("alert")).toHaveTextContent("Routing did not refresh — showing the last data");
+    expect(await within(card).findByRole("status")).toHaveTextContent("Routing did not refresh — showing the last data");
+    expect(within(card).queryByRole("alert")).toBeNull();   // a polite note: the card still has data
     expect(within(card).getByText("domain:netflix.com")).toBeInTheDocument();
   });
 

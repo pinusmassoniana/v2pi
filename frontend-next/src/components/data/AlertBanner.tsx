@@ -32,11 +32,15 @@ export interface AlertBannerProps {
   className?: string;
 }
 
-/** A problem worth interrupting for: "alert" when bad, "status" when a warning. */
+/**
+ * A problem worth interrupting for: a group named by its title. Only the title is a live region — "alert" when
+ * bad, "status" when a warning — so a sentence that changes every second (a rate, an age) is not re-announced
+ * each time: it sits outside the live region, marked aria-live="off".
+ */
 export function AlertBanner({ tone, title, text, icon = "!", children, action, onDismiss, className }: AlertBannerProps) {
   return (
     <div
-      role={tone === "bad" ? "alert" : "status"}
+      role="group"
       aria-label={title}
       data-tone={tone}
       className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border px-3 py-2.5 text-[12.5px] text-t1 backdrop-blur-md", SURFACE[tone], className)}
@@ -44,8 +48,8 @@ export function AlertBanner({ tone, title, text, icon = "!", children, action, o
       <span aria-hidden className={cn("grid size-6 shrink-0 place-items-center rounded-lg text-[13px] font-extrabold", ICON[tone])}>{icon}</span>
       <div className="min-w-0 flex-1">
         <p>
-          <b className="font-bold">{title}</b>
-          {text ? <>{" "}<span className="text-t2">{text}</span></> : null}
+          <b role={tone === "bad" ? "alert" : "status"} aria-label={title} className="font-bold">{title}</b>
+          {text ? <>{" "}<span aria-live="off" className="text-t2">{text}</span></> : null}
         </p>
         {children}
       </div>

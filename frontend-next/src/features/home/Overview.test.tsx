@@ -40,7 +40,8 @@ describe("Overview › alerts", () => {
     const { client } = await openOverview({ config_drift: "drift" });
     const apply = vi.spyOn(api, "apply").mockResolvedValue({ ok: true });
     const invalidate = vi.spyOn(client, "invalidateQueries");
-    const alert = await screen.findByRole("alert", { name: "Config drift" });
+    await screen.findByRole("alert", { name: "Config drift" });
+    const alert = screen.getByRole("group", { name: "Config drift" });
     expect(within(alert).queryByRole("button", { name: /Dismiss/ })).toBeNull();
     expect(within(screen.getByRole("region", { name: "Status" })).getByText("stale config")).toBeInTheDocument();
     await userEvent.click(within(alert).getByRole("button", { name: "Reload config" }));
@@ -59,15 +60,18 @@ describe("Overview › alerts", () => {
 
   it("O2: a recent failover is announced; dismissing it is remembered, and a newer one shows again", async () => {
     const { api$, client } = await openOverview({ last_failover_at: NOW_SEC - 600 });
-    const banner = await screen.findByRole("status", { name: "Auto-failover" });
+    await screen.findByRole("status", { name: "Auto-failover" });
+    const banner = screen.getByRole("group", { name: "Auto-failover" });
     expect(banner).toHaveTextContent("Auto-failover to nl-ams-03 · 10m ago");
+    expect(within(banner).getByText("to nl-ams-03 · 10m ago")).toHaveAttribute("aria-live", "off");
     await userEvent.click(within(banner).getByRole("button", { name: "Dismiss: Auto-failover" }));
-    expect(screen.queryByRole("status", { name: "Auto-failover" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Auto-failover" })).toBeNull();
     expect(localStorage.getItem("failoverDismissed")).toBe(String(NOW_SEC - 600));
 
     api$.getStatus.mockResolvedValue({ ...STATUS, last_failover_at: NOW_SEC - 60 });
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
-    expect(await screen.findByRole("status", { name: "Auto-failover" })).toHaveTextContent("to nl-ams-03 · 1m ago");
+    await screen.findByRole("status", { name: "Auto-failover" });
+    expect(screen.getByRole("group", { name: "Auto-failover" })).toHaveTextContent("to nl-ams-03 · 1m ago");
   });
 
   it("O2: a dismissal stored by the previous panel keeps that failover hidden", async () => {
@@ -83,7 +87,8 @@ describe("Overview › alerts", () => {
 
   it("O3: subscription expiry and data-cap warnings for enabled subscriptions only", async () => {
     await openOverview();
-    const banner = await screen.findByRole("status", { name: "Subscriptions" });
+    await screen.findByRole("status", { name: "Subscriptions" });
+    const banner = screen.getByRole("group", { name: "Subscriptions" });
     expect(within(banner).getByText("work: expires in 2d")).toBeInTheDocument();
     expect(within(banner).getByText("home: 86% of data cap")).toBeInTheDocument();
     expect(banner).not.toHaveTextContent("old");
@@ -93,7 +98,8 @@ describe("Overview › alerts", () => {
     const api$ = mockApi();
     api$.listSubs.mockResolvedValue([{ ...SUBS[0]!, expire_at: NOW_SEC - 10 }]);
     renderApp("/");
-    expect(await screen.findByRole("alert", { name: "Subscriptions" })).toHaveTextContent("work: expired");
+    await screen.findByRole("alert", { name: "Subscriptions" });
+    expect(screen.getByRole("group", { name: "Subscriptions" })).toHaveTextContent("work: expired");
   });
 
   it("O5: untunneled traffic raises the banner only above 50 000 bps", async () => {
@@ -101,7 +107,12 @@ describe("Overview › alerts", () => {
     api$.emitTraffic(withDirect(10_000, 40_000));
     expect(screen.queryByRole("status", { name: "Traffic bypassing the tunnel" })).toBeNull();
     api$.emitTraffic(withDirect(20_000, 100_000));
-    expect(screen.getByRole("status", { name: "Traffic bypassing the tunnel" })).toHaveTextContent("· 120 kbit/s");
+    expect(screen.getByRole("status", { name: "Traffic bypassing the tunnel" })).toHaveTextContent(/^Traffic bypassing the tunnel$/);
+    const rate = within(screen.getByRole("group", { name: "Traffic bypassing the tunnel" })).getByText("· 120 kbit/s");
+    expect(rate).toHaveAttribute("aria-live", "off");
+    api$.emitTraffic(withDirect(30_000, 100_000));   // the rate changes; the live region does not
+    expect(rate).toHaveTextContent("· 130 kbit/s");
+    expect(screen.getByRole("status", { name: "Traffic bypassing the tunnel" })).toHaveTextContent(/^Traffic bypassing the tunnel$/);
   });
 
   it("nothing is wrong: no alerts at all", async () => {

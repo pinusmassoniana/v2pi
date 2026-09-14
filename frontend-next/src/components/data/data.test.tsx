@@ -57,13 +57,14 @@ describe("Chip", () => {
 });
 
 describe("AlertBanner", () => {
-  it("a bad banner is an alert named by its title; its action runs and shows a busy label", async () => {
+  it("a bad banner is a group whose title alone is the alert; its action runs and shows a busy label", async () => {
     const onClick = vi.fn();
     const { rerender } = render(
       <AlertBanner tone="bad" title="Config drift" text="· xray runs another config" action={{ label: "Reload config", busyLabel: "Reloading…", onClick }} />,
     );
-    const banner = screen.getByRole("alert", { name: "Config drift" });
+    const banner = screen.getByRole("group", { name: "Config drift" });
     expect(banner).toHaveTextContent("Config drift · xray runs another config");
+    expect(within(banner).getByRole("alert", { name: "Config drift" })).toHaveTextContent(/^Config drift$/);
     await userEvent.click(within(banner).getByRole("button", { name: "Reload config" }));
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(within(banner).queryByRole("button", { name: /Dismiss/ })).toBeNull();
@@ -72,11 +73,19 @@ describe("AlertBanner", () => {
     expect(screen.getByRole("button", { name: "Reloading…" })).toBeDisabled();
   });
 
-  it("a warning is a status and can be dismissed", async () => {
+  it("a warning's title is the status; the sentence that ticks is outside it and not live", async () => {
     const onDismiss = vi.fn();
-    render(<AlertBanner tone="warn" title="Auto-failover" text="to nl-ams-03 · 10m ago" onDismiss={onDismiss}><span>extra</span></AlertBanner>);
-    const banner = screen.getByRole("status", { name: "Auto-failover" });
+    const { rerender } = render(<AlertBanner tone="warn" title="Auto-failover" text="to nl-ams-03 · 10m ago" onDismiss={onDismiss}><span>extra</span></AlertBanner>);
+    const banner = screen.getByRole("group", { name: "Auto-failover" });
     expect(banner).toHaveTextContent("extra");
+    const live = within(banner).getByRole("status", { name: "Auto-failover" });
+    expect(live).toHaveTextContent(/^Auto-failover$/);
+    expect(within(banner).queryByRole("alert")).toBeNull();
+    const age = within(banner).getByText("to nl-ams-03 · 10m ago");
+    expect(age).toHaveAttribute("aria-live", "off");
+    expect(live).not.toContainElement(age);
+    rerender(<AlertBanner tone="warn" title="Auto-failover" text="to nl-ams-03 · 11m ago" onDismiss={onDismiss}><span>extra</span></AlertBanner>);
+    expect(live).toHaveTextContent(/^Auto-failover$/);
     await userEvent.click(within(banner).getByRole("button", { name: "Dismiss: Auto-failover" }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });

@@ -24,8 +24,8 @@ export function cardFallback(queries: readonly CardQuery[], message: string, ske
   return <Skeleton className={skeletonClassName} />;
 }
 
-/** A read failed but the card still has its last good data: say so above it, with Retry. */
+/** A read failed but the card still has its last good data: say so above it, politely, with Retry. */
 export function staleNotice(queries: readonly CardQuery[], message: string): ReactNode {
   if (!queries.some((query) => query.isError && query.data !== undefined)) return null;
-  return <ErrorState message={`${message} — showing the last data`} onRetry={() => retryFailed(queries)} />;
+  return <ErrorState role="status" message={`${message} — showing the last data`} onRetry={() => retryFailed(queries)} />;
 }

@@ -16,9 +16,12 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
   );
 }
 
-export function ErrorState({ message, onRetry, retryLabel = "Retry" }: { message: string; onRetry?: () => void; retryLabel?: string }) {
+/** A failure with an optional Retry. `role="status"` for a polite note (e.g. a refresh failed but data is shown). */
+export function ErrorState({ message, onRetry, retryLabel = "Retry", role = "alert" }: {
+  message: string; onRetry?: () => void; retryLabel?: string; role?: "alert" | "status";
+}) {
   return (
-    <div role="alert" className="glass flex items-center justify-between gap-3 border-bad/40 p-4">
+    <div role={role} className="glass flex items-center justify-between gap-3 border-bad/40 p-4">
       <p className="text-sm text-bad">{message}</p>
       {onRetry ? <Button size="sm" onClick={onRetry}>{retryLabel}</Button> : null}
     </div>
