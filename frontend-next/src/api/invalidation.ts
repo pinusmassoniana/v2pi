@@ -1,4 +1,4 @@
-import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { useIsMutating, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { api } from "./client";
 import { keys } from "./keys";
@@ -62,6 +62,18 @@ export async function invalidate(client: QueryClient, name: MutationName): Promi
 }
 
 type Api = typeof api;
+
+/**
+ * The mutation key shared by every write that changes what carries the tunnel — connect / reload config (apply),
+ * connect best, roll back, disconnect, xray-core start / stop — so each of their controls stays disabled while any
+ * of them runs, and two never overlap.
+ */
+export const CONNECTION_WRITE = ["connection"] as const;
+
+/** A connection write (CONNECTION_WRITE) is running. */
+export function useConnectionBusy(): boolean {
+  return useIsMutating({ mutationKey: CONNECTION_WRITE }) > 0;
+}
 
 /**
  * The api write `name`, bound to its invalidation: call it like `api[name]`; once it succeeds, the

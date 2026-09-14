@@ -277,6 +277,33 @@ describe("Overview › roll back and disconnect", () => {
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["network"] }));
   });
 
+  it("connection writes never overlap: while a Disconnect runs, Reload config, Roll back and xray-core wait", async () => {
+    const { block } = await openOverview({ config_drift: "drift", prev_active_node_id: 2 });
+    let finish: () => void = () => {};
+    vi.spyOn(api, "disconnect").mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: true }); }));
+    const reload = within(screen.getByRole("group", { name: "Config drift" })).getByRole("button", { name: "Reload config" });
+    const rollback = within(block).getByRole("button", { name: "Roll back to de-fra-01" });
+    expect(reload).toBeEnabled();
+    expect(rollback).toBeEnabled();
+    await userEvent.click(within(block).getByRole("button", { name: "Disconnect" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Disconnect" }));
+    expect(await within(block).findByRole("button", { name: "Disconnecting…" })).toBeDisabled();
+    expect(reload).toBeDisabled();
+    expect(rollback).toBeDisabled();
+    for (const toggle of screen.getAllByRole("switch", { name: "xray-core" })) expect(toggle).toBeDisabled();
+    await act(async () => finish());
+    await waitFor(() => expect(reload).toBeEnabled());
+  });
+
+  it("Reload config re-applies the node that is active when it is pressed", async () => {
+    const { client } = await openOverview({ config_drift: "drift" });
+    const apply = vi.spyOn(api, "apply").mockResolvedValue({ ok: true });
+    const reload = within(await screen.findByRole("group", { name: "Config drift" })).getByRole("button", { name: "Reload config" });
+    act(() => { client.setQueryData<Status>(["status"], (old) => ({ ...old!, active_node_id: 2 })); });
+    await userEvent.click(reload);
+    await waitFor(() => expect(apply).toHaveBeenCalledWith(2));
+  });
+
   it("a failed roll back raises the backend's message", async () => {
     const { block } = await openOverview({ prev_active_node_id: 2 });
     vi.spyOn(api, "rollback").mockRejectedValue(new ApiError(409, "rollback target was revoked"));

@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Status } from "../../api/client";
-import { useApiWrite } from "../../api/invalidation";
+import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError } from "../../components/ui/Toaster";
@@ -11,7 +11,9 @@ export function XrayCard({ status, className }: { status?: Status; className?: s
   const queryClient = useQueryClient();
   const start = useApiWrite("xrayStart");
   const stop = useApiWrite("xrayStop");
+  const busy = useConnectionBusy();
   const toggle = useMutation({
+    mutationKey: CONNECTION_WRITE,
     mutationFn: async (on: boolean) => {
       await (on ? start() : stop());
       // The write succeeded: show the new state now instead of flicking back to the old one until the
@@ -28,7 +30,7 @@ export function XrayCard({ status, className }: { status?: Status; className?: s
         <p className={cn("text-[11px]", running ? "text-ok" : "text-t3")}>{status?.xray_state ?? "—"}</p>
       </div>
       <div className="ml-auto">
-        <Toggle label="xray-core" checked={running} disabled={!status || toggle.isPending} onCheckedChange={(on) => toggle.mutate(on)} />
+        <Toggle label="xray-core" checked={running} disabled={!status || busy} onCheckedChange={(on) => toggle.mutate(on)} />
       </div>
     </div>
   );

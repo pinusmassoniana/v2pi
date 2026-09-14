@@ -13,6 +13,8 @@ export interface AlertAction {
   /** Shown while `busy`. */
   busyLabel?: string;
   busy?: boolean;
+  /** Unavailable for another reason than its own work (e.g. a related write is running). */
+  disabled?: boolean;
   onClick: () => void;
 }
 
@@ -54,7 +56,7 @@ export function AlertBanner({ tone, title, text, icon = "!", children, action, o
         {children}
       </div>
       {action ? (
-        <Button size="sm" variant={tone === "bad" ? "danger" : "secondary"} disabled={action.busy} onClick={action.onClick}>
+        <Button size="sm" variant={tone === "bad" ? "danger" : "secondary"} disabled={action.busy || action.disabled} onClick={action.onClick}>
           {action.busy ? (action.busyLabel ?? action.label) : action.label}
         </Button>
       ) : null}

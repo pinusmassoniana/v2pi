@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Network, Node, Status } from "../../../api/client";
-import { useApiWrite } from "../../../api/invalidation";
+import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../../api/invalidation";
 import { keys } from "../../../api/keys";
 import { useTraffic } from "../../../api/traffic";
 import { openPalette } from "../../../app/shell/palette";
@@ -34,12 +34,15 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const queryClient = useQueryClient();
   const rollbackWrite = useApiWrite("rollback");
   const disconnectWrite = useApiWrite("disconnect");
+  const connectionBusy = useConnectionBusy();
   const rollback = useMutation({
+    mutationKey: CONNECTION_WRITE,
     mutationFn: (target: string) => rollbackWrite().then((result) => ({ ok: Boolean(result?.ok), target })),
     onSuccess: ({ ok, target }) => notifyOk(ok ? `Rolled back to ${target}` : "Nothing to roll back"),
     onError: (error) => notifyError(error, "roll back failed"),
   });
   const disconnect = useMutation({
+    mutationKey: CONNECTION_WRITE,
     mutationFn: ({ id }: { id: number; name: string }) => disconnectWrite(id),
     onSuccess: (_result, { name }) => notifyOk(`Disconnected from ${name}`),
     onError: (error) => notifyError(error, "disconnect failed"),
@@ -71,7 +74,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const kill = killSwitchState(network);
   const pool = poolSize(network?.segment);
   const clients = network?.status.dhcp_clients;
-  const busy = rollback.isPending || disconnect.isPending;
+  const busy = connectionBusy;   // this block's own writes, or any other connection write
 
   const orb = online
     ? { value: latency === null ? "—" : String(latency), caption: latency === null ? "ONLINE" : "ms · ONLINE", tone: "ok" as const }

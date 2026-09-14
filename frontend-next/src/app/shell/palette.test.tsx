@@ -60,6 +60,26 @@ describe("command palette", () => {
     await waitFor(() => expect(rollback).toHaveBeenCalledTimes(1));
   });
 
+  it("a connect from the palette is a connection write: the other connection controls wait for it", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2 });
+    let finish: () => void = () => {};
+    vi.spyOn(api, "connectBest").mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: true, node_id: 2 }); }));
+    renderApp("/");
+    const block = await screen.findByRole("region", { name: "Status" });
+    const disconnect = await within(block).findByRole("button", { name: "Disconnect" });
+    act(() => openPalette());
+    await userEvent.click(await screen.findByText("Connect best"));
+    await waitFor(() => expect(disconnect).toBeDisabled());
+    expect(within(block).getByRole("button", { name: "Roll back to de-fra-01" })).toBeDisabled();
+    act(() => openPalette());
+    expect((await screen.findByText("Connect best")).closest("[cmdk-item]")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("Roll back to previous node").closest("[cmdk-item]")).toHaveAttribute("aria-disabled", "true");
+    act(() => closePalette());
+    await act(async () => finish());
+    await waitFor(() => expect(disconnect).toBeEnabled());
+  });
+
   it("roll back is not offered when the gateway says it would not work", async () => {
     const api$ = mockApi();
     api$.getStatus.mockResolvedValue({ ...STATUS, prev_active_node_id: 2, rollback_available: false });

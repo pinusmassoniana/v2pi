@@ -1,8 +1,9 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { Status, Subscription } from "../../../api/client";
 import { serverNow } from "../../../api/clock";
-import { useApiWrite } from "../../../api/invalidation";
+import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../../api/invalidation";
+import { keys } from "../../../api/keys";
 import { useTraffic } from "../../../api/traffic";
 import { AlertBanner } from "../../../components/data/AlertBanner";
 import { Chip } from "../../../components/data/Chip";
@@ -25,8 +26,11 @@ export interface AlertsProps {
 export function Alerts({ status, subs, activeName, className }: AlertsProps) {
   const traffic = useTraffic();
   const [dismissed, setDismissed] = useState<number | null>(readFailoverDismissed);
+  const queryClient = useQueryClient();
   const apply = useApiWrite("apply");
+  const connectionBusy = useConnectionBusy();
   const reload = useMutation({
+    mutationKey: CONNECTION_WRITE,
     mutationFn: (nodeId: number) => apply(nodeId),
     onSuccess: () => notifyOk("Config reloaded"),
     onError: (error) => notifyError(error, "reload failed"),
@@ -41,6 +45,12 @@ export function Alerts({ status, subs, activeName, className }: AlertsProps) {
 
   if (!drift && failoverAt === null && warnings.length === 0 && !bypass.alert) return null;
 
+  // Re-apply the node that is active when the button is pressed, not the one this render saw.
+  function reloadActive() {
+    const nodeId = queryClient.getQueryData<Status>(keys.status)?.active_node_id ?? null;
+    if (nodeId !== null) reload.mutate(nodeId);
+  }
+
   return (
     <div className={cn("grid grid-cols-1 gap-2.5 md:grid-cols-3", className)}>
       {drift ? (
@@ -49,7 +59,7 @@ export function Alerts({ status, subs, activeName, className }: AlertsProps) {
           title="Config drift"
           text="· xray is running a different config than the one on disk"
           className="md:col-span-3"
-          action={{ label: "Reload config", busyLabel: "Reloading…", busy: reload.isPending, onClick: () => reload.mutate(activeId) }}
+          action={{ label: "Reload config", busyLabel: "Reloading…", busy: reload.isPending, disabled: connectionBusy, onClick: reloadActive }}
         />
       ) : null}
       {failoverAt !== null ? (

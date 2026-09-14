@@ -1,9 +1,9 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import { useEffect } from "react";
 import type { Status } from "../../api/client";
-import { useApiWrite } from "../../api/invalidation";
+import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -11,7 +11,9 @@ import { ROLLBACK_TARGET_CHANGED, rollbackStillValid } from "../../features/home
 import { SECTIONS, type AppPath } from "../nav";
 import { closePalette, openPalette, usePalette } from "./palette";
 
-const ITEM = "flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2 text-sm text-t1 data-[selected=true]:bg-glass-2";
+const ITEM =
+  "flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2 text-sm text-t1 data-[selected=true]:bg-glass-2 " +
+  "data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-50";
 const GROUP =
   "px-1 pb-2 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] " +
   "[&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[.1em] [&_[cmdk-group-heading]]:text-t3";
@@ -29,6 +31,9 @@ export function CommandPalette() {
   const rollback = useApiWrite("rollback");
   const probeTcp = useApiWrite("probeTcp");
   const probeHttp = useApiWrite("probeHttp");
+  // Connect, connect best and roll back run as connection writes: offered only while no other one is running.
+  const connectionBusy = useConnectionBusy();
+  const connection = useMutation({ mutationKey: CONNECTION_WRITE, mutationFn: (action: () => Promise<string>) => action() });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -51,10 +56,10 @@ export function CommandPalette() {
     void navigate({ to: "/nodes/$nodeId", params: { nodeId: String(id) } });
   };
 
-  async function run(action: () => Promise<string>, failure: string) {
+  async function run(action: () => Promise<string>, failure: string, { connectionWrite = false } = {}) {
     closePalette();
     try {
-      notifyOk(await action());
+      notifyOk(await (connectionWrite ? connection.mutateAsync(action) : action()));
     } catch (error) {
       notifyError(error, failure);
     }
@@ -68,7 +73,7 @@ export function CommandPalette() {
       notifyError(null, ROLLBACK_TARGET_CHANGED);
       return;
     }
-    await run(async () => ((await rollback()).ok ? "Rolled back to the previous node" : "Nothing to roll back"), "roll back failed");
+    await run(async () => ((await rollback()).ok ? "Rolled back to the previous node" : "Nothing to roll back"), "roll back failed", { connectionWrite: true });
   }
 
   return (
@@ -91,8 +96,9 @@ export function CommandPalette() {
             <Command.Item
               key={n.id}
               value={`node ${n.id} ${n.name} ${n.address} ${n.note}`}
+              disabled={mode === "nodes" && connectionBusy}
               onSelect={() => (mode === "nodes"
-                ? void run(async () => { await apply(n.id); return `Connected to ${n.name}`; }, "connect failed")
+                ? void run(async () => { await apply(n.id); return `Connected to ${n.name}`; }, "connect failed", { connectionWrite: true })
                 : openNode(n.id))}
               className={ITEM}
             >
@@ -114,7 +120,8 @@ export function CommandPalette() {
             <Command.Group heading="Actions" className={GROUP}>
               <Command.Item
                 value="action connect best healthiest"
-                onSelect={() => void run(async () => `Connected to node ${(await connectBest(null)).node_id}`, "connect best failed")}
+                disabled={connectionBusy}
+                onSelect={() => void run(async () => `Connected to node ${(await connectBest(null)).node_id}`, "connect best failed", { connectionWrite: true })}
                 className={ITEM}
               >
                 Connect best
@@ -130,7 +137,7 @@ export function CommandPalette() {
                 Refresh all subscriptions
               </Command.Item>
               {rollbackAvailable ? (
-                <Command.Item value="action roll back previous node" onSelect={() => void rollBack()} className={ITEM}>
+                <Command.Item value="action roll back previous node" disabled={connectionBusy} onSelect={() => void rollBack()} className={ITEM}>
                   Roll back to previous node
                 </Command.Item>
               ) : null}
