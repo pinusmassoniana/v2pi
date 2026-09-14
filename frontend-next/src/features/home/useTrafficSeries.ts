@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import type { TrafficFrame } from "../../api/client";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
@@ -34,11 +34,25 @@ export function useTrafficSeries(windowSec: TrafficWindowSec): TrafficSeries {
     () => (history.data?.samples ?? []).map(([ts, up, down]) => ({ ts, up, down })),
     [history.data],
   );
+  // Two windows, memoised separately so a live frame — which bumps `traffic.version` roughly once a
+  // second — only ever invalidates the live-window slice. `traffic.samples` is one ring array mutated
+  // in place for the store's life (createTrafficStore in api/traffic.ts), so its own reference never
+  // changes; `traffic.version` is the store's designated change signal, so it stands in for it here.
+  // The recorded-history slice depends on nothing a live frame touches, so it — and the chart geometry
+  // built from it — stays referentially stable between history polls.
+  const { version: liveVersion } = traffic;
+  const liveSamples = useMemo(() => {
+    void liveVersion; // read only to key the memo — the ring array itself never changes reference
+    return windowSlice(traffic.samples, windowSec);
+  }, [traffic.samples, liveVersion, windowSec]);
+  const recordedSamples = useMemo(() => windowSlice(recorded, windowSec), [recorded, windowSec]);
+  const { refetch } = history;
+  const retry = useCallback(() => void refetch(), [refetch]);
   return {
-    samples: windowSlice(long ? recorded : traffic.samples, windowSec),
+    samples: long ? recordedSamples : liveSamples,
     pending: long && history.isPending,
     error: long && history.isError ? history.error : null,
-    retry: () => void history.refetch(),
+    retry,
     disabled: traffic.disabled,
     live: traffic.disabled ? null : traffic.live,
   };

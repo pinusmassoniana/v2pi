@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { createQueryClient } from "../../api/queryClient";
@@ -80,6 +81,31 @@ describe("useTrafficSeries", () => {
     api$.emitTraffic({ disabled: true });
     expect(latest!.disabled).toBe(true);
     expect(latest!.live).toBeNull();
+  });
+
+  it("keeps the same samples reference across live frames while a long window is selected", async () => {
+    vi.useFakeTimers();
+    const api$ = mockApi();
+    api$.getTrafficHistory.mockResolvedValue({ samples: [[T(0), 10, 20], [T(60), 11, 21]], interval_ms: 60_000 });
+    const client = createQueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useTrafficSeries(86_400), { wrapper });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const samples = result.current.samples;
+    expect(samples.length).toBeGreaterThan(0);
+
+    const t = TRAFFIC_FRAME.ts;
+    for (const [offset, down] of [[0, 1], [30_000, 2], [90_000, 3]] as const) api$.emitTraffic(frame(t + offset, down));
+    expect(result.current.samples).toBe(samples);
+  });
+
+  it("gives a new samples reference on each live frame while a short window is selected", () => {
+    const api$ = mockApi();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: createQueryClient() }, children);
+    const { result } = renderHook(() => useTrafficSeries(600), { wrapper });
+    const before = result.current.samples;
+    api$.emitTraffic(TRAFFIC_FRAME);
+    expect(result.current.samples).not.toBe(before);
   });
 });
 

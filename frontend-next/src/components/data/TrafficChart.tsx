@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { TrafficSample } from "../../api/traffic";
 import { cn } from "../../lib/cn";
 import { fmtRate } from "../../lib/format";
@@ -41,7 +41,10 @@ const clock = (ms: number) => {
 
 export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, body, height = 184 }: TrafficChartProps) {
   const id = useSvgId("traffic");
-  const g = trafficGeometry(samples, windowSec, peak, height);
+  // Rebuilding two 700-point path strings is the expensive part of a render; skip it unless the
+  // window's actual inputs changed (a 24h/7d window's `samples` stays referentially stable between
+  // history polls even while live frames keep arriving — see useTrafficSeries.ts).
+  const g = useMemo(() => trafficGeometry(samples, windowSec, peak, height), [samples, windowSec, peak, height]);
   const label = windowLabel(windowSec);
 
   let plot: ReactNode = body;
