@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TrafficFrame, TrafficHistoryResp, TrafficMessage } from "./client";
-import { RING_SIZE, createTrafficStore } from "./traffic";
+import { IDLE_CLOSE_MS, RING_SIZE, createTrafficStore } from "./traffic";
+
+afterEach(() => vi.useRealTimers());
 
 function fakeConnection() {
   let onMessage: (m: TrafficMessage) => void = () => {};
@@ -21,15 +23,39 @@ const noHistory = () => Promise.resolve<TrafficHistoryResp>({ samples: [], inter
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe("traffic store", () => {
-  it("opens one socket for any number of subscribers and closes it after the last leaves", () => {
+  it("opens one socket for any number of subscribers and closes it a while after the last leaves", () => {
+    vi.useFakeTimers();
     const c = fakeConnection();
     const store = createTrafficStore(c.connect, noHistory);
     const a = store.subscribe(() => {});
     const b = store.subscribe(() => {});
     expect(c.connect).toHaveBeenCalledTimes(1);
     a();
-    expect(c.handle.close).not.toHaveBeenCalled();
     b();
+    vi.advanceTimersByTime(IDLE_CLOSE_MS - 1);
+    expect(c.handle.close).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(c.handle.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("a subscriber back within the idle delay keeps the same socket and its samples", () => {
+    vi.useFakeTimers();
+    const c = fakeConnection();
+    const loadHistory = vi.fn(noHistory);
+    const store = createTrafficStore(c.connect, loadHistory);
+    const leave = store.subscribe(() => {});
+    c.push(frame(1000));
+    leave();
+    vi.advanceTimersByTime(IDLE_CLOSE_MS - 1_000);
+    const again = store.subscribe(() => {});
+    vi.advanceTimersByTime(IDLE_CLOSE_MS * 2);
+    expect(c.connect).toHaveBeenCalledTimes(1);
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+    expect(c.handle.close).not.toHaveBeenCalled();
+    expect(store.getSnapshot().samples).toHaveLength(1);
+    // and the delay starts over when that one leaves too
+    again();
+    vi.advanceTimersByTime(IDLE_CLOSE_MS);
     expect(c.handle.close).toHaveBeenCalledTimes(1);
   });
 
@@ -68,6 +94,17 @@ describe("traffic store", () => {
     expect(store.getSnapshot().version).toBe(v);
     c.push({ disabled: true });
     expect(store.getSnapshot().disabled).toBe(true);
+  });
+
+  it("reset does not wait out the idle delay", () => {
+    vi.useFakeTimers();
+    const c = fakeConnection();
+    const store = createTrafficStore(c.connect, noHistory);
+    store.subscribe(() => {})();
+    store.reset();
+    expect(c.handle.close).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(IDLE_CLOSE_MS);
+    expect(c.handle.close).toHaveBeenCalledTimes(1);
   });
 
   it("reset closes the socket at once and forgets the frame, the samples and the disabled flag", async () => {

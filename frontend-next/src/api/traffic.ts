@@ -15,6 +15,8 @@ export interface TrafficSnapshot {
 }
 
 export const RING_SIZE = 4000;
+/** How long the socket outlives its last subscriber, so switching screens does not reconnect. */
+export const IDLE_CLOSE_MS = 15_000;
 const HISTORY_WINDOW_SEC = 3600;
 const HISTORY_MAX_POINTS = 1200;
 
@@ -31,6 +33,7 @@ export function createTrafficStore(
   let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0 };
   const listeners = new Set<() => void>();
   let handle: TrafficHandle | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
   // Bumped by reset(), so a history request from the ended session cannot refill the window.
   let epoch = 0;
 
@@ -71,26 +74,38 @@ export function createTrafficStore(
     emit({ live: message, disabled: false });
   };
 
+  const close = () => {
+    handle?.close();
+    handle = null;
+  };
+
+  const cancelIdleClose = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+
   return {
     subscribe(listener: () => void): () => void {
       listeners.add(listener);
+      cancelIdleClose();
       if (!handle) {
         handle = connect(onMessage, () => { void backfill(); });
         void backfill();
       }
       return () => {
         listeners.delete(listener);
-        if (listeners.size === 0 && handle) {
-          handle.close();
-          handle = null;
+        // Home › Overview ↔ Traffic unmounts one chart and mounts the next: keep the stream and its
+        // window for a while instead of reconnecting and refetching history on every switch.
+        if (listeners.size === 0 && handle && !idleTimer) {
+          idleTimer = setTimeout(() => { idleTimer = null; close(); }, IDLE_CLOSE_MS);
         }
       };
     },
     /** End of session: close the socket now and forget the frame, the samples and the disabled flag. */
     reset(): void {
       epoch += 1;
-      handle?.close();
-      handle = null;
+      cancelIdleClose();
+      close();
       samples.length = 0;
       emit({ live: null, disabled: false });
     },
