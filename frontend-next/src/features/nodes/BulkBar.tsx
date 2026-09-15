@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Node } from "../../api/client";
-import { useApiWrite } from "../../api/invalidation";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { api, type Node } from "../../api/client";
+import { invalidate, useApiWrite, type MutationName } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
@@ -18,15 +18,25 @@ class BulkStop extends Error {
   constructor(public node: Node, public cause: unknown) { super(node.name); }
 }
 
-async function eachInTurn(nodes: readonly Node[], write: (node: Node) => Promise<unknown>): Promise<number> {
-  for (const node of nodes) {
-    try {
-      await write(node);
-    } catch (error) {
-      throw new BulkStop(node, error);
+/**
+ * Write each node in turn, stopping at the first failure. The lists the write changes are re-read once, when the
+ * run ends or stops, not after every node.
+ */
+async function eachInTurn(
+  client: QueryClient, name: MutationName, nodes: readonly Node[], write: (node: Node) => Promise<unknown>,
+): Promise<number> {
+  try {
+    for (const node of nodes) {
+      try {
+        await write(node);
+      } catch (error) {
+        throw new BulkStop(node, error);
+      }
     }
+    return nodes.length;
+  } finally {
+    void invalidate(client, name);
   }
-  return nodes.length;
 }
 
 function stopped(error: unknown, fallback: string): void {
@@ -49,14 +59,12 @@ export interface BulkBarProps {
 export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   const queryClient = useQueryClient();
   const profiles = useQuery(queries.profiles());   // read for the select; nothing here polls it
-  const updateNode = useApiWrite("updateNode");
-  const deleteNode = useApiWrite("deleteNode");
   const detachNodes = useApiWrite("detachNodes");
 
   const assign = useMutation({
     mutationKey: BULK_KEY,
     mutationFn: ({ nodes, profileId }: { nodes: readonly Node[]; profileId: number | null; profileName: string }) =>
-      eachInTurn(nodes, (node) => updateNode(node.id, { tuning_profile_id: profileId })),
+      eachInTurn(queryClient, "updateNode", nodes, (node) => api.updateNode(node.id, { tuning_profile_id: profileId })),
     onSuccess: (count, { profileName }) => {
       notifyOk(`Assigned ${profileName} to ${count} node(s)`);
       onClear();
@@ -74,7 +82,7 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   });
   const remove = useMutation({
     mutationKey: BULK_KEY,
-    mutationFn: (nodes: readonly Node[]) => eachInTurn(nodes, (node) => deleteNode(node.id)),
+    mutationFn: (nodes: readonly Node[]) => eachInTurn(queryClient, "deleteNode", nodes, (node) => api.deleteNode(node.id)),
     onSuccess: (count) => {
       notifyOk(`Deleted ${count} server(s)`);
       onClear();

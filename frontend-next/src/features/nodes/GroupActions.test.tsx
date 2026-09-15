@@ -17,6 +17,9 @@ afterEach(() => {
 const toolbar = () => within(screen.getByRole("region", { name: "Servers toolbar" }));
 const row = (name: string) => document.querySelector<HTMLElement>(`[data-node-name="${name}"]`)!;
 const selectionBar = () => screen.getByRole("region", { name: "Selection" });
+/** How many times `key` was invalidated through this spy. */
+const invalidations = (spy: { mock: { calls: unknown[][] } }, key: string) =>
+  spy.mock.calls.filter(([filters]) => JSON.stringify((filters as { queryKey?: unknown } | undefined)?.queryKey) === JSON.stringify([key])).length;
 
 async function openList(path = "/nodes") {
   const api$ = mockNodeGroups(mockApi());
@@ -72,8 +75,9 @@ describe("Servers › group actions (N8–N10)", () => {
     await waitFor(() => expect(toolbar().getByRole("button", { name: "TCP ping" })).toBeEnabled());
   });
 
-  it("Test all probes every shown row in order, counting down, past a failure", async () => {
-    const { api$ } = await openList("/nodes?q=example&sort=name");
+  it("Test all probes every shown row in order, counting down, past a failure; health is re-read once at the end", async () => {
+    const { api$, client } = await openList("/nodes?q=example&sort=name");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
     const pending: ((health: NodeHealth) => void)[] = [];
     api$.probeNode.mockImplementation((id) => (id === 2
       ? Promise.reject(new Error("probe failed"))
@@ -87,6 +91,7 @@ describe("Servers › group actions (N8–N10)", () => {
     for (let i = 0; i < 4; i++) await act(async () => pending.shift()!(NODE_HEALTH[0]!));
     await waitFor(() => expect(toolbar().getByRole("button", { name: "Test all (real)" })).toBeEnabled());
     expect(api$.probeNode.mock.calls.map(([id]) => id)).toEqual([5, 2, 3, 1, 4, 6]);
+    expect(invalidations(invalidate, "nodeHealth")).toBe(1);
   });
 
   it("Test all counts thrown probe failures and reports them once, at the end", async () => {
@@ -181,8 +186,9 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     await waitFor(() => expect(within(selectionBar()).getByText("1 selected")).toBeInTheDocument());
   });
 
-  it("assigns a tuning profile node by node, then clears the selection", async () => {
-    const { api$ } = await openList();
+  it("assigns a tuning profile node by node, then clears the selection; the lists are re-read once", async () => {
+    const { api$, client } = await openList();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
     const success = vi.spyOn(toast, "success");
     await userEvent.click(within(row("de-fra-01")).getByRole("checkbox", { name: "Select de-fra-01" }));
     await userEvent.click(within(row("fi-hel-02")).getByRole("checkbox", { name: "Select fi-hel-02" }));
@@ -193,6 +199,7 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     await waitFor(() => expect(success).toHaveBeenCalledWith("Assigned fragment-tls to 2 node(s)", { duration: 8000 }));
     expect(api$.updateNode.mock.calls).toEqual([[2, { tuning_profile_id: 2 }], [3, { tuning_profile_id: 2 }]]);
     expect(screen.queryByRole("region", { name: "Selection" })).toBeNull();
+    expect(invalidations(invalidate, "nodes")).toBe(1);
   });
 
   it("(global default) clears the profile; the first failure stops the run and names its node", async () => {
@@ -218,8 +225,9 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     await waitFor(() => expect(success).toHaveBeenCalledWith("Detached 2 node(s) to Servers", { duration: 8000 }));
   });
 
-  it("Servers: bulk delete asks first, deletes in turn and stops at the first failure", async () => {
-    const { api$ } = await openList("/nodes?group=servers");
+  it("Servers: bulk delete asks first, deletes in turn and stops at the first failure, then re-reads the lists once", async () => {
+    const { api$, client } = await openList("/nodes?group=servers");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
     const error = vi.spyOn(toast, "error");
     expect(screen.queryByRole("button", { name: "Detach to Servers" })).toBeNull();
     for (const name of ["vps-hel", "lab-lan", "kz-ala-01"]) await userEvent.click(within(row(name)).getByRole("checkbox", { name: `Select ${name}` }));
@@ -235,6 +243,7 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(error).toHaveBeenCalledWith("lab-lan: database is locked", { duration: 20000 }));
     expect(api$.deleteNode.mock.calls).toEqual([[7], [8]]);
+    expect(invalidations(invalidate, "nodes")).toBe(1);
   });
 
   it("Clear empties the selection", async () => {

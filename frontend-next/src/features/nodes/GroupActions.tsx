@@ -1,8 +1,8 @@
 import { useIsMutating, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { Activity, Gauge, Radar, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, errText, type Node, type NodeHealth } from "../../api/client";
-import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../api/invalidation";
+import { ApiError, api, errText, type Node, type NodeHealth } from "../../api/client";
+import { CONNECTION_WRITE, invalidate, useApiWrite, useConnectionBusy } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { Button } from "../../components/ui/Button";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -31,7 +31,6 @@ export interface GroupActionsProps {
  */
 function useTestAll(shown: readonly Node[]) {
   const queryClient = useQueryClient();
-  const probe = useApiWrite("probeNode");
   const [remaining, setRemaining] = useState(0);
   const mounted = useRef(false);
   useEffect(() => {
@@ -45,19 +44,25 @@ function useTestAll(shown: readonly Node[]) {
       setRemaining(queue.length);
       let failed = 0;
       let lastError: unknown = null;
-      for (const node of queue) {
-        try {
-          const result = await probe(node.id);
-          queryClient.setQueryData<NodeHealth[]>(keys.nodeHealth, (old) => mergeHealth(old, result));
-        } catch (error) {
-          // one node failing its test is a result too; carry on with the next, but remember it happened
-          failed += 1;
-          lastError = error;
+      // Each result lands in the list as it arrives; the health list is re-read once, when the run ends or stops,
+      // instead of after every probe.
+      try {
+        for (const node of queue) {
+          try {
+            const result = await api.probeNode(node.id);
+            queryClient.setQueryData<NodeHealth[]>(keys.nodeHealth, (old) => mergeHealth(old, result));
+          } catch (error) {
+            // one node failing its test is a result too; carry on with the next, but remember it happened
+            failed += 1;
+            lastError = error;
+          }
+          if (!mounted.current) return { total: queue.length, failed, lastError };
+          setRemaining((count) => count - 1);
         }
-        if (!mounted.current) return { total: queue.length, failed, lastError };
-        setRemaining((count) => count - 1);
+        return { total: queue.length, failed, lastError };
+      } finally {
+        void invalidate(queryClient, "probeNode");
       }
-      return { total: queue.length, failed, lastError };
     },
     onSuccess: ({ total, failed, lastError }) => {
       if (failed > 0) notifyError(null, `Test all: ${failed} of ${total} probes failed — ${errText(lastError, "probe failed")}`);
