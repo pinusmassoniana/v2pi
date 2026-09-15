@@ -163,6 +163,39 @@ describe("Anti-DPI › row actions (T2)", () => {
     await waitFor(() => expect(error).toHaveBeenCalledWith("cannot delete the default profile", { duration: 20000 }));
   });
 
+  it("a 502 on Apply, Make default or Delete of the live profile says nothing changed, and re-reads what the write could move", async () => {
+    const { api$, client } = await openAntiDpi();
+    const error = vi.spyOn(toast, "error");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const refused = new ApiError(502, "xray -test failed: bad config");
+    async function expectRefused(message: string) {
+      await waitFor(() => expect(error).toHaveBeenCalledWith(`${message} — applying to the tunnel failed: xray -test failed: bad config`, { duration: 20000 }));
+      // The store rolled the write back; the profiles, and the nodes, status and network a failed re-apply can move, are read again.
+      expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(expect.arrayContaining([keys.profiles, keys.nodes, keys.status, keys.network]));
+      invalidate.mockClear();
+      await waitFor(() => expect(within(row("balanced")).getByRole("button", { name: "Edit balanced" })).toBeEnabled());
+    }
+
+    api$.applyProfileActive.mockRejectedValueOnce(refused);
+    await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" }));
+    await answer("Apply mux-heavy", "Apply");
+    await expectRefused("not applied");
+
+    api$.setDefaultProfile.mockRejectedValueOnce(refused);
+    await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Make mux-heavy the default" }));
+    await expectRefused("default not changed");
+
+    api$.deleteProfile.mockRejectedValueOnce(refused);
+    await userEvent.click(within(row("fragment-tls")).getByRole("button", { name: "Edit fragment-tls" }));
+    await userEvent.click(within(row("fragment-tls")).getByRole("button", { name: "Delete fragment-tls" }));
+    await answer('Delete profile "fragment-tls"?', "Delete");
+    await expectRefused("not deleted");
+    expect(api$.deleteProfile).toHaveBeenCalledWith(2);
+    // Not deleted, so the editor keeps the profile it was editing.
+    expect(within(editor()).getByRole("heading", { name: "Editing profile · id 2" })).toBeInTheDocument();
+    expect(error).not.toHaveBeenCalledWith("xray -test failed: bad config", expect.anything());
+  });
+
   it("Edit loads a profile into the editor; deleting that profile clears it; New starts blank", async () => {
     await openAntiDpi();
     expect(within(editor()).getByRole("heading", { name: "New profile" })).toBeInTheDocument();

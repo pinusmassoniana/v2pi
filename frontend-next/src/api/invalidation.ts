@@ -118,11 +118,12 @@ export const CONNECTION_BUSY = "Another connection change is still running — t
 /**
  * A 502 on a connection write: the write and its re-apply run in one store transaction (spec §13.2), so a failed
  * apply rolls the write back too — the gateway still holds what it had before the write was sent. Shared by Routing
- * (`useRoutingActions.ts`) and the Anti-DPI profile editor (`ProfileEditor.tsx`), so both show this instead of the
- * raw apply error.
+ * (`useRoutingActions.ts`), the Anti-DPI profile editor (`ProfileEditor.tsx`) and the profile row actions
+ * (`useProfileActions.ts`), so each shows this instead of the raw apply error; `outcome` names what did not happen
+ * ("not applied", "default not changed", "not deleted").
  */
-export function saveRefusedMessage(error: ApiError): string {
-  return `not saved — applying to the tunnel failed: ${error.message}`;
+export function saveRefusedMessage(error: ApiError, outcome = "not saved"): string {
+  return `${outcome} — applying to the tunnel failed: ${error.message}`;
 }
 
 /**

@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { ApiError, type Status, type TuningProfile } from "../../api/client";
-import { CONNECTION_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, isConnectionBusy, useApiWrite } from "../../api/invalidation";
+import {
+  CONNECTION_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, invalidate, isConnectionBusy, saveRefusedMessage, useApiWrite,
+} from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -42,29 +44,45 @@ export function useProfileActions(editor: { edit: (profile: TuningProfile) => Pr
   const deleteWrite = useApiWrite("deleteProfile");
   const { edit, clone, onDeleted } = editor;
 
+  /**
+   * A write's failure. A 502 is spec §13.2: the backend wrote and re-applied in one transaction and rolled both back,
+   * so say what did not happen in Routing's words, and re-read the profiles and what a failed re-apply can move.
+   */
+  const failed = (name: "applyProfileActive" | "setDefaultProfile" | "deleteProfile", outcome: string, fallback: string) => (error: Error) => {
+    if (error instanceof ApiError && error.status === 502) {
+      notifyError(null, saveRefusedMessage(error, outcome));
+      void invalidate(queryClient, name);
+    } else {
+      notifyError(error, fallback);
+    }
+  };
+
   const apply = useMutation({
     mutationKey: PROFILE_CONNECTION_WRITE,
     mutationFn: (profile: TuningProfile) => applyWrite(profile.id),
     onSuccess: (result) => notifyOk(`applied to active node ${result.node_id}`),
-    onError: (error) => notifyError(error instanceof ApiError && error.status === 409 ? null : error, error instanceof ApiError && error.status === 409 ? NO_ACTIVE_NODE : "apply failed"),
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) notifyError(null, NO_ACTIVE_NODE);
+      else failed("applyProfileActive", "not applied", "apply failed")(error);
+    },
   });
   const makeDefault = useMutation({
     mutationKey: PROFILE_CONNECTION_WRITE,
     mutationFn: (profile: TuningProfile) => defaultWrite(profile.id),
     onSuccess: () => notifyOk("default updated"),
-    onError: (error) => notifyError(error, "set-default failed"),
+    onError: failed("setDefaultProfile", "default not changed", "set-default failed"),
   });
   const removeLive = useMutation({
     mutationKey: PROFILE_CONNECTION_WRITE,
     mutationFn: (profile: TuningProfile) => deleteWrite(profile.id),
     onSuccess: (_result, profile) => notifyOk(`deleted "${profile.name}"`),
-    onError: (error) => notifyError(error, "delete failed"),
+    onError: failed("deleteProfile", "not deleted", "delete failed"),
   });
   const removePlain = useMutation({
     mutationKey: PROFILE_WRITE,
     mutationFn: (profile: TuningProfile) => deleteWrite(profile.id),
     onSuccess: (_result, profile) => notifyOk(`deleted "${profile.name}"`),
-    onError: (error) => notifyError(error, "delete failed"),
+    onError: failed("deleteProfile", "not deleted", "delete failed"),
   });
   const { mutate: applyMutate } = apply;
   const { mutate: defaultMutate } = makeDefault;
