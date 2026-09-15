@@ -237,7 +237,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
             </>
           ) : <span className="text-[11px] text-t3">Add server and Import live in the Servers group</span>) : undefined}
         />
-        <FailoverNote lastFailoverAt={status?.lastFailoverAt ?? null} className="px-1" />
+        <FailoverNote armed={status?.failoverEnabled} lastFailoverAt={status?.lastFailoverAt ?? null} className="px-1" />
         {statusError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
         {ready ? staleNotice([nodes, health, subs], "Servers did not refresh") : null}
         {/* The rows still show, but every probe cell would read as never probed: say the health is what's missing. */}

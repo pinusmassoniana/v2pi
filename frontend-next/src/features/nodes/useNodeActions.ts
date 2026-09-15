@@ -4,6 +4,7 @@ import { CONNECTION_BUSY, CONNECTION_WRITE, useApiWrite, useConnectionBusy } fro
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
+import { useDisconnect } from "../../lib/disconnect";
 import { deleteNodeMessage, mergeHealth } from "./list";
 import { nodeMutationMessage } from "./nodeForm";
 
@@ -11,29 +12,28 @@ export const OFFLINE_HINT = "Gateway unreachable";
 
 /**
  * N6: Connect / Disconnect one node. A connection write: disabled while any connection write runs (here, on Home or
- * in ⌘K) and while the gateway is unreachable, with the reason to show beside the control.
+ * in ⌘K) and while the gateway is unreachable, with the reason to show beside the control. Disconnect asks first,
+ * as on Home (useDisconnect); Connect does not.
  */
 export function useNodeConnection(node: Pick<Node, "id" | "name">, active: boolean) {
   const apply = useApiWrite("apply");
-  const disconnect = useApiWrite("disconnect");
+  const disconnect = useDisconnect();
   const offline = useQuery(queries.status()).isError;   // the shell polls status; this reads the cache
   const connectionBusy = useConnectionBusy();
-  const mutation = useMutation({
+  const connect = useMutation({
     mutationKey: CONNECTION_WRITE,
-    mutationFn: async (connect: boolean) => {
-      await (connect ? apply(node.id) : disconnect(node.id));
-      return connect;
-    },
-    onSuccess: (connect) => notifyOk(connect ? `Connected to ${node.name}` : `Disconnected from ${node.name}`),
-    onError: (error, connect) => notifyError(error, connect ? "connect failed" : "disconnect failed"),
+    mutationFn: () => apply(node.id),
+    onSuccess: () => notifyOk(`Connected to ${node.name}`),
+    onError: (error) => notifyError(error, "connect failed"),
   });
-  const reason = offline ? OFFLINE_HINT : connectionBusy && !mutation.isPending ? CONNECTION_BUSY : null;
+  const busy = connect.isPending || disconnect.busy;
+  const reason = offline ? OFFLINE_HINT : connectionBusy && !busy ? CONNECTION_BUSY : null;
   return {
-    busy: mutation.isPending,
+    busy,
     disabled: offline || connectionBusy,
     reason,
-    label: mutation.isPending ? (active ? "Disconnecting…" : "Connecting…") : active ? "Disconnect" : "Connect",
-    toggle: () => mutation.mutate(!active),
+    label: busy ? (active ? "Disconnecting…" : "Connecting…") : active ? "Disconnect" : "Connect",
+    toggle: () => (active ? void disconnect.disconnect(node.id, node.name) : connect.mutate()),
   };
 }
 

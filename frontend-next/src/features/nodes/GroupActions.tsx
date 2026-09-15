@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { nodeLabel } from "../../lib/nodeHealth";
 import { Elapsed } from "./Elapsed";
-import { bestScope, mergeHealth, probeScope, type GroupKey } from "./list";
+import { bestScope, inScope, mergeHealth, probeScope, type GroupKey } from "./list";
 
 export const NO_CONNECTABLE = "No connectable node in this group";
 
@@ -16,6 +16,7 @@ export interface GroupActionsProps {
   group: GroupKey;
   /** The group's rows after search and sort — all of them, not only the rendered ones. */
   shown: readonly Node[];
+  /** Every node, to tell a group with no nodes from a search that shows none of them. */
   nodes: readonly Node[] | undefined;
   /** The gateway is unreachable: no connection write can start. */
   offline: boolean;
@@ -112,14 +113,17 @@ export function GroupActions({ group, shown, nodes, offline }: GroupActionsProps
   // TypeScript what that control-flow link already establishes; it reads no impure clock as a fallback.
   const pingingSince = runningPing?.submittedAt;
   const testing = testAll.testing;
+  // Pings and Connect best act on the whole group, whatever the search shows (§13.5): they wait only for a group with
+  // no nodes at all. Test all goes through the shown rows, so it needs some.
+  const groupEmpty = !nodes?.some((node) => inScope(node, group));
 
   return (
     <>
-      <Button size="sm" aria-label={pinging === "tcp" ? undefined : "TCP ping"} disabled={pinging !== null || shown.length === 0} onClick={() => ping.mutate("tcp")}>
+      <Button size="sm" aria-label={pinging === "tcp" ? undefined : "TCP ping"} disabled={pinging !== null || groupEmpty} onClick={() => ping.mutate("tcp")}>
         <Radar size={14} aria-hidden className="hidden md:inline" />
         {pinging === "tcp" ? <>Pinging… <Elapsed since={pingingSince!} /></> : <>TCP<span className="hidden md:inline"> ping</span></>}
       </Button>
-      <Button size="sm" aria-label={pinging === "http" ? undefined : "HTTP ping"} disabled={pinging !== null || shown.length === 0} onClick={() => ping.mutate("http")}>
+      <Button size="sm" aria-label={pinging === "http" ? undefined : "HTTP ping"} disabled={pinging !== null || groupEmpty} onClick={() => ping.mutate("http")}>
         <Gauge size={14} aria-hidden className="hidden md:inline" />
         {pinging === "http" ? <>Pinging… <Elapsed since={pingingSince!} /></> : <>HTTP<span className="hidden md:inline"> ping</span></>}
       </Button>
@@ -132,7 +136,7 @@ export function GroupActions({ group, shown, nodes, offline }: GroupActionsProps
         variant="primary"
         aria-label={best.isPending ? undefined : "Connect best"}
         title={offline ? "Gateway unreachable" : "Connect to the healthiest node in this group"}
-        disabled={offline || connectionBusy || shown.length === 0}
+        disabled={offline || connectionBusy || groupEmpty}
         onClick={() => best.mutate()}
       >
         <Zap size={14} aria-hidden className="hidden md:inline" />

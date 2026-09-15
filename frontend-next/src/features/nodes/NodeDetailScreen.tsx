@@ -32,7 +32,8 @@ function DetailSheet({ nodeId, search }: DetailProps) {
   const dialogs = useNodeDialogs();
   return (
     <>
-      <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group) }); }}>
+      {/* Closing replaces the node's history entry, so Back does not open the sheet again. */}
+      <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group), replace: true }); }}>
         <SheetContent title={title}>
           <NodeDetailBody nodeId={nodeId} showName={false} menu={dialogs.menu} />
         </SheetContent>

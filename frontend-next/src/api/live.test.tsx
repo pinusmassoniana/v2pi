@@ -163,7 +163,7 @@ async function countNodesReads(path: string, loaded: () => HTMLElement | null) {
 }
 
 describe("Nodes polls each key at its owner's cadence and no faster", () => {
-  it("Servers: status 3 s (shell); nodes, node health and subscriptions 30 s; settings read once, profiles never", async () => {
+  it("Servers: status 3 s (shell); nodes, node health and subscriptions 30 s; settings and profiles never", async () => {
     const during = await countNodesReads("/nodes", () => document.querySelector("tr[data-node-id]"));
     expect(during).toEqual({
       status: 60_000 / STATUS_POLL_MS, nodes: 60_000 / SLOW_POLL_MS, nodeHealth: 60_000 / SLOW_POLL_MS, subs: 60_000 / SLOW_POLL_MS,

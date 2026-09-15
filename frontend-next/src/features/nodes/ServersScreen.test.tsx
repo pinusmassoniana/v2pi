@@ -153,22 +153,22 @@ describe("Servers › states (N19, N20)", () => {
     expect(document.querySelector('[data-node-name="de-fra-01"]')).toHaveTextContent("40 ms");
   });
 
-  it("N20: auto-failover armed with the last switch, off with a past switch, nothing when neither", async () => {
+  it("N20: auto-failover armed with the last switch, off with a past switch, nothing when neither — from the status poll", async () => {
     const api$ = mockApi();
+    api$.getSettings.mockResolvedValue({ ...SETTINGS, failover_enabled: false });   // loaded once elsewhere; not what the note reads
     api$.getStatus.mockResolvedValue({ ...STATUS, last_failover_at: NOW_SEC - 720 });
-    const first = renderApp("/nodes");
-    expect(await screen.findByText(/Auto-failover/)).toHaveTextContent("⇄ Auto-failover armed · last switch 12m ago");
-    first.unmount();
+    const { client } = renderApp("/nodes");
+    const note = await screen.findByText(/Auto-failover/);
+    expect(note).toHaveTextContent("⇄ Auto-failover armed · last switch 12m ago");
 
-    api$.getSettings.mockResolvedValue({ ...SETTINGS, failover_enabled: false });
-    const second = renderApp("/nodes");
-    expect(await screen.findByText(/Auto-failover/)).toHaveTextContent("Auto-failover off · last switch 12m ago");
-    second.unmount();
+    api$.getStatus.mockResolvedValue({ ...STATUS, failover_enabled: false, last_failover_at: NOW_SEC - 720 });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(screen.getByText(/Auto-failover/)).toHaveTextContent("Auto-failover off · last switch 12m ago"));
 
-    api$.getStatus.mockResolvedValue(STATUS);
-    renderApp("/nodes");
-    await waitFor(() => expect(rowNames()).toHaveLength(6));
-    await waitFor(() => expect(api$.getSettings).toHaveBeenCalledTimes(3));
-    expect(screen.queryByText(/Auto-failover/)).toBeNull();
+    api$.getStatus.mockResolvedValue({ ...STATUS, failover_enabled: false });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(screen.queryByText(/Auto-failover/)).toBeNull());
+    expect(rowNames()).toHaveLength(6);
+    expect(api$.getSettings).not.toHaveBeenCalled();
   });
 });

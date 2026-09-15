@@ -14,6 +14,7 @@ import { Pill } from "../../../components/ui/Pill";
 import { Skeleton } from "../../../components/ui/States";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
+import { useDisconnect } from "../../../lib/disconnect";
 import {
   ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, activeNodeLabel, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor,
   nodeLabel, rollbackStillValid, tunnelLabel, xrayLabel,
@@ -33,19 +34,13 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const traffic = useTraffic();
   const queryClient = useQueryClient();
   const rollbackWrite = useApiWrite("rollback");
-  const disconnectWrite = useApiWrite("disconnect");
+  const disconnect = useDisconnect();
   const connectionBusy = useConnectionBusy();
   const rollback = useMutation({
     mutationKey: CONNECTION_WRITE,
     mutationFn: (target: string) => rollbackWrite().then((result) => ({ ok: Boolean(result?.ok), target })),
     onSuccess: ({ ok, target }) => notifyOk(ok ? `Rolled back to ${target}` : "Nothing to roll back"),
     onError: (error) => notifyError(error, "roll back failed"),
-  });
-  const disconnect = useMutation({
-    mutationKey: CONNECTION_WRITE,
-    mutationFn: ({ id }: { id: number; name: string }) => disconnectWrite(id),
-    onSuccess: (_result, { name }) => notifyOk(`Disconnected from ${name}`),
-    onError: (error) => notifyError(error, "disconnect failed"),
   });
 
   if (!status) {
@@ -97,15 +92,6 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
     rollback.mutate(target);
   }
 
-  async function onDisconnect(id: number, name: string) {
-    if (!(await confirm(`Disconnect from ${name}? Devices lose the tunnel until a node is connected again.`, { confirmLabel: "Disconnect" }))) return;
-    if (isConnectionBusy(queryClient)) {
-      notifyError(null, CONNECTION_BUSY);
-      return;
-    }
-    disconnect.mutate({ id, name });
-  }
-
   return (
     <GlassCard aria-label="Status" data-stale={statusError || undefined} className={cn("transition-opacity duration-200", statusError && "opacity-60", className)}>
       <div className="flex items-center gap-4">
@@ -137,8 +123,8 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
           </Button>
         ) : null}
         {status.active_node_id !== null ? (
-          <Button variant="danger" className="md:ml-auto" disabled={busy} onClick={() => void onDisconnect(status.active_node_id!, activeName)}>
-            {disconnect.isPending ? "Disconnecting…" : "Disconnect"}
+          <Button variant="danger" className="md:ml-auto" disabled={busy} onClick={() => void disconnect.disconnect(status.active_node_id!, activeName)}>
+            {disconnect.busy ? "Disconnecting…" : "Disconnect"}
           </Button>
         ) : null}
       </div>

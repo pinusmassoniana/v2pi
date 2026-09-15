@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type NodeHealth } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ALL_NODE_HEALTH, NODE_HEALTH, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
+import { ALL_NODE_HEALTH, NODE_HEALTH, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { Elapsed } from "./Elapsed";
@@ -143,6 +143,19 @@ describe("Servers › group actions (N8–N10)", () => {
     await waitFor(() => expect(toolbar().getByRole("button", { name: "Connect best" })).toBeEnabled());
   });
 
+  it("a search that shows no rows leaves the group's pings and Connect best on; Test all needs rows", async () => {
+    const api$ = mockNodeGroups(mockApi());
+    renderApp("/nodes?q=nothing-matches");
+    await screen.findByText("No servers here");
+    expect(toolbar().getByRole("button", { name: "Test all (real)" })).toBeDisabled();
+    for (const name of ["TCP ping", "HTTP ping", "Connect best"]) expect(toolbar().getByRole("button", { name })).toBeEnabled();
+    await userEvent.click(toolbar().getByRole("button", { name: "TCP ping" }));
+    expect(api$.probeTcp).toHaveBeenCalledWith("1");
+    await waitFor(() => expect(toolbar().getByRole("button", { name: "TCP ping" })).toBeEnabled());
+    await userEvent.click(toolbar().getByRole("button", { name: "Connect best" }));
+    expect(api$.connectBest).toHaveBeenCalledWith(1);
+  });
+
   it("an empty group has nothing to ping, test or connect", async () => {
     mockNodeGroups(mockApi());
     renderApp("/nodes?group=3");
@@ -210,14 +223,37 @@ describe("Servers › selection and bulk (N18, T6)", () => {
 
   it("(global default) clears the profile; the first failure stops the run and names its node", async () => {
     const { api$ } = await openList();
-    api$.updateNode.mockRejectedValueOnce(new ApiError(409, "disconnect the active node before editing it"));
+    api$.updateNode.mockRejectedValueOnce(new ApiError(500, "database is locked"));
     const error = vi.spyOn(toast, "error");
-    await userEvent.click(within(row("nl-ams-03")).getByRole("checkbox", { name: "Select nl-ams-03" }));
     await userEvent.click(within(row("de-fra-01")).getByRole("checkbox", { name: "Select de-fra-01" }));
+    await userEvent.click(within(row("fi-hel-02")).getByRole("checkbox", { name: "Select fi-hel-02" }));
     await userEvent.selectOptions(within(selectionBar()).getByRole("combobox", { name: "Assign tuning profile" }), "(global default)");
-    await waitFor(() => expect(error).toHaveBeenCalledWith("nl-ams-03: That node is active. Disconnect → Edit → Connect, then try again.", { duration: 20000 }));
-    expect(api$.updateNode.mock.calls).toEqual([[1, { tuning_profile_id: null }]]);
+    await waitFor(() => expect(error).toHaveBeenCalledWith("de-fra-01: database is locked", { duration: 20000 }));
+    expect(api$.updateNode.mock.calls).toEqual([[2, { tuning_profile_id: null }]]);
     expect(within(selectionBar()).getByText("2 selected")).toBeInTheDocument();
+  });
+
+  it("assign skips the active node and says so", async () => {
+    const { api$ } = await openList();
+    const success = vi.spyOn(toast, "success");
+    for (const name of ["nl-ams-03", "de-fra-01", "fi-hel-02"]) await userEvent.click(within(row(name)).getByRole("checkbox", { name: `Select ${name}` }));
+    await userEvent.selectOptions(within(selectionBar()).getByRole("combobox", { name: "Assign tuning profile" }), "(global default)");
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Assigned (global default) to 2 node(s) · 1 skipped: active", { duration: 8000 }));
+    expect(api$.updateNode.mock.calls).toEqual([[2, { tuning_profile_id: null }], [3, { tuning_profile_id: null }]]);
+  });
+
+  it("Servers: bulk delete skips the active server and says so", async () => {
+    const { api$, client } = await openList("/nodes?group=servers");
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: 8 });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    const success = vi.spyOn(toast, "success");
+    for (const name of ["vps-hel", "lab-lan", "kz-ala-01"]) await userEvent.click(within(row(name)).getByRole("checkbox", { name: `Select ${name}` }));
+    await userEvent.click(within(selectionBar()).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(dialog).toHaveTextContent("Delete 2 server(s)?");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Deleted 2 server(s) · 1 skipped: active", { duration: 8000 }));
+    expect(api$.deleteNode.mock.calls).toEqual([[7], [9]]);
   });
 
   it("a subscription's nodes are detached to Servers in one call; there is no bulk delete there", async () => {

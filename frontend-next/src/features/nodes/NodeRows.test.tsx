@@ -166,13 +166,33 @@ describe("Servers › row actions (N6, N7, N15)", () => {
     await waitFor(() => expect(within(row("fi-hel-02")).getByRole("button", { name: "Connect fi-hel-02" })).toBeEnabled());
   });
 
-  it("Disconnect disconnects the active node; a failure carries the backend's message", async () => {
+  it("Disconnect asks as on Home, then disconnects the active node; a failure carries the backend's message", async () => {
     const { api$ } = await openList();
     api$.disconnect.mockRejectedValue(new ApiError(409, "node 1 is not connected (active is 2)"));
     const error = vi.spyOn(toast, "error");
     await userEvent.click(within(row("nl-ams-03")).getByRole("button", { name: "Disconnect nl-ams-03" }));
-    expect(api$.disconnect).toHaveBeenCalledWith(1);
+    let dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(dialog).toHaveTextContent("Disconnect from nl-ams-03? Devices lose the tunnel until a node is connected again.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(api$.disconnect).not.toHaveBeenCalled();
+
+    await userEvent.click(within(row("nl-ams-03")).getByRole("button", { name: "Disconnect nl-ams-03" }));
+    dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(api$.disconnect).toHaveBeenCalledWith(1));
     await waitFor(() => expect(error).toHaveBeenCalledWith("node 1 is not connected (active is 2)", { duration: 20000 }));
+  });
+
+  it("a connection write that starts while the Disconnect question is open stops the disconnect", async () => {
+    const { api$, client } = await openList();
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(within(row("nl-ams-03")).getByRole("button", { name: "Disconnect nl-ams-03" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    const release = holdConnectionWrite(client);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
+    expect(api$.disconnect).not.toHaveBeenCalled();
+    await release();
   });
 
   it("a connection write elsewhere, or an unreachable gateway, disables Connect and says why", async () => {
@@ -385,6 +405,15 @@ describe("Servers › phone cards", () => {
     expect(within(card("de-fra-01")).queryByRole("button", { name: /More actions/ })).toBeNull();
     await userEvent.click(within(card("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" }));
     expect(api$.apply).toHaveBeenCalledWith(2);
+  });
+
+  it("a card's Disconnect asks first too", async () => {
+    setViewportWidth(390);
+    const { api$ } = await openList();
+    const card = document.querySelector<HTMLElement>('li[data-node-name="nl-ams-03"]')!;
+    await userEvent.click(within(card).getByRole("button", { name: "Disconnect nl-ams-03" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(api$.disconnect).toHaveBeenCalledWith(1));
   });
 
   it("the active card follows the same rule: not running, unknown, connected", async () => {

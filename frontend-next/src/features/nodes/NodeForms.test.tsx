@@ -226,7 +226,10 @@ describe("Edit node (N13, T6)", () => {
     expect(banner).toHaveTextContent("That node is active. Disconnect → Edit → Connect, then try again.");
     api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null, active_since: null });   // what the gateway says after it
     await userEvent.click(within(banner).getByRole("button", { name: "Disconnect" }));
-    expect(api$.disconnect).toHaveBeenCalledWith(2);
+    const ask = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(ask).toHaveTextContent("Disconnect from de-fra-01?");
+    await userEvent.click(within(ask).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(api$.disconnect).toHaveBeenCalledWith(2));
     await waitFor(() => expect(banner).toHaveTextContent("Disconnected — Save again"));
     expect(within(banner).queryByRole("button", { name: /Disconnect/ })).toBeNull();
     api$.updateNode.mockImplementation(async (id, patch) => ({ ...ALL_NODES[1]!, ...patch, id }));

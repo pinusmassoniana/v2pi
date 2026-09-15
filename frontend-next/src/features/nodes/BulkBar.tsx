@@ -1,7 +1,7 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { api, type Node } from "../../api/client";
+import { api, type Node, type Status } from "../../api/client";
 import { BULK_KEY, invalidate, useApiWrite, type MutationName } from "../../api/invalidation";
-import { queries } from "../../api/keys";
+import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { PICK_PROFILE, ProfileSelect } from "../../components/ui/ProfileSelect";
@@ -38,6 +38,20 @@ async function eachInTurn(
   }
 }
 
+/** A bulk assign or delete: every selected node except the active one, which refuses both (409), and how many that left out. */
+interface BulkRun { nodes: readonly Node[]; skipped: number }
+
+function withoutActive(client: QueryClient, selected: readonly Node[]): BulkRun {
+  const activeId = client.getQueryData<Status>(keys.status)?.active_node_id ?? null;
+  const nodes = selected.filter((node) => node.id !== activeId);
+  return { nodes, skipped: selected.length - nodes.length };
+}
+
+/** "· 1 skipped: active" after a result, when the active node was left out. */
+function skippedNote(skipped: number): string {
+  return skipped > 0 ? ` · ${skipped} skipped: active` : "";
+}
+
 function stopped(error: unknown, fallback: string): void {
   if (error instanceof BulkStop) notifyError(null, `${error.node.name}: ${nodeMutationMessage(error.cause, fallback)}`);
   else notifyError(error, fallback);
@@ -61,7 +75,8 @@ export interface BulkBarProps {
 
 /**
  * N18 / T6: what to do with the selected nodes — assign a tuning profile, detach them to Servers (a subscription's
- * nodes) or delete them (Servers), one node at a time, stopping at the first that fails.
+ * nodes) or delete them (Servers), one node at a time, stopping at the first that fails. Assign and delete skip the
+ * active node, which refuses both, and say so.
  */
 export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   const queryClient = useQueryClient();
@@ -70,10 +85,10 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
 
   const assign = useMutation({
     mutationKey: BULK_KEY,
-    mutationFn: ({ nodes, profileId }: { nodes: readonly Node[]; profileId: number | null; profileName: string }) =>
+    mutationFn: ({ nodes, profileId }: BulkRun & { profileId: number | null; profileName: string }) =>
       eachInTurn(queryClient, "updateNode", nodes, (node) => api.updateNode(node.id, { tuning_profile_id: profileId })),
-    onSuccess: (count, { profileName }) => {
-      notifyOk(`Assigned ${profileName} to ${count} node(s)`);
+    onSuccess: (count, { profileName, skipped }) => {
+      notifyOk(`Assigned ${profileName} to ${count} node(s)${skippedNote(skipped)}`);
       onClear();
     },
     onError: (error) => stopped(error, "assign failed"),
@@ -89,9 +104,9 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   });
   const remove = useMutation({
     mutationKey: BULK_KEY,
-    mutationFn: (nodes: readonly Node[]) => eachInTurn(queryClient, "deleteNode", nodes, (node) => api.deleteNode(node.id)),
-    onSuccess: (count) => {
-      notifyOk(`Deleted ${count} server(s)`);
+    mutationFn: ({ nodes }: BulkRun) => eachInTurn(queryClient, "deleteNode", nodes, (node) => api.deleteNode(node.id)),
+    onSuccess: (count, { skipped }) => {
+      notifyOk(`Deleted ${count} server(s)${skippedNote(skipped)}`);
       onClear();
     },
     onError: (error) => stopped(error, "delete failed"),
@@ -104,14 +119,14 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   function onAssign(value: string) {
     if (value === PICK_PROFILE) return;
     const profileId = profileFromValue(value);
-    assign.mutate({ nodes: selected, profileId, profileName: profileName(profiles.data, profileId) });
+    assign.mutate({ ...withoutActive(queryClient, selected), profileId, profileName: profileName(profiles.data, profileId) });
   }
 
   async function onDelete() {
-    const nodes = [...selected];
-    if (!(await confirm(`Delete ${nodes.length} server(s)?`, { confirmLabel: "Delete" }))) return;
+    const chosen = [...selected];
+    if (!(await confirm(`Delete ${withoutActive(queryClient, chosen).nodes.length} server(s)?`, { confirmLabel: "Delete" }))) return;
     if (queryClient.isMutating({ mutationKey: BULK_KEY }) > 0) return;   // another bulk write started meanwhile
-    remove.mutate(nodes);
+    remove.mutate(withoutActive(queryClient, chosen));   // the active node as it is now, after the question
   }
 
   return (

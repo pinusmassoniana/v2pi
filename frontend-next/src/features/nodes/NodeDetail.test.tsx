@@ -236,10 +236,29 @@ describe("Node detail › profile and actions (N6, N7, N15, T6)", () => {
     expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
   });
 
-  it("the active node disconnects", async () => {
+  it("the active node disconnects after the same question as Home", async () => {
     const { api$ } = await openDetail("/nodes/1", { phone: true });
     await userEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
-    expect(api$.disconnect).toHaveBeenCalledWith(1);
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(dialog).toHaveTextContent("Disconnect from nl-ams-03? Devices lose the tunnel until a node is connected again.");
+    expect(api$.disconnect).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(api$.disconnect).toHaveBeenCalledWith(1));
+  });
+
+  it("closing the sheet replaces the node's history entry, so Back does not open it again", async () => {
+    mockNodeGroups(mockApi());
+    const { router } = renderApp("/nodes");
+    await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
+    await userEvent.click(screen.getByRole("link", { name: "de-fra-01" }));
+    await screen.findByRole("dialog", { name: "de-fra-01" });
+    const length = router.history.length;
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/nodes"));
+    expect(router.history.length).toBe(length);
+    await act(async () => router.history.back());
+    await waitFor(() => expect(router.state.location.pathname).toBe("/nodes"));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("a manual server is deleted after the confirmation, back to Servers", async () => {
