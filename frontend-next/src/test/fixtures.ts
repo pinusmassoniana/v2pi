@@ -325,7 +325,7 @@ export const GATEWAY_NETWORK: Network = {
     { title: "Create VLAN 2", detail: "Add VLAN 2 on the router and tag the client switch port to it (the Pi's client leg is eth0.2)." },
     { title: "Disable the router's DHCP on VLAN 2", detail: "The Pi serves DHCP + DNS on this segment (192.168.50.100–192.168.50.200); two DHCP servers on one VLAN conflict." },
     { title: "Give the Pi's Home leg internet", detail: "The Pi reaches the tunnel through its Home leg eth0 (192.168.1.120); keep that port on your normal LAN with internet access." },
-    { title: "Delegate an IPv6 /64 to VLAN 2", detail: "Route a v6 /64 to this segment — DHCPv6-PD on the router, or a static route of 2001:db8:5a:2::/64 to the Pi's Home leg eth0." },
+    { title: "Delegate an IPv6 /64 to VLAN 2", detail: "Route a v6 /64 to this segment — DHCPv6-PD on the router, or a static route of 2001:db8:5a:2::/64 to the Pi's Home leg eth0. (Set the prefix to `auto` to read it from a host PD client instead.)" },
     { title: "Disable the router's IPv6 / Router Advertisement on VLAN 2", detail: "The Pi advertises IPv6 (RA) on this segment itself; a second router advertising its ISP prefix here makes clients leak around the tunnel." },
     { title: "Use a node with IPv6 egress", detail: "v6 traffic exits via the active node; pick one with working IPv6 or v6-only sites will fail." },
   ],
