@@ -3,6 +3,7 @@ import {
   type AnyRouter, type RouterHistory,
 } from "@tanstack/react-router";
 import { useLayoutEffect } from "react";
+import { nodesSearchSchema } from "../features/nodes/search";
 import { LEGACY_REDIRECTS } from "./nav";
 import { Shell } from "./shell/Shell";
 
@@ -18,9 +19,15 @@ const system = () => import("../features/system/screens");
 
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: lazyRouteComponent(home, "Overview") });
 const trafficRoute = createRoute({ getParentRoute: () => rootRoute, path: "/traffic", component: lazyRouteComponent(home, "Traffic") });
-const nodesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nodes", component: lazyRouteComponent(nodes, "Servers") });
+// The Servers list keeps its group, search and sort in the URL (N1–N3); a node's detail keeps the list's search and
+// sort, so closing it returns to the list as it was.
+const nodesRoute = createRoute({
+  getParentRoute: () => rootRoute, path: "/nodes", validateSearch: nodesSearchSchema, component: lazyRouteComponent(nodes, "Servers"),
+});
 const subscriptionsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nodes/subscriptions", component: lazyRouteComponent(nodes, "Subscriptions") });
-const nodeDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nodes/$nodeId", component: lazyRouteComponent(nodes, "NodeDetail") });
+const nodeDetailRoute = createRoute({
+  getParentRoute: () => rootRoute, path: "/nodes/$nodeId", validateSearch: nodesSearchSchema, component: lazyRouteComponent(nodes, "NodeDetail"),
+});
 const routingRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/routing", component: lazyRouteComponent(tunnel, "Routing") });
 const antiDpiRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/anti-dpi", component: lazyRouteComponent(tunnel, "AntiDpi") });
 const healthRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/health", component: lazyRouteComponent(tunnel, "Health") });

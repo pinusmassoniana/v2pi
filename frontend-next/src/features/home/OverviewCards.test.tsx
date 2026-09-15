@@ -50,7 +50,7 @@ describe("Overview › layout", () => {
     await screen.findByRole("region", { name: "Status" });
     expect(screen.getAllByRole("switch", { name: "xray-core" })).toHaveLength(2);
     await act(() => router.navigate({ to: "/nodes" }));
-    await screen.findByText("Nodes › Servers");
+    await screen.findByRole("region", { name: "Servers toolbar" });
     expect(screen.getAllByRole("switch", { name: "xray-core" })).toHaveLength(1);
     expect(api$.getStatus).toHaveBeenCalled();
   });
