@@ -2,8 +2,9 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi } from "vitest";
 import type {
-  Network, Node, NodeHealth, NodeIn, NodeUpdate, PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate, RefreshAllResult,
-  Routing, RoutingIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage, TuningProfile,
+  Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate, PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
+  RefreshAllResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
+  TuningProfile,
 } from "../api/client";
 import { api } from "../api/client";
 import { recordServerNow } from "../api/clock";
@@ -294,6 +295,92 @@ export const PROFILE_PRESETS: ProfilePreset[] = [
 /** Status as the Health & failover strip reads it after a switch twelve minutes ago. */
 export const FAILOVER_STATUS: Status = { ...STATUS, last_failover_at: NOW_SEC - 720, failovers_24h: 1, eligible_standby_count: 4 };
 
+/**
+ * Gateway › Network's read: the segment on eth0.2 at 192.168.50.1 with DHCP .100–.200 handing out the gateway as DNS,
+ * IPv6 through the tunnel on a static /64, the kill-switch armed and confirmed, seven leases in no particular order (one
+ * without a host name, one that never expires) and the router checklist the backend builds for that saved plan.
+ */
+export const GATEWAY_NETWORK: Network = {
+  segment: {
+    iface: "eth0.2", ip: "192.168.50.1", ip6: "2001:db8:5a:2::/64", dhcp_start: "192.168.50.100", dhcp_end: "192.168.50.200",
+    dhcp_lease: "12h", client_dns: "192.168.50.1", client_dns6: "2606:4700:4700::1111",
+  },
+  kill_switch_enabled: true, lan_access_enabled: true, ipv6_enabled: true,
+  status: {
+    segment_up: true, uplink: true, uplink6: true, dhcp_clients: 7,
+    clients: [
+      { ip: "192.168.50.140", mac: "aa:bb:cc:00:01:40", hostname: "thinkpad-work", expiry: NOW_SEC + 3 * 3_600 + 120 },
+      { ip: "192.168.50.101", mac: "aa:bb:cc:00:01:01", hostname: "iphone-anna", expiry: NOW_SEC + 11 * 3_600 + 900 },
+      { ip: "192.168.50.176", mac: "aa:bb:cc:00:01:76", hostname: "ipad", expiry: NOW_SEC + 38 * 60 + 20 },
+      { ip: "192.168.50.112", mac: "aa:bb:cc:00:01:12", hostname: "", expiry: NOW_SEC + 47 * 60 },
+      { ip: "192.168.50.123", mac: "aa:bb:cc:00:01:23", hostname: "appletv", expiry: 0 },
+      { ip: "192.168.50.104", mac: "aa:bb:cc:00:01:04", hostname: "macbook-pro", expiry: NOW_SEC + 9 * 3_600 + 60 },
+      { ip: "192.168.50.118", mac: "aa:bb:cc:00:01:18", hostname: "pixel-8", expiry: NOW_SEC + 6 * 3_600 + 1_800 },
+    ],
+    tunnel: { real_ok: true, latency_ms: 42, egress_ip: "185.107.56.21", checked_at: iso(NOW_SEC - 5) },
+    wan_blocked: false, enforcement_status: "ok", enforcement_error: "", enforcement_warning: "",
+    ipv6_prefix: null, foreign_ra: false, ipv6_prefix_source: "static",
+  },
+  recommendations: [
+    { title: "Create VLAN 2", detail: "Add VLAN 2 on the router and tag the client switch port to it (the Pi's client leg is eth0.2)." },
+    { title: "Disable the router's DHCP on VLAN 2", detail: "The Pi serves DHCP + DNS on this segment (192.168.50.100–192.168.50.200); two DHCP servers on one VLAN conflict." },
+    { title: "Give the Pi's Home leg internet", detail: "The Pi reaches the tunnel through its Home leg eth0 (192.168.1.120); keep that port on your normal LAN with internet access." },
+    { title: "Delegate an IPv6 /64 to VLAN 2", detail: "Route a v6 /64 to this segment — DHCPv6-PD on the router, or a static route of 2001:db8:5a:2::/64 to the Pi's Home leg eth0." },
+    { title: "Disable the router's IPv6 / Router Advertisement on VLAN 2", detail: "The Pi advertises IPv6 (RA) on this segment itself; a second router advertising its ISP prefix here makes clients leak around the tunnel." },
+    { title: "Use a node with IPv6 egress", detail: "v6 traffic exits via the active node; pick one with working IPv6 or v6-only sites will fail." },
+  ],
+  events: [],
+};
+
+const SEGMENT_FIELDS = {
+  segment_iface: "iface", segment_ip: "ip", segment_ip6: "ip6", dhcp_start: "dhcp_start", dhcp_end: "dhcp_end", dhcp_lease: "dhcp_lease",
+  client_dns: "client_dns", client_dns6: "client_dns6",
+} as const;
+
+/** What PUT /network answers: the stored settings with the patch's values, as the backend reads them back. */
+export function networkAfter(patch: NetworkPatch, base: Network = GATEWAY_NETWORK): Network {
+  const segment = { ...base.segment };
+  for (const key of Object.keys(SEGMENT_FIELDS) as (keyof typeof SEGMENT_FIELDS)[]) {
+    const value = patch[key];
+    if (value !== undefined) segment[SEGMENT_FIELDS[key]] = value;
+  }
+  return {
+    ...base, segment,
+    kill_switch_enabled: patch.kill_switch_enabled ?? base.kill_switch_enabled,
+    lan_access_enabled: patch.lan_access_enabled ?? base.lan_access_enabled,
+    ipv6_enabled: patch.ipv6_enabled ?? base.ipv6_enabled,
+  };
+}
+
+/**
+ * Test vectors shaped like `xray x25519` output — 43 base64url characters of 32 bytes, the byte ramps 0x20–0x3F and
+ * 0x00–0x1F the backend's tests use. Fake on inspection; never real keys.
+ */
+export const RW_PUBLIC_KEY = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
+export const RW_PRIVATE_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"; // fake test vector, not a real key
+
+/** The three devices: iphone-anna and laptop-work active, ipad suspended. */
+export const RW_CLIENTS: RwClient[] = [
+  { id: "3f2a9c1e-7b4d-4e8a-9c21-5d6e7f809a1b", email: "iphone-anna", enabled: true },
+  { id: "b01c55d2-9e3f-4a6b-8c7d-1e2f3a4b5c6d", email: "ipad", enabled: false },
+  { id: "e04d77aa-1b2c-4d3e-9f40-a1b2c3d4e5f6", email: "laptop-work", enabled: true },
+];
+
+/**
+ * Gateway › Remote access's read: the inbound on :8443 with a stored private key and served live, two LAN hosts by
+ * name, the routed subnets derived from the management and segment /24s, and the three devices of RW_CLIENTS.
+ */
+export const RW: Rw = {
+  enabled: true, port: 8443, dest: "www.microsoft.com:443", server_names: "www.microsoft.com,learn.microsoft.com", short_ids: "3a9e,6ba85179e3d4fc21",
+  public_key: RW_PUBLIC_KEY, endpoint: "vpn.example.net", has_private_key: true,
+  hosts: { "nas.v2pi": "192.168.1.10", "printer.v2pi": "192.168.1.20" }, state_error: "",
+  routed_nets: ["192.168.1.0/24", "192.168.50.0/24"], routed_nets_override: "",
+  clients: RW_CLIENTS, live: true, revocation: "", revocation_pending: false,
+};
+
+/** The same gateway while a committed revocation has not been proven to reach the running xray. */
+export const RW_PENDING: Rw = { ...RW, revocation_pending: true };
+
 /** One live frame: healthy tunnel through nl-ams-03, nothing leaking around it. */
 export const TRAFFIC_FRAME: TrafficFrame = {
   ts: NOW_SEC * 1000,
@@ -373,6 +460,30 @@ export function mockApi() {
       ...(TUNNEL_PROFILES.find((p) => p.id === id) ?? profile({ id, name: `profile-${id}` })), is_default: true,
     })),
     applyProfileActive: vi.spyOn(api, "applyProfileActive").mockResolvedValue({ ok: true, node_id: 1 }),
+    putNetwork: vi.spyOn(api, "putNetwork").mockImplementation(async (patch: NetworkPatch) => networkAfter(patch)),
+    getRw: vi.spyOn(api, "getRw").mockResolvedValue(RW),
+    putRw: vi.spyOn(api, "putRw").mockImplementation(async (body: RwIn) => ({
+      ...RW, enabled: body.enabled, port: body.port, dest: body.dest, server_names: body.server_names, short_ids: body.short_ids,
+      public_key: body.public_key, endpoint: body.endpoint, has_private_key: RW.has_private_key || body.private_key !== "",
+      hosts: body.hosts, routed_nets_override: body.routed_nets,
+    })),
+    addRwClient: vi.spyOn(api, "addRwClient").mockImplementation(async (email: string) => ({
+      ...RW, clients: [...RW.clients, { id: "5b1d0c7e-2f3a-4b5c-8d6e-7f8091a2b3c4", email, enabled: true }],
+    })),
+    setRwClientEnabled: vi.spyOn(api, "setRwClientEnabled").mockImplementation(async (id: string, enabled: boolean) => ({
+      ...RW, clients: RW.clients.map((client) => (client.id === id ? { ...client, enabled } : client)), revocation: enabled ? "" : "reapplied",
+    })),
+    deleteRwClient: vi.spyOn(api, "deleteRwClient").mockImplementation(async (id: string) => ({
+      ...RW, clients: RW.clients.filter((client) => client.id !== id), revocation: "reapplied",
+    })),
+    newRwShortId: vi.spyOn(api, "newRwShortId").mockResolvedValue({ short_id: "0123456789abcdef" }),
+    rwClientLink: vi.spyOn(api, "rwClientLink").mockImplementation(async (id: string) => ({
+      link: `vless://${id}@vpn.example.net:8443?security=reality&pbk=${RW_PUBLIC_KEY}&sid=3a9e#${RW.clients.find((client) => client.id === id)?.email ?? "client"}`,
+    })),
+    rwClientConfig: vi.spyOn(api, "rwClientConfig").mockImplementation(async (id: string) => {
+      const name = RW.clients.find((client) => client.id === id)?.email ?? "client";
+      return { filename: `${name}.conf`, config: `[General]\nbypass-system = true\n[Proxy]\n${name} = vless, vpn.example.net, 8443\n` };
+    }),
     /** Push one WebSocket message into the live-traffic store, as the socket would. */
     emitTraffic(message: TrafficMessage): void {
       const send = deliver;
@@ -395,6 +506,12 @@ export function mockNodeGroups(api$: MockApi): MockApi {
 export function mockTunnel(api$: MockApi): MockApi {
   api$.getRouting.mockResolvedValue(TUNNEL_ROUTING);
   api$.listProfiles.mockResolvedValue(TUNNEL_PROFILES);
+  return api$;
+}
+
+/** Serve Gateway › Network's segment, leases and checklist instead of the Home network read (see GATEWAY_NETWORK). */
+export function mockGateway(api$: MockApi): MockApi {
+  api$.getNetwork.mockResolvedValue(GATEWAY_NETWORK);
   return api$;
 }
 

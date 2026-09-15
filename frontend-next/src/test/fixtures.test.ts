@@ -3,9 +3,9 @@ import { api } from "../api/client";
 import { serverNow } from "../api/clock";
 import { trafficStore } from "../api/traffic";
 import {
-  ALL_NODES, ALL_NODE_HEALTH, FAILOVER_STATUS, NETWORK, NODES, NODE_HEALTH, NOW_SEC, PREVIEW, PREVIEW_NODES, PROFILES, PROFILE_PRESETS, REFRESH_ALL,
-  ROUTING, ROUTING_PRESETS, RU_DIRECT_PRESET, SETTINGS, STATUS, SUBS, TRAFFIC_FRAME, TUNNEL_PROFILES, TUNNEL_ROUTING, VALID, mockApi,
-  mockNodeGroups, mockTunnel,
+  ALL_NODES, ALL_NODE_HEALTH, FAILOVER_STATUS, GATEWAY_NETWORK, NETWORK, NODES, NODE_HEALTH, NOW_SEC, PREVIEW, PREVIEW_NODES, PROFILES, PROFILE_PRESETS,
+  REFRESH_ALL, ROUTING, ROUTING_PRESETS, RU_DIRECT_PRESET, RW, RW_CLIENTS, RW_PENDING, RW_PRIVATE_KEY, RW_PUBLIC_KEY, SETTINGS, STATUS, SUBS,
+  TRAFFIC_FRAME, TUNNEL_PROFILES, TUNNEL_ROUTING, VALID, mockApi, mockGateway, mockNodeGroups, mockTunnel,
 } from "./fixtures";
 
 describe("gateway fixtures", () => {
@@ -126,6 +126,55 @@ describe("gateway fixtures", () => {
     mockTunnel(api$);
     await expect(api.getRouting()).resolves.toBe(TUNNEL_ROUTING);
     await expect(api.listProfiles()).resolves.toBe(TUNNEL_PROFILES);
+  });
+
+  it("mockApi answers Gateway's reads and writes, and mockGateway serves the gateway's network read", async () => {
+    const api$ = mockApi();
+    await expect(api.getRw()).resolves.toBe(RW);
+    await expect(api.putNetwork({ dhcp_end: "192.168.50.150", kill_switch_enabled: false })).resolves.toMatchObject({
+      segment: { ...GATEWAY_NETWORK.segment, dhcp_end: "192.168.50.150" }, kill_switch_enabled: false, lan_access_enabled: true, ipv6_enabled: true,
+    });
+    const body = {
+      enabled: false, port: 443, dest: "", server_names: "", short_ids: "", public_key: "", endpoint: "", private_key: "", hosts: {}, routed_nets: "10.9.0.0/24",
+    };
+    await expect(api.putRw(body)).resolves.toMatchObject({
+      enabled: false, port: 443, dest: "", server_names: "", short_ids: "", public_key: "", endpoint: "", hosts: {},
+      has_private_key: true, routed_nets_override: "10.9.0.0/24", revocation: "",
+    });
+    await expect(api.addRwClient("e2e-phone")).resolves.toMatchObject({ clients: [...RW_CLIENTS, { email: "e2e-phone", enabled: true }] });
+    const suspended = await api.setRwClientEnabled(RW_CLIENTS[0]!.id, false);
+    expect(suspended.clients[0]).toEqual({ ...RW_CLIENTS[0], enabled: false });
+    expect(suspended.revocation).toBe("reapplied");
+    expect((await api.setRwClientEnabled(RW_CLIENTS[1]!.id, true)).revocation).toBe("");
+    await expect(api.deleteRwClient(RW_CLIENTS[2]!.id)).resolves.toMatchObject({ clients: RW_CLIENTS.slice(0, 2), revocation: "reapplied" });
+    await expect(api.newRwShortId()).resolves.toEqual({ short_id: "0123456789abcdef" });
+    expect((await api.rwClientLink(RW_CLIENTS[0]!.id)).link).toMatch(/^vless:\/\/3f2a9c1e-.+#iphone-anna$/);
+    await expect(api.rwClientConfig(RW_CLIENTS[0]!.id)).resolves.toMatchObject({ filename: "iphone-anna.conf" });
+    await expect(api.getNetwork()).resolves.toBe(NETWORK);
+    mockGateway(api$);
+    await expect(api.getNetwork()).resolves.toBe(GATEWAY_NETWORK);
+  });
+
+  it("the gateway network: pool and leases inside the segment /24, one lease without a name and one that never expires", () => {
+    const { segment, status } = GATEWAY_NETWORK;
+    const net = segment.ip.split(".").slice(0, 3).join(".");
+    for (const address of [segment.dhcp_start, segment.dhcp_end, ...status.clients.map((lease) => lease.ip)]) expect(address.startsWith(`${net}.`)).toBe(true);
+    expect(status.clients).toHaveLength(status.dhcp_clients);
+    expect(status.clients.filter((lease) => lease.hostname === "").length).toBe(1);
+    expect(status.clients.filter((lease) => lease.expiry === 0).map((lease) => lease.hostname)).toEqual(["appletv"]);
+    expect(status.clients.map((lease) => lease.ip)).not.toEqual([...status.clients.map((lease) => lease.ip)].sort());
+    expect(new Set(GATEWAY_NETWORK.recommendations.map((rec) => rec.title)).size).toBe(6);
+    expect(segment.client_dns).toBe(segment.ip);
+  });
+
+  it("remote access: well-formed keys, short ids and client ids; one suspended device; a pending twin", () => {
+    for (const key of [RW_PUBLIC_KEY, RW_PRIVATE_KEY]) expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(RW.short_ids.split(",").every((id) => /^([0-9a-f]{2}){1,8}$/.test(id))).toBe(true);
+    expect(new Set(RW.clients.map((client) => client.id)).size).toBe(3);
+    expect(RW.clients.every((client) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(client.id))).toBe(true);
+    expect(RW.clients.filter((client) => !client.enabled).map((client) => client.email)).toEqual(["ipad"]);
+    expect(RW_PENDING).toEqual({ ...RW, revocation_pending: true });
+    expect(RW.revocation_pending).toBe(false);
   });
 
   it("the Tunnel ruleset has one rule of every type, labels, a switched-off rule, and a preset reply with one unsaved rule", () => {
