@@ -107,11 +107,17 @@ describe("Routing › rules table (R1)", () => {
 describe("Routing › staging (R2, R3, R5)", () => {
   it("an edit stages it: STAGED · 1 change, politely; typing it back unstages", async () => {
     const { table } = await openRouting();
+    const before = screen.getAllByRole("status");
     const label = within(table).getByRole("textbox", { name: "Rule 3 label" });
     await userEvent.type(label, "yandex");
-    expect(within(banner()!).getByRole("status")).toHaveTextContent("STAGED · 1 change — not yet applied to the live config.");
+    const status = within(banner()!).getByRole("status");
+    // The live region was there, empty, before anything was staged — so the first STAGED sentence is announced.
+    expect(before).toContain(status);
+    expect(status).toHaveTextContent("STAGED · 1 change — not yet applied to the live config.");
     await userEvent.clear(label);
     expect(banner()).toBeNull();
+    expect(status).toBeInTheDocument();
+    expect(status).toBeEmptyDOMElement();
   });
 
   it("add, move and remove: up is off on the first rule, down on the last; counts follow the rules", async () => {
@@ -167,9 +173,12 @@ describe("Routing › staging (R2, R3, R5)", () => {
     expect(banner()).toBeNull();
 
     await userEvent.type(within(table).getByRole("textbox", { name: "Rule 1 label" }), " — mine");
+    const status = within(banner()!).getByRole("status");
     api$.getRouting.mockResolvedValue(TUNNEL_ROUTING);
     await act(() => client.invalidateQueries({ queryKey: keys.routing }));
-    expect(await within(banner()!).findByText("The ruleset changed on the gateway since you started editing — Discard to load it")).toBeInTheDocument();
+    // Said in the staged live region, which was there before the gateway moved, so the notice is announced too.
+    expect(await within(status).findByText("The ruleset changed on the gateway since you started editing — Discard to load it")).toBeInTheDocument();
+    expect(within(banner()!).getByRole("status")).toBe(status);
     expect(within(table).getByRole("textbox", { name: "Rule 1 label" })).toHaveValue("RU off tunnel — mine");
     expect(within(table).queryByLabelText("Rule 6 value")).toBeNull();
 

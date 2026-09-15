@@ -6,9 +6,13 @@ import { CheckLine } from "./CheckLine";
 const key = runKey({ rules: [] });
 
 describe("CheckLine", () => {
-  it("shows nothing until something ran", () => {
-    const { container } = render(<CheckLine result={null} liveKey={key} />);
-    expect(container).toBeEmptyDOMElement();
+  it("keeps an empty status mounted until something ran, so the answer arrives in a live region that already exists", () => {
+    const { rerender } = render(<CheckLine result={null} liveKey={key} />);
+    const line = screen.getByRole("status");
+    expect(line).toBeEmptyDOMElement();
+    rerender(<CheckLine result={{ ok: true, text: "✓ ruleset valid", key }} liveKey={key} />);
+    expect(screen.getByRole("status")).toBe(line);
+    expect(line).toHaveTextContent("✓ ruleset valid");
   });
 
   it("a pass reads in the ok colour, a failure in the bad one, both as a status", () => {

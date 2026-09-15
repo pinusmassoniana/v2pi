@@ -119,8 +119,11 @@ describe("Anti-DPI › Validate, Create / Save, New (T5)", () => {
   it("Validate checks what Save would send; an edit marks the result stale", async () => {
     const { api$ } = await openEditor();
     await userEvent.click(within(row(3)).getByRole("button", { name: "Edit mux-heavy" }));
+    const status = within(editor()).getByRole("status");
+    expect(status).toBeEmptyDOMElement();
     await userEvent.click(within(editor()).getByRole("button", { name: "Validate" }));
     expect(await within(editor()).findByText("✓ profile valid")).toHaveClass("text-ok");
+    expect(within(editor()).getByRole("status")).toBe(status);   // the answer lands in the live region that was already there
     expect(api$.validateProfile).toHaveBeenCalledWith(formToProfileIn(profileToForm(TUNNEL_PROFILES[2]!)));
     expect(api$.validateProfile.mock.calls[0]![0]).toMatchObject({ name: "mux-heavy", mux_concurrency: "8", tls_max: "1.3", doh_url: "https://1.1.1.1/dns-query" });
     await userEvent.type(within(editor()).getByLabelText("ALPN"), ",h3");

@@ -41,9 +41,11 @@ async function answer(text: string, button: string) {
 describe("Routing › Validate (R6)", () => {
   it("checks what Save would send and says so; an edit marks the result as out of date", async () => {
     const { api$, table } = await openRouting();
+    const before = screen.getAllByRole("status");
     await userEvent.click(toolbarButton("Validate"));
     const result = await screen.findByText("✓ ruleset valid");
     expect(result).toHaveAttribute("role", "status");
+    expect(before).toContain(result);   // an existing live region took the answer, so it is announced
     expect(result).toHaveClass("text-ok");
     expect(screen.getByText("· Validate never saves")).toBeInTheDocument();
     const sent = api$.validateRouting.mock.calls[0]![0];

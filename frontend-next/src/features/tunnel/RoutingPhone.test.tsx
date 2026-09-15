@@ -126,8 +126,12 @@ describe("Routing on a phone", () => {
 
   it("Validate from the footer shows its result there", async () => {
     await openPhone();
+    const before = screen.getAllByRole("status");
+    expect(screen.getByText("Validate never saves")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Validate" }));
     const result = await screen.findByText("✓ ruleset valid");
     expect(result.closest(".sticky")).not.toBeNull();
+    expect(before).toContain(result);   // the footer's live region was mounted before the answer came
+    expect(screen.queryByText("Validate never saves")).toBeNull();
   });
 });

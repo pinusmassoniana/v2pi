@@ -77,18 +77,24 @@ export function Routing() {
         ) : null}
         {current && !desktop ? <RoutingMenu actions={actions} onImportJson={() => setImporting(true)} /> : null}
       </div>
-      {editor.staged ? (
-        <StagedBanner changes={editor.changes} gatewayChanged={editor.gatewayChanged} onDiscard={actions.discard} className="max-md:sticky max-md:top-28 max-md:z-20">
-          <Button size="sm" variant="primary" disabled={actions.saving || connectionBusy} onClick={() => void actions.save()}>
-            {actions.saving ? "Saving…" : "Apply staged"}
-          </Button>
-        </StagedBanner>
-      ) : null}
+      {/* Always mounted, so its live region exists before the first STAGED sentence arrives in it. */}
+      <StagedBanner
+        staged={editor.staged}
+        changes={editor.changes}
+        gatewayChanged={editor.gatewayChanged}
+        onDiscard={actions.discard}
+        className="max-md:sticky max-md:top-28 max-md:z-20"
+      >
+        <Button size="sm" variant="primary" disabled={actions.saving || connectionBusy} onClick={() => void actions.save()}>
+          {actions.saving ? "Saving…" : "Apply staged"}
+        </Button>
+      </StagedBanner>
       {actions.saveError ? <p role="alert" className="glass whitespace-pre-wrap border-bad/40 p-3 text-sm text-bad">{actions.saveError}</p> : null}
-      {actions.check && desktop ? (
-        <div className="flex min-w-0 items-center gap-2 px-1">
+      {desktop ? (
+        // The result line stays mounted (empty, taking no space) so Validate's first answer lands in a live region.
+        <div className={actions.check ? "flex min-w-0 items-center gap-2 px-1" : "contents"}>
           <CheckLine result={actions.check} liveKey={liveKey} />
-          <span className="shrink-0 text-[11.5px] text-t3">· Validate never saves</span>
+          {actions.check ? <span className="shrink-0 text-[11.5px] text-t3">· Validate never saves</span> : null}
         </div>
       ) : null}
       {current ? staleNotice([routing], "Routing did not refresh") : null}
@@ -118,7 +124,8 @@ export function Routing() {
           {!desktop ? (
             <div className="glass sticky bottom-24 z-20 flex items-center gap-2 bg-solid p-2.5">
               <div className="min-w-0 flex-1">
-                {actions.check ? <CheckLine result={actions.check} liveKey={liveKey} /> : <p className="text-[11px] text-t3">Validate never saves</p>}
+                <CheckLine result={actions.check} liveKey={liveKey} />
+                {actions.check ? null : <p className="text-[11px] text-t3">Validate never saves</p>}
               </div>
               <Button size="sm" disabled={actions.validating} onClick={() => void actions.validate()}>{actions.validating ? "Validating…" : "Validate"}</Button>
               <Button size="sm" variant="primary" disabled={saveDisabled} onClick={() => void actions.save()}>{actions.saving ? "Saving…" : "Save"}</Button>
