@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { networkView } from "./network";
+import { NETWORK } from "../test/fixtures";
+import { ipv6Source, killSwitchState, networkView } from "./network";
 import type { Network } from "../api/client";
 
 function sample(over: Partial<Network["status"]> = {}): Network {
@@ -15,6 +16,26 @@ function sample(over: Partial<Network["status"]> = {}): Network {
     events: [],
   };
 }
+
+const withStatus = (patch: Partial<Network["status"]>): Network => ({ ...NETWORK, status: { ...NETWORK.status, ...patch } });
+
+describe("kill-switch and IPv6 source, shared by Home and Gateway", () => {
+  it("kill-switch: disabled is open, armed only on confirmed enforcement, unknown otherwise", () => {
+    expect(killSwitchState(NETWORK)).toEqual({ label: "ARMED", tone: "ok" });
+    expect(killSwitchState({ ...NETWORK, kill_switch_enabled: false })).toEqual({ label: "OPEN", tone: "bad" });
+    expect(killSwitchState(withStatus({ enforcement_status: "error" }))).toEqual({ label: "UNKNOWN", tone: "neutral" });
+    expect(killSwitchState(withStatus({ enforcement_status: "unknown" })).label).toBe("UNKNOWN");
+    expect(killSwitchState(withStatus({ enforcement_status: undefined })).label).toBe("UNKNOWN");
+    expect(killSwitchState(undefined).label).toBe("UNKNOWN");
+  });
+
+  it("IPv6 source", () => {
+    expect(ipv6Source(NETWORK)).toBe("static");
+    expect(ipv6Source(withStatus({ ipv6_prefix_source: "pd" }))).toBe("pd");
+    expect(ipv6Source(withStatus({ ipv6_prefix_source: null }))).toBe("on");
+    expect(ipv6Source({ ...NETWORK, ipv6_enabled: false })).toBe("off");
+  });
+});
 
 describe("networkView", () => {
   it("maps unknown (dev) status to unknown tones and em-dashes", () => {

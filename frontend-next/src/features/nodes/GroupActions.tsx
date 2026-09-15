@@ -7,7 +7,7 @@ import { keys } from "../../api/keys";
 import { Button } from "../../components/ui/Button";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { nodeLabel } from "../../lib/nodeHealth";
-import { Elapsed } from "./Elapsed";
+import { Elapsed } from "../../components/data/Elapsed";
 import { bestScope, inScope, mergeHealth, probeScope, type GroupKey } from "./list";
 
 export const NO_CONNECTABLE = "No connectable node in this group";

@@ -4,7 +4,8 @@ import { CardHeader } from "../../../components/data/CardHeader";
 import { ConnectionPath } from "../../../components/data/ConnectionPath";
 import { GlassCard } from "../../../components/ui/GlassCard";
 import { cardFallback, staleNotice, type CardQuery } from "../../../components/data/CardState";
-import { activeFlag, activeNodeLabel, bypassState, killSwitchState, liveLatency, poolSize, probeFor, tunnelLeg } from "../derive";
+import { killSwitchState } from "../../../lib/network";
+import { activeFlag, activeNodeLabel, bypassState, liveLatency, poolSize, probeFor, tunnelLeg } from "../derive";
 
 export interface ConnectionCardProps {
   status: Status | undefined;

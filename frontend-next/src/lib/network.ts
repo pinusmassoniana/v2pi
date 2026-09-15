@@ -1,4 +1,23 @@
 import type { Network } from "../api/client";
+import type { Tone as StateTone } from "../components/data/types";
+
+/**
+ * O4 / W6 kill-switch, from what the gateway has saved and confirmed — never from an unsaved toggle. Switched off is
+ * OPEN; ARMED only when the host confirms enforcement; anything else is UNKNOWN. Home and Gateway › Network both read
+ * this one rule, so the two screens can never disagree.
+ */
+export function killSwitchState(network: Network | undefined): { label: "ARMED" | "OPEN" | "UNKNOWN"; tone: StateTone } {
+  if (network?.kill_switch_enabled === false) return { label: "OPEN", tone: "bad" };
+  if (network?.status.enforcement_status === "ok") return { label: "ARMED", tone: "ok" };
+  return { label: "UNKNOWN", tone: "neutral" };
+}
+
+/** O10: static / ula / pd, "on" when enabled without a reported source, "off". */
+export function ipv6Source(network: Network): string {
+  if (!network.ipv6_enabled) return "off";
+  const source = network.status.ipv6_prefix_source;
+  return source === "static" || source === "ula" || source === "pd" ? source : "on";
+}
 
 // Pure presentation logic for the Network screen's live-status panel, so it's
 // unit-testable from a sample payload without a DOM harness. Real detection is

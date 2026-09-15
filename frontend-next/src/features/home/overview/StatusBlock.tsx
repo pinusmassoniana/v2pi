@@ -15,8 +15,9 @@ import { Skeleton } from "../../../components/ui/States";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
 import { useDisconnect } from "../../../lib/disconnect";
+import { killSwitchState } from "../../../lib/network";
 import {
-  ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, activeNodeLabel, hasConfigDrift, killSwitchState, liveLatency, nodeEndpoint, poolSize, probeFor,
+  ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, activeNodeLabel, hasConfigDrift, liveLatency, nodeEndpoint, poolSize, probeFor,
   nodeLabel, rollbackStillValid, tunnelLabel, xrayLabel,
 } from "../derive";
 

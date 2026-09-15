@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ConnEvent, Network, Routing, Status, TrafficFrame } from "../../api/client";
+import type { ConnEvent, Routing, Status, TrafficFrame } from "../../api/client";
 import { NETWORK, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
   FAILOVER_DISMISSED_KEY, bypassState, chartStale, clockTime, eventLevel, failoverBanner, failoverHistory, failoverPill, hasConfigDrift,
-  ipv6Source, killSwitchState, latencyStats, liveLatency, nodeEndpoint, peakOf, poolSize, readFailoverDismissed, rollbackStillValid,
+  latencyStats, liveLatency, nodeEndpoint, peakOf, poolSize, readFailoverDismissed, rollbackStillValid,
   recentEvents, recentValues, routeBadge, routingSummary, sessionTotals, sinceLabel, tunnelLabel, tunnelLeg, whenLabel,
   writeFailoverDismissed, xrayLabel,
 } from "./derive";
@@ -12,7 +12,6 @@ const NOW_MS = NOW_SEC * 1000;
 const active = TRAFFIC_FRAME.active!;
 const status = (patch: Partial<Status>): Status => ({ ...STATUS, ...patch });
 const probe = (patch: Partial<NonNullable<TrafficFrame["active"]>>): TrafficFrame["active"] => ({ ...active, ...patch });
-const withStatus = (patch: Partial<Network["status"]>): Network => ({ ...NETWORK, status: { ...NETWORK.status, ...patch } });
 const pad = (n: number) => String(n).padStart(2, "0");
 
 afterEach(() => localStorage.clear());
@@ -64,14 +63,6 @@ describe("status block", () => {
     expect(rollbackStillValid(status({ prev_active_node_id: 2, rollback_available: undefined }), 2)).toBe(false);
     expect(rollbackStillValid(status({ prev_active_node_id: 3 }), 2)).toBe(false);
     expect(rollbackStillValid(undefined, 2)).toBe(false);
-  });
-
-  it("kill-switch: disabled is open, armed only on confirmed enforcement", () => {
-    expect(killSwitchState(NETWORK)).toEqual({ label: "ARMED", tone: "ok" });
-    expect(killSwitchState({ ...NETWORK, kill_switch_enabled: false })).toEqual({ label: "OPEN", tone: "bad" });
-    expect(killSwitchState(withStatus({ enforcement_status: "error" })).label).toBe("UNKNOWN");
-    expect(killSwitchState(withStatus({ enforcement_status: undefined })).label).toBe("UNKNOWN");
-    expect(killSwitchState(undefined).label).toBe("UNKNOWN");
   });
 
   it("pool size on one /24, including unusual but valid ranges", () => {
@@ -233,12 +224,6 @@ describe("summaries", () => {
     expect(routeBadge("Direct")).toBe("direct");
   });
 
-  it("IPv6 source", () => {
-    expect(ipv6Source(NETWORK)).toBe("static");
-    expect(ipv6Source(withStatus({ ipv6_prefix_source: "pd" }))).toBe("pd");
-    expect(ipv6Source(withStatus({ ipv6_prefix_source: null }))).toBe("on");
-    expect(ipv6Source({ ...NETWORK, ipv6_enabled: false })).toBe("off");
-  });
 });
 
 describe("events", () => {

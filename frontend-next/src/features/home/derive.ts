@@ -1,6 +1,6 @@
 // Pure derivations for Home › Overview and Home › Traffic: every rule that turns API data into what
 // the screens say lives here, where it is unit-tested without rendering anything.
-import type { ConnEvent, Network, NetworkSegment, Node, Routing, Status, TrafficFrame } from "../../api/client";
+import type { ConnEvent, NetworkSegment, Node, Routing, Status, TrafficFrame } from "../../api/client";
 import { LIVE_WINDOW_MAX_SEC } from "../../api/cadence";
 import type { TrafficSample } from "../../api/traffic";
 import type { EventLevel, PathLeg, Tone } from "../../components/data/types";
@@ -57,13 +57,6 @@ export function tunnelLabel(status: Status | undefined, statusError: boolean, pr
   if (matched?.stale === false && matched.real_ok === false) return { label: "OFFLINE", tone: "bad" };
   if (matched?.stale === true || status.active_health_fresh === false) return { label: "UNKNOWN", tone: "neutral" };
   return status.tunnel_online === true ? { label: "ONLINE", tone: "ok" } : { label: "UNKNOWN", tone: "neutral" };
-}
-
-/** O4 kill-switch: switched off is OPEN; ARMED only when the host confirms enforcement. */
-export function killSwitchState(network: Network | undefined): Labelled<"ARMED" | "OPEN" | "UNKNOWN"> {
-  if (network?.kill_switch_enabled === false) return { label: "OPEN", tone: "bad" };
-  if (network?.status.enforcement_status === "ok") return { label: "ARMED", tone: "ok" };
-  return { label: "UNKNOWN", tone: "neutral" };
 }
 
 function ipv4(address: string): number[] | null {
@@ -248,13 +241,6 @@ export function routingSummary(routing: Routing, activeLabel: string): RoutingSu
     defaultBadge,
     defaultTarget: defaultBadge === "proxy" ? `→ ${activeLabel}` : null,
   };
-}
-
-/** O10: static / ula / pd, "on" when enabled without a reported source, "off". */
-export function ipv6Source(network: Network): string {
-  if (!network.ipv6_enabled) return "off";
-  const source = network.status.ipv6_prefix_source;
-  return source === "static" || source === "ula" || source === "pd" ? source : "on";
 }
 
 // ---- events ----------------------------------------------------------------------------------

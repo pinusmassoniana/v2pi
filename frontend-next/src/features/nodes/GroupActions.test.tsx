@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,6 @@ import { settleConfirm } from "../../components/confirm";
 import { ALL_NODE_HEALTH, NODE_HEALTH, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
-import { Elapsed } from "./Elapsed";
 
 afterEach(() => {
   act(() => settleConfirm(false));
@@ -27,16 +26,6 @@ async function openList(path = "/nodes") {
   await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
   return { api$, ...view };
 }
-
-describe("Elapsed", () => {
-  it("counts whole seconds on its own clock", () => {
-    vi.useFakeTimers();
-    render(<Elapsed since={Date.now()} />);
-    expect(screen.getByText("0 s")).toBeInTheDocument();
-    act(() => { vi.advanceTimersByTime(42_000); });
-    expect(screen.getByText("42 s")).toBeInTheDocument();
-  });
-});
 
 describe("Servers › group actions (N8–N10)", () => {
   it("TCP ping sweeps the group; both pings wait for it; its answer replaces the health list", async () => {
