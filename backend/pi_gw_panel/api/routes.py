@@ -1764,6 +1764,10 @@ def _rw_out(state, *, revocation: str = "") -> RwOut:
         clients=[RwClientOut(**c) for c in rw_mod.get_clients(store)],
         live=_rw_serving(state),
         revocation=revocation,
+        # Read straight from the store, not through `rw_reconcile_is_pending`: that answers False
+        # when the read fails ("do not act now"), which is right for a retry and wrong for a
+        # warning. A failed read raises here like every other read in this response.
+        revocation_pending=bool(store.get_setting(RW_PENDING_KEY)),
     )
 
 

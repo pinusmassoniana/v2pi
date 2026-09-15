@@ -685,6 +685,12 @@ class RwOut(BaseModel):
     # other says we could not make it go. Never empty on a revocation: a revocation that could
     # not be applied must say so, not look like a success.
     revocation: str = ""
+    # True while a committed narrowing (a save that took access away, a suspend or a delete) has
+    # not been PROVEN to reach the running xray: the durable reconcile marker, read as it stands.
+    # It survives reloads and restarts and clears only on proof (a reconciled revocation, a full
+    # apply, the boot or liveness recovery). Clients must show it as a security warning — the
+    # revoked credential may still be accepted until it clears.
+    revocation_pending: bool
 
 
 class RwIn(StrictIn):
