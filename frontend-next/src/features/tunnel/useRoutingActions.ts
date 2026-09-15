@@ -16,9 +16,12 @@ export function routingSavedMessage(applied: boolean, dropped: number): string {
   return `${applied ? "saved & applied" : "saved — applies on next Connect"}${dropped > 0 ? ` · ${dropped} duplicate row(s) dropped` : ""}`;
 }
 
-/** A 502 after a routing save: the rules were stored; only re-applying the tunnel failed. */
-export function applyFailedMessage(error: ApiError): string {
-  return `saved, but applying to the tunnel failed: ${error.message}`;
+/**
+ * A 502 after a routing save: `put_routing` writes and re-applies inside one store transaction, so a failed apply
+ * rolls the write back too (spec §13.2) — the gateway still holds the ruleset it had before Save was pressed.
+ */
+export function saveRefusedMessage(error: ApiError): string {
+  return `not saved — applying to the tunnel failed: ${error.message}`;
 }
 
 interface SaveVariables {
@@ -67,7 +70,7 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
     mutationFn: ({ body }: SaveVariables) => putRouting(body),
     onSuccess: (_saved, { applied, dropped }) => notifyOk(routingSavedMessage(applied, dropped)),
     onError: (error) => {
-      if (error instanceof ApiError && error.status === 502) notifyError(null, applyFailedMessage(error));
+      if (error instanceof ApiError && error.status === 502) notifyError(null, saveRefusedMessage(error));
       else if (!(error instanceof ApiError && error.status === 422)) notifyError(error, "save failed");
     },
   });
@@ -111,8 +114,10 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
       },
       onError: (error) => {
         if (error instanceof ApiError && error.status === 422) setSaveError(error.message);
-        // Stored, but the tunnel refused it: show what the gateway holds now.
-        if (error instanceof ApiError && error.status === 502) void invalidate(queryClient, "putRouting").then(discardEdits);
+        // Not saved: the store rolled the write back, so the gateway's ruleset is unchanged — re-reading it is
+        // harmless (and lets a gatewayChanged notice fire if something else moved it meanwhile), but the staged
+        // edits stay so the operator can fix the rule and press Save again.
+        if (error instanceof ApiError && error.status === 502) void invalidate(queryClient, "putRouting");
       },
     });
   }

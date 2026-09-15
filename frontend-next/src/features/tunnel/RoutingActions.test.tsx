@@ -2,10 +2,11 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type Routing, type RoutingIn } from "../../api/client";
+import { ApiError, type RoutingIn } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ROUTING_INVALID, STATUS, TUNNEL_ROUTING, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
+import { ROUTING_INVALID, STATUS, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
+import { GATEWAY_CHANGED } from "./StagedBanner";
 
 const writeText = vi.fn<(text: string) => Promise<void>>();
 
@@ -122,18 +123,23 @@ describe("Routing › Save (R6)", () => {
     await waitFor(() => expect(toolbarButton("Save")).toBeEnabled());
   });
 
-  it("a 502 is a save the tunnel refused: says so and shows the ruleset the gateway now holds", async () => {
+  it("a 502 is a save the tunnel could not apply: nothing was saved, and the staged edits stay for a retry", async () => {
     const { api$, table } = await openRouting();
     const error = vi.spyOn(toast, "error");
-    const stored: Routing = { ...TUNNEL_ROUTING, rules: TUNNEL_ROUTING.rules.map((rule) => (rule.id === 23 ? { ...rule, label: "yandex" } : rule)) };
-    api$.putRouting.mockRejectedValue(new ApiError(502, "xray -test failed: bad config"));
+    api$.putRouting.mockRejectedValueOnce(new ApiError(502, "xray -test failed: bad config"));
     await stageLabel(table, "yandex");
-    api$.getRouting.mockResolvedValue(stored);
     await userEvent.click(toolbarButton("Save"));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("saved, but applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
-    await waitFor(() => expect(banner()).toBeNull());
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
+    // The store rolled the write back, so the gateway's ruleset never moved: no gateway-changed notice.
+    await waitFor(() => expect(api$.getRouting).toHaveBeenCalledTimes(2));
+    expect(banner()).toHaveTextContent("STAGED · 1 change");
+    expect(banner()).not.toHaveTextContent(GATEWAY_CHANGED);
     expect(within(table).getByRole("textbox", { name: "Rule 3 label" })).toHaveValue("yandex");
-    expect(api$.getRouting).toHaveBeenCalledTimes(2);
+    // Save again with the same edits — the rule was fixed, or just retried — and this time it goes through.
+    await userEvent.click(toolbarButton("Save"));
+    await waitFor(() => expect(api$.putRouting).toHaveBeenCalledTimes(2));
+    expect(api$.putRouting.mock.calls[1]![0].rules[2]).toEqual({ type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "yandex" });
+    await waitFor(() => expect(banner()).toBeNull());
   });
 
   it("a 422 shows under the banner and keeps the staged edits", async () => {
