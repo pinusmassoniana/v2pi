@@ -105,6 +105,31 @@ function jsonRes(body: any, status = 200) {
   return { ok: status < 400, status, json: async () => body } as Response;
 }
 
+/** How long `call`'s request runs before the client gives up on it: every request but /csrf never answers. */
+async function abortsAfter(call: () => Promise<unknown>): Promise<number> {
+  vi.useFakeTimers();
+  api._reset();
+  const started = Date.now();
+  let abortedAfter = -1;
+  (globalThis as any).fetch = vi.fn((url: string, opts: any) => {
+    if (url.endsWith("/api/csrf")) return Promise.resolve(jsonRes({ csrf: "tok-123" }));
+    return new Promise((_resolve, reject) => {
+      opts.signal.addEventListener("abort", () => {
+        abortedAfter = Date.now() - started;
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  });
+  try {
+    const pending = call().catch((error) => error);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(((await pending) as ApiError).message).toBe("request timed out");
+    return abortedAfter;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 beforeEach(() => { api._reset(); });
 
 describe("api client", () => {
@@ -393,6 +418,15 @@ describe("api client", () => {
     expect(err.status).toBe(0);
     expect(err.message).toBe("request timed out");
     vi.useRealTimers();
+  });
+
+  it("gives a settings write that re-applies the tunnel 60 s, and every other settings write the 20 s default", async () => {
+    expect(await abortsAfter(() => api.putSettings({ health_interval: 60 }))).toBe(20_000);
+    expect(await abortsAfter(() => api.putSettings({ subs_auto_switch: false }))).toBe(20_000);
+    for (const patch of [{ dns_intercept: true }, { tunneled_fetch: false }, { stats_enabled: true }, { stats_api_port: 10086 }]) {
+      expect(await abortsAfter(() => api.putSettings(patch))).toBe(60_000);
+    }
+    expect(await abortsAfter(() => api.resetSettings())).toBe(60_000);
   });
 
   it("fires the registered onUnauthorized callback on a mid-session 401 outside /login (F13-6)", async () => {

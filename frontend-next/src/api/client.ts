@@ -59,6 +59,11 @@ export interface Settings {
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
   dns_intercept: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
 }
+/**
+ * The settings PUT /settings re-applies the live tunnel for (routes.py _SETTINGS_CONFIG_KEYS), inside the same
+ * transaction: a patch holding one waits on a rebuild, `xray -test` and a reload, and a 502 rolls the whole patch back.
+ */
+export const SETTINGS_REAPPLY_KEYS = ["tunneled_fetch", "dns_intercept", "stats_enabled", "stats_api_port"] as const satisfies readonly (keyof Settings)[];
 export interface Diagnostics {
   app_version: string; xray_version: string; uptime_sec: number;
   db_path: string; db_bytes: number; disk_free_bytes: number; disk_total_bytes: number;
@@ -233,6 +238,12 @@ export function setOnUnauthorized(fn: (() => void) | null) { _onUnauthorized = f
 // fast instead of leaving the promise pending forever. Generous enough for a real-probe sweep.
 const REQUEST_TIMEOUT_MS = 20000;
 const PROBE_SWEEP_TIMEOUT_MS = 210000;
+/** A write that re-applies the live tunnel under the store lock: rebuild, `xray -test` (15 s), reload and net apply. */
+export const REAPPLY_TIMEOUT_MS = 60_000;
+
+function reappliesTunnel(patch: Partial<Settings>): boolean {
+  return SETTINGS_REAPPLY_KEYS.some((key) => key in patch);
+}
 
 async function req(path: string, opts: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<any> {
   const ac = new AbortController();
@@ -349,8 +360,9 @@ export const api = {
   importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },
 
   getSettings(): Promise<Settings> { return req("/settings"); },
-  putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch).then(announceCapabilityChange); },
-  resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset").then(announceCapabilityChange); },
+  putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch, reappliesTunnel(patch) ? REAPPLY_TIMEOUT_MS : undefined).then(announceCapabilityChange); },
+  // A reset writes every re-apply key back to its default, so it always re-applies.
+  resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
 
   listProfiles(): Promise<TuningProfile[]> { return req("/profiles"); },

@@ -1,6 +1,6 @@
-import { useIsMutating, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { partialMatchKey, useIsMutating, useQueryClient, type Mutation, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { ApiError, api } from "./client";
+import { ApiError, SETTINGS_REAPPLY_KEYS, api, type Settings } from "./client";
 import { keys } from "./keys";
 
 const NODE_LIST = [keys.nodes, keys.nodeHealth, keys.profiles, keys.subs];
@@ -82,8 +82,20 @@ export const BULK_KEY = ["nodes", "bulk"] as const;
 /** Refresh of one subscription or of all of them (Subscriptions, ⌘K): they block each other. */
 export const SUBS_REFRESH_KEY = ["subs", "refresh"] as const;
 
-/** A gateway settings write: one at a time, so a rollback or a re-read only ever reasons about one. */
+/** A gateway settings write that re-applies nothing: one at a time, so a rollback or a re-read only ever reasons about one. */
 export const SETTINGS_WRITE = ["settings-write"] as const;
+
+/**
+ * A settings write that re-applies the live tunnel: PUT /settings re-applies inside its own transaction whenever the
+ * patch holds one of SETTINGS_REAPPLY_KEYS (routes.py _SETTINGS_CONFIG_KEYS), so it is a connection write too — its key
+ * starts with CONNECTION_WRITE. The gateway DNS toggle and the tunneled subscription fetch save under it.
+ */
+export const SETTINGS_CONNECTION_WRITE = [...CONNECTION_WRITE, "settings"] as const;
+
+/** The mutation key a settings patch saves under: a connection write when it re-applies the tunnel. */
+export function settingsWriteKey(patch: Partial<Settings>): typeof SETTINGS_WRITE | typeof SETTINGS_CONNECTION_WRITE {
+  return SETTINGS_REAPPLY_KEYS.some((key) => key in patch) ? SETTINGS_CONNECTION_WRITE : SETTINGS_WRITE;
+}
 
 /**
  * Routing Save. It always re-applies the tunnel (put_routing -> reapply_active_node), so it is a connection write: its
@@ -100,20 +112,60 @@ export const PROFILE_WRITE = ["profiles", "write"] as const;
  */
 export const PROFILE_CONNECTION_WRITE = [...CONNECTION_WRITE, "profile"] as const;
 
+/** Matches a mutation whose key starts with any of `keys` (TanStack's own partial key match). */
+function writingAny(keys: readonly QueryKey[]) {
+  return (mutation: Mutation<unknown, Error, unknown, unknown>) => {
+    const key = mutation.options.mutationKey;
+    return key !== undefined && keys.some((prefix) => partialMatchKey(key, prefix));
+  };
+}
+
+/** A write under any of `keys` (each a key or a key prefix) is running. Every busy flag below is this. */
+export function useWriting(...keys: readonly QueryKey[]): boolean {
+  return useIsMutating({ predicate: writingAny(keys) }) > 0;
+}
+
+/**
+ * A write under any of `keys` is running right now. For code that awaited something first (a confirmation): the busy
+ * flag it rendered with may be out of date, so it checks again before starting its own write.
+ */
+export function isWriting(client: QueryClient, ...keys: readonly QueryKey[]): boolean {
+  return client.isMutating({ predicate: writingAny(keys) }) > 0;
+}
+
 /** A connection write (CONNECTION_WRITE) is running. */
 export function useConnectionBusy(): boolean {
-  return useIsMutating({ mutationKey: CONNECTION_WRITE }) > 0;
+  return useWriting(CONNECTION_WRITE);
 }
 
 /** Any tuning-profile write (PROFILE_WRITE or PROFILE_CONNECTION_WRITE) is running: the Anti-DPI screen's one busy flag. */
 export function useProfileBusy(): boolean {
-  const plain = useIsMutating({ mutationKey: PROFILE_WRITE });
-  const live = useIsMutating({ mutationKey: PROFILE_CONNECTION_WRITE });
-  return plain + live > 0;
+  return useWriting(PROFILE_WRITE, PROFILE_CONNECTION_WRITE);
+}
+
+/** Any tuning-profile write is running right now (for code that awaited a question first). */
+export function isProfileBusy(client: QueryClient): boolean {
+  return isWriting(client, PROFILE_WRITE, PROFILE_CONNECTION_WRITE);
+}
+
+/** Any settings write (SETTINGS_WRITE or SETTINGS_CONNECTION_WRITE) is running: one settings write at a time. */
+export function useSettingsBusy(): boolean {
+  return useWriting(SETTINGS_WRITE, SETTINGS_CONNECTION_WRITE);
+}
+
+/** Any settings write is running right now (for code that awaited a question first). */
+export function isSettingsBusy(client: QueryClient): boolean {
+  return isWriting(client, SETTINGS_WRITE, SETTINGS_CONNECTION_WRITE);
 }
 
 /** Said when another connection write started while a confirmation was open, so nothing was sent. */
 export const CONNECTION_BUSY = "Another connection change is still running — try again when it finishes";
+
+/** Said when another profile write started while a question was open, so nothing was sent. */
+export const PROFILE_BUSY = "Another profile change is still running — try again when it finishes";
+
+/** Said when another settings write started while a question was open, so nothing was sent. */
+export const SETTINGS_BUSY = "Another settings change is still running — try again when it finishes";
 
 /**
  * A 502 on a connection write: the write and its re-apply run in one store transaction (spec §13.2), so a failed
@@ -126,12 +178,9 @@ export function saveRefusedMessage(error: ApiError, outcome = "not saved"): stri
   return `${outcome} — applying to the tunnel failed: ${error.message}`;
 }
 
-/**
- * A connection write is running right now. For code that awaited something first (a confirmation): the busy flag
- * it rendered with may be out of date, so it checks again before starting its own write.
- */
+/** A connection write is running right now (for code that awaited something first, as isWriting). */
 export function isConnectionBusy(client: QueryClient): boolean {
-  return client.isMutating({ mutationKey: CONNECTION_WRITE }) > 0;
+  return isWriting(client, CONNECTION_WRITE);
 }
 
 /**

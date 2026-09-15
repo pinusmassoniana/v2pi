@@ -3,10 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type Settings, type Status } from "../../api/client";
-import { SETTINGS_WRITE } from "../../api/invalidation";
+import { SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
-import { FAILOVER_STATUS, SETTINGS, STATUS, mockApi } from "../../test/fixtures";
+import { FAILOVER_STATUS, SETTINGS, STATUS, holdWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { failoverLabel, healthState } from "./HealthStateStrip";
@@ -166,6 +166,17 @@ describe("Health & failover › form (G3, G4)", () => {
     await waitFor(() => expect(error).toHaveBeenCalledWith("failover_cooldown must be an integer", { duration: 20000 }));
     await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(reads));
     expect(within(failover()).getByLabelText("Cooldown")).toHaveValue(60);
+  });
+
+  it("Save also waits while a settings write that re-applies the tunnel runs (the gateway DNS switch)", async () => {
+    const { client } = await openHealth();
+    await userEvent.clear(within(failover()).getByLabelText("Cooldown"));
+    await userEvent.type(within(failover()).getByLabelText("Cooldown"), "60");
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    const release = holdWrite(client, SETTINGS_CONNECTION_WRITE);
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    await release();
+    await waitFor(() => expect(saveButton()).toBeEnabled());
   });
 
   it("follows the gateway's settings where nothing was typed, and never sends back what it did not change", async () => {

@@ -5,8 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import { api } from "./client";
 import clientSource from "./client.ts?raw";
 import {
-  CONNECTION_WRITE, INVALIDATES, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, invalidate, isConnectionBusy, useApiWrite,
-  useConnectionBusy, useProfileBusy, type MutationName,
+  CONNECTION_WRITE, INVALIDATES, PROFILE_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
+  SETTINGS_WRITE, invalidate, isConnectionBusy, isProfileBusy, isSettingsBusy, isWriting, settingsWriteKey, useApiWrite, useConnectionBusy,
+  useProfileBusy, useSettingsBusy, useWriting, type MutationName,
 } from "./invalidation";
 import { keys } from "./keys";
 
@@ -127,8 +128,66 @@ describe("Tunnel mutation keys", () => {
 
     release = hold(client, PROFILE_WRITE);
     expect(isConnectionBusy(client)).toBe(false);
+    expect(isProfileBusy(client)).toBe(true);
     await waitFor(() => expect(result.current).toEqual({ connection: false, profile: true }));
     await release();
+    expect(isProfileBusy(client)).toBe(false);
     await waitFor(() => expect(result.current).toEqual({ connection: false, profile: false }));
+    expect(PROFILE_BUSY).toBe("Another profile change is still running — try again when it finishes");
+  });
+});
+
+describe("one set of busy helpers", () => {
+  it("useWriting and isWriting count a write under any of the keys they are given, each matched as a key prefix", async () => {
+    const client = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => ({ plain: useWriting(SETTINGS_WRITE, PROFILE_WRITE), connection: useWriting(CONNECTION_WRITE) }), { wrapper });
+    expect(result.current).toEqual({ plain: false, connection: false });
+
+    let release = hold(client, ROUTING_WRITE);
+    expect(isWriting(client, CONNECTION_WRITE)).toBe(true);
+    expect(isWriting(client, SETTINGS_WRITE, PROFILE_WRITE)).toBe(false);
+    await waitFor(() => expect(result.current).toEqual({ plain: false, connection: true }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ plain: false, connection: false }));
+
+    release = hold(client, PROFILE_WRITE);
+    expect(isWriting(client, SETTINGS_WRITE, PROFILE_WRITE)).toBe(true);
+    await waitFor(() => expect(result.current).toEqual({ plain: true, connection: false }));
+    await release();
+    expect(isWriting(client, SETTINGS_WRITE, PROFILE_WRITE)).toBe(false);
+    await waitFor(() => expect(result.current).toEqual({ plain: false, connection: false }));
+  });
+});
+
+describe("settings writes that re-apply the tunnel", () => {
+  it("a patch holding a re-apply key saves as a connection write, any other patch as a plain settings write", () => {
+    expect(SETTINGS_CONNECTION_WRITE.slice(0, CONNECTION_WRITE.length)).toEqual([...CONNECTION_WRITE]);
+    for (const patch of [{ dns_intercept: true }, { tunneled_fetch: false }, { stats_enabled: true }, { stats_api_port: 10085 }, { dns_intercept: false, health_interval: 60 }]) {
+      expect(settingsWriteKey(patch)).toBe(SETTINGS_CONNECTION_WRITE);
+    }
+    for (const patch of [{ subs_auto_switch: false }, { health_interval: 60, failover_cooldown: 0 }, {}]) {
+      expect(settingsWriteKey(patch)).toBe(SETTINGS_WRITE);
+    }
+  });
+
+  it("either settings key is settings-busy; only the re-applying one is also a connection write", async () => {
+    const client = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => ({ settings: useSettingsBusy(), connection: useConnectionBusy() }), { wrapper });
+
+    let release = hold(client, SETTINGS_CONNECTION_WRITE);
+    expect([isSettingsBusy(client), isConnectionBusy(client)]).toEqual([true, true]);
+    await waitFor(() => expect(result.current).toEqual({ settings: true, connection: true }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ settings: false, connection: false }));
+
+    release = hold(client, SETTINGS_WRITE);
+    expect([isSettingsBusy(client), isConnectionBusy(client)]).toEqual([true, false]);
+    await waitFor(() => expect(result.current).toEqual({ settings: true, connection: false }));
+    await release();
+    expect(isSettingsBusy(client)).toBe(false);
+    await waitFor(() => expect(result.current).toEqual({ settings: false, connection: false }));
+    expect(SETTINGS_BUSY).toBe("Another settings change is still running — try again when it finishes");
   });
 });

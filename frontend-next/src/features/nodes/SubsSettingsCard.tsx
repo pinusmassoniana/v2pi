@@ -1,12 +1,16 @@
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Settings } from "../../api/client";
-import { SETTINGS_WRITE, useApiWrite } from "../../api/invalidation";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiError, type Settings } from "../../api/client";
+import {
+  CONNECTION_BUSY, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE, invalidate, isConnectionBusy, isSettingsBusy, saveRefusedMessage,
+  useApiWrite, useConnectionBusy, useSettingsBusy,
+} from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { cardFallback } from "../../components/data/CardState";
 import { CardHeader } from "../../components/data/CardHeader";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError } from "../../components/ui/Toaster";
+import { confirmTunnelStart } from "../../lib/tunnelStart";
 
 type SubsSetting = "tunneled_fetch" | "subs_auto_switch";
 
@@ -25,37 +29,78 @@ const ROWS: readonly { key: SubsSetting; label: string; text: string; note: stri
   },
 ];
 
-/** G1, subscription half: two gateway settings, each saved on its own the moment it is flipped. */
+interface Flip {
+  key: SubsSetting;
+  on: boolean;
+}
+
+/**
+ * G1, subscription half: two gateway settings, each saved on its own the moment it is flipped. tunneled_fetch re-applies
+ * the live tunnel (a connection write, SETTINGS_CONNECTION_WRITE); subs_auto_switch does not (SETTINGS_WRITE). Any
+ * settings write disables both switches, so the rollback and re-read below only ever reason about one write.
+ */
 export function SubsSettingsCard({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const settings = useQuery(queries.settings());   // read once; this card is its only writer on the screen
   const putSettings = useApiWrite("putSettings");
-  // Both rows share SETTINGS_WRITE: a save in flight disables every switch on the card, so a second click (the same
-  // row twice, or the other row) never overlaps the first — the rollback/invalidate logic below only has to reason
-  // about one write at a time.
-  const toggle = useMutation({
-    mutationKey: SETTINGS_WRITE,
-    mutationFn: ({ key, on }: { key: SubsSetting; on: boolean }) => putSettings({ [key]: on }),
-    // Optimistic: the switch moves at once. A failure puts back only the field it changed, so a second switch
-    // flipped meanwhile keeps its own new value.
-    onMutate: ({ key, on }) => {
-      const before = queryClient.getQueryData<Settings>(keys.settings)?.[key];
-      queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: on } : old));
-      return { key, before };
-    },
-    onError: (error, _variables, context) => {
-      if (context?.before !== undefined) {
-        const { key, before } = context;
-        queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: before } : old));
+  const settingsBusy = useSettingsBusy();
+  const connectionBusy = useConnectionBusy();
+
+  // Optimistic: the switch moves at once. A failure puts back only the field it changed.
+  const onMutate = ({ key, on }: Flip) => {
+    const before = queryClient.getQueryData<Settings>(keys.settings)?.[key];
+    queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: on } : old));
+    return { key, before };
+  };
+  const revert = (context: { key: SubsSetting; before: boolean | undefined } | undefined) => {
+    if (context?.before === undefined) return;
+    const { key, before } = context;
+    queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: before } : old));
+  };
+  const failed = (error: Error) => {
+    // The rollback is a best guess from this write's own snapshot; re-read the gateway's actual value too.
+    void queryClient.invalidateQueries({ queryKey: keys.settings });
+    notifyError(error, "setting was not saved");
+  };
+
+  const tunneled = useMutation({
+    mutationKey: SETTINGS_CONNECTION_WRITE,
+    mutationFn: ({ key, on }: Flip) => putSettings({ [key]: on }),
+    onMutate,
+    onError: (error, _flip, context) => {
+      revert(context);
+      if (error instanceof ApiError && error.status === 502) {
+        // The re-apply failed and the settings transaction rolled the change back: nothing was saved.
+        notifyError(null, saveRefusedMessage(error));
+        void invalidate(queryClient, "putSettings");
+      } else {
+        failed(error);
       }
-      // The rollback is a best guess from this write's own snapshot; re-read the gateway's actual value too.
-      void queryClient.invalidateQueries({ queryKey: keys.settings });
-      notifyError(error, "setting was not saved");
     },
   });
-  // One write at a time: disables both switches so a click can't land while another row's save is still out,
-  // which is what let a rollback or a stale refetch show the wrong value (see the mutation's own comment).
-  const saving = useIsMutating({ mutationKey: SETTINGS_WRITE }) > 0;
+  const autoSwitch = useMutation({
+    mutationKey: SETTINGS_WRITE,
+    mutationFn: ({ key, on }: Flip) => putSettings({ [key]: on }),
+    onMutate,
+    onError: (error, _flip, context) => {
+      revert(context);
+      failed(error);
+    },
+  });
+
+  async function flip(key: SubsSetting, on: boolean) {
+    if (key === "subs_auto_switch") {
+      autoSwitch.mutate({ key, on });
+      return;
+    }
+    // Re-applying starts an xray the operator stopped while a node is still selected: ask first.
+    if (!(await confirmTunnelStart(queryClient))) return;
+    if (isConnectionBusy(queryClient) || isSettingsBusy(queryClient)) {
+      notifyError(null, isConnectionBusy(queryClient) ? CONNECTION_BUSY : SETTINGS_BUSY);
+      return;
+    }
+    tunneled.mutate({ key, on });
+  }
 
   const fallback = cardFallback([settings], "Subscription settings did not load", "h-24");
   return (
@@ -73,8 +118,8 @@ export function SubsSettingsCard({ className }: { className?: string }) {
               <Toggle
                 label={row.label}
                 checked={settings.data?.[row.key] ?? false}
-                disabled={saving}
-                onCheckedChange={(on) => toggle.mutate({ key: row.key, on })}
+                disabled={settingsBusy || (row.key === "tunneled_fetch" && connectionBusy)}
+                onCheckedChange={(on) => void flip(row.key, on)}
               />
             </li>
           ))}

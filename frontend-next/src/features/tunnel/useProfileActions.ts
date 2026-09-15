@@ -2,21 +2,13 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useCallback, useMemo } from "react";
 import { ApiError, type Status, type TuningProfile } from "../../api/client";
 import {
-  CONNECTION_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, invalidate, isConnectionBusy, saveRefusedMessage, useApiWrite,
+  CONNECTION_BUSY, PROFILE_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, invalidate, isConnectionBusy, isProfileBusy, saveRefusedMessage, useApiWrite,
 } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { nodeLabel } from "../../lib/nodeHealth";
 import { ACTIVE_NODE_CHANGED, NO_ACTIVE_NODE, applyActiveConfirmMessage, deleteProfileMessage } from "./profileForm";
-
-/** Said when another profile write started while a question was open, so nothing was sent. */
-export const PROFILE_BUSY = "Another profile change is still running — try again when it finishes";
-
-/** Any tuning-profile write is running right now (for code that awaited a question first). */
-export function isProfileBusy(client: QueryClient): boolean {
-  return client.isMutating({ mutationKey: PROFILE_WRITE }) + client.isMutating({ mutationKey: PROFILE_CONNECTION_WRITE }) > 0;
-}
 
 /** The profile as the list holds it now: whether it is live may have changed while a question was open. */
 function latest(client: QueryClient, profile: TuningProfile): TuningProfile {

@@ -1,9 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, type ReactNode } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import type { Settings } from "../../api/client";
-import { SETTINGS_WRITE, useApiWrite } from "../../api/invalidation";
+import { SETTINGS_WRITE, useApiWrite, useSettingsBusy } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { useUnsavedGuard } from "../../app/guard";
 import { CardHeader } from "../../components/data/CardHeader";
@@ -56,8 +56,8 @@ function HealthForm({ settings }: { settings: Settings }) {
   useUnsavedGuard(isDirty);
   const [master, sweep] = useWatch({ control, name: ["health_enabled", "health_sweep_enabled"] });
   const putSettings = useApiWrite("putSettings");
-  // One settings write at a time, shared with every other settings card (SETTINGS_WRITE).
-  const saving = useIsMutating({ mutationKey: SETTINGS_WRITE }) > 0;
+  // One settings write at a time across both settings keys, shared with every other settings card and the gateway DNS switch.
+  const saving = useSettingsBusy();
   const save = useMutation({
     mutationKey: SETTINGS_WRITE,
     mutationFn: (patch: HealthPatch) => putSettings(patch),

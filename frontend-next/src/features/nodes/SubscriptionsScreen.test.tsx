@@ -3,8 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RefreshAllResult, type RefreshResult, type Settings, type Subscription } from "../../api/client";
+import { CONNECTION_BUSY, isConnectionBusy, isSettingsBusy } from "../../api/invalidation";
 import { settleConfirm } from "../../components/confirm";
-import { NOW_SEC, REFRESH_ALL, SETTINGS, SUBS, mockApi } from "../../test/fixtures";
+import { NOW_SEC, REFRESH_ALL, SETTINGS, STATUS, SUBS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
 afterEach(() => act(() => settleConfirm(false)));
@@ -132,6 +133,99 @@ describe("Subscriptions › fetch settings (G1)", () => {
     await userEvent.click(tunnel);
     await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(readsBefore));
     expect(tunnel).toBeChecked();
+  });
+});
+
+describe("Subscriptions › fetch settings that re-apply the tunnel", () => {
+  const STOPPED = { ...STATUS, running: false, xray_state: "stopped" };
+
+  it("the tunneled fetch saves as a connection write, the auto-switch as a plain settings write", async () => {
+    const { api$, client } = await openSubscriptions();
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    const autoSwitch = screen.getByRole("switch", { name: "Subscription auto-switch" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    let finish: (settings: Settings) => void = () => {};
+    api$.putSettings.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await userEvent.click(tunnel);
+    await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ tunneled_fetch: false }));
+    expect([isConnectionBusy(client), isSettingsBusy(client)]).toEqual([true, true]);
+    await act(async () => finish({ ...SETTINGS, tunneled_fetch: false }));
+    await waitFor(() => expect(autoSwitch).toBeEnabled());
+
+    await userEvent.click(autoSwitch);
+    expect(api$.putSettings).toHaveBeenLastCalledWith({ subs_auto_switch: false });
+    expect([isConnectionBusy(client), isSettingsBusy(client)]).toEqual([false, true]);
+    await act(async () => finish({ ...SETTINGS, tunneled_fetch: false, subs_auto_switch: false }));
+  });
+
+  it("while a connection write runs the tunneled fetch waits and the auto-switch does not", async () => {
+    const { client } = await openSubscriptions();
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    const release = holdConnectionWrite(client);
+    await waitFor(() => expect(tunnel).toBeDisabled());
+    expect(screen.getByRole("switch", { name: "Subscription auto-switch" })).toBeEnabled();
+    await release();
+    await waitFor(() => expect(tunnel).toBeEnabled());
+  });
+
+  it("a 502 says nothing was saved, puts the switch back and re-reads what a re-apply can move", async () => {
+    const { api$ } = await openSubscriptions();
+    const error = vi.spyOn(toast, "error");
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    const reads = { settings: api$.getSettings.mock.calls.length, status: api$.getStatus.mock.calls.length };
+    api$.putSettings.mockRejectedValue(new ApiError(502, "xray -test failed: bad outbound"));
+    await userEvent.click(tunnel);
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad outbound", { duration: 20000 }));
+    expect(tunnel).toBeChecked();
+    await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(reads.settings));
+    expect(api$.getStatus.mock.calls.length).toBeGreaterThan(reads.status);
+  });
+
+  it("with xray stopped and a node still selected it asks before starting the tunnel; Cancel sends nothing", async () => {
+    const { api$, client } = await openSubscriptions();
+    api$.getStatus.mockResolvedValue(STOPPED);
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    await userEvent.click(tunnel);
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(dialog).toHaveTextContent("This starts the tunnel again. Continue?");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(api$.putSettings).not.toHaveBeenCalled();
+    expect(tunnel).toBeChecked();
+
+    await userEvent.click(tunnel);
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ tunneled_fetch: false }));
+  });
+
+  it("a connection write that started while the question was open: nothing is sent, and it says why", async () => {
+    const { api$, client } = await openSubscriptions();
+    api$.getStatus.mockResolvedValue(STOPPED);
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    const error = vi.spyOn(toast, "error");
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    await userEvent.click(tunnel);
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    const release = holdConnectionWrite(client);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith(CONNECTION_BUSY, { duration: 20000 }));
+    expect(api$.putSettings).not.toHaveBeenCalled();
+    await release();
+  });
+
+  it("the auto-switch re-applies nothing, so it never asks", async () => {
+    const { api$, client } = await openSubscriptions();
+    api$.getStatus.mockResolvedValue(STOPPED);
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    const autoSwitch = await screen.findByRole("switch", { name: "Subscription auto-switch" });
+    await waitFor(() => expect(autoSwitch).toBeChecked());
+    await userEvent.click(autoSwitch);
+    expect(screen.queryByRole("dialog", { name: "Confirm" })).toBeNull();
+    expect(api$.putSettings).toHaveBeenCalledWith({ subs_auto_switch: false });
   });
 });
 

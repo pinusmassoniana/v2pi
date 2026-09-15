@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi } from "vitest";
 import type {
@@ -398,13 +398,18 @@ export function mockTunnel(api$: MockApi): MockApi {
   return api$;
 }
 
+/** Start a write under `mutationKey` that runs until the returned function is called, as one started elsewhere would. */
+export function holdWrite(client: QueryClient, mutationKey: QueryKey): () => Promise<void> {
+  let release: () => void = () => {};
+  const done = new Promise<void>((resolve) => { release = resolve; });
+  const running = client.getMutationCache().build(client, { mutationKey, mutationFn: () => done }).execute(undefined);
+  return () => act(async () => { release(); await running; });
+}
+
 /**
  * Start a connection write (CONNECTION_WRITE) that runs until the returned function is called: every connection
  * control waits meanwhile, as it would for a connect started elsewhere in the app.
  */
 export function holdConnectionWrite(client: QueryClient): () => Promise<void> {
-  let release: () => void = () => {};
-  const done = new Promise<void>((resolve) => { release = resolve; });
-  const running = client.getMutationCache().build(client, { mutationKey: CONNECTION_WRITE, mutationFn: () => done }).execute(undefined);
-  return () => act(async () => { release(); await running; });
+  return holdWrite(client, CONNECTION_WRITE);
 }
