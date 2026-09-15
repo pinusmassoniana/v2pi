@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { ApiError, api, errText, type PresetInfo, type Routing, type RoutingIn, type Status } from "../../api/client";
-import { CONNECTION_BUSY, ROUTING_WRITE, invalidate, isConnectionBusy, useApiWrite } from "../../api/invalidation";
+import { CONNECTION_BUSY, ROUTING_WRITE, invalidate, isConnectionBusy, saveRefusedMessage, useApiWrite } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -14,14 +14,6 @@ import type { RoutingEditor } from "./useRoutingEditor";
 /** R6 Save's message: whether the tunnel took it now, and how many duplicate rows were left out. */
 export function routingSavedMessage(applied: boolean, dropped: number): string {
   return `${applied ? "saved & applied" : "saved — applies on next Connect"}${dropped > 0 ? ` · ${dropped} duplicate row(s) dropped` : ""}`;
-}
-
-/**
- * A 502 after a routing save: `put_routing` writes and re-applies inside one store transaction, so a failed apply
- * rolls the write back too (spec §13.2) — the gateway still holds the ruleset it had before Save was pressed.
- */
-export function saveRefusedMessage(error: ApiError): string {
-  return `not saved — applying to the tunnel failed: ${error.message}`;
 }
 
 interface SaveVariables {

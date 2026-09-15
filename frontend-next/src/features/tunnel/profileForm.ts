@@ -243,3 +243,27 @@ export function sectionStates(form: ProfileFormValues): Record<ProfileSection, S
     dns: { open: form.doh_enabled || form.quic !== "allow", summary: `DoH ${form.doh_enabled ? "on" : "off"} · QUIC ${form.quic}` },
   };
 }
+
+/** Which section holds a field, for opening the one an invalid submit's issue lives in. "Profile" never collapses, so it needs no entry. */
+const ISSUE_SECTIONS: Partial<Record<string, ProfileSection>> = {
+  frag_packets: "fragmentation", frag_length: "fragmentation", frag_interval: "fragmentation",
+  noises: "noise",
+  mux_concurrency: "mux",
+  xhttp_padding: "xhttp", xmux_max_concurrency: "xhttp", xmux_max_connections: "xhttp",
+  alpn: "tls", tls_min: "tls", tls_max: "tls",
+  doh_url: "dns",
+};
+
+/**
+ * T5 (fix round 1): the sections holding at least one of `issues`' fields — a hidden switch or a collapsed phone
+ * section can still carry an invalid value, since the backend checks fragmentation only while its toggle is on but
+ * checks noises, Mux concurrency and the other knobs whether or not their section is open.
+ */
+export function issueSections(issues: readonly ProfileIssue[]): ProfileSection[] {
+  const sections = new Set<ProfileSection>();
+  for (const issue of issues) {
+    const section = ISSUE_SECTIONS[String(issue.path[0])];
+    if (section) sections.add(section);
+  }
+  return [...sections];
+}

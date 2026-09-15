@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TuningProfile } from "../../api/client";
+import { ApiError, type TuningProfile } from "../../api/client";
 import { CONNECTION_WRITE } from "../../api/invalidation";
 import { settleConfirm } from "../../components/confirm";
 import { PROFILE_INVALID, STATUS, TUNNEL_PROFILES, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
@@ -158,6 +158,28 @@ describe("Anti-DPI › Validate, Create / Save, New (T5)", () => {
     await release();
   });
 
+  it("a 502 on saving the live profile says nothing was saved, keeps the edit, and Save can be pressed again with the same body", async () => {
+    const { api$ } = await openEditor();
+    const error = vi.spyOn(toast, "error");
+    const success = vi.spyOn(toast, "success");
+    api$.updateProfile.mockRejectedValueOnce(new ApiError(502, "xray -test failed: bad config"));
+    await userEvent.click(within(row(2)).getByRole("button", { name: "Edit fragment-tls" }));
+    await userEvent.clear(within(editor()).getByLabelText("Length"));
+    await userEvent.type(within(editor()).getByLabelText("Length"), "80-160");
+    const expectedBody = { ...formToProfileIn(profileToForm(TUNNEL_PROFILES[1]!)), frag_length: "80-160" };
+    await userEvent.click(within(editor()).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api$.updateProfile).toHaveBeenCalledWith(2, expectedBody));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
+    expect(success).not.toHaveBeenCalled();
+    expect(within(editor()).getByLabelText("Length")).toHaveValue("80-160");
+    expect(within(editor()).getByRole("heading", { name: "Editing profile · id 2" })).toBeInTheDocument();
+    expect(screen.getByText("● unsaved changes")).toBeInTheDocument();
+
+    await userEvent.click(within(editor()).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api$.updateProfile).toHaveBeenCalledTimes(2));
+    expect(api$.updateProfile).toHaveBeenLastCalledWith(2, expectedBody);
+  });
+
   it("a preset stages into a new profile under its name; Create sends it and starts over", async () => {
     const { api$ } = await openEditor();
     const success = vi.spyOn(toast, "success");
@@ -211,6 +233,49 @@ describe("Anti-DPI › Validate, Create / Save, New (T5)", () => {
     expect(router.state.location.pathname).toBe("/tunnel/anti-dpi");
     await userEvent.click(within(editor()).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(api$.addProfile).toHaveBeenCalledWith(expect.objectContaining({ name: "mux-heavy copy!", mux_concurrency: "8", quic: "proxy" })));
+  });
+});
+
+describe("Anti-DPI › Save blocked by a hidden or collapsed field (fix round 1)", () => {
+  it("desktop: an invalid Mux concurrency left over when Mux is switched off blocks Save with a visible reason", async () => {
+    const { api$ } = await openEditor();
+    await userEvent.click(within(row(3)).getByRole("button", { name: "Edit mux-heavy" }));
+    await userEvent.clear(within(editor()).getByLabelText("Concurrency"));
+    await userEvent.type(within(editor()).getByLabelText("Concurrency"), "0");
+    await userEvent.click(within(editor()).getByRole("switch", { name: "Mux" }));
+    expect(within(editor()).queryByLabelText("Concurrency")).toBeNull();
+    await userEvent.click(within(editor()).getByRole("button", { name: "Save" }));
+    expect(await within(editor()).findByText("✗ concurrency: a number within 1..1024")).toHaveClass("text-bad");
+    expect(api$.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("desktop: an invalid noise packet left over when UDP noise is switched off blocks Save with a visible reason", async () => {
+    const { api$ } = await openEditor();
+    await userEvent.click(within(row(2)).getByRole("button", { name: "Edit fragment-tls" }));
+    await userEvent.clear(within(section("UDP noise")).getByLabelText("Noise 1 packet"));
+    await userEvent.type(within(section("UDP noise")).getByLabelText("Noise 1 packet"), "0");
+    await userEvent.click(within(editor()).getByRole("switch", { name: "UDP noise" }));
+    expect(within(editor()).queryByLabelText("Noise 1 packet")).toBeNull();
+    await userEvent.click(within(editor()).getByRole("button", { name: "Save" }));
+    expect(await within(editor()).findByText("✗ packet: N or A-B within 1..65535")).toHaveClass("text-bad");
+    expect(api$.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("phone: an invalid value in a collapsed section blocks Save with a visible reason and opens that section", async () => {
+    const { api$ } = await openEditor({ phone: true });
+    await userEvent.click(screen.getByRole("button", { name: "More actions for fragment-tls" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Edit" }));
+    const page = await screen.findByRole("region", { name: "Profile editor" });
+    const xhttp = within(page).getByRole("button", { name: /^XHTTP transport/ });
+    await userEvent.click(xhttp);
+    await userEvent.type(within(page).getByLabelText("Padding"), "abc");
+    await userEvent.click(xhttp);
+    expect(xhttp).toHaveAttribute("aria-expanded", "false");
+    expect(xhttp).toHaveTextContent("custom");
+    await userEvent.click(within(page).getByRole("button", { name: "Save" }));
+    expect(await within(page).findByText("✗ padding: N or A-B within 0..1,000,000")).toHaveClass("text-bad");
+    expect(xhttp).toHaveAttribute("aria-expanded", "true");
+    expect(api$.updateProfile).not.toHaveBeenCalled();
   });
 });
 

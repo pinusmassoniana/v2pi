@@ -1,6 +1,6 @@
 import { useIsMutating, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { api } from "./client";
+import { ApiError, api } from "./client";
 import { keys } from "./keys";
 
 const NODE_LIST = [keys.nodes, keys.nodeHealth, keys.profiles, keys.subs];
@@ -114,6 +114,16 @@ export function useProfileBusy(): boolean {
 
 /** Said when another connection write started while a confirmation was open, so nothing was sent. */
 export const CONNECTION_BUSY = "Another connection change is still running — try again when it finishes";
+
+/**
+ * A 502 on a connection write: the write and its re-apply run in one store transaction (spec §13.2), so a failed
+ * apply rolls the write back too — the gateway still holds what it had before the write was sent. Shared by Routing
+ * (`useRoutingActions.ts`) and the Anti-DPI profile editor (`ProfileEditor.tsx`), so both show this instead of the
+ * raw apply error.
+ */
+export function saveRefusedMessage(error: ApiError): string {
+  return `not saved — applying to the tunnel failed: ${error.message}`;
+}
 
 /**
  * A connection write is running right now. For code that awaited something first (a confirmation): the busy flag

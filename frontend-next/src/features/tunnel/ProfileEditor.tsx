@@ -1,9 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type ReactNode } from "react";
 import { Controller, useWatch } from "react-hook-form";
-import { api, errText, type ProfileIn, type TuningProfile } from "../../api/client";
+import { ApiError, api, errText, type ProfileIn, type TuningProfile } from "../../api/client";
 import {
-  CONNECTION_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, isConnectionBusy, useApiWrite, useConnectionBusy, useProfileBusy,
+  CONNECTION_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, invalidate, isConnectionBusy, saveRefusedMessage, useApiWrite, useConnectionBusy,
+  useProfileBusy,
 } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { CheckLine } from "../../components/data/CheckLine";
@@ -18,8 +19,8 @@ import { EditorSection } from "./EditorSection";
 import { NoiseRows } from "./NoiseRows";
 import { PresetMenu } from "./PresetMenu";
 import {
-  FINGERPRINTS, MAX_ALPN, MAX_NAME, MAX_TLS_VERSION, NO_MIMICRY, QUIC_LABELS, QUIC_MODES, XUDP_MODES, formToProfileIn, profileFormSchema,
-  profileSavedMessage, sectionStates, type ProfileFormValues, type ProfileSection,
+  FINGERPRINTS, MAX_ALPN, MAX_NAME, MAX_TLS_VERSION, NO_MIMICRY, QUIC_LABELS, QUIC_MODES, XUDP_MODES, formToProfileIn, issueSections,
+  profileFormSchema, profileIssues, profileSavedMessage, sectionStates, type ProfileFormValues, type ProfileSection,
 } from "./profileForm";
 import type { ProfileEditorState } from "./useProfileEditor";
 
@@ -43,8 +44,11 @@ interface SaveVariables {
 /**
  * T5: Validate, Create / Save and the preset menu under the fields. Validate is a peek, marked stale once the form
  * moves past what it checked. Saving the profile the live tunnel runs on re-applies it, so that is a connection write.
+ * A save the backend refuses to apply (502) rolls back too (spec §13.2), so it never claims "saved"; a save blocked
+ * by a value in a hidden or collapsed field (an invalid submit) shows the first issue and opens every section one
+ * of them lives in, instead of doing nothing.
  */
-function EditorFooter({ editor, sticky }: { editor: ProfileEditorState; sticky: boolean }) {
+function EditorFooter({ editor, sticky, openSections }: { editor: ProfileEditorState; sticky: boolean; openSections: (sections: readonly ProfileSection[]) => void }) {
   const queryClient = useQueryClient();
   const { form, editing } = editor;
   const values = useWatch({ control: form.control }) as ProfileFormValues;
@@ -60,7 +64,17 @@ function EditorFooter({ editor, sticky }: { editor: ProfileEditorState; sticky: 
   const saveOptions = {
     mutationFn: write,
     onSuccess: (saved: TuningProfile) => notifyOk(profileSavedMessage(saved)),
-    onError: (error: Error) => notifyError(error, "save failed"),
+    onError: (error: Error, variables: SaveVariables) => {
+      if (error instanceof ApiError && error.status === 502) {
+        // The store transaction that applies the save rolled it back too: the gateway still runs what it had
+        // before Save was pressed, so re-reading it (and the status/network a failed re-apply can also move) is
+        // harmless, and lets the operator fix the value and press Save again.
+        notifyError(null, saveRefusedMessage(error));
+        void invalidate(queryClient, variables.id === null ? "addProfile" : "updateProfile");
+      } else {
+        notifyError(error, "save failed");
+      }
+    },
   };
   const savePlain = useMutation({ mutationKey: PROFILE_WRITE, ...saveOptions });
   const saveLive = useMutation({ mutationKey: PROFILE_CONNECTION_WRITE, ...saveOptions });
@@ -87,16 +101,28 @@ function EditorFooter({ editor, sticky }: { editor: ProfileEditorState; sticky: 
     }
   }
 
-  const submit = form.handleSubmit((submitted) => {
-    const id = typeof editing === "number" ? editing : null;
-    // Whether the save re-applies the tunnel, as the list says now.
-    const nowLive = id !== null && (queryClient.getQueryData<TuningProfile[]>(keys.profiles)?.find((profile) => profile.id === id)?.is_active ?? false);
-    if (nowLive && isConnectionBusy(queryClient)) {
-      notifyError(null, CONNECTION_BUSY);
-      return;
-    }
-    (nowLive ? saveLive : savePlain).mutate({ id, body: formToProfileIn(submitted) }, { onSuccess: () => editor.reset(false) });
-  });
+  const submit = form.handleSubmit(
+    (submitted) => {
+      const id = typeof editing === "number" ? editing : null;
+      // Whether the save re-applies the tunnel, as the list says now.
+      const nowLive = id !== null && (queryClient.getQueryData<TuningProfile[]>(keys.profiles)?.find((profile) => profile.id === id)?.is_active ?? false);
+      if (nowLive && isConnectionBusy(queryClient)) {
+        notifyError(null, CONNECTION_BUSY);
+        return;
+      }
+      (nowLive ? saveLive : savePlain).mutate({ id, body: formToProfileIn(submitted) }, { onSuccess: () => editor.reset(false) });
+    },
+    () => {
+      // A hidden switch or a collapsed phone section can still hold an invalid value — the backend checks noises,
+      // Mux concurrency and the other knobs whether or not their toggle is on. Say so in the same line Validate
+      // uses, and open every section one of the issues lives in, instead of doing nothing.
+      const current = form.getValues();
+      const issues = profileIssues(current);
+      if (issues.length === 0) return;
+      setCheck({ ok: false, text: `✗ ${issues[0]!.message}`, key: runKey(formToProfileIn(current)) });
+      openSections(issueSections(issues));
+    },
+  );
 
   return (
     <div
@@ -139,6 +165,15 @@ export function ProfileEditor({ editor, desktop }: { editor: ProfileEditorState;
     summary: states[name].summary,
     onToggle: () => setOpen((current) => ({ ...current, [name]: !current[name] })),
   });
+  // An invalid Save can name an issue in a section that is off or collapsed; open every one it lives in.
+  const openSections = (sections: readonly ProfileSection[]) => {
+    if (sections.length === 0) return;
+    setOpen((current) => {
+      const next = { ...current };
+      for (const name of sections) next[name] = true;
+      return next;
+    });
+  };
 
   return (
     // A plain container, not a <form>: radix switches inside a form add hidden checkboxes of their own.
@@ -216,7 +251,7 @@ export function ProfileEditor({ editor, desktop }: { editor: ProfileEditorState;
         <SegmentedField legend="QUIC" options={QUIC_OPTIONS} radio={register("quic")} />
       </EditorSection>
 
-      <EditorFooter editor={editor} sticky={!desktop} />
+      <EditorFooter editor={editor} sticky={!desktop} openSections={openSections} />
     </div>
   );
 }
