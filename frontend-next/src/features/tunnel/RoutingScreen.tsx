@@ -64,6 +64,8 @@ export function Routing() {
   const liveKey = useMemo(() => (current ? runKey(toRoutingIn(current).body) : ""), [current]);
   const openIndex = current && openKey !== null ? current.rows.findIndex((row) => row.key === openKey) : -1;
   const saveDisabled = !editor.staged || actions.saving || connectionBusy;
+  // While a save runs, the ruleset it sends cannot be edited; while a preset loads, its reply would replace the edits.
+  const rulesLocked = actions.saving || actions.presetBusy;
 
   return (
     <div className="flex flex-col gap-3">
@@ -100,8 +102,7 @@ export function Routing() {
       {current ? staleNotice([routing], "Routing did not refresh") : null}
       {current ? (
         <>
-          {/* While a save runs, the ruleset it sends cannot be edited. */}
-          <fieldset disabled={actions.saving} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
+          <fieldset disabled={rulesLocked} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
             {desktop ? (
               <GlassCard aria-label="Rules" className="overflow-hidden p-0">
                 <RulesTable rows={current.rows} defaultAction={current.defaultAction} onAdd={onAdd} onUpdate={onUpdate} onMove={onMove} onRemove={onRemove} />
@@ -137,6 +138,7 @@ export function Routing() {
               row={current.rows[openIndex]!}
               index={openIndex}
               count={count}
+              disabled={rulesLocked}
               onUpdate={onUpdate}
               onMove={onMove}
               onRemove={onRemove}

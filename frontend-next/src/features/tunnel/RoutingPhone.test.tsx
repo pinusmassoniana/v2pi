@@ -1,11 +1,13 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { settleConfirm } from "../../components/confirm";
-import { STATUS, mockApi, mockTunnel } from "../../test/fixtures";
+import { RU_DIRECT_PRESET, STATUS, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
+import type { RuleRow } from "./rules";
+import { RuleSheet } from "./RuleSheet";
 
 afterEach(() => act(() => settleConfirm(false)));
 
@@ -122,6 +124,35 @@ describe("Routing on a phone", () => {
     await userEvent.click(screen.getByRole("button", { name: "More routing actions" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Import JSON" }));
     expect(await screen.findByRole("dialog", { name: "Import JSON" })).toBeInTheDocument();
+  });
+
+  it("while a preset loads, the cards are locked, so nothing changed meanwhile is lost to the reply", async () => {
+    const { api$, list } = await openPhone();
+    let land: () => void = () => {};
+    api$.routingPreset.mockImplementationOnce(() => new Promise((resolve) => { land = () => resolve(RU_DIRECT_PRESET); }));
+    await userEvent.click(screen.getByRole("button", { name: "More routing actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /ru-direct/ }));
+    await waitFor(() => expect(api$.routingPreset).toHaveBeenCalledWith("ru-direct"));
+    await waitFor(() => expect(within(list).getByRole("button", { name: "Edit rule 1" })).toBeDisabled());
+    expect(within(list).getByRole("switch", { name: "Rule 1 enabled" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add rule" })).toBeDisabled();
+    await act(async () => land());
+    await waitFor(() => expect(within(list).getByRole("button", { name: "Edit rule 1" })).toBeEnabled());
+    expect(cards(list)).toHaveLength(9);
+  });
+
+  it("a locked rule sheet keeps its fields and rule actions off, and Done still closes it", async () => {
+    const onClose = vi.fn();
+    const row: RuleRow = { key: "r1", id: 1, type: "domain", value: "example.org", action: "proxy", enabled: true, label: "" };
+    render(<RuleSheet row={row} index={0} count={2} disabled onUpdate={vi.fn()} onMove={vi.fn()} onRemove={vi.fn()} onClose={onClose} />);
+    const sheet = await screen.findByRole("dialog", { name: "Rule 1 of 2" });
+    expect(within(sheet).getByRole("radio", { name: "domain" })).toBeDisabled();
+    expect(within(sheet).getByLabelText("Value")).toBeDisabled();
+    expect(within(sheet).getByLabelText("Label")).toBeDisabled();
+    expect(within(sheet).getByRole("switch", { name: "Enabled" })).toBeDisabled();
+    for (const name of ["Move down", "Delete"]) expect(within(sheet).getByRole("button", { name })).toBeDisabled();
+    await userEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("Validate from the footer shows its result there", async () => {

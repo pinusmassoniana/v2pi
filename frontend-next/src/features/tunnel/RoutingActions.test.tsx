@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RoutingIn } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ROUTING_INVALID, STATUS, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
+import { ROUTING_INVALID, RU_DIRECT_PRESET, STATUS, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { GATEWAY_CHANGED } from "./StagedBanner";
 
@@ -193,6 +193,25 @@ describe("Routing › presets (R4)", () => {
     expect(banner()).toHaveTextContent("STAGED · 1 change");
     expect(api$.getRouting).toHaveBeenCalledTimes(1);
     expect(api$.putRouting).not.toHaveBeenCalled();
+  });
+
+  it("while a preset loads, the rules, defaults and tester are locked, so nothing typed meanwhile is lost to the reply", async () => {
+    const { api$, table } = await openRouting();
+    let land: () => void = () => {};
+    api$.routingPreset.mockImplementationOnce(() => new Promise((resolve) => { land = () => resolve(RU_DIRECT_PRESET); }));
+    await userEvent.click(toolbarButton("Import preset"));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /ru-direct/ }));
+    await waitFor(() => expect(api$.routingPreset).toHaveBeenCalledWith("ru-direct"));
+    await waitFor(() => expect(within(table).getByRole("textbox", { name: "Rule 3 label" })).toBeDisabled());
+    expect(within(table).getByLabelText("Rule 1 value")).toBeDisabled();
+    expect(within(table).getByRole("switch", { name: "Rule 1 enabled" })).toBeDisabled();
+    expect(within(table).getByRole("button", { name: "Remove rule 1" })).toBeDisabled();
+    expect(within(table).getByRole("button", { name: "Add rule" })).toBeDisabled();
+    expect(within(screen.getByRole("region", { name: "Defaults" })).getByLabelText("Default action")).toBeDisabled();
+    expect(within(screen.getByRole("region", { name: "Destination tester" })).getByRole("textbox")).toBeDisabled();
+    await act(async () => land());
+    await waitFor(() => expect(within(table).getByLabelText("Rule 7 value")).toHaveValue("category-ru"));
+    expect(within(table).getByRole("textbox", { name: "Rule 3 label" })).toBeEnabled();
   });
 
   it("asks before replacing staged rules", async () => {
