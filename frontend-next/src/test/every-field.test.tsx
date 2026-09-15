@@ -14,6 +14,9 @@ const PATHS = [...SECTIONS.flatMap((s) => s.tabs.map((t) => t.to)), "/nodes/1"];
 const LOADED: Readonly<Record<string, [region: string, text: string]>> = {
   "/": ["Upstream health", "de-fra-01"],
   "/traffic": ["Probe latency by node", "ch-zrh-02"],
+  "/nodes": ["Servers toolbar", "work"],
+  "/nodes/subscriptions": ["home", "fetch failed: timeout"],
+  "/nodes/1": ["Config", "nl-ams-03.example.org"],
 };
 
 function fillEveryField(root: HTMLElement) {
@@ -39,7 +42,7 @@ describe.each(PATHS)("%s", (path) => {
     if (loaded) {
       const [region, text] = loaded;
       await within(await screen.findByRole("region", { name: region })).findByText(text, { exact: false });
-      api$.emitTraffic(TRAFFIC_FRAME);
+      if (api$.connectTraffic.mock.calls.length > 0) api$.emitTraffic(TRAFFIC_FRAME);   // screens that stream live traffic
     }
     for (let pass = 0; pass < 2; pass++) {
       await act(async () => { fillEveryField(document.body); });
