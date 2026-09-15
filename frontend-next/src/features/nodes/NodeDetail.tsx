@@ -12,6 +12,7 @@ import { SERVERS, groupOf } from "./list";
 import { NodeConfigCard } from "./NodeConfigCard";
 import { NodeHealthCard } from "./NodeHealthCard";
 import { DISCONNECT_FIRST, NO_MENU_CALLBACKS, type NodeMenuCallbacks } from "./NodeRowActions";
+import { useNodesStatus } from "./nodesStatus";
 import { FailBadge, StaleBadge } from "./probe";
 import { ProfileRow } from "./ProfileRow";
 import { toSearch } from "./search";
@@ -93,7 +94,7 @@ export interface NodeDetailBodyProps {
  * actions. Reads every query from the cache; the Servers list (desktop) or the page (phone) keeps them fresh.
  */
 export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: NodeDetailBodyProps) {
-  const status = useQuery(queries.status());
+  const { status } = useNodesStatus();
   const nodes = useQuery(queries.nodes());
   const health = useQuery(queries.nodeHealth());
   const subs = useQuery(queries.subs());
@@ -109,13 +110,13 @@ export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: N
     );
   }
 
-  const active = status.data?.active_node_id === node.id;
+  const active = status?.activeId === node.id;
   const nodeHealth = health.data?.find((row) => row.node_id === node.id);
   const group = groupOf(node);
   const groupName = group === SERVERS ? "Servers" : (subs.data?.find((sub) => sub.id === group)?.name ?? `subscription #${group}`);
   const flag = flagEmoji(nodeHealth?.egress_cc);
   const failCount = active ? (nodeHealth?.fail_count ?? 0) : 0;
-  const since = status.data?.active_since ?? null;
+  const since = status?.activeSince ?? null;
 
   return (
     <div className="flex flex-col gap-3">

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
 import { Ellipsis, Plus, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { Node } from "../../api/client";
+import type { Node, NodeHealth } from "../../api/client";
 import { SLOW_POLL_MS } from "../../api/cadence";
 import { useApiWrite } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
@@ -17,13 +17,14 @@ import { BulkBar } from "./BulkBar";
 import { FailoverNote } from "./FailoverNote";
 import { GroupActions } from "./GroupActions";
 import {
-  SERVERS, applyOrder, canReorder, groupChips, groupOf, healthById, moveWithin, parseGroup, pruneSelection, resolveGroup, selectionState, shownNodes,
+  SERVERS, applyOrder, canReorder, groupChips, groupOf, healthById, inScope, moveWithin, parseGroup, pruneSelection, resolveGroup, selectionState, shownNodes,
   visibleRows, type GroupKey, type SortKey,
 } from "./list";
 import { NodeCards } from "./NodeCards";
 import { NodeDialogs, useNodeDialogs } from "./NodeDialogs";
 import { NodeTable, type SelectionControls } from "./NodeTable";
 import { RowCapFooter } from "./RowCapFooter";
+import { useNodesStatus } from "./nodesStatus";
 import { listState, readDense, toSearch, writeDense, type ListState, type NodesSearch } from "./search";
 import { ServersToolbar } from "./ServersToolbar";
 import { OFFLINE_HINT } from "./useNodeActions";
@@ -52,10 +53,11 @@ function LoadingRows() {
  * as it was. Cancelling the nodes query first stops an in-flight refetch (the previous move's, or the 30 s
  * poll's) from landing after this optimistic update and reverting it out from under the next move.
  */
-function useReorder(shown: readonly Node[]) {
+function useReorder() {
   const queryClient = useQueryClient();
   const reorderWrite = useApiWrite("reorderNodes");
   const { mutate, isPending } = useMutation({
+    mutationKey: REORDER_KEY,
     mutationFn: (ids: number[]) => reorderWrite(ids),
     onMutate: async (ids: number[]) => {
       await queryClient.cancelQueries({ queryKey: keys.nodes });
@@ -68,13 +70,21 @@ function useReorder(shown: readonly Node[]) {
       if (context?.previous) queryClient.setQueryData(keys.nodes, context.previous);
     },
   });
-  const onMove = useCallback((index: number, delta: -1 | 1) => {
-    if (isPending) return;
-    const ids = moveWithin(shown.map((node) => node.id), index, delta);
-    if (ids) mutate(ids);
-  }, [shown, isPending, mutate]);
+  // Reads the group's current order from the cache when a button is pressed (reordering only exists over the whole
+  // Servers group in position order, which is the cache's order), so the callback never changes and a poll or a
+  // probe result does not hand every row a new one.
+  const onMove = useCallback((nodeId: number, delta: -1 | 1) => {
+    if (queryClient.isMutating({ mutationKey: REORDER_KEY }) > 0) return;
+    const ids = (queryClient.getQueryData<Node[]>(keys.nodes) ?? []).filter((node) => inScope(node, SERVERS)).map((node) => node.id);
+    const moved = moveWithin(ids, ids.indexOf(nodeId), delta);
+    if (moved) mutate(moved);
+  }, [queryClient, mutate]);
   return useMemo(() => ({ busy: isPending, onMove }), [isPending, onMove]);
 }
+
+const REORDER_KEY = ["nodes", "reorder"] as const;
+/** No health for a sort that does not read it: the rows then keep their order and identity when a probe lands. */
+const NO_HEALTH: ReadonlyMap<number, NodeHealth> = new Map();
 
 const NONE: ReadonlySet<number> = new Set();
 
@@ -119,7 +129,7 @@ function useSelection(group: GroupKey, shown: readonly Node[]) {
 export function ServersView({ search, groupOverride, hidden, children }: ServersViewProps) {
   const navigate = useNavigate();
   const desktop = useMediaQuery(DESKTOP_QUERY);
-  const status = useQuery(queries.status());
+  const { status, statusError } = useNodesStatus();
   const nodes = usePolledQuery(queries.nodes(), SLOW_POLL_MS);
   const health = usePolledQuery(queries.nodeHealth(), SLOW_POLL_MS);
   const subs = usePolledQuery(queries.subs(), SLOW_POLL_MS);
@@ -133,11 +143,11 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
   const group = resolved.group;
   const { q, sort, dir } = list;
   const healthMap = useMemo(() => healthById(health.data), [health.data]);
+  const sortHealth = sort === "tcp" || sort === "http" ? healthMap : NO_HEALTH;
   const chips = useMemo(() => groupChips(nodes.data ?? [], subs.data ?? []), [nodes.data, subs.data]);
-  const shown = useMemo(() => shownNodes(nodes.data ?? [], healthMap, group, q, sort, dir), [nodes.data, healthMap, group, q, sort, dir]);
+  const shown = useMemo(() => shownNodes(nodes.data ?? [], sortHealth, group, q, sort, dir), [nodes.data, sortHealth, group, q, sort, dir]);
   const rows = visibleRows(shown, showAllGroup === group);
-  const detailSearch = useMemo(() => toSearch({ q, sort, dir }), [q, sort, dir]);
-  const reorderControls = useReorder(shown);
+  const reorderControls = useReorder();
   const reorder = canReorder(group, sort, q) ? reorderControls : null;
   const selection = useSelection(group, shown);
   const dialogs = useNodeDialogs();
@@ -163,15 +173,15 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
 
   const ready = nodes.data !== undefined && subs.data !== undefined;
   const failed = (nodes.isError && nodes.data === undefined) || (subs.isError && subs.data === undefined);
-  const activeId = status.data?.active_node_id ?? null;
-  const activeSince = status.data?.active_since ?? null;
+  const activeId = status?.activeId ?? null;
+  const activeSince = status?.activeSince ?? null;
   let body: ReactNode;
   if (failed) body = cardFallback([nodes, subs], "Servers did not load");
   else if (!ready) body = <LoadingRows />;
   else if (shown.length === 0) body = <EmptyState title={group === SERVERS ? "No servers here — add one with Add server." : "No servers here"} />;
   else {
     const common = {
-      rows, health: healthMap, activeId, activeSince, dense, menu: dialogs.menu, detailSearch, reorder,
+      rows, health: healthMap, activeId, activeSince, dense, menu: dialogs.menu, reorder,
       selection: desktop || selecting ? selection.controls : null,
     };
     body = desktop ? <NodeTable {...common} sort={sort} dir={dir} onSort={onSort} /> : <NodeCards {...common} />;
@@ -215,7 +225,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
           entry={entry}
           dense={dense}
           onDense={onDense}
-          actions={<GroupActions group={group} shown={shown} nodes={nodes.data} offline={status.isError} />}
+          actions={<GroupActions group={group} shown={shown} nodes={nodes.data} offline={statusError} />}
           manage={desktop ? (group === SERVERS ? (
             <>
               <Button size="sm" onClick={dialogs.openImport}><Upload size={14} aria-hidden />Import</Button>
@@ -223,8 +233,8 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
             </>
           ) : <span className="text-[11px] text-t3">Add server and Import live in the Servers group</span>) : undefined}
         />
-        <FailoverNote status={status.data} className="px-1" />
-        {status.isError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
+        <FailoverNote lastFailoverAt={status?.lastFailoverAt ?? null} className="px-1" />
+        {statusError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
         {ready ? staleNotice([nodes, health, subs], "Servers did not refresh") : null}
         {body}
         {ready ? <RowCapFooter shown={rows.length} total={shown.length} onShowAll={() => setShowAllGroup(group)} /> : null}

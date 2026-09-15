@@ -30,6 +30,15 @@ export function toSearch(state: ListState): NodesSearch {
   };
 }
 
+/**
+ * A row's or card's link to its node's detail: the list's search and sort as the URL has them now, without the group
+ * (the detail shows the node's own). A module-level function rather than an object, so the link — and the memoised
+ * row around it — does not change with every keystroke in the search field.
+ */
+export function detailLinkSearch(prev: NodesSearch): NodesSearch {
+  return { ...prev, group: undefined };
+}
+
 /** N4: same key and values as the Svelte panel. */
 export const DENSITY_KEY = "nodes-density";
 

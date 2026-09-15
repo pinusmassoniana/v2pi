@@ -11,11 +11,18 @@ import {
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { checkedAgo } from "../../lib/nodeHealth";
+import { NodeRowActions } from "./NodeRowActions";
 
 // Pass-through spy: every row's checked age calls checkedAgo when the row renders, so its call count shows how many rows re-render.
 vi.mock("../../lib/nodeHealth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/nodeHealth")>();
   return { ...actual, checkedAgo: vi.fn(actual.checkedAgo) };
+});
+
+// Pass-through spy on the row's actions: rendered once per table row or card render, and by nothing else.
+vi.mock("./NodeRowActions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./NodeRowActions")>();
+  return { ...actual, NodeRowActions: vi.fn(actual.NodeRowActions) };
 });
 
 afterEach(() => act(() => settleConfirm(false)));
@@ -302,6 +309,45 @@ describe("Servers › reorder and row cap (N11, N19)", () => {
     api$.listNodes.mockResolvedValue(ALL_NODES);
     await userEvent.click(within(row("vps-hel")).getByRole("button", { name: "Move vps-hel down" }));
     expect(api$.reorderNodes).toHaveBeenCalledWith([9, 7, 8]);
+  });
+});
+
+describe("Servers › 240 rows", () => {
+  it("a row re-renders only for its own changes: not on a status poll, another node's probe, or a search showing the same rows", async () => {
+    const api$ = mockApi();
+    const servers = Array.from({ length: 240 }, (_, i) => node(100 + i, `bulk-${String(i).padStart(3, "0")}`));
+    const probed = (id: number, ms: number): NodeHealth => ({ ...NODE_HEALTH[1]!, node_id: id, last_tcp_ms: ms });
+    api$.listNodes.mockResolvedValue(servers);
+    api$.listNodeHealth.mockResolvedValue(servers.map((n) => probed(n.id, 40)));
+    const { client, router } = renderApp("/nodes?group=servers");
+    await waitFor(() => expect(rowNames()).toHaveLength(100));
+    await userEvent.click(within(screen.getByText(/Showing 100 of 240/)).getByRole("button", { name: "show all" }));
+    await waitFor(() => expect(rowNames()).toHaveLength(240));
+    const renders = vi.mocked(NodeRowActions);
+    renders.mockClear();
+
+    // The status poll moves the gateway clock on every 3 s; nothing a row shows changes with it.
+    api$.getStatus.mockResolvedValue({ ...STATUS, server_now: NOW_SEC + 3, failovers_24h: 3 });
+    await act(() => client.refetchQueries({ queryKey: keys.status }));
+    expect(renders).not.toHaveBeenCalled();
+
+    // One node's new probe result re-renders its own row, in a list that can be reordered.
+    expect(within(row("bulk-000")).getByRole("button", { name: "Move bulk-000 down" })).toBeEnabled();
+    api$.listNodeHealth.mockResolvedValue(servers.map((n) => probed(n.id, n.id === 150 ? 77 : 40)));
+    await act(() => client.refetchQueries({ queryKey: keys.nodeHealth }));
+    await waitFor(() => expect(within(row("bulk-050")).getByText("77 ms")).toBeInTheDocument());
+    expect(new Set(renders.mock.calls.map(([props]) => props.node.id))).toEqual(new Set([150]));
+
+    // The first keystroke ends reordering, so every row loses its arrows; the next ones show the same 240 rows.
+    const search = screen.getByRole("searchbox", { name: "Search nodes" });
+    await userEvent.type(search, "b");
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Move / })).toBeNull());
+    renders.mockClear();
+    await userEvent.type(search, "ulk");
+    await waitFor(() => expect(router.state.location.search).toEqual({ group: "servers", q: "bulk" }));
+    expect(rowNames()).toHaveLength(240);
+    expect(renders).not.toHaveBeenCalled();
+    expect(within(row("bulk-000")).getByRole("link", { name: "bulk-000" })).toHaveAttribute("href", "/nodes/100?q=bulk");
   });
 });
 

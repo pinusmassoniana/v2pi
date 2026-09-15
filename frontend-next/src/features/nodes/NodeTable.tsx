@@ -10,11 +10,12 @@ import { cn } from "../../lib/cn";
 import type { SortDir, SortKey } from "./list";
 import { NodeRowActions, type NodeMenuCallbacks } from "./NodeRowActions";
 import { ActiveRealPill, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
-import type { NodesSearch } from "./search";
+import { detailLinkSearch } from "./search";
 
 export interface ReorderControls {
   busy: boolean;
-  onMove: (index: number, delta: -1 | 1) => void;
+  /** Swap a node with its neighbour in the group's current order. */
+  onMove: (nodeId: number, delta: -1 | 1) => void;
 }
 
 /** N18: the selection over the shown rows. */
@@ -36,8 +37,6 @@ export interface NodeListProps {
   activeSince: number | null;
   dense: boolean;
   menu: NodeMenuCallbacks;
-  /** The list's search and sort, carried into a node's detail so closing it comes back to this list. */
-  detailSearch: NodesSearch;
   /** Up / down arrows (N11); null when this list cannot be reordered. */
   reorder: ReorderControls | null;
   /** Checkboxes (N18): always on the desktop table; on phone cards only in select mode. Null for none. */
@@ -57,14 +56,14 @@ const NARROW = "hidden min-[901px]:table-cell";
 
 interface RowProps {
   node: Node;
-  index: number;
-  last: number;
+  /** First and last row of a reorderable list; both false otherwise, so a search that shifts rows leaves them be. */
+  first: boolean;
+  last: boolean;
   health: NodeHealth | undefined;
   active: boolean;
   activeSince: number | null;
   dense: boolean;
   menu: NodeMenuCallbacks;
-  detailSearch: NodesSearch;
   reorder: ReorderControls | null;
   /** Null when the list shows no checkboxes. */
   selected: boolean | null;
@@ -74,7 +73,7 @@ interface RowProps {
 const noToggle = () => {};
 
 /** One row; memoised, so a poll that changes one node's health re-renders that row only. */
-const NodeRow = memo(function NodeRow({ node, index, last, health, active, activeSince, dense, menu, detailSearch, reorder, selected, onToggle }: RowProps) {
+const NodeRow = memo(function NodeRow({ node, first, last, health, active, activeSince, dense, menu, reorder, selected, onToggle }: RowProps) {
   const cell = cn("px-2.5 align-middle", dense ? "py-1" : "py-2.5");
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
@@ -94,17 +93,17 @@ const NodeRow = memo(function NodeRow({ node, index, last, health, active, activ
         <div className="flex items-start gap-2">
           {reorder ? (
             <span className="flex shrink-0 flex-col">
-              <Button size="icon" variant="ghost" className="size-6" aria-label={`Move ${node.name} up`} disabled={index === 0 || reorder.busy} onClick={() => reorder.onMove(index, -1)}>
+              <Button size="icon" variant="ghost" className="size-6" aria-label={`Move ${node.name} up`} disabled={first || reorder.busy} onClick={() => reorder.onMove(node.id, -1)}>
                 <ChevronUp size={14} aria-hidden />
               </Button>
-              <Button size="icon" variant="ghost" className="size-6" aria-label={`Move ${node.name} down`} disabled={index === last || reorder.busy} onClick={() => reorder.onMove(index, 1)}>
+              <Button size="icon" variant="ghost" className="size-6" aria-label={`Move ${node.name} down`} disabled={last || reorder.busy} onClick={() => reorder.onMove(node.id, 1)}>
                 <ChevronDown size={14} aria-hidden />
               </Button>
             </span>
           ) : null}
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <Link to="/nodes/$nodeId" params={{ nodeId: String(node.id) }} search={detailSearch} className="truncate text-[13px] font-semibold text-t1 hover:underline">
+              <Link to="/nodes/$nodeId" params={{ nodeId: String(node.id) }} search={detailLinkSearch} className="truncate text-[13px] font-semibold text-t1 hover:underline">
                 {node.name}
               </Link>
               {node.stale ? <StaleBadge /> : null}
@@ -156,7 +155,7 @@ function SortHeader({ label, sortKey, sort, dir, onSort, className }: { label: s
 }
 
 /** N5 on a desktop: a real table, sortable by its headers, whose columns collapse by breakpoint. */
-export function NodeTable({ rows, health, activeId, activeSince, dense, menu, detailSearch, reorder, selection, sort, dir, onSort }: NodeTableProps) {
+export function NodeTable({ rows, health, activeId, activeSince, dense, menu, reorder, selection, sort, dir, onSort }: NodeTableProps) {
   const plain = "px-2.5 py-2 font-semibold uppercase tracking-[.07em]";
   return (
     <div className="glass overflow-x-auto">
@@ -192,14 +191,13 @@ export function NodeTable({ rows, health, activeId, activeSince, dense, menu, de
             <NodeRow
               key={node.id}
               node={node}
-              index={index}
-              last={rows.length - 1}
+              first={reorder !== null && index === 0}
+              last={reorder !== null && index === rows.length - 1}
               health={health.get(node.id)}
               active={node.id === activeId}
               activeSince={node.id === activeId ? activeSince : null}
               dense={dense}
               menu={menu}
-              detailSearch={detailSearch}
               reorder={reorder}
               selected={selection ? selection.selected.has(node.id) : null}
               onToggle={selection?.onToggle ?? noToggle}

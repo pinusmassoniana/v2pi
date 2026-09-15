@@ -10,7 +10,7 @@ import { bestReading } from "./list";
 import type { NodeListProps } from "./NodeTable";
 import { NodeRowActions } from "./NodeRowActions";
 import { ActiveRealPill, FailBadge, ProbePill, StaleBadge } from "./probe";
-import type { NodesSearch } from "./search";
+import { detailLinkSearch } from "./search";
 
 interface CardProps {
   node: Node;
@@ -18,7 +18,6 @@ interface CardProps {
   active: boolean;
   activeSince: number | null;
   dense: boolean;
-  detailSearch: NodesSearch;
   /** Select mode: a checkbox instead of the buttons. Null outside it. */
   selected: boolean | null;
   onToggle: (id: number) => void;
@@ -42,7 +41,7 @@ function readingLine(health: NodeHealth | undefined): ReactNode {
  * A card is a link to the node's page with its own buttons on top: the link covers the card, the content lets
  * taps through, and only the buttons take them back.
  */
-const NodeCard = memo(function NodeCard({ node, health, active, activeSince, dense, detailSearch, selected, onToggle }: CardProps) {
+const NodeCard = memo(function NodeCard({ node, health, active, activeSince, dense, selected, onToggle }: CardProps) {
   const flag = flagEmoji(health?.egress_cc);
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
@@ -56,7 +55,7 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, den
       <Link
         to="/nodes/$nodeId"
         params={{ nodeId: String(node.id) }}
-        search={detailSearch}
+        search={detailLinkSearch}
         aria-label={node.name}
         className="absolute inset-0 rounded-[18px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-g2"
       />
@@ -93,7 +92,7 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, den
 });
 
 /** N5 on a phone: one card per node; in select mode a "select all shown" checkbox above them. */
-export function NodeCards({ rows, health, activeId, activeSince, dense, detailSearch, selection }: NodeListProps) {
+export function NodeCards({ rows, health, activeId, activeSince, dense, selection }: NodeListProps) {
   return (
     <>
       {selection ? (
@@ -117,7 +116,6 @@ export function NodeCards({ rows, health, activeId, activeSince, dense, detailSe
             active={node.id === activeId}
             activeSince={node.id === activeId ? activeSince : null}
             dense={dense}
-            detailSearch={detailSearch}
             selected={selection ? selection.selected.has(node.id) : null}
             onToggle={selection?.onToggle ?? noToggle}
           />
