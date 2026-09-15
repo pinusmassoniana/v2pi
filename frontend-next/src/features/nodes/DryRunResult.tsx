@@ -1,9 +1,14 @@
 import type { PreviewNodes } from "../../api/client";
 
-/** U9: what a refresh would parse — count and format, the truncation note, and the nodes it returned. */
-export function DryRunResult({ result }: { result: PreviewNodes }) {
+/**
+ * U9: what a refresh would parse — the URL it was run against, count and format, the truncation note, and the
+ * nodes it returned. Rendered only for a result whose target still matches the form (SubscriptionFormSheet
+ * hides it behind a "Form changed…" note otherwise), so the URL here is always the one that produced `result`.
+ */
+export function DryRunResult({ result, url }: { result: PreviewNodes; url: string }) {
   return (
     <section aria-label="Dry-run result" className="flex flex-col gap-2 rounded-xl border border-line bg-glass p-3">
+      <p className="truncate font-mono text-[10.5px] text-t3" title={url}>{url}</p>
       <p className="text-sm font-semibold text-t1">Dry-run: {result.count} node(s) · <span className="font-normal text-t2">{result.format}</span></p>
       {result.truncated ? <p className="text-xs text-warn">Showing first {result.returned_count} of {result.count} nodes.</p> : null}
       {result.count === 0 ? (

@@ -120,7 +120,7 @@ describe("Edit subscription (U5, T6)", () => {
   it("a subscription without injected rows opens with none", async () => {
     const { sheet } = await openForm("home");
     expect(within(sheet).getByText("No headers")).toBeInTheDocument();
-    expect(within(sheet).getByLabelText("Default tuning profile for new nodes")).toHaveValue("2");
+    await waitFor(() => expect(within(sheet).getByLabelText("Default tuning profile for new nodes")).toHaveValue("2"));
   });
 });
 
@@ -166,5 +166,30 @@ describe("Preview and dry-run (U8, U9)", () => {
     api$.previewSubNodes.mockRejectedValueOnce(new ApiError(502, "fetch failed: timeout"));
     await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
     expect(await within(sheet).findByRole("alert")).toHaveTextContent("fetch failed: timeout");
+  });
+
+  it("gives previewSubNodes more time than the default request timeout", async () => {
+    const { api$, sheet } = await openForm("work");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
+    await waitFor(() => expect(api$.previewSubNodes).toHaveBeenCalledWith(SUBS[0]!.url, SUBS[0]!.injection, 30_000));
+  });
+
+  it("a dry-run result no longer matching the form is hidden, not left looking current", async () => {
+    const { sheet } = await openForm("work");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
+    await within(sheet).findByRole("region", { name: "Dry-run result" });
+    await userEvent.type(within(sheet).getByLabelText("URL"), "&extra=1");
+    expect(within(sheet).queryByRole("region", { name: "Dry-run result" })).toBeNull();
+    expect(within(sheet).getByText("Form changed since this run — run it again.")).toBeInTheDocument();
+  });
+
+  it("an old preview does not linger next to a validation error", async () => {
+    const { sheet } = await openForm("work");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Preview request" }));
+    await within(sheet).findByLabelText("Request preview");
+    await userEvent.clear(within(sheet).getByLabelText("URL"));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Preview request" }));
+    expect(await within(sheet).findByText("URL is required")).toBeInTheDocument();
+    expect(within(sheet).queryByLabelText("Request preview")).toBeNull();
   });
 });

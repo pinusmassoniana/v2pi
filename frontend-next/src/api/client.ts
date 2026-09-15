@@ -339,7 +339,11 @@ export const api = {
   refreshSub(id: number): Promise<any> { return mutate("POST", `/subs/${id}/refresh`); },
   refreshAllSubs(): Promise<RefreshAllResult> { return mutate("POST", "/subs/refresh-all"); },
   previewSub(url: string, injection?: Record<string, any>): Promise<Preview> { return peek("/subs/preview", { url, injection }); },
-  previewSubNodes(url: string, injection?: Record<string, any>): Promise<PreviewNodes> { return peek("/subs/preview-nodes", { url, injection }); },
+  // The backend's own fetch budgets 20 s; give the round-trip a longer client timeout so a slow-but-alive
+  // provider isn't aborted out from under it. Callers that want the default may omit timeoutMs.
+  previewSubNodes(url: string, injection?: Record<string, any>, timeoutMs?: number): Promise<PreviewNodes> {
+    return peek("/subs/preview-nodes", { url, injection }, timeoutMs);
+  },
   reorderNodes(ids: number[]) { return mutate("POST", "/nodes/reorder", { ids }); },
   connectBest(subscription_id: number | null): Promise<{ ok: boolean; node_id: number }> { return mutate("POST", "/connect-best", { subscription_id }); },
   importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },

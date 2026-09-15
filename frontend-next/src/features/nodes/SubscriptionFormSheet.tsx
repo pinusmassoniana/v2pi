@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { api, errText, type Preview, type PreviewNodes, type Subscription } from "../../api/client";
 import { useApiWrite } from "../../api/invalidation";
 import { queries } from "../../api/keys";
@@ -18,8 +18,18 @@ import { RequestPreview } from "./RequestPreview";
 import { SELECT_CLASS } from "./ServersToolbar";
 import { blankSubForm, buildInjection, formToSubIn, subFormSchema, subToForm, type SubFormValues } from "./subForm";
 
-interface Peek<T> { busy: boolean; data: T | null; error: string | null }
-const IDLE = { busy: false, data: null, error: null };
+// previewSubNodes' own fetch is the slow one — the backend budgets 20 s for it; give the client a
+// margin over that instead of racing it with the shared 20 s default (REQUEST_TIMEOUT_MS in client.ts).
+const DRY_RUN_TIMEOUT_MS = 30_000;
+
+/** What produced a preview or dry-run result: the URL and injection as they were at the moment it ran. */
+interface PeekTarget { url: string; injection: ReturnType<typeof buildInjection> }
+interface Peek<T> { busy: boolean; data: T | null; error: string | null; target: PeekTarget | null }
+const IDLE: Peek<never> = { busy: false, data: null, error: null, target: null };
+
+function targetKey(target: PeekTarget): string {
+  return JSON.stringify(target);
+}
 
 /**
  * U5 edit and U7 add, with U8 Preview request and U9 Dry-run parse. Preview and dry-run are peeks: they change
@@ -41,6 +51,16 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
   const [dryRun, setDryRun] = useState<Peek<PreviewNodes>>(IDLE);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // What a fresh preview/dry-run would target right now — reactive, so an edit anywhere the peeks read from
+  // (the URL, a header, a query row) is reflected without another click. Compared against each peek's own
+  // target to tell a still-current result from one the form has moved past.
+  const liveUrl = useWatch({ control, name: "url" });
+  const liveHeaders = useWatch({ control, name: "headers" });
+  const liveQueries = useWatch({ control, name: "queries" });
+  const liveKey = targetKey({ url: (liveUrl ?? "").trim(), injection: buildInjection(liveHeaders ?? [], liveQueries ?? []) });
+  const previewStale = preview.target !== null && targetKey(preview.target) !== liveKey;
+  const dryRunStale = dryRun.target !== null && targetKey(dryRun.target) !== liveKey;
+
   const save = useMutation({
     mutationFn: (values: SubFormValues) => (edit ? updateWrite(sub.id, formToSubIn(values, true)) : addWrite(formToSubIn(values, false))),
     onSuccess: (saved) => {
@@ -52,7 +72,7 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
   });
 
   /** The URL and injection as typed now, once the URL is there. */
-  async function request(): Promise<{ url: string; injection: ReturnType<typeof buildInjection> } | null> {
+  async function request(): Promise<PeekTarget | null> {
     if (!(await trigger("url"))) return null;
     const values = getValues();
     return { url: values.url.trim(), injection: buildInjection(values.headers, values.queries) };
@@ -60,23 +80,25 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
 
   async function runPreview() {
     const target = await request();
-    if (!target) return;
-    setPreview({ busy: true, data: null, error: null });
+    // A validation failure means whatever is on screen is for a URL that no longer parses — never leave a
+    // stale success sitting next to the new error.
+    if (!target) { setPreview(IDLE); return; }
+    setPreview({ busy: true, data: null, error: null, target });
     try {
-      setPreview({ busy: false, data: await api.previewSub(target.url, target.injection), error: null });
+      setPreview({ busy: false, data: await api.previewSub(target.url, target.injection), error: null, target });
     } catch (error) {
-      setPreview({ busy: false, data: null, error: errText(error, "preview failed") });
+      setPreview({ busy: false, data: null, error: errText(error, "preview failed"), target });
     }
   }
 
   async function runDryRun() {
     const target = await request();
-    if (!target) return;
-    setDryRun({ busy: true, data: null, error: null });
+    if (!target) { setDryRun(IDLE); return; }
+    setDryRun({ busy: true, data: null, error: null, target });
     try {
-      setDryRun({ busy: false, data: await api.previewSubNodes(target.url, target.injection), error: null });
+      setDryRun({ busy: false, data: await api.previewSubNodes(target.url, target.injection, DRY_RUN_TIMEOUT_MS), error: null, target });
     } catch (error) {
-      setDryRun({ busy: false, data: null, error: errText(error, "dry-run failed") });   // 502 fetch / 422 parse
+      setDryRun({ busy: false, data: null, error: errText(error, "dry-run failed"), target });   // 502 fetch / 422 parse
     }
   }
 
@@ -143,9 +165,17 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
             <Button disabled={dryRun.busy} onClick={() => void runDryRun()}>{dryRun.busy ? "Parsing… (up to 20 s)" : "Dry-run parse"}</Button>
             <span className="text-[11px] text-t3">preview doesn't fetch · dry-run does</span>
           </div>
-          {preview.data ? <RequestPreview preview={preview.data} /> : null}
+          {preview.data ? (
+            previewStale ? <p className="text-xs text-t3">Form changed since this run — run it again.</p> : <RequestPreview preview={preview.data} />
+          ) : null}
           {preview.error ? <p role="alert" className="text-xs text-bad">{preview.error}</p> : null}
-          {dryRun.data ? <DryRunResult result={dryRun.data} /> : null}
+          {dryRun.data ? (
+            dryRunStale ? (
+              <p className="text-xs text-t3">Form changed since this run — run it again.</p>
+            ) : (
+              <DryRunResult result={dryRun.data} url={dryRun.target?.url ?? ""} />
+            )
+          ) : null}
           {dryRun.error ? <p role="alert" className="text-xs text-bad">{dryRun.error}</p> : null}
 
           <div className="sticky bottom-0 -mx-5 -mb-5 flex items-center justify-end gap-2 border-t border-line bg-solid px-5 py-3">
