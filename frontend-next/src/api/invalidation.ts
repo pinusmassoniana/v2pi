@@ -85,9 +85,31 @@ export const SUBS_REFRESH_KEY = ["subs", "refresh"] as const;
 /** A gateway settings write: one at a time, so a rollback or a re-read only ever reasons about one. */
 export const SETTINGS_WRITE = ["settings-write"] as const;
 
+/**
+ * Routing Save. It always re-applies the tunnel (put_routing -> reapply_active_node), so it is a connection write: its
+ * key starts with CONNECTION_WRITE, and every filter on that key — useConnectionBusy, isConnectionBusy — counts it.
+ */
+export const ROUTING_WRITE = [...CONNECTION_WRITE, "routing"] as const;
+
+/** A tuning-profile write that leaves the live tunnel alone: create, or update / delete of a profile the tunnel is not on. */
+export const PROFILE_WRITE = ["profiles", "write"] as const;
+
+/**
+ * A tuning-profile write that moves the live tunnel: apply to the active node, make default, or update / delete of the
+ * profile the tunnel runs on (`is_active`). A connection write too — its key starts with CONNECTION_WRITE.
+ */
+export const PROFILE_CONNECTION_WRITE = [...CONNECTION_WRITE, "profile"] as const;
+
 /** A connection write (CONNECTION_WRITE) is running. */
 export function useConnectionBusy(): boolean {
   return useIsMutating({ mutationKey: CONNECTION_WRITE }) > 0;
+}
+
+/** Any tuning-profile write (PROFILE_WRITE or PROFILE_CONNECTION_WRITE) is running: the Anti-DPI screen's one busy flag. */
+export function useProfileBusy(): boolean {
+  const plain = useIsMutating({ mutationKey: PROFILE_WRITE });
+  const live = useIsMutating({ mutationKey: PROFILE_CONNECTION_WRITE });
+  return plain + live > 0;
 }
 
 /** Said when another connection write started while a confirmation was open, so nothing was sent. */

@@ -1,10 +1,13 @@
 import { QueryClient, QueryClientProvider, type QueryKey } from "@tanstack/react-query";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "./client";
 import clientSource from "./client.ts?raw";
-import { INVALIDATES, invalidate, useApiWrite, type MutationName } from "./invalidation";
+import {
+  CONNECTION_WRITE, INVALIDATES, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, invalidate, isConnectionBusy, useApiWrite,
+  useConnectionBusy, useProfileBusy, type MutationName,
+} from "./invalidation";
 import { keys } from "./keys";
 
 describe("invalidation map", () => {
@@ -92,5 +95,40 @@ describe("useApiWrite", () => {
 
     await expect(result.current()).rejects.toThrow("nope");
     expect(invalidateQueries).not.toHaveBeenCalled();
+  });
+});
+
+/** Start a mutation under `mutationKey` that runs until the returned function is called. */
+function hold(client: QueryClient, mutationKey: QueryKey): () => Promise<void> {
+  let release: () => void = () => {};
+  const done = new Promise<void>((resolve) => { release = resolve; });
+  const running = client.getMutationCache().build(client, { mutationKey, mutationFn: () => done }).execute(undefined);
+  return () => act(async () => { release(); await running; });
+}
+
+describe("Tunnel mutation keys", () => {
+  it("Routing Save and the profile writes that move the tunnel are connection writes; plain profile writes are not", async () => {
+    const client = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => ({ connection: useConnectionBusy(), profile: useProfileBusy() }), { wrapper });
+    expect(ROUTING_WRITE.slice(0, CONNECTION_WRITE.length)).toEqual([...CONNECTION_WRITE]);
+    expect(PROFILE_CONNECTION_WRITE.slice(0, CONNECTION_WRITE.length)).toEqual([...CONNECTION_WRITE]);
+
+    let release = hold(client, ROUTING_WRITE);
+    expect(isConnectionBusy(client)).toBe(true);
+    await waitFor(() => expect(result.current).toEqual({ connection: true, profile: false }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ connection: false, profile: false }));
+
+    release = hold(client, PROFILE_CONNECTION_WRITE);
+    await waitFor(() => expect(result.current).toEqual({ connection: true, profile: true }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ connection: false, profile: false }));
+
+    release = hold(client, PROFILE_WRITE);
+    expect(isConnectionBusy(client)).toBe(false);
+    await waitFor(() => expect(result.current).toEqual({ connection: false, profile: true }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ connection: false, profile: false }));
   });
 });

@@ -55,32 +55,60 @@ export function TextField({ label, hint, error, required, fieldClassName, classN
   );
 }
 
-export interface SegmentedFieldProps {
-  legend: string;
-  options: readonly string[];
-  /** The radios' shared props — register(name) for react-hook-form. */
-  radio: ComponentProps<"input">;
+export interface SegmentedOption {
+  value: string;
+  /** What the option reads as; its value when absent. */
+  label?: string;
+  /** Classes for this option — `has-[:checked]:text-bad` to colour it while checked, say. */
+  className?: string;
 }
 
-/** A choice of a few options as a segmented control: real radios, so arrow keys and screen readers work. */
-export function SegmentedField({ legend, options, radio }: SegmentedFieldProps) {
+export interface SegmentedFieldProps {
+  legend: string;
+  options: readonly (string | SegmentedOption)[];
+  /** Uncontrolled, for react-hook-form: the radios' shared props — register(name). */
+  radio?: ComponentProps<"input">;
+  /** Controlled instead: the checked value, and what picking an option does. */
+  value?: string;
+  onValueChange?: (value: string) => void;
+  /** The radio group's name when controlled; a generated one when absent. */
+  name?: string;
+  disabled?: boolean;
+  className?: string;
+}
+
+/**
+ * A choice of a few options as a segmented control: real radios in a fieldset named by its legend, so arrow keys and
+ * screen readers work. Register it with react-hook-form (`radio`) or control it (`value` + `onValueChange`). A row of
+ * options wider than its container scrolls sideways instead of wrapping.
+ */
+export function SegmentedField({ legend, options, radio, value, onValueChange, name, disabled, className }: SegmentedFieldProps) {
+  const generated = useId();
+  const group = name ?? generated;
   return (
-    <fieldset className="flex min-w-0 flex-col gap-1">
+    <fieldset disabled={disabled} className={cn("flex min-w-0 flex-col gap-1", className)}>
       <legend className="mb-1 text-xs font-semibold text-t2">{legend}</legend>
-      <div className="inline-flex self-start rounded-xl border border-line bg-glass p-0.5">
-        {options.map((option) => (
-          <label
-            key={option}
-            className={cn(
-              "cursor-pointer rounded-[10px] px-3.5 py-1.5 text-[13px] font-semibold text-t3 transition-colors duration-150",
-              "has-[:checked]:bg-glass-2 has-[:checked]:text-t1 has-[:checked]:shadow-[inset_0_0_0_1px_var(--line)]",
-              "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-g2",
-            )}
-          >
-            <input type="radio" value={option} {...radio} className="sr-only" />
-            {option}
-          </label>
-        ))}
+      <div className="inline-flex max-w-full self-start overflow-x-auto rounded-xl border border-line bg-glass p-0.5">
+        {options.map((entry) => {
+          const option: SegmentedOption = typeof entry === "string" ? { value: entry } : entry;
+          const input: ComponentProps<"input"> = onValueChange
+            ? { name: group, checked: value === option.value, onChange: () => onValueChange(option.value) }
+            : (radio ?? {});
+          return (
+            <label
+              key={option.value}
+              className={cn(
+                "shrink-0 cursor-pointer whitespace-nowrap rounded-[10px] px-3.5 py-1.5 text-[13px] font-semibold text-t3 transition-colors duration-150",
+                "has-[:checked]:bg-glass-2 has-[:checked]:text-t1 has-[:checked]:shadow-[inset_0_0_0_1px_var(--line)]",
+                "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-g2 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
+                option.className,
+              )}
+            >
+              <input type="radio" value={option.value} {...input} className="sr-only" />
+              {option.label ?? option.value}
+            </label>
+          );
+        })}
       </div>
     </fieldset>
   );

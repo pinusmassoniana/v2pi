@@ -13,6 +13,7 @@ import { ProfileSelect } from "../../components/ui/ProfileSelect";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyOk } from "../../components/ui/Toaster";
+import { FORM_CHANGED, isStaleRun, runKey } from "../../lib/staleResult";
 import { DryRunResult } from "./DryRunResult";
 import { KeyValueRowsEditor } from "./KeyValueRowsEditor";
 import { RequestPreview } from "./RequestPreview";
@@ -26,10 +27,6 @@ const DRY_RUN_TIMEOUT_MS = 30_000;
 interface PeekTarget { url: string; injection: ReturnType<typeof buildInjection> }
 interface Peek<T> { busy: boolean; data: T | null; error: string | null; target: PeekTarget | null }
 const IDLE: Peek<never> = { busy: false, data: null, error: null, target: null };
-
-function targetKey(target: PeekTarget): string {
-  return JSON.stringify(target);
-}
 
 /**
  * U5 edit and U7 add, with U8 Preview request and U9 Dry-run parse. Preview and dry-run are peeks: they change
@@ -57,9 +54,9 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
   const liveUrl = useWatch({ control, name: "url" });
   const liveHeaders = useWatch({ control, name: "headers" });
   const liveQueries = useWatch({ control, name: "queries" });
-  const liveKey = targetKey({ url: (liveUrl ?? "").trim(), injection: buildInjection(liveHeaders ?? [], liveQueries ?? []) });
-  const previewStale = preview.target !== null && targetKey(preview.target) !== liveKey;
-  const dryRunStale = dryRun.target !== null && targetKey(dryRun.target) !== liveKey;
+  const liveKey = runKey({ url: (liveUrl ?? "").trim(), injection: buildInjection(liveHeaders ?? [], liveQueries ?? []) });
+  const previewStale = isStaleRun(preview.target && runKey(preview.target), liveKey);
+  const dryRunStale = isStaleRun(dryRun.target && runKey(dryRun.target), liveKey);
 
   // Said even if the form has gone; closing it or showing the reason in it is passed to mutate below, which runs
   // only for this form's latest save while it is still open — a stale save never closes a form opened after it.
@@ -162,12 +159,12 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
             <span className="text-[11px] text-t3">preview doesn't fetch · dry-run does</span>
           </div>
           {preview.data ? (
-            previewStale ? <p className="text-xs text-t3">Form changed since this run — run it again.</p> : <RequestPreview preview={preview.data} />
+            previewStale ? <p className="text-xs text-t3">{FORM_CHANGED}</p> : <RequestPreview preview={preview.data} />
           ) : null}
           {preview.error ? <p role="alert" className="text-xs text-bad">{preview.error}</p> : null}
           {dryRun.data ? (
             dryRunStale ? (
-              <p className="text-xs text-t3">Form changed since this run — run it again.</p>
+              <p className="text-xs text-t3">{FORM_CHANGED}</p>
             ) : (
               <DryRunResult result={dryRun.data} url={dryRun.target?.url ?? ""} />
             )
