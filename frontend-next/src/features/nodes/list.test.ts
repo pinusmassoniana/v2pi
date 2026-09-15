@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Node } from "../../api/client";
-import { ALL_NODES, ALL_NODE_HEALTH, NODES, SUBS, node } from "../../test/fixtures";
+import { ALL_NODES, ALL_NODE_HEALTH, NODES, NODE_HEALTH, NOW_SEC, SUBS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
-  ROW_CAP, SERVERS, bestScope, canReorder, defaultGroup, groupChips, groupOf, healthById, inScope, matchesSearch, moveWithin, parseGroup,
-  pillTone, probeScope, pruneSelection, resolveGroup, selectionState, shownNodes, sortNodes, visibleRows,
+  ROW_CAP, SERVERS, applyOrder, bestReading, bestScope, canReorder, checkedAgo, defaultGroup, deleteNodeMessage, groupChips, groupOf, healthById, inScope,
+  liveReading, matchesSearch, mergeHealth, moveWithin, parseGroup, pillTone, probeScope, pruneSelection, resolveGroup, selectionState, shownNodes,
+  sortNodes, visibleRows,
 } from "./list";
 
 const HEALTH = healthById(ALL_NODE_HEALTH);
@@ -98,6 +99,13 @@ describe("reorder, cap and selection", () => {
     expect(canReorder(1, "pos", "")).toBe(false);
   });
 
+  it("applies a new order to one group's nodes and leaves every other node in its place", () => {
+    const order = applyOrder(ALL_NODES, [8, 7, 9]);
+    expect(order.map((n) => n.id)).toEqual([1, 2, 3, 4, 5, 6, 8, 7, 9, 10]);
+    expect(applyOrder(ALL_NODES, [])).toEqual(ALL_NODES);
+    expect(applyOrder(ALL_NODES, [99, 9]).map((n) => n.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
   it("moves a row by swapping it with its neighbour and returns the whole list", () => {
     expect(moveWithin([7, 8, 9], 0, 1)).toEqual([8, 7, 9]);
     expect(moveWithin([7, 8, 9], 2, -1)).toEqual([7, 9, 8]);
@@ -139,5 +147,43 @@ describe("pills", () => {
     expect(pillTone(false, 42)).toBe("failed");
     expect(pillTone(null, null)).toBe("unknown");
     expect(pillTone(undefined, undefined)).toBe("unknown");
+  });
+});
+
+describe("readings", () => {
+  it("a probe result replaces the node's row, or joins the list", () => {
+    const fresh = { ...NODE_HEALTH[1]!, last_real_ms: 33 };
+    expect(mergeHealth(NODE_HEALTH, fresh).map((h) => h.last_real_ms)).toEqual([45, 33, 71, 164, null]);
+    expect(mergeHealth(NODE_HEALTH, { ...fresh, node_id: 5 })).toHaveLength(6);
+    expect(mergeHealth(undefined, fresh)).toEqual([fresh]);
+  });
+
+  it("the card's number: real, else HTTP, else TCP — passing checks only", () => {
+    const byId = healthById(ALL_NODE_HEALTH);
+    expect(bestReading(byId.get(1))).toEqual({ label: "real", ms: 45 });
+    expect(bestReading(byId.get(6))).toEqual({ label: "HTTP", ms: 139 });
+    expect(bestReading(byId.get(8))).toEqual({ label: "TCP", ms: 2 });
+    expect(bestReading({ ...NODE_HEALTH[0]!, last_real_ok: null, last_http_ok: false, last_tcp_ok: null })).toBeNull();
+    expect(bestReading(undefined)).toBeNull();
+  });
+
+  it("checked ago on the gateway clock; nothing when never probed", () => {
+    expect(checkedAgo(NODE_HEALTH[0]!.checked_at, NOW_SEC * 1000)).toBe("5 s ago");
+    expect(checkedAgo(NODE_HEALTH[1]!.checked_at, NOW_SEC * 1000)).toBe("4 min ago");
+    expect(checkedAgo(null, NOW_SEC * 1000)).toBeNull();
+    expect(checkedAgo("not a date", NOW_SEC * 1000)).toBeNull();
+  });
+
+  it("the live probe's word on the active node: fresh latency, failed, or nothing", () => {
+    const probe = TRAFFIC_FRAME.active!;
+    expect(liveReading(probe)).toBe(42);
+    expect(liveReading({ ...probe, stale: true })).toBeNull();
+    expect(liveReading({ ...probe, real_ok: false })).toBe("failed");
+    expect(liveReading({ ...probe, real_ok: null })).toBeNull();
+    expect(liveReading(null)).toBeNull();
+  });
+
+  it("the delete confirmation word for word", () => {
+    expect(deleteNodeMessage({ name: "vps-hel", address: "198.51.100.23" })).toBe('Delete server "vps-hel" (198.51.100.23)?');
   });
 });

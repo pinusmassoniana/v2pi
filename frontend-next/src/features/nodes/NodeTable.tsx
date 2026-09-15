@@ -1,0 +1,178 @@
+import { Link } from "@tanstack/react-router";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import { memo } from "react";
+import type { Node, NodeHealth } from "../../api/client";
+import { serverNow } from "../../api/clock";
+import { Sparkline } from "../../components/data/Sparkline";
+import { Uptime } from "../../components/data/Uptime";
+import { Button } from "../../components/ui/Button";
+import { cn } from "../../lib/cn";
+import { checkedAgo, type SortDir, type SortKey } from "./list";
+import { NodeRowActions, type NodeMenuCallbacks } from "./NodeRowActions";
+import { ActiveRealPill, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
+import type { NodesSearch } from "./search";
+
+export interface ReorderControls {
+  busy: boolean;
+  onMove: (index: number, delta: -1 | 1) => void;
+}
+
+/** What the desktop table and the phone cards share. */
+export interface NodeListProps {
+  /** The rows to render, already searched, sorted and capped. */
+  rows: readonly Node[];
+  health: ReadonlyMap<number, NodeHealth>;
+  activeId: number | null;
+  /** When the active node was connected (epoch s). */
+  activeSince: number | null;
+  dense: boolean;
+  menu: NodeMenuCallbacks;
+  /** The list's search and sort, carried into a node's detail so closing it comes back to this list. */
+  detailSearch: NodesSearch;
+  /** Up / down arrows (N11); null when this list cannot be reordered. */
+  reorder: ReorderControls | null;
+}
+
+export interface NodeTableProps extends NodeListProps {
+  sort: SortKey;
+  dir: SortDir;
+  onSort: (key: SortKey) => void;
+}
+
+/** Hidden columns fold into the name block below these widths (spec §4). */
+const WIDE = "hidden min-[1281px]:table-cell";
+const MEDIUM = "hidden min-[1025px]:table-cell";
+const NARROW = "hidden min-[901px]:table-cell";
+
+interface RowProps {
+  node: Node;
+  index: number;
+  last: number;
+  health: NodeHealth | undefined;
+  active: boolean;
+  activeSince: number | null;
+  dense: boolean;
+  menu: NodeMenuCallbacks;
+  detailSearch: NodesSearch;
+  reorder: ReorderControls | null;
+}
+
+/** One row; memoised, so a poll that changes one node's health re-renders that row only. */
+const NodeRow = memo(function NodeRow({ node, index, last, health, active, activeSince, dense, menu, detailSearch, reorder }: RowProps) {
+  const cell = cn("px-2.5 align-middle", dense ? "py-1" : "py-2.5");
+  const checked = checkedAgo(health?.checked_at, serverNow());
+  const failCount = active ? (health?.fail_count ?? 0) : 0;
+  return (
+    <tr
+      data-node-id={node.id}
+      data-node-name={node.name}
+      data-active={active || undefined}
+      data-stale={node.stale || undefined}
+      className={cn("border-t border-line transition-opacity duration-150", node.stale && "opacity-55", active && "bg-glass-2 shadow-[inset_3px_0_0_var(--g2)]")}
+    >
+      <td className={cn(cell, "min-w-0")}>
+        <div className="flex items-start gap-2">
+          {reorder ? (
+            <span className="flex shrink-0 flex-col">
+              <Button size="icon" variant="ghost" className="size-6" aria-label={`Move ${node.name} up`} disabled={index === 0 || reorder.busy} onClick={() => reorder.onMove(index, -1)}>
+                <ChevronUp size={14} aria-hidden />
+              </Button>
+              <Button size="icon" variant="ghost" className="size-6" aria-label={`Move ${node.name} down`} disabled={index === last || reorder.busy} onClick={() => reorder.onMove(index, 1)}>
+                <ChevronDown size={14} aria-hidden />
+              </Button>
+            </span>
+          ) : null}
+          <div className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <Link to="/nodes/$nodeId" params={{ nodeId: String(node.id) }} search={detailSearch} className="truncate text-[13px] font-semibold text-t1 hover:underline">
+                {node.name}
+              </Link>
+              {node.stale ? <StaleBadge /> : null}
+              {failCount > 0 ? <FailBadge count={failCount} /> : null}
+            </div>
+            {active ? (
+              <p className="text-[11px] font-semibold text-ok">
+                connected{activeSince !== null ? <> · <Uptime since={activeSince} running coarse /></> : null}
+              </p>
+            ) : null}
+            <p className="truncate text-[11px] text-t3">
+              <span className="font-mono">#{node.id}</span>
+              <span className="min-[1281px]:hidden"> · {node.port} · {node.transport} · {node.security}</span>
+              {node.note ? <span className="text-t2"> · {node.note}</span> : null}
+            </p>
+          </div>
+        </div>
+      </td>
+      <td className={cn(cell, "max-w-56 truncate font-mono text-[11.5px] text-t2")} title={node.address}>{node.address}</td>
+      <td className={cn(cell, WIDE, "font-mono text-[11.5px] tabular-nums text-t2")}>{node.port}</td>
+      <td className={cn(cell, WIDE, "whitespace-nowrap text-t2")}>{node.transport} · {node.security}</td>
+      <td className={cell}><ProbePill ok={health?.last_tcp_ok} ms={health?.last_tcp_ms} /></td>
+      <td className={cell}><ProbePill ok={health?.last_http_ok} ms={health?.last_http_ms} /></td>
+      <td className={cell}>{active ? <ActiveRealPill nodeId={node.id} health={health} /> : <ProbePill ok={health?.last_real_ok} ms={health?.last_real_ms} />}</td>
+      <td className={cn(cell, NARROW, "max-w-44")}><Egress health={health} /></td>
+      <td className={cn(cell, MEDIUM, "w-20")}>
+        {health && health.lat_history.length > 1 ? <Sparkline values={health.lat_history} width={64} height={18} className="h-[18px] w-16" /> : <span className="text-t3">—</span>}
+      </td>
+      <td className={cn(cell, MEDIUM, "whitespace-nowrap text-t3")} title={health?.checked_at ?? undefined}>{checked ?? "—"}</td>
+      <td className={cn(cell, "w-px")}><NodeRowActions node={node} active={active} menu={menu} /></td>
+    </tr>
+  );
+});
+
+const SORTABLE: readonly { key: SortKey; label: string; className?: string }[] = [
+  { key: "name", label: "Name" }, { key: "address", label: "Address" },
+];
+
+function SortHeader({ label, sortKey, sort, dir, onSort, className }: { label: string; sortKey: SortKey; sort: SortKey; dir: SortDir; onSort: (key: SortKey) => void; className?: string }) {
+  const on = sort === sortKey;
+  return (
+    <th scope="col" aria-sort={on ? (dir === "asc" ? "ascending" : "descending") : undefined} className={cn("px-2.5 py-2 font-semibold", className)}>
+      <button type="button" onClick={() => onSort(sortKey)} className={cn("inline-flex items-center gap-1 uppercase tracking-[.07em] hover:text-t1", on && "text-t1")}>
+        {label}
+        {on ? <span aria-hidden>{dir === "asc" ? "▲" : "▼"}</span> : null}
+      </button>
+    </th>
+  );
+}
+
+/** N5 on a desktop: a real table, sortable by its headers, whose columns collapse by breakpoint. */
+export function NodeTable({ rows, health, activeId, activeSince, dense, menu, detailSearch, reorder, sort, dir, onSort }: NodeTableProps) {
+  const plain = "px-2.5 py-2 font-semibold uppercase tracking-[.07em]";
+  return (
+    <div className="glass overflow-x-auto">
+      <table aria-label="Nodes" data-dense={dense || undefined} className="w-full text-left text-xs">
+        <thead className="text-[9.5px] text-t3">
+          <tr>
+            {SORTABLE.map((column) => <SortHeader key={column.key} label={column.label} sortKey={column.key} sort={sort} dir={dir} onSort={onSort} />)}
+            <th scope="col" className={cn(plain, WIDE)}>Port</th>
+            <th scope="col" className={cn(plain, WIDE)}>Transport</th>
+            <SortHeader label="TCP" sortKey="tcp" sort={sort} dir={dir} onSort={onSort} />
+            <SortHeader label="HTTP" sortKey="http" sort={sort} dir={dir} onSort={onSort} />
+            <th scope="col" className={plain}>Real</th>
+            <th scope="col" className={cn(plain, NARROW)}>Egress</th>
+            <th scope="col" className={cn(plain, MEDIUM)}>Trend</th>
+            <th scope="col" className={cn(plain, MEDIUM)}>Checked</th>
+            <th scope="col" className="px-2.5 py-2"><span className="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((node, index) => (
+            <NodeRow
+              key={node.id}
+              node={node}
+              index={index}
+              last={rows.length - 1}
+              health={health.get(node.id)}
+              active={node.id === activeId}
+              activeSince={node.id === activeId ? activeSince : null}
+              dense={dense}
+              menu={menu}
+              detailSearch={detailSearch}
+              reorder={reorder}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

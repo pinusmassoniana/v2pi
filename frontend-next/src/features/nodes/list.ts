@@ -1,7 +1,7 @@
 // Pure rules of Nodes › Servers: which group is shown, what the search keeps, how rows sort, when they can be
 // reordered, how many render, and how a probe result reads. Unit-tested without rendering.
 import type { Node, NodeHealth, Subscription } from "../../api/client";
-import { SLOW_LATENCY_MS } from "../../lib/nodeHealth";
+import { SLOW_LATENCY_MS, probeAge, type ActiveProbe } from "../../lib/nodeHealth";
 
 /** The manual nodes' group: nodes that belong to no subscription. */
 export const SERVERS = "servers";
@@ -156,4 +156,51 @@ export function pillTone(ok: boolean | null | undefined, ms: number | null | und
   if (ok === false) return "failed";
   if (ok !== true) return "unknown";
   return ms !== null && ms !== undefined && ms > SLOW_LATENCY_MS ? "slow" : "ok";
+}
+
+/** A probe result replacing the node's previous one in the health list (a single test, or one step of Test all). */
+export function mergeHealth(rows: readonly NodeHealth[] | undefined, row: NodeHealth): NodeHealth[] {
+  const list = rows ?? [];
+  return list.some((old) => old.node_id === row.node_id) ? list.map((old) => (old.node_id === row.node_id ? row : old)) : [...list, row];
+}
+
+export interface Reading { label: "real" | "HTTP" | "TCP"; ms: number }
+
+/** The phone card's one number: the real check's latency, else HTTP's, else TCP's — only a passing check counts. */
+export function bestReading(health: NodeHealth | undefined): Reading | null {
+  if (!health) return null;
+  if (health.last_real_ok === true && health.last_real_ms !== null) return { label: "real", ms: health.last_real_ms };
+  if (health.last_http_ok === true && health.last_http_ms !== null) return { label: "HTTP", ms: health.last_http_ms };
+  if (health.last_tcp_ok === true && health.last_tcp_ms !== null) return { label: "TCP", ms: health.last_tcp_ms };
+  return null;
+}
+
+/** N5 "checked": "5 s ago", "4 min ago"; null when never probed or the time is unreadable. */
+export function checkedAgo(checkedAt: string | null | undefined, nowMs: number): string | null {
+  const at = checkedAt ? Date.parse(checkedAt) : Number.NaN;
+  return Number.isFinite(at) ? `${probeAge(nowMs - at)} ago` : null;
+}
+
+/**
+ * N5 on the active row: what the live probe says — its latency, "failed", or null when it says nothing fresh. Pass
+ * the probe matched to the active node (probeFor), never the frame's raw `active`.
+ */
+export function liveReading(probe: ActiveProbe): number | "failed" | null {
+  if (!probe || probe.stale !== false) return null;
+  if (probe.real_ok === false) return "failed";
+  return probe.real_ok === true ? probe.latency_ms : null;
+}
+
+/** N15: the delete confirmation, word for word. */
+export function deleteNodeMessage(node: Pick<Node, "name" | "address">): string {
+  return `Delete server "${node.name}" (${node.address})?`;
+}
+
+/** N11: the node list with one group's nodes put in `ids` order, every other node where it was. */
+export function applyOrder(nodes: readonly Node[], ids: readonly number[]): Node[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const moved = new Set(ids);
+  const queue = ids.map((id) => byId.get(id)).filter((node): node is Node => node !== undefined);
+  let next = 0;
+  return nodes.map((node) => (moved.has(node.id) && next < queue.length ? queue[next++]! : node));
 }

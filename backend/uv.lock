@@ -293,7 +293,7 @@ wheels = [
 
 [[package]]
 name = "pi-gw-panel"
-version = "1.18.31"
+version = "1.18.32"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

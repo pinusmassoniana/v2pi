@@ -8,11 +8,13 @@ const target = process.env.V2PI_API ?? "http://127.0.0.1:8000";
 
 // Libraries the first screen needs: the auth forms, overlays, the command palette and toasts, with the
 // packages they pull in. Only these share the `vendor` chunk; anything a section alone imports (an icon, a
-// chart helper) stays in that section's lazily loaded chunk instead of loading at boot.
+// chart helper, the Nodes row menu's dropdown and its positioning) stays in that section's lazily loaded chunk
+// instead of loading at boot.
+const SECTION_ONLY = "(?!@radix-ui[\\\\/]react-(?:dropdown-menu|menu|popper|arrow|roving-focus|collection|use-size|use-rect|rect)[\\\\/]|@floating-ui[\\\\/])";
 const BOOT_VENDOR = new RegExp(
-  "node_modules[\\\\/](" +
+  "node_modules[\\\\/]" + SECTION_ONLY + "(" +
     [
-      "radix-ui", "@radix-ui", "@floating-ui", "aria-hidden", "react-remove-scroll", "react-remove-scroll-bar",
+      "radix-ui", "@radix-ui", "aria-hidden", "react-remove-scroll", "react-remove-scroll-bar",
       "react-style-singleton", "use-callback-ref", "use-sidecar", "detect-node-es", "get-nonce", "tslib",
       "cmdk", "sonner", "react-hook-form", "@hookform", "zod", "@standard-schema",
       "clsx", "tailwind-merge", "class-variance-authority",
