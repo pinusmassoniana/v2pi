@@ -16,6 +16,15 @@ export interface ReorderControls {
   onMove: (index: number, delta: -1 | 1) => void;
 }
 
+/** N18: the selection over the shown rows. */
+export interface SelectionControls {
+  selected: ReadonlySet<number>;
+  /** The select-all checkbox: none, some (indeterminate) or all of the shown rows. */
+  state: "none" | "some" | "all";
+  onToggle: (id: number) => void;
+  onToggleAll: () => void;
+}
+
 /** What the desktop table and the phone cards share. */
 export interface NodeListProps {
   /** The rows to render, already searched, sorted and capped. */
@@ -30,6 +39,8 @@ export interface NodeListProps {
   detailSearch: NodesSearch;
   /** Up / down arrows (N11); null when this list cannot be reordered. */
   reorder: ReorderControls | null;
+  /** Checkboxes (N18): always on the desktop table; on phone cards only in select mode. Null for none. */
+  selection: SelectionControls | null;
 }
 
 export interface NodeTableProps extends NodeListProps {
@@ -54,10 +65,15 @@ interface RowProps {
   menu: NodeMenuCallbacks;
   detailSearch: NodesSearch;
   reorder: ReorderControls | null;
+  /** Null when the list shows no checkboxes. */
+  selected: boolean | null;
+  onToggle: (id: number) => void;
 }
 
+const noToggle = () => {};
+
 /** One row; memoised, so a poll that changes one node's health re-renders that row only. */
-const NodeRow = memo(function NodeRow({ node, index, last, health, active, activeSince, dense, menu, detailSearch, reorder }: RowProps) {
+const NodeRow = memo(function NodeRow({ node, index, last, health, active, activeSince, dense, menu, detailSearch, reorder, selected, onToggle }: RowProps) {
   const cell = cn("px-2.5 align-middle", dense ? "py-1" : "py-2.5");
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
@@ -68,6 +84,11 @@ const NodeRow = memo(function NodeRow({ node, index, last, health, active, activ
       data-stale={node.stale || undefined}
       className={cn("border-t border-line transition-opacity duration-150", node.stale && "opacity-55", active && "bg-glass-2 shadow-[inset_3px_0_0_var(--g2)]")}
     >
+      {selected !== null ? (
+        <td className={cn(cell, "w-px")}>
+          <input type="checkbox" aria-label={`Select ${node.name}`} checked={selected} onChange={() => onToggle(node.id)} className="size-4 accent-g2" />
+        </td>
+      ) : null}
       <td className={cn(cell, "min-w-0")}>
         <div className="flex items-start gap-2">
           {reorder ? (
@@ -134,13 +155,25 @@ function SortHeader({ label, sortKey, sort, dir, onSort, className }: { label: s
 }
 
 /** N5 on a desktop: a real table, sortable by its headers, whose columns collapse by breakpoint. */
-export function NodeTable({ rows, health, activeId, activeSince, dense, menu, detailSearch, reorder, sort, dir, onSort }: NodeTableProps) {
+export function NodeTable({ rows, health, activeId, activeSince, dense, menu, detailSearch, reorder, selection, sort, dir, onSort }: NodeTableProps) {
   const plain = "px-2.5 py-2 font-semibold uppercase tracking-[.07em]";
   return (
     <div className="glass overflow-x-auto">
       <table aria-label="Nodes" data-dense={dense || undefined} className="w-full text-left text-xs">
         <thead className="text-[9.5px] text-t3">
           <tr>
+            {selection ? (
+              <th scope="col" className="w-px px-2.5 py-2">
+                <input
+                  type="checkbox"
+                  aria-label="Select all shown"
+                  checked={selection.state === "all"}
+                  ref={(input) => { if (input) input.indeterminate = selection.state === "some"; }}
+                  onChange={selection.onToggleAll}
+                  className="size-4 accent-g2"
+                />
+              </th>
+            ) : null}
             {SORTABLE.map((column) => <SortHeader key={column.key} label={column.label} sortKey={column.key} sort={sort} dir={dir} onSort={onSort} />)}
             <th scope="col" className={cn(plain, WIDE)}>Port</th>
             <th scope="col" className={cn(plain, WIDE)}>Transport</th>
@@ -167,6 +200,8 @@ export function NodeTable({ rows, health, activeId, activeSince, dense, menu, de
               menu={menu}
               detailSearch={detailSearch}
               reorder={reorder}
+              selected={selection ? selection.selected.has(node.id) : null}
+              onToggle={selection?.onToggle ?? noToggle}
             />
           ))}
         </tbody>

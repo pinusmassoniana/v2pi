@@ -17,7 +17,12 @@ interface CardProps {
   activeSince: number | null;
   dense: boolean;
   detailSearch: NodesSearch;
+  /** Select mode: a checkbox instead of the buttons. Null outside it. */
+  selected: boolean | null;
+  onToggle: (id: number) => void;
 }
+
+const noToggle = () => {};
 
 /** Whether `checkedAt` is a parseable timestamp — mirrors `checkedAgo`'s null case, but needs no current time. */
 function everChecked(checkedAt: string | null | undefined): boolean {
@@ -40,7 +45,7 @@ function readingLine(health: NodeHealth | undefined): ReactNode {
  * A card is a link to the node's page with its own buttons on top: the link covers the card, the content lets
  * taps through, and only the buttons take them back.
  */
-const NodeCard = memo(function NodeCard({ node, health, active, activeSince, dense, detailSearch }: CardProps) {
+const NodeCard = memo(function NodeCard({ node, health, active, activeSince, dense, detailSearch, selected, onToggle }: CardProps) {
   const flag = flagEmoji(health?.egress_cc);
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
@@ -59,6 +64,15 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, den
         className="absolute inset-0 rounded-[18px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-g2"
       />
       <div className="pointer-events-none relative flex items-start gap-3">
+        {selected !== null ? (
+          <input
+            type="checkbox"
+            aria-label={`Select ${node.name}`}
+            checked={selected}
+            onChange={() => onToggle(node.id)}
+            className="pointer-events-auto mt-0.5 size-5 shrink-0 accent-g2"
+          />
+        ) : null}
         <div className="min-w-0 flex-1">
           <p className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-t1">
             <span className="truncate">{flag ? `${flag} ` : ""}{node.name}</span>
@@ -75,27 +89,43 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, den
           </div>
           <p className="mt-1 truncate text-[11px] text-t3">{readingLine(health)}</p>
         </div>
-        <NodeRowActions node={node} active={active} withMenu={false} className="pointer-events-auto" />
+        {selected === null ? <NodeRowActions node={node} active={active} withMenu={false} className="pointer-events-auto" /> : null}
       </div>
     </li>
   );
 });
 
-/** N5 on a phone: one card per node. */
-export function NodeCards({ rows, health, activeId, activeSince, dense, detailSearch }: NodeListProps) {
+/** N5 on a phone: one card per node; in select mode a "select all shown" checkbox above them. */
+export function NodeCards({ rows, health, activeId, activeSince, dense, detailSearch, selection }: NodeListProps) {
   return (
-    <ul aria-label="Nodes" data-dense={dense || undefined} className="flex flex-col gap-2">
-      {rows.map((node) => (
-        <NodeCard
-          key={node.id}
-          node={node}
-          health={health.get(node.id)}
-          active={node.id === activeId}
-          activeSince={node.id === activeId ? activeSince : null}
-          dense={dense}
-          detailSearch={detailSearch}
-        />
-      ))}
-    </ul>
+    <>
+      {selection ? (
+        <label className="flex min-h-11 items-center gap-2.5 px-1 text-sm text-t2">
+          <input
+            type="checkbox"
+            checked={selection.state === "all"}
+            ref={(input) => { if (input) input.indeterminate = selection.state === "some"; }}
+            onChange={selection.onToggleAll}
+            className="size-5 accent-g2"
+          />
+          Select all shown
+        </label>
+      ) : null}
+      <ul aria-label="Nodes" data-dense={dense || undefined} className="flex flex-col gap-2">
+        {rows.map((node) => (
+          <NodeCard
+            key={node.id}
+            node={node}
+            health={health.get(node.id)}
+            active={node.id === activeId}
+            activeSince={node.id === activeId ? activeSince : null}
+            dense={dense}
+            detailSearch={detailSearch}
+            selected={selection ? selection.selected.has(node.id) : null}
+            onToggle={selection?.onToggle ?? noToggle}
+          />
+        ))}
+      </ul>
+    </>
   );
 }

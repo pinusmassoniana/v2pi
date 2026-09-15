@@ -43,7 +43,7 @@ describe("Servers › table (N5)", () => {
   it("is a real table whose sorted column carries aria-sort, sortable from its headers", async () => {
     const { router } = await openList();
     expect(within(table()).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
-      "Name", "Address", "Port", "Transport", "TCP", "HTTP", "Real", "Egress", "Trend", "Checked", "Actions",
+      "", "Name", "Address", "Port", "Transport", "TCP", "HTTP", "Real", "Egress", "Trend", "Checked", "Actions",
     ]);
     expect(table().querySelector("[aria-sort]")).toBeNull();   // position order sorts by nothing shown
     await userEvent.click(within(table()).getByRole("button", { name: "Name" }));
@@ -67,9 +67,9 @@ describe("Servers › table (N5)", () => {
     expect(active).toHaveAttribute("data-active", "true");
     expect(within(active).getByText("fail 2")).toHaveAttribute("title", "Consecutive real-request failures (auto-failover counter)");
     const cells = [...active.querySelectorAll("td")].map((td) => td.textContent);
-    expect(cells.slice(1, 8)).toEqual(["nl-ams-03.example.org", "443", "vision · reality", "31 ms", "142 ms", "45 ms", "🇳🇱 185.107.56.21"]);
-    expect(cells[9]).toBe("5 s ago");
-    expect(active.querySelectorAll("td")[8]!.querySelector("svg path")).not.toBeNull();
+    expect(cells.slice(2, 9)).toEqual(["nl-ams-03.example.org", "443", "vision · reality", "31 ms", "142 ms", "45 ms", "🇳🇱 185.107.56.21"]);
+    expect(cells[10]).toBe("5 s ago");
+    expect(active.querySelectorAll("td")[9]!.querySelector("svg path")).not.toBeNull();
     expect(active).toHaveTextContent("#1 · 443 · vision · reality");
   });
 
@@ -101,7 +101,7 @@ describe("Servers › table (N5)", () => {
   it("a live frame updates the active node's real pill without re-rendering the rows", async () => {
     const { api$ } = await openList();
     api$.emitTraffic(TRAFFIC_FRAME);
-    const real = () => row("nl-ams-03").querySelectorAll("td")[6]!.firstElementChild!;
+    const real = () => row("nl-ams-03").querySelectorAll("td")[7]!.firstElementChild!;
     await waitFor(() => expect(real()).toHaveAttribute("data-live", "true"));
     expect(real()).toHaveTextContent("42 ms");
     const renders = vi.mocked(checkedAgo).mock.calls.length;
