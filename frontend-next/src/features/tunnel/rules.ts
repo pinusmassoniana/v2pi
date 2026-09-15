@@ -1,7 +1,7 @@
 // Tunnel › Routing rules: the staged ruleset, what counts as a change, what Save sends, the inline row checks, JSON
 // import and the destination tester. Pure and unit-tested; no rendering here.
 import type { Routing, RoutingIn, RoutingRuleIn } from "../../api/client";
-import { inIPv4Cidr, parseDestination } from "../../lib/routing";
+import { parseDestination } from "../../lib/routing";
 
 export const RULE_TYPES = ["geoip", "geosite", "domain", "ip", "port"] as const;
 export type RuleType = (typeof RULE_TYPES)[number];
@@ -399,8 +399,8 @@ export function testDestination(input: string, state: StagedRouting): TesterResu
   const parsed = parseDestination(raw);
   if (parsed.ipv6) return { action: null, detail: IPV6_NOT_EVALUATED };
   const { host, port } = parsed;
-  const isIp = ipv4Number(host) !== null;
-  if (isIp && isPrivateIPv4(host)) return { action: "direct", detail: "(private range, always matched first)" };
+  const address = ipv4Number(host);
+  if (address !== null && isPrivateIPv4(host)) return { action: "direct", detail: "(private range, always matched first)" };
   let skippedGeo = false;
   for (const row of state.rows) {
     if (!row.enabled || !row.value.trim()) continue;
@@ -418,7 +418,11 @@ export function testDestination(input: string, state: StagedRouting): TesterResu
       });
       if (!hit && skippedToken) skippedGeo = true;
     } else if (row.type === "ip") {
-      hit = isIp && tokens.some((token) => inIPv4Cidr(host, token));
+      // Each token read as the backend's ip_network reads it (ipv4Span): a malformed one such as "8.8.8.8/" matches nothing.
+      hit = address !== null && tokens.some((token) => {
+        const span = ipv4Span(token);
+        return span !== null && span.first <= address && address <= span.last;
+      });
     } else if (row.type === "port") {
       hit = port !== null && tokens.some((token) => portMatches(token, port));
     } else {

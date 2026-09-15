@@ -307,6 +307,19 @@ describe("testDestination (R8)", () => {
     expect(testDestination("1.2.3.4", ranged)?.detail).toBe("(default · geo rules not evaluated locally)");
   });
 
+  it("ip tokens are read as the backend reads them: a stray '8.8.8.8/' or another malformed token matches nothing", () => {
+    const withIp = (value: string) => updateRule(addRule(state, "n-ip"), "n-ip", { type: "ip", value, action: "block" });
+    for (const value of ["8.8.8.8/", "8.8.8.8/33", "8.8.8.8/1/2", "08.8.8.8", "8.8.8.8/x"]) {
+      expect(testDestination("1.2.3.4", withIp(value))?.action).toBe("proxy");
+      expect(testDestination("8.8.8.8", withIp(value))?.action).toBe("proxy");
+    }
+    expect(testDestination("8.8.8.8", withIp("8.8.8.8"))?.action).toBe("block");
+    expect(testDestination("8.8.8.9", withIp("8.8.8.8"))?.action).toBe("proxy");
+    expect(testDestination("8.8.8.200:53", withIp("8.8.8.1/24"))?.action).toBe("block");
+    expect(testDestination("8.8.9.1", withIp("8.8.8.0/24"))?.action).toBe("proxy");
+    expect(testDestination("1.2.3.4", withIp("0.0.0.0/0"))?.action).toBe("block");
+  });
+
   it("checks rules in order, first match wins, skipping switched-off and empty rules", () => {
     expect(testDestination("netflix.com", state)?.detail).toBe("(default · geo rules not evaluated locally)");
     const on = updateRule(state, "s26", { enabled: true });
