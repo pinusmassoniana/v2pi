@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Settings } from "../../api/client";
 import { useApiWrite } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
@@ -9,6 +9,11 @@ import { Toggle } from "../../components/ui/Toggle";
 import { notifyError } from "../../components/ui/Toaster";
 
 type SubsSetting = "tunneled_fetch" | "subs_auto_switch";
+
+// Both rows share this mutation key: a save in flight disables every switch on the card, so a second click
+// (the same row twice, or the other row) never overlaps the first — the rollback/invalidate logic below
+// only has to reason about one write at a time.
+const SETTINGS_WRITE = ["settings-write"] as const;
 
 const ROWS: readonly { key: SubsSetting; label: string; text: string; note: string }[] = [
   {
@@ -31,6 +36,7 @@ export function SubsSettingsCard({ className }: { className?: string }) {
   const settings = useQuery(queries.settings());   // read once; this card is its only writer on the screen
   const putSettings = useApiWrite("putSettings");
   const toggle = useMutation({
+    mutationKey: SETTINGS_WRITE,
     mutationFn: ({ key, on }: { key: SubsSetting; on: boolean }) => putSettings({ [key]: on }),
     // Optimistic: the switch moves at once. A failure puts back only the field it changed, so a second switch
     // flipped meanwhile keeps its own new value.
@@ -44,9 +50,14 @@ export function SubsSettingsCard({ className }: { className?: string }) {
         const { key, before } = context;
         queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: before } : old));
       }
+      // The rollback is a best guess from this write's own snapshot; re-read the gateway's actual value too.
+      void queryClient.invalidateQueries({ queryKey: keys.settings });
       notifyError(error, "setting was not saved");
     },
   });
+  // One write at a time: disables both switches so a click can't land while another row's save is still out,
+  // which is what let a rollback or a stale refetch show the wrong value (see the mutation's own comment).
+  const saving = useIsMutating({ mutationKey: SETTINGS_WRITE }) > 0;
 
   const fallback = cardFallback([settings], "Subscription settings did not load", "h-24");
   return (
@@ -61,7 +72,12 @@ export function SubsSettingsCard({ className }: { className?: string }) {
                 <p className="text-xs text-t2">{row.text}</p>
                 <p className="text-[11px] text-t3">{row.note}</p>
               </div>
-              <Toggle label={row.label} checked={settings.data?.[row.key] ?? false} onCheckedChange={(on) => toggle.mutate({ key: row.key, on })} />
+              <Toggle
+                label={row.label}
+                checked={settings.data?.[row.key] ?? false}
+                disabled={saving}
+                onCheckedChange={(on) => toggle.mutate({ key: row.key, on })}
+              />
             </li>
           ))}
         </ul>

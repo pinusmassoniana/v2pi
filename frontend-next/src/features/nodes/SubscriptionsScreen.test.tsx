@@ -104,6 +104,35 @@ describe("Subscriptions › fetch settings (G1)", () => {
     expect(autoSwitch).toBeChecked();
     expect(api$.putSettings).toHaveBeenCalledWith({ subs_auto_switch: false });
   });
+
+  it("both switches are disabled while a save is out, then re-enabled with the saved value", async () => {
+    const { api$ } = await openSubscriptions();
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    const autoSwitch = screen.getByRole("switch", { name: "Subscription auto-switch" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    let finish: (settings: Settings) => void = () => {};
+    api$.putSettings.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await userEvent.click(tunnel);
+    expect(tunnel).toBeDisabled();
+    expect(autoSwitch).toBeDisabled();   // the other row's switch is held too — one write at a time
+    const saved: Settings = { ...SETTINGS, tunneled_fetch: false };
+    api$.getSettings.mockResolvedValue(saved);   // the gateway now persists the new value too, as it would for real
+    await act(async () => finish(saved));
+    await waitFor(() => expect(tunnel).not.toBeDisabled());
+    expect(autoSwitch).not.toBeDisabled();
+    expect(tunnel).not.toBeChecked();
+  });
+
+  it("a failing save re-reads settings from the gateway instead of trusting its own rollback", async () => {
+    const { api$ } = await openSubscriptions();
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    const readsBefore = api$.getSettings.mock.calls.length;
+    api$.putSettings.mockRejectedValue(new ApiError(422, "tunneled_fetch: invalid"));
+    await userEvent.click(tunnel);
+    await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(readsBefore));
+    expect(tunnel).toBeChecked();
+  });
 });
 
 describe("Subscriptions › actions (U2–U4, U6)", () => {
