@@ -33,7 +33,8 @@ describe.each(PATHS)("%s", (path) => {
     const logged: unknown[][] = [];
     vi.spyOn(console, "error").mockImplementation((...args) => { logged.push(args); });
     renderApp(path);
-    await screen.findByRole("heading", { level: 1 });
+    // hidden: a node's detail is a modal sheet on a desktop, which hides the page behind it from queries
+    await screen.findByRole("heading", { level: 1, hidden: true });
     const loaded = LOADED[path];
     if (loaded) {
       const [region, text] = loaded;

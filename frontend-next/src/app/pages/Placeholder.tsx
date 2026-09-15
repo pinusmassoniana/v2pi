@@ -1,4 +1,3 @@
-import { useParams } from "@tanstack/react-router";
 import { EmptyState } from "../../components/ui/States";
 import { sectionForPath, titleForPath, type AppPath } from "../nav";
 
@@ -13,9 +12,4 @@ export function Placeholder({ section, title }: { section: string; title: string
 
 export function TabPlaceholder({ path }: { path: AppPath }) {
   return <Placeholder section={sectionForPath(path).label} title={titleForPath(path)} />;
-}
-
-export function NodeDetailPlaceholder() {
-  const { nodeId } = useParams({ from: "/nodes/$nodeId" });
-  return <Placeholder section="Nodes" title={`Node ${nodeId}`} />;
 }

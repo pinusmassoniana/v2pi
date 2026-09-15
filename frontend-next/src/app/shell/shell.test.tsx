@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, type Status } from "../../api/client";
 import { STATUS, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
+import { setViewportWidth } from "../../test/viewport";
 import { SECTIONS } from "../nav";
 import { ErrorBoundary } from "./ErrorBoundary";
 
@@ -23,6 +24,7 @@ describe("shell", () => {
   });
 
   it("phone: five sections below, the section's tabs on top; a node detail belongs to Servers", async () => {
+    setViewportWidth(390);   // a phone opens a node as a page (a desktop sheet would hide the page from queries)
     mockApi();
     renderApp("/nodes/12");
     const sections = await screen.findByRole("navigation", { name: "Sections" });

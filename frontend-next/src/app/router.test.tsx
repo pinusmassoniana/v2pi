@@ -42,8 +42,10 @@ describe("router", () => {
   });
 
   it("renders a node detail, while the static subscriptions route wins over the node id", async () => {
-    renderAt("/nodes/42");
-    expect(await screen.findByText("Nodes › Node 42")).toBeInTheDocument();
+    renderAt("/nodes/2");
+    expect(await screen.findByRole("dialog", { name: "de-fra-01" })).toBeInTheDocument();
+    const router = renderAt("/nodes/subscriptions");
+    await waitFor(() => expect(router.state.matches.at(-1)?.routeId).toBe("/nodes/subscriptions"));
   });
 
   it.each(Object.entries(LEGACY_REDIRECTS))("old bookmark %s lands on %s", async (from, to) => {
