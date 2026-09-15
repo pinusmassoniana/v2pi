@@ -29,6 +29,18 @@ export function activeNodeLabel(status: Status | undefined, nodes: readonly Node
   return id === null ? "No node" : nodeLabel(nodes, id);
 }
 
+/** Whether the active node carries traffic, as far as the status poll tells: "connected", "not running", "unknown". */
+export type ConnectedState = "connected" | "not running" | "unknown";
+
+/**
+ * The one "connected" rule Home and Nodes share. Nothing is known while the status poll fails or before its first
+ * answer, whatever the last one said; with xray stopped the active node is only chosen, not connected.
+ */
+export function connectedState(status: Pick<Status, "running"> | undefined, statusError: boolean): ConnectedState {
+  if (statusError || !status) return "unknown";
+  return status.running === false ? "not running" : "connected";
+}
+
 /**
  * The live probe, only when it is about the active node: right after a switch the frame can still
  * describe the node before it, and its latency, egress and health must not be shown as the new one's.

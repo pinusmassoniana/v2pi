@@ -88,6 +88,16 @@ describe("Node detail › health and config (N5)", () => {
     expect(within(header).getByText(/^connected/)).toHaveTextContent("connected · 1m");
   });
 
+  it("the active node's header: active · not running with xray stopped, active · unknown while status fails", async () => {
+    const { api$, client } = await openDetail("/nodes/1", { phone: true, status: { running: false } });
+    const header = (await screen.findByRole("heading", { level: 2, name: "🇳🇱 nl-ams-03" })).closest("header")!;
+    await waitFor(() => expect(within(header).getByText(/^active/)).toHaveTextContent("active · not running · —"));
+    api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(within(header).getByText(/^active/)).toHaveTextContent("active · unknown · —"));
+    expect(within(header).queryByText(/^connected/)).toBeNull();
+  });
+
   it("a node never probed says so, and a standby has no failure counter", async () => {
     await openDetail("/nodes/5", { phone: true });
     const health = await screen.findByRole("region", { name: "Health" });

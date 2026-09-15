@@ -80,6 +80,22 @@ describe("Servers › table (N5)", () => {
     expect(active).toHaveTextContent("#1 · 443 · vision · reality");
   });
 
+  it("the active row reads active · not running with xray stopped and active · unknown while status fails, with no uptime", async () => {
+    const { api$, client } = await openList("/nodes", { running: false });
+    await waitFor(() => expect(row("nl-ams-03")).toHaveTextContent("active · not running · —"));
+    expect(within(row("nl-ams-03")).getByText(/^active · not running/)).toHaveClass("text-bad");
+    expect(row("nl-ams-03")).not.toHaveTextContent("connected");
+
+    api$.getStatus.mockResolvedValue(STATUS);
+    await act(() => client.refetchQueries({ queryKey: keys.status }));
+    await waitFor(() => expect(row("nl-ams-03")).toHaveTextContent("connected · 1m"));
+
+    api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
+    await act(() => client.refetchQueries({ queryKey: keys.status }));
+    await waitFor(() => expect(row("nl-ams-03")).toHaveTextContent("active · unknown · —"));
+    expect(row("nl-ams-03")).not.toHaveTextContent("connected");
+  });
+
   it("the other rows: no counter off the active node, slow, failed and never probed pills, notes", async () => {
     await openList();
     expect(within(row("se-sto-01")).queryByText(/^fail \d/)).toBeNull();   // fail_count 3, but not the active node
@@ -367,5 +383,18 @@ describe("Servers › phone cards", () => {
     expect(within(card("de-fra-01")).queryByRole("button", { name: /More actions/ })).toBeNull();
     await userEvent.click(within(card("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" }));
     expect(api$.apply).toHaveBeenCalledWith(2);
+  });
+
+  it("the active card follows the same rule: not running, unknown, connected", async () => {
+    setViewportWidth(390);
+    const { api$, client } = await openList("/nodes", { running: false });
+    const card = () => document.querySelector<HTMLElement>('li[data-node-name="nl-ams-03"]')!;
+    await waitFor(() => expect(card()).toHaveTextContent("active · not running · —"));
+    api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
+    await act(() => client.refetchQueries({ queryKey: keys.status }));
+    await waitFor(() => expect(card()).toHaveTextContent("active · unknown · —"));
+    api$.getStatus.mockResolvedValue(STATUS);
+    await act(() => client.refetchQueries({ queryKey: keys.status }));
+    await waitFor(() => expect(card()).toHaveTextContent("connected · 1m"));
   });
 });

@@ -4,12 +4,12 @@ import { memo } from "react";
 import type { Node, NodeHealth } from "../../api/client";
 import { Ago } from "../../components/data/Ago";
 import { Sparkline } from "../../components/data/Sparkline";
-import { Uptime } from "../../components/data/Uptime";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
+import type { ConnectedState } from "../../lib/nodeHealth";
 import type { SortDir, SortKey } from "./list";
 import { NodeRowActions, type NodeMenuCallbacks } from "./NodeRowActions";
-import { ActiveRealPill, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
+import { ActiveLine, ActiveRealPill, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
 import { detailLinkSearch } from "./search";
 
 export interface ReorderControls {
@@ -35,6 +35,8 @@ export interface NodeListProps {
   activeId: number | null;
   /** When the active node was connected (epoch s). */
   activeSince: number | null;
+  /** Whether the active node is connected (connectedState). */
+  connection: ConnectedState;
   dense: boolean;
   menu: NodeMenuCallbacks;
   /** Up / down arrows (N11); null when this list cannot be reordered. */
@@ -62,6 +64,8 @@ interface RowProps {
   health: NodeHealth | undefined;
   active: boolean;
   activeSince: number | null;
+  /** The active row's connection; null on every other row, so a change reaches only the active one. */
+  connection: ConnectedState | null;
   dense: boolean;
   menu: NodeMenuCallbacks;
   reorder: ReorderControls | null;
@@ -73,7 +77,7 @@ interface RowProps {
 const noToggle = () => {};
 
 /** One row; memoised, so a poll that changes one node's health re-renders that row only. */
-const NodeRow = memo(function NodeRow({ node, first, last, health, active, activeSince, dense, menu, reorder, selected, onToggle }: RowProps) {
+const NodeRow = memo(function NodeRow({ node, first, last, health, active, activeSince, connection, dense, menu, reorder, selected, onToggle }: RowProps) {
   const cell = cn("px-2.5 align-middle", dense ? "py-1" : "py-2.5");
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
@@ -109,11 +113,7 @@ const NodeRow = memo(function NodeRow({ node, first, last, health, active, activ
               {node.stale ? <StaleBadge /> : null}
               {failCount > 0 ? <FailBadge count={failCount} /> : null}
             </div>
-            {active ? (
-              <p className="text-[11px] font-semibold text-ok">
-                connected{activeSince !== null ? <> · <Uptime since={activeSince} running coarse /></> : null}
-              </p>
-            ) : null}
+            {active && connection ? <ActiveLine state={connection} since={activeSince} className="text-[11px]" /> : null}
             <p className="truncate text-[11px] text-t3">
               <span className="font-mono">#{node.id}</span>
               <span className="min-[1281px]:hidden"> · {node.port} · {node.transport} · {node.security}</span>
@@ -155,7 +155,7 @@ function SortHeader({ label, sortKey, sort, dir, onSort, className }: { label: s
 }
 
 /** N5 on a desktop: a real table, sortable by its headers, whose columns collapse by breakpoint. */
-export function NodeTable({ rows, health, activeId, activeSince, dense, menu, reorder, selection, sort, dir, onSort }: NodeTableProps) {
+export function NodeTable({ rows, health, activeId, activeSince, connection, dense, menu, reorder, selection, sort, dir, onSort }: NodeTableProps) {
   const plain = "px-2.5 py-2 font-semibold uppercase tracking-[.07em]";
   return (
     <div className="glass overflow-x-auto">
@@ -196,6 +196,7 @@ export function NodeTable({ rows, health, activeId, activeSince, dense, menu, re
               health={health.get(node.id)}
               active={node.id === activeId}
               activeSince={node.id === activeId ? activeSince : null}
+              connection={node.id === activeId ? connection : null}
               dense={dense}
               menu={menu}
               reorder={reorder}

@@ -4,16 +4,16 @@ import { Activity, CopyPlus, Pencil, Share2, Trash2, Unlink } from "lucide-react
 import type { ReactNode } from "react";
 import type { Node } from "../../api/client";
 import { queries } from "../../api/keys";
-import { Uptime } from "../../components/data/Uptime";
 import { Button } from "../../components/ui/Button";
 import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
 import { flagEmoji } from "../../lib/flag";
+import { connectedState } from "../../lib/nodeHealth";
 import { SERVERS, groupOf } from "./list";
 import { NodeConfigCard } from "./NodeConfigCard";
 import { NodeHealthCard } from "./NodeHealthCard";
 import { DISCONNECT_FIRST, NO_MENU_CALLBACKS, type NodeMenuCallbacks } from "./NodeRowActions";
 import { useNodesStatus } from "./nodesStatus";
-import { FailBadge, StaleBadge } from "./probe";
+import { ActiveLine, FailBadge, StaleBadge } from "./probe";
 import { ProfileRow } from "./ProfileRow";
 import { toSearch } from "./search";
 import { useNodeConnection, useNodeRemoval, useNodeTest } from "./useNodeActions";
@@ -94,7 +94,7 @@ export interface NodeDetailBodyProps {
  * actions. Reads every query from the cache; the Servers list (desktop) or the page (phone) keeps them fresh.
  */
 export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: NodeDetailBodyProps) {
-  const { status } = useNodesStatus();
+  const { status, statusError } = useNodesStatus();
   const nodes = useQuery(queries.nodes());
   const health = useQuery(queries.nodeHealth());
   const subs = useQuery(queries.subs());
@@ -132,9 +132,7 @@ export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: N
           <span className="font-mono text-t3">id {node.id}</span>
           <span>· {node.transport} · {node.security}</span>
         </div>
-        {active ? (
-          <p className="text-xs font-semibold text-ok">connected{since !== null ? <> · <Uptime since={since} running coarse /></> : null}</p>
-        ) : null}
+        {active ? <ActiveLine state={connectedState(status, statusError)} since={since} className="text-xs" /> : null}
       </header>
       <PrimaryActions node={node} active={active} />
       <NodeHealthCard node={node} health={nodeHealth} active={active} />

@@ -9,6 +9,8 @@ export interface NodesStatus {
   activeSince: number | null;
   lastFailoverAt: number | null;
   failoverEnabled: boolean;
+  /** xray-core runs (connectedState). */
+  running: boolean;
 }
 
 function pickNodesStatus(status: Status): NodesStatus {
@@ -17,6 +19,7 @@ function pickNodesStatus(status: Status): NodesStatus {
     activeSince: status.active_since,
     lastFailoverAt: status.last_failover_at,
     failoverEnabled: status.failover_enabled === true,
+    running: status.running,
   };
 }
 

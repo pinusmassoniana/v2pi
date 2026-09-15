@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NodeHealth, Status, TrafficFrame } from "../api/client";
 import { NODES, NODE_HEALTH, NOW_SEC, STATUS, TRAFFIC_FRAME } from "../test/fixtures";
 import {
-  SLOW_LATENCY_MS, activeFlag, activeNode, activeNodeLabel, activeRow, checkedAgo, everProbed, nodeLabel, probeAge, probeFor, standbyRows,
+  SLOW_LATENCY_MS, activeFlag, activeNode, activeNodeLabel, activeRow, checkedAgo, connectedState, everProbed, nodeLabel, probeAge, probeFor, standbyRows,
   timestampMs,
 } from "./nodeHealth";
 
@@ -26,6 +26,14 @@ describe("active node", () => {
     expect(activeNodeLabel(undefined, NODES)).toBe("No node");
     expect(nodeLabel(NODES, 2)).toBe("de-fra-01");
     expect(nodeLabel([], 2)).toBe("node #2");
+  });
+
+  it("connected: unknown while status fails or before it loads, not running with xray stopped, else connected", () => {
+    expect(connectedState(STATUS, false)).toBe("connected");
+    expect(connectedState(status({ running: false }), false)).toBe("not running");
+    expect(connectedState(STATUS, true)).toBe("unknown");
+    expect(connectedState(status({ running: false }), true)).toBe("unknown");
+    expect(connectedState(undefined, false)).toBe("unknown");
   });
 
   it("probeFor: the live probe only when it is about the active node", () => {

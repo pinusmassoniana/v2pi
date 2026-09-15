@@ -13,6 +13,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { EmptyState, Skeleton } from "../../components/ui/States";
 import { notifyError } from "../../components/ui/Toaster";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
+import { connectedState } from "../../lib/nodeHealth";
 import { BulkBar } from "./BulkBar";
 import { FailoverNote } from "./FailoverNote";
 import { GroupActions } from "./GroupActions";
@@ -181,7 +182,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
   else if (shown.length === 0) body = <EmptyState title={group === SERVERS ? "No servers here — add one with Add server." : "No servers here"} />;
   else {
     const common = {
-      rows, health: healthMap, activeId, activeSince, dense, menu: dialogs.menu, reorder,
+      rows, health: healthMap, activeId, activeSince, connection: connectedState(status, statusError), dense, menu: dialogs.menu, reorder,
       selection: desktop || selecting ? selection.controls : null,
     };
     body = desktop ? <NodeTable {...common} sort={sort} dir={dir} onSort={onSort} /> : <NodeCards {...common} />;

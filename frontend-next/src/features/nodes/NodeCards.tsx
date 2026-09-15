@@ -2,14 +2,13 @@ import { Link } from "@tanstack/react-router";
 import { memo, type ReactNode } from "react";
 import type { Node, NodeHealth } from "../../api/client";
 import { Ago } from "../../components/data/Ago";
-import { Uptime } from "../../components/data/Uptime";
 import { cn } from "../../lib/cn";
 import { flagEmoji } from "../../lib/flag";
-import { everProbed } from "../../lib/nodeHealth";
+import { everProbed, type ConnectedState } from "../../lib/nodeHealth";
 import { bestReading } from "./list";
 import type { NodeListProps } from "./NodeTable";
 import { NodeRowActions } from "./NodeRowActions";
-import { ActiveRealPill, FailBadge, ProbePill, StaleBadge } from "./probe";
+import { ActiveLine, ActiveRealPill, FailBadge, ProbePill, StaleBadge } from "./probe";
 import { detailLinkSearch } from "./search";
 
 interface CardProps {
@@ -17,6 +16,8 @@ interface CardProps {
   health: NodeHealth | undefined;
   active: boolean;
   activeSince: number | null;
+  /** The active card's connection; null on every other card. */
+  connection: ConnectedState | null;
   dense: boolean;
   /** Select mode: a checkbox instead of the buttons. Null outside it. */
   selected: boolean | null;
@@ -41,7 +42,7 @@ function readingLine(health: NodeHealth | undefined): ReactNode {
  * A card is a link to the node's page with its own buttons on top: the link covers the card, the content lets
  * taps through, and only the buttons take them back.
  */
-const NodeCard = memo(function NodeCard({ node, health, active, activeSince, dense, selected, onToggle }: CardProps) {
+const NodeCard = memo(function NodeCard({ node, health, active, activeSince, connection, dense, selected, onToggle }: CardProps) {
   const flag = flagEmoji(health?.egress_cc);
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
@@ -75,9 +76,7 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, den
             {node.stale ? <StaleBadge /> : null}
             {failCount > 0 ? <FailBadge count={failCount} /> : null}
           </p>
-          {active ? (
-            <p className="text-[11px] font-semibold text-ok">connected{activeSince !== null ? <> · <Uptime since={activeSince} running coarse /></> : null}</p>
-          ) : null}
+          {active && connection ? <ActiveLine state={connection} since={activeSince} className="text-[11px]" /> : null}
           <div className="mt-1.5 flex flex-wrap gap-1">
             <ProbePill label="TCP" ok={health?.last_tcp_ok} ms={health?.last_tcp_ms} />
             <ProbePill label="HTTP" ok={health?.last_http_ok} ms={health?.last_http_ms} />
@@ -92,7 +91,7 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, den
 });
 
 /** N5 on a phone: one card per node; in select mode a "select all shown" checkbox above them. */
-export function NodeCards({ rows, health, activeId, activeSince, dense, selection }: NodeListProps) {
+export function NodeCards({ rows, health, activeId, activeSince, connection, dense, selection }: NodeListProps) {
   return (
     <>
       {selection ? (
@@ -115,6 +114,7 @@ export function NodeCards({ rows, health, activeId, activeSince, dense, selectio
             health={health.get(node.id)}
             active={node.id === activeId}
             activeSince={node.id === activeId ? activeSince : null}
+            connection={node.id === activeId ? connection : null}
             dense={dense}
             selected={selection ? selection.selected.has(node.id) : null}
             onToggle={selection?.onToggle ?? noToggle}

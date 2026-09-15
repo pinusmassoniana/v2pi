@@ -2,10 +2,11 @@ import { useCallback } from "react";
 import type { NodeHealth } from "../../api/client";
 import { useTrafficSelect, type TrafficSnapshot } from "../../api/traffic";
 import type { Tone } from "../../components/data/types";
+import { Uptime } from "../../components/data/Uptime";
 import { Pill } from "../../components/ui/Pill";
 import { cn } from "../../lib/cn";
 import { flagEmoji } from "../../lib/flag";
-import { probeFor } from "../../lib/nodeHealth";
+import { probeFor, type ConnectedState } from "../../lib/nodeHealth";
 import { liveReading, pillTone, type PillState } from "./list";
 
 const TONE: Record<PillState, Tone> = { ok: "ok", slow: "warn", failed: "bad", unknown: "neutral" };
@@ -50,6 +51,21 @@ export function ActiveRealPill({ nodeId, health, label }: { nodeId: number; heal
   const live = useTrafficSelect(select);
   if (live === null) return <ProbePill ok={health?.last_real_ok} ms={health?.last_real_ms} label={label} />;
   return <ProbePill ok={live !== "failed"} ms={live === "failed" ? null : live} label={label} live />;
+}
+
+const ACTIVE_TONE: Record<ConnectedState, string> = { connected: "text-ok", "not running": "text-bad", unknown: "text-t2" };
+
+/**
+ * The active node's line: "connected · 3d 4h" while xray runs, else "active · not running" or "active · unknown"
+ * (the status poll fails) — with the uptime as "—", since nothing proves the connection is up.
+ */
+export function ActiveLine({ state, since, className }: { state: ConnectedState; since: number | null; className?: string }) {
+  return (
+    <p className={cn("font-semibold", ACTIVE_TONE[state], className)}>
+      {state === "connected" ? "connected" : `active · ${state}`}
+      {since !== null ? <> · <Uptime since={since} running={state === "connected"} coarse /></> : null}
+    </p>
+  );
 }
 
 /** N5 egress: the probed exit address with its country's flag, IPv6 underneath. */

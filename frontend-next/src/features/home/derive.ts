@@ -6,7 +6,7 @@ import type { TrafficSample } from "../../api/traffic";
 import type { EventLevel, PathLeg, Tone } from "../../components/data/types";
 import { agoLabel } from "../../lib/dashboard";
 import { formatUriHost } from "../../lib/format";
-import type { ActiveProbe } from "../../lib/nodeHealth";
+import { connectedState, type ActiveProbe } from "../../lib/nodeHealth";
 
 // The node-health rules Home shares with Nodes live in src/lib/nodeHealth.ts; Home's screens keep importing them from here.
 export {
@@ -50,8 +50,9 @@ export type TunnelLabel = Labelled<"ONLINE" | "UNKNOWN" | "OFFLINE">;
  * the active node (probeFor).
  */
 export function tunnelLabel(status: Status | undefined, statusError: boolean, probe: ActiveProbe): TunnelLabel {
-  if (statusError || !status) return { label: "UNKNOWN", tone: "neutral" };
-  if (status.active_node_id === null || status.running === false) return { label: "OFFLINE", tone: "bad" };
+  const connected = connectedState(status, statusError);
+  if (connected === "unknown" || !status) return { label: "UNKNOWN", tone: "neutral" };
+  if (status.active_node_id === null || connected === "not running") return { label: "OFFLINE", tone: "bad" };
   const matched = probe && probe.node_id === status.active_node_id ? probe : null;
   if (matched?.stale === false && matched.real_ok === false) return { label: "OFFLINE", tone: "bad" };
   if (matched?.stale === true || status.active_health_fresh === false) return { label: "UNKNOWN", tone: "neutral" };
