@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type Status } from "../../api/client";
-import { STATUS, mockApi } from "../../test/fixtures";
+import { STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { SECTIONS } from "../nav";
@@ -131,6 +131,20 @@ describe("shell", () => {
     expect(await screen.findByText(/Can't reach the panel — showing data from/)).toBeInTheDocument();
     expect(screen.getByText("Tunnel unknown")).toHaveClass("text-t2");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Overview");
+  });
+
+  it("a status poll that fails while a connection write holds the gateway's lock is not called unreachable; after it, it is", async () => {
+    const api$ = mockApi();
+    const { client } = renderApp("/");
+    await screen.findByText("Tunnel online");
+    const release = holdConnectionWrite(client);
+    api$.getStatus.mockRejectedValue(new ApiError(0, "request timed out"));
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await expect(screen.findByText(/Can't reach the panel/, {}, { timeout: 300 })).rejects.toThrow();
+    expect(screen.getByText("Tunnel online")).toBeInTheDocument();
+    await release();
+    expect(await screen.findByText(/Can't reach the panel — showing data from/)).toBeInTheDocument();
+    expect(screen.getByText("Tunnel unknown")).toBeInTheDocument();
   });
 
   it("log out sits in the topbar on desktop and in the System section on a phone", async () => {

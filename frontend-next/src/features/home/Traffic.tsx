@@ -178,7 +178,7 @@ export function Traffic() {
   const nowMs = serverNow();
   const activeId = status.data?.active_node_id ?? null;
   const history = network.data ? failoverHistory(network.data.events, status.data?.last_failover_at) : [];
-  const failovers = network.data?.status.failovers_24h ?? status.data?.failovers_24h ?? 0;
+  const failovers = status.data?.failovers_24h ?? 0;
   // "last …" under the count: the newest event the count itself counts (kind exactly "failover", as the backend's
   // failovers_24h does) — a manual switch is not a failover.
   const lastFailover = network.data

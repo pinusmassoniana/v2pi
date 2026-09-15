@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { api } from "./client";
 import clientSource from "./client.ts?raw";
 import {
-  CONNECTION_WRITE, INVALIDATES, PROFILE_BUSY, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
+  CONNECTION_WRITE, GATEWAY_REFUSED, INVALIDATES, NETWORK_WRITE, PROFILE_BUSY, RW_WRITE, invalidateRefused, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
   SETTINGS_WRITE, invalidate, isConnectionBusy, isProfileBusy, isSettingsBusy, isWriting, settingsWriteKey, useApiWrite, useConnectionBusy,
   useProfileBusy, useSettingsBusy, useWriting, type MutationName,
 } from "./invalidation";
@@ -48,6 +48,8 @@ describe("invalidation map", () => {
     // putRouting, putSettings and resetSettings each re-apply the live tunnel server-side on
     // their own (routes.py: reapply_active_node -> apply_node -> apply_net).
     expect(INVALIDATES.putRouting).toEqual([keys.routing, keys.status, keys.network]);
+    // A network apply moves the remote-access subnets too: routed_nets derive from the segment.
+    expect(INVALIDATES.putNetwork).toEqual([keys.network, keys.status, keys.rw]);
     expect(INVALIDATES.putSettings).toEqual([keys.settings, keys.status, keys.network]);
     expect(INVALIDATES.resetSettings).toEqual([keys.settings, keys.status, keys.network]);
     // Every profile write can re-apply the active node when it turns out to use the profile
@@ -134,6 +136,26 @@ describe("Tunnel mutation keys", () => {
     expect(isProfileBusy(client)).toBe(false);
     await waitFor(() => expect(result.current).toEqual({ connection: false, profile: false }));
     expect(PROFILE_BUSY).toBe("Another profile change is still running — try again when it finishes");
+  });
+});
+
+describe("Gateway writes", () => {
+  it("Apply to host and every remote-access write are connection writes", () => {
+    for (const key of [NETWORK_WRITE, RW_WRITE]) expect(key.slice(0, CONNECTION_WRITE.length)).toEqual([...CONNECTION_WRITE]);
+    expect(new Set([NETWORK_WRITE, RW_WRITE, SETTINGS_CONNECTION_WRITE, ROUTING_WRITE, PROFILE_CONNECTION_WRITE].map((key) => key.join("/"))).size).toBe(5);
+  });
+
+  it("a refused or unanswered Gateway write re-reads network, status and remote access, plus what it names", async () => {
+    const client = new QueryClient();
+    const spy = vi.spyOn(client, "invalidateQueries").mockResolvedValue();
+    expect(GATEWAY_REFUSED).toEqual([keys.network, keys.status, keys.rw]);
+    await invalidateRefused(client);
+    expect(spy.mock.calls.map(([filters]) => filters)).toEqual([{ queryKey: keys.network }, { queryKey: keys.status }, { queryKey: keys.rw }]);
+    spy.mockClear();
+    await invalidateRefused(client, keys.settings);
+    expect(spy.mock.calls.map(([filters]) => filters)).toEqual([
+      { queryKey: keys.network }, { queryKey: keys.status }, { queryKey: keys.rw }, { queryKey: keys.settings },
+    ]);
   });
 });
 

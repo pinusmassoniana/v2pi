@@ -76,10 +76,10 @@ describe("Traffic › KPIs", () => {
     expect(region("Active latency")).toHaveTextContent(/^Active latency—stale · 3m ago$/);
   });
 
-  it("H1: failovers fall back to the status count, and there is no uptime while offline", async () => {
+  it("H1: failovers are the status count, and there is no uptime while offline", async () => {
     const api$ = mockApi();
     api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null, tunnel_online: false, failovers_24h: 0 });
-    api$.getNetwork.mockResolvedValue({ ...NETWORK, events: [], status: { ...NETWORK.status, failovers_24h: undefined } });
+    api$.getNetwork.mockResolvedValue({ ...NETWORK, events: [] });
     renderApp("/traffic");
     const failovers = await screen.findByRole("region", { name: "Failovers · 24h" });
     await waitFor(() => expect(failovers).toHaveTextContent("0none recorded"));

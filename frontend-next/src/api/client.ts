@@ -137,10 +137,11 @@ export interface NetworkStatus {
   foreign_ra: boolean | null;   // another router advertising v6 on the segment (leak)
   ipv6_prefix_source: string | null;   // "static" | "ula" | "pd"
   enforcement_status?: "ok" | "unknown" | "error";
+  // Why host enforcement is not confirmed, when a network operation failed ("" otherwise).
+  enforcement_error: string;
   // The last apply SUCCEEDED except for a secondary part (LAN access). Render it as a
   // warning, never as a failure — a partially-applied network is still enforcing.
   enforcement_warning?: string;
-  failovers_24h?: number; failover_ready?: boolean; eligible_standby_count?: number;
 }
 export interface RouterRec { title: string; detail: string; }
 export interface ConnEvent { ts: number; kind: string; detail: string; }
@@ -172,15 +173,23 @@ export interface Rw {
   routed_nets: string[];         // effective list (derived from the net plan unless overridden)
   routed_nets_override: string;  // raw csv override, "" when deriving
   clients: RwClient[];
-  live: boolean;                 // the running xray config reflects these settings
+  // Whether remote access is being served right now: xray is not affirmatively stopped and the
+  // config it loaded carries the inbound (schemas.py RwOut.live). It does NOT mean these settings
+  // are the running ones — a save with no active node is stored and applied on the next connect.
+  live: boolean;
   // How a revocation (client suspended/deleted, feature switched off, key rotated) reached the
   // running xray. Never empty on a revocation — see backend RwOut for the full contract.
   revocation: RwRevocation;
+  // A committed narrowing has not been proven to reach the running xray yet: the revoked
+  // credential may still be accepted. A security warning; it survives reloads and restarts.
+  revocation_pending: boolean;
 }
-export interface RwPatch {
-  enabled?: boolean; port?: number; dest?: string; server_names?: string; short_ids?: string;
-  public_key?: string; endpoint?: string; private_key?: string;
-  hosts?: Record<string, string>; routed_nets?: string;
+// PUT /rw is a FULL replace: every field it omits resets to its default, so every field is sent.
+// private_key "" keeps the stored key (the browser never receives it).
+export interface RwIn {
+  enabled: boolean; port: number; dest: string; server_names: string; short_ids: string;
+  public_key: string; endpoint: string; private_key: string;
+  hosts: Record<string, string>; routed_nets: string;
 }
 export interface RwClientConfig { filename: string; config: string; }
 
@@ -221,6 +230,14 @@ export class ApiError extends Error {
   constructor(public status: number, msg: string, public detail: unknown = msg) { super(msg); }
 }
 
+/**
+ * No HTTP response arrived — the request timed out or the network failed. A write may still have committed on the
+ * gateway (it keeps working under its lock), so it is neither a success nor a refusal: re-read and see.
+ */
+export function isNoAnswer(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 0;
+}
+
 // Shared fallback-message extractor — was pasted across eight call sites; every screen now
 // imports this instead of redefining it.
 export function errText(err: unknown, fallback: string): string {
@@ -240,6 +257,8 @@ const REQUEST_TIMEOUT_MS = 20000;
 const PROBE_SWEEP_TIMEOUT_MS = 210000;
 /** A write that re-applies the live tunnel under the store lock: rebuild, `xray -test` (15 s), reload and net apply. */
 export const REAPPLY_TIMEOUT_MS = 60_000;
+/** PUT /network re-provisions the host under the store lock: host commands, dnsmasq and xray checks, maybe a second pass. */
+export const NETWORK_APPLY_TIMEOUT_MS = 180_000;
 
 function reappliesTunnel(patch: Partial<Settings>): boolean {
   return SETTINGS_REAPPLY_KEYS.some((key) => key in patch);
@@ -387,15 +406,15 @@ export const api = {
   detachNodes(ids: number[]) { return mutate("POST", "/nodes/detach", { ids }); },
   validateNode(n: NodeValidateIn): Promise<{ ok: boolean; error: string }> { return peek("/nodes/validate", n); },
 
-  getNetwork(): Promise<Network> { return req("/network"); },
-  putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch); },
+  getNetwork(signal?: AbortSignal): Promise<Network> { return req("/network", { signal }); },
+  putNetwork(patch: NetworkPatch): Promise<Network> { return mutate("PUT", "/network", patch, NETWORK_APPLY_TIMEOUT_MS); },
 
   getRw(): Promise<Rw> { return req("/rw"); },
-  putRw(patch: RwPatch): Promise<Rw> { return mutate("PUT", "/rw", patch); },
-  addRwClient(email: string): Promise<Rw> { return mutate("POST", "/rw/clients", { email }); },
-  setRwClientEnabled(id: string, enabled: boolean): Promise<Rw> { return mutate("PATCH", `/rw/clients/${encodeURIComponent(id)}`, { enabled }); },
+  putRw(body: RwIn): Promise<Rw> { return mutate("PUT", "/rw", body, REAPPLY_TIMEOUT_MS); },
+  addRwClient(email: string): Promise<Rw> { return mutate("POST", "/rw/clients", { email }, REAPPLY_TIMEOUT_MS); },
+  setRwClientEnabled(id: string, enabled: boolean): Promise<Rw> { return mutate("PATCH", `/rw/clients/${encodeURIComponent(id)}`, { enabled }, REAPPLY_TIMEOUT_MS); },
   newRwShortId(): Promise<{ short_id: string }> { return peek("/rw/short-id"); },
-  deleteRwClient(id: string): Promise<Rw> { return mutate("DELETE", `/rw/clients/${encodeURIComponent(id)}`); },
+  deleteRwClient(id: string): Promise<Rw> { return mutate("DELETE", `/rw/clients/${encodeURIComponent(id)}`, undefined, REAPPLY_TIMEOUT_MS); },
   rwClientLink(id: string): Promise<{ link: string }> { return req(`/rw/clients/${encodeURIComponent(id)}/link`); },
   rwClientConfig(id: string): Promise<RwClientConfig> { return req(`/rw/clients/${encodeURIComponent(id)}/config`); },
 

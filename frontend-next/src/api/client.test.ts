@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { api, ApiError, setOnUnauthorized, TRAFFIC_CAPABILITY_EVENT } from "./client";
+import { api, ApiError, isNoAnswer, setOnUnauthorized, TRAFFIC_CAPABILITY_EVENT, type RwIn } from "./client";
 
 function mockFetch() {
   const calls: any[] = [];
@@ -269,12 +269,17 @@ describe("api client", () => {
     expect(rw.routed_nets).toEqual(["192.168.1.0/24", "192.168.10.0/24"]);
     expect(rw.hosts["nas.v2pi"]).toBe("192.168.1.88");
 
-    const saved = await api.putRw({ enabled: true, private_key: "PRIV", port: 443 });
+    // PUT /rw replaces everything, so the body is always the whole form
+    const body: RwIn = {
+      enabled: true, port: 443, dest: "", server_names: "", short_ids: "ab12cd34", public_key: "PUB", endpoint: "home.example.org",
+      private_key: "PRIV", hosts: {}, routed_nets: "",
+    };
+    const saved = await api.putRw(body);
     expect(saved.enabled).toBe(true);
     expect(saved.has_private_key).toBe(true);
     const put = calls.find((c) => c.url.endsWith("/api/rw") && c.opts.method === "PUT");
     expect(put.opts.headers["X-CSRF-Token"]).toBe("tok-123");
-    expect(JSON.parse(put.opts.body)).toEqual({ enabled: true, private_key: "PRIV", port: 443 });
+    expect(JSON.parse(put.opts.body)).toEqual(body);
   });
 
   it("road-warrior clients: add, delete, link and .conf all hit the right endpoints", async () => {
@@ -427,6 +432,46 @@ describe("api client", () => {
       expect(await abortsAfter(() => api.putSettings(patch))).toBe(60_000);
     }
     expect(await abortsAfter(() => api.resetSettings())).toBe(60_000);
+  });
+
+  it("gives Apply to host 180 s and every remote-access write 60 s; the remote-access reads keep the 20 s default", async () => {
+    const body: RwIn = {
+      enabled: false, port: 443, dest: "", server_names: "", short_ids: "", public_key: "", endpoint: "", private_key: "", hosts: {}, routed_nets: "",
+    };
+    expect(await abortsAfter(() => api.putNetwork({ dhcp_end: "192.168.10.250" }))).toBe(180_000);
+    expect(await abortsAfter(() => api.putRw(body))).toBe(60_000);
+    expect(await abortsAfter(() => api.addRwClient("iphone"))).toBe(60_000);
+    expect(await abortsAfter(() => api.setRwClientEnabled("cid", false))).toBe(60_000);
+    expect(await abortsAfter(() => api.deleteRwClient("cid"))).toBe(60_000);
+    expect(await abortsAfter(() => api.getNetwork())).toBe(20_000);
+    expect(await abortsAfter(() => api.getRw())).toBe(20_000);
+    expect(await abortsAfter(() => api.newRwShortId())).toBe(20_000);
+    expect(await abortsAfter(() => api.rwClientLink("cid"))).toBe(20_000);
+    expect(await abortsAfter(() => api.rwClientConfig("cid"))).toBe(20_000);
+  });
+
+  it("getNetwork aborts when its caller's signal does", async () => {
+    let seen: AbortSignal | undefined;
+    (globalThis as any).fetch = vi.fn((_url: string, opts: any) => new Promise((_resolve, reject) => {
+      seen = opts.signal;
+      opts.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    const controller = new AbortController();
+    const pending = api.getNetwork(controller.signal).catch((e) => e);
+    controller.abort();
+    const err = await pending;
+    expect(seen?.aborted).toBe(true);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe("network error");
+  });
+
+  it("isNoAnswer: a timeout or a network failure, where a write may still have committed — never an HTTP answer", () => {
+    expect(isNoAnswer(new ApiError(0, "request timed out"))).toBe(true);
+    expect(isNoAnswer(new ApiError(0, "network error"))).toBe(true);
+    expect(isNoAnswer(new ApiError(502, "apply failed"))).toBe(false);
+    expect(isNoAnswer(new ApiError(422, "segment_iface: must not be blank"))).toBe(false);
+    expect(isNoAnswer(new Error("request timed out"))).toBe(false);
+    expect(isNoAnswer(null)).toBe(false);
   });
 
   it("fires the registered onUnauthorized callback on a mid-session 401 outside /login (F13-6)", async () => {

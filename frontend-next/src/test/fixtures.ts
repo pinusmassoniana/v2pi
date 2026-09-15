@@ -95,7 +95,7 @@ export const NETWORK: Network = {
     ],
     tunnel: { real_ok: true, latency_ms: 42, egress_ip: "185.107.56.21", checked_at: iso(NOW_SEC - 5) },
     wan_blocked: false, ipv6_prefix: null, foreign_ra: false, ipv6_prefix_source: "static",
-    enforcement_status: "ok", failovers_24h: 2, failover_ready: true, eligible_standby_count: 3,
+    enforcement_status: "ok", enforcement_error: "",
   },
   recommendations: [{ title: "Hand out the gateway as the router", detail: "Set DHCP option 3 to 10.0.2.1." }],
   // Oldest first, as the backend appends them.

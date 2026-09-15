@@ -42,7 +42,8 @@ export const queries = {
   profilePresets: () => queryOptions({ queryKey: keys.profilePresets, queryFn: () => api.listProfilePresets() }),
   routing: () => queryOptions({ queryKey: keys.routing, queryFn: () => api.getRouting() }),
   routingPresets: () => queryOptions({ queryKey: keys.routingPresets, queryFn: () => api.listRoutingPresets() }),
-  network: () => queryOptions({ queryKey: keys.network, queryFn: () => api.getNetwork() }),
+  // The signal aborts a GET that a write's invalidation cancelled, so it can never land over the write's reply.
+  network: () => queryOptions({ queryKey: keys.network, queryFn: ({ signal }) => api.getNetwork(signal) }),
   rw: () => queryOptions({ queryKey: keys.rw, queryFn: () => api.getRw() }),
   settings: () => queryOptions({ queryKey: keys.settings, queryFn: () => api.getSettings() }),
   tokens: () => queryOptions({ queryKey: keys.tokens, queryFn: () => api.listTokens() }),

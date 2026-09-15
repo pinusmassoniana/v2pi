@@ -9,7 +9,7 @@ function sample(over: Partial<Network["status"]> = {}): Network {
     kill_switch_enabled: false, lan_access_enabled: true, ipv6_enabled: false,
     status: { segment_up: null, uplink: null, uplink6: null, dhcp_clients: 0, clients: [],
               tunnel: { real_ok: null, latency_ms: null, egress_ip: null, checked_at: null },
-              wan_blocked: false, ipv6_prefix: null, foreign_ra: null,
+              wan_blocked: false, enforcement_error: "", ipv6_prefix: null, foreign_ra: null,
               ipv6_prefix_source: null, ...over },
     recommendations: [],
     events: [],

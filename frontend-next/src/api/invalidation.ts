@@ -41,7 +41,8 @@ export const INVALIDATES = {
   addProfile: PROFILE, updateProfile: PROFILE, deleteProfile: PROFILE,
   setDefaultProfile: PROFILE, applyProfileActive: PROFILE,
   putRouting: [keys.routing, keys.status, keys.network],
-  putNetwork: [keys.network, keys.status],
+  // routed_nets on the remote-access read derive from the segment (routes.py _rw_default_nets).
+  putNetwork: [keys.network, keys.status, keys.rw],
   putRw: RW, addRwClient: RW, setRwClientEnabled: RW, deleteRwClient: RW,
   putSettings: [keys.settings, keys.status, keys.network],
   resetSettings: [keys.settings, keys.status, keys.network],
@@ -131,6 +132,24 @@ export function useWriting(...keys: readonly QueryKey[]): boolean {
  */
 export function isWriting(client: QueryClient, ...keys: readonly QueryKey[]): boolean {
   return client.isMutating({ predicate: writingAny(keys) }) > 0;
+}
+
+/** Apply to host (PUT /network): it re-provisions the host and re-syncs the net rules, so it is a connection write. */
+export const NETWORK_WRITE = [...CONNECTION_WRITE, "network"] as const;
+
+/** Every remote-access write: each re-applies, reloads or stops xray, so each is a connection write. */
+export const RW_WRITE = [...CONNECTION_WRITE, "rw"] as const;
+
+/**
+ * What a Gateway write that was refused (502) or never answered can have moved: a failed re-apply rolls the store back
+ * but may reload the previous config, stop xray or assert the guard. useApiWrite invalidates only on success, so these
+ * are invalidated explicitly.
+ */
+export const GATEWAY_REFUSED = [keys.network, keys.status, keys.rw] as const;
+
+/** Re-read GATEWAY_REFUSED, plus any `extra` keys (the settings a gateway DNS flip wrote). */
+export function invalidateRefused(client: QueryClient, ...extra: readonly QueryKey[]): Promise<unknown> {
+  return Promise.all([...GATEWAY_REFUSED, ...extra].map((queryKey) => client.invalidateQueries({ queryKey })));
 }
 
 /** A connection write (CONNECTION_WRITE) is running. */
