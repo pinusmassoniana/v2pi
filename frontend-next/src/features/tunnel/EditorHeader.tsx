@@ -24,7 +24,7 @@ export function EditorHeader({ editing, profile, dirty, onNew, onBack }: EditorH
           <ChevronLeft size={18} aria-hidden />
         </Button>
       ) : null}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-52">
         <h2 className="text-[15px] font-bold text-t1">{existing ? `Editing profile · id ${editing}` : "New profile"}</h2>
         {existing && profile ? (
           <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-t3">

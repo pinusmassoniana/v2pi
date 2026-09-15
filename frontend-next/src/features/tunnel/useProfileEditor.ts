@@ -25,6 +25,8 @@ export interface ProfileEditorState {
   reset: (open: boolean) => void;
   /** Phone: back to the list, asking first when the editor is dirty. */
   close: () => Promise<void>;
+  /** T4: put merged values in the editor, still saving to the same profile and still compared with what it loaded. */
+  stage: (values: ProfileFormValues) => void;
 }
 
 /**
@@ -59,5 +61,10 @@ export function useProfileEditor(): ProfileEditorState {
     if (await confirmDiscard()) load(blankProfileForm(), null);
   }, [confirmDiscard, load]);
 
-  return { form, editing, dirty, generation, confirmDiscard, edit, clone, reset, close };
+  const stage = useCallback((values: ProfileFormValues) => {
+    resetForm(values, { keepDefaultValues: true });
+    setGeneration((value) => value + 1);
+  }, [resetForm]);
+
+  return { form, editing, dirty, generation, confirmDiscard, edit, clone, reset, close, stage };
 }

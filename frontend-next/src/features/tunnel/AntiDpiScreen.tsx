@@ -12,6 +12,7 @@ import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { EditorHeader } from "./EditorHeader";
 import { ProfileCards } from "./ProfileCards";
+import { ProfileEditor } from "./ProfileEditor";
 import { HEADER_HINT } from "./profileForm";
 import { NO_ACTIVE_NODE_HINT } from "./ProfileRowActions";
 import { ProfilesTable } from "./ProfilesTable";
@@ -77,7 +78,10 @@ export function AntiDpi() {
         </section>
       ) : null}
       {showEditor ? (
-        <GlassCard aria-label="Profile editor" className="flex min-w-0 flex-col gap-3 min-[1180px]:sticky min-[1180px]:top-5">
+        <GlassCard
+          aria-label="Profile editor"
+          className="flex min-w-0 flex-col gap-3 min-[1180px]:sticky min-[1180px]:top-5 min-[1180px]:max-h-[calc(100dvh-6.5rem)] min-[1180px]:overflow-y-auto min-[1180px]:bg-solid min-[1180px]:pb-0"
+        >
           <EditorHeader
             editing={editing}
             profile={list?.find((profile) => profile.id === editingId)}
@@ -85,6 +89,7 @@ export function AntiDpi() {
             onNew={() => editor.reset(true)}
             onBack={desktop ? undefined : () => void editor.close()}
           />
+          <ProfileEditor key={editor.generation} editor={editor} desktop={desktop} />
         </GlassCard>
       ) : null}
     </div>
