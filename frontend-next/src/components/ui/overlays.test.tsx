@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,24 @@ import { Sheet, SheetContent } from "./Sheet";
 import { notifyError, notifyOk } from "./Toaster";
 
 afterEach(() => act(() => settleConfirm(false)));
+
+// Declared at module scope: a button that opens a dialog by state, as the screens do — no Radix trigger.
+function OpensDialog({ initialFocus }: { initialFocus?: "field" | "overlay" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>Open</button>
+      {open ? (
+        <Dialog open onOpenChange={setOpen}>
+          <DialogContent title="Rename" initialFocus={initialFocus}>
+            <button type="button">Help</button>
+            <input aria-label="New name" />
+          </DialogContent>
+        </Dialog>
+      ) : null}
+    </>
+  );
+}
 
 describe("confirm", () => {
   it("resolves true on its confirm button and false on Cancel", async () => {
@@ -127,6 +146,41 @@ describe("Dialog and Sheet", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByText("copy"), { key: "Escape" });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("a dialog opened by state focuses its first field, not the ×, and gives focus back to its opener on close", async () => {
+    render(<OpensDialog />);
+    const opener = screen.getByRole("button", { name: "Open" });
+    await userEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "Rename" });
+    await waitFor(() => expect(within(dialog).getByLabelText("New name")).toHaveFocus());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("a dialog to read focuses itself; the × stays reachable by keyboard", async () => {
+    render(<OpensDialog initialFocus="overlay" />);
+    await userEvent.click(screen.getByRole("button", { name: "Open" }));
+    const dialog = await screen.findByRole("dialog", { name: "Rename" });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    await userEvent.tab();
+    expect(within(dialog).getByRole("button", { name: "Close" })).toHaveFocus();
+  });
+
+  it("a sheet focuses its first field; with none, the sheet itself", async () => {
+    const view = render(<Sheet open><SheetContent title="Import"><button type="button">Paste</button><textarea aria-label="Nodes" /></SheetContent></Sheet>);
+    await waitFor(() => expect(screen.getByLabelText("Nodes")).toHaveFocus());
+    view.unmount();
+    render(<Sheet open><SheetContent title="Node 12"><button type="button">Connect</button></SheetContent></Sheet>);
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Node 12" })).toHaveFocus());
+  });
+
+  it("a confirmation focuses its question, not Cancel", async () => {
+    render(<ConfirmDialog />);
+    act(() => void confirm("Delete node “nl-ams-03”?"));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    await waitFor(() => expect(dialog).toHaveFocus());
   });
 
   it("a sheet is a dialog too", () => {

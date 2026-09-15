@@ -1,32 +1,31 @@
 import { Dialog as Primitive } from "radix-ui";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
-import { CloseButton, Dialog, OverlayPortal, useEscapeWithin } from "./Dialog";
+import { CloseButton, Dialog, OverlayPortal, useEscapeWithin, useOverlayFocus, type InitialFocus } from "./Dialog";
 
 /** A sheet root; `dirty` guards closing exactly as on Dialog. */
 export const Sheet = Dialog;
 
 /**
  * Bottom sheet on a phone; a right-hand panel over the page from 768 px (node detail, forms). Opened by
- * navigating to a route rather than clicking a `Dialog.Trigger`, so Radix has no trigger to return focus to on
- * close (its default `onCloseAutoFocus` would otherwise send it nowhere) — restore it ourselves, to whatever
- * held focus the moment this mounted (typically the row or card link that opened it, which the list underneath
- * keeps mounted for exactly this).
+ * navigating to a route or by state rather than a `Dialog.Trigger`, so focus is placed and given back by
+ * useOverlayFocus: the first field on open, and on close whatever held focus the moment this mounted (typically
+ * the row or card link that opened it, which the list underneath keeps mounted for exactly this).
  */
-export function SheetContent({ title, className, children }: { title: string; className?: string; children: ReactNode }) {
-  const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+export function SheetContent({ title, initialFocus, className, children }: {
+  title: string;
+  initialFocus?: InitialFocus;
+  className?: string;
+  children: ReactNode;
+}) {
   const escape = useEscapeWithin();
+  const focus = useOverlayFocus(initialFocus);
   return (
     <OverlayPortal className="bg-[rgba(4,3,10,.5)]">
       <Primitive.Content
         {...escape}
+        {...focus}
         aria-describedby={undefined}
-        onCloseAutoFocus={(event) => {
-          if (opener?.isConnected) {
-            event.preventDefault();
-            opener.focus();
-          }
-        }}
         className={cn(
           "glass fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto rounded-b-none p-5 " +
             "md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:w-[min(32rem,100vw)] md:rounded-r-none",

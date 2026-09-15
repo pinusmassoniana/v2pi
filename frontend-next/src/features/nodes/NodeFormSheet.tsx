@@ -19,6 +19,7 @@ import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, MAX_FIELD, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
   isIdentityConflict, nodeFormSchema, nodeToForm, validateMessage, type NodeFormValues,
 } from "./nodeForm";
+import { useNodesStatus } from "./nodesStatus";
 import { useNodeConnection } from "./useNodeActions";
 
 export type NodeFormMode = "add" | "clone" | "edit";
@@ -39,13 +40,24 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-/** N13: the edit refused because the node is active — say so, and offer the Disconnect that unblocks it. */
+/** Said in place of the active-node banner once the node is no longer the active one. */
+export const DISCONNECTED_SAVE_AGAIN = "Disconnected — Save again";
+
+/**
+ * N13: the edit refused because the node is active — say so, and offer the Disconnect that unblocks it. Whether the
+ * node is still active comes from the status cache, so once a disconnect (here or anywhere) lands, the banner stops
+ * offering Disconnect and says to save again.
+ */
 function ActiveBanner({ node }: { node: Node }) {
+  const { status } = useNodesStatus();
   const connection = useNodeConnection(node, true);
+  const active = status?.activeId === node.id;
   return (
     <div role="alert" className="flex flex-wrap items-center gap-2.5 rounded-xl border border-warn/40 bg-warn/10 p-3 text-sm text-t1">
-      <p className="min-w-0 flex-1">{ACTIVE_NODE_MESSAGE}</p>
-      <Button size="sm" variant="danger" disabled={connection.disabled} title={connection.reason ?? undefined} onClick={connection.toggle}>{connection.label}</Button>
+      <p className="min-w-0 flex-1">{active ? ACTIVE_NODE_MESSAGE : DISCONNECTED_SAVE_AGAIN}</p>
+      {active ? (
+        <Button size="sm" variant="danger" disabled={connection.disabled} title={connection.reason ?? undefined} onClick={connection.toggle}>{connection.label}</Button>
+      ) : null}
     </div>
   );
 }
@@ -73,18 +85,14 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   const addWrite = useApiWrite("addNode");
   const updateWrite = useApiWrite("updateNode");
 
+  // What a save did is said even when this form has gone meanwhile; what it does to the form — closing it, showing
+  // the Servers group, a conflict banner — is passed to mutate below, which runs only for this form's latest save
+  // while the form is still open, so a stale save can never close or mark a form opened after it.
   const save = useMutation({
     mutationFn: (values: NodeFormValues) => (edit ? updateWrite(node.id, formToNodeUpdate(values)) : addWrite(formToNodeIn(values))),
-    onSuccess: (saved) => {
-      notifyOk(edit ? `Saved ${saved.name}` : `Added ${saved.name}`);
-      onClose();
-      // N12: a new server is manual — show it in Servers. The form is closing, so nothing unsaved is left behind.
-      if (!edit) void navigate({ to: "/nodes", search: { group: SERVERS }, ignoreBlocker: true });
-    },
+    onSuccess: (saved) => notifyOk(edit ? `Saved ${saved.name}` : `Added ${saved.name}`),
     onError: (error) => {
-      // Add has one 409 (the identity); edit has two, told apart by the server's detail.
-      if (error instanceof ApiError && error.status === 409) setConflict(edit && !isIdentityConflict(error) ? "active" : "identity");
-      else notifyError(error, edit ? "save failed" : "add failed");
+      if (!(error instanceof ApiError && error.status === 409)) notifyError(error, edit ? "save failed" : "add failed");
     },
   });
 
@@ -110,7 +118,17 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   const title = edit ? `Edit node · ${node.name}` : "Add server";
   const submit = handleSubmit((values) => {
     setConflict(null);
-    save.mutate(values);
+    save.mutate(values, {
+      onSuccess: () => {
+        onClose();
+        // N12: a new server is manual — show it in Servers. The form is closing, so nothing unsaved is left behind.
+        if (!edit) void navigate({ to: "/nodes", search: { group: SERVERS }, ignoreBlocker: true });
+      },
+      onError: (error) => {
+        // Add has one 409 (the identity); edit has two, told apart by the server's detail.
+        if (error instanceof ApiError && error.status === 409) setConflict(edit && !isIdentityConflict(error) ? "active" : "identity");
+      },
+    });
   });
 
   return (

@@ -1,7 +1,9 @@
 import { Activity, Ellipsis } from "lucide-react";
 import type { Node } from "../../api/client";
 import { Button } from "../../components/ui/Button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../../components/ui/DropdownMenu";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, useAfterMenu,
+} from "../../components/ui/DropdownMenu";
 import { cn } from "../../lib/cn";
 import { useNodeConnection, useNodeRemoval, useNodeTest } from "./useNodeActions";
 
@@ -15,11 +17,6 @@ export interface NodeMenuCallbacks {
 export const NO_MENU_CALLBACKS: NodeMenuCallbacks = {};
 
 export const DISCONNECT_FIRST = "Disconnect first";
-
-/** Let the menu close and hand focus back before an item opens a dialog of its own. */
-function afterMenu(action: () => void): void {
-  window.setTimeout(action, 0);
-}
 
 export interface NodeRowActionsProps {
   node: Node;
@@ -35,6 +32,8 @@ export function NodeRowActions({ node, active, menu = NO_MENU_CALLBACKS, withMen
   const connection = useNodeConnection(node, active);
   const test = useNodeTest(node);
   const removal = useNodeRemoval();
+  // Let the menu close and hand focus back before an item opens a dialog of its own.
+  const { after: afterMenu, onCloseAutoFocus } = useAfterMenu();
   const manual = node.subscription_id === null;
   const { onEdit, onClone, onExport } = menu;
 
@@ -67,7 +66,7 @@ export function NodeRowActions({ node, active, menu = NO_MENU_CALLBACKS, withMen
               <Ellipsis size={16} aria-hidden />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent>
+          <DropdownMenuContent onCloseAutoFocus={onCloseAutoFocus}>
             {onEdit ? (
               <DropdownMenuItem disabled={active} hint={active ? DISCONNECT_FIRST : undefined} onSelect={() => afterMenu(() => onEdit(node))}>
                 Edit

@@ -61,14 +61,11 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
   const previewStale = preview.target !== null && targetKey(preview.target) !== liveKey;
   const dryRunStale = dryRun.target !== null && targetKey(dryRun.target) !== liveKey;
 
+  // Said even if the form has gone; closing it or showing the reason in it is passed to mutate below, which runs
+  // only for this form's latest save while it is still open — a stale save never closes a form opened after it.
   const save = useMutation({
     mutationFn: (values: SubFormValues) => (edit ? updateWrite(sub.id, formToSubIn(values, true)) : addWrite(formToSubIn(values, false))),
-    onSuccess: (saved) => {
-      notifyOk(edit ? `Saved ${saved.name}` : `Added ${saved.name}`);
-      onClose();
-    },
-    // 422 "url: …" (a bad scheme or a private address): the form stays as typed, with the reason in it.
-    onError: (error) => setSaveError(errText(error, edit ? "save failed" : "add failed")),
+    onSuccess: (saved) => notifyOk(edit ? `Saved ${saved.name}` : `Added ${saved.name}`),
   });
 
   /** The URL and injection as typed now, once the URL is there. */
@@ -105,7 +102,11 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
   const { errors } = formState;
   const submit = handleSubmit((values) => {
     setSaveError(null);
-    save.mutate(values);
+    save.mutate(values, {
+      onSuccess: () => onClose(),
+      // 422 "url: …" (a bad scheme or a private address): the form stays as typed, with the reason in it.
+      onError: (error) => setSaveError(errText(error, edit ? "save failed" : "add failed")),
+    });
   });
 
   return (

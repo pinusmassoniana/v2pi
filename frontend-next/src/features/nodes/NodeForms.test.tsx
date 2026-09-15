@@ -213,16 +213,57 @@ describe("Edit node (N13, T6)", () => {
     expect(router.state.location.search).toEqual({});
   });
 
-  it("a 409 explains the active node and offers Disconnect in the form", async () => {
-    const { api$ } = await openList("/nodes");
-    api$.updateNode.mockRejectedValue(new ApiError(409, "disconnect the active node before editing it"));
+  it("a 409 explains the active node and offers Disconnect in the form; once disconnected it says to save again", async () => {
+    // The node became active after its Edit was opened (the menu disables Edit on the active node).
+    const { api$, client } = await openList("/nodes");
     await fromMenu("de-fra-01", "Edit");
     const sheet = await screen.findByRole("dialog", { name: "Edit node · de-fra-01" });
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: 2 });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    api$.updateNode.mockRejectedValue(new ApiError(409, "disconnect the active node before editing it"));
     await userEvent.click(within(sheet).getByRole("button", { name: "Save" }));
     const banner = await within(sheet).findByRole("alert");
     expect(banner).toHaveTextContent("That node is active. Disconnect → Edit → Connect, then try again.");
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null, active_since: null });   // what the gateway says after it
     await userEvent.click(within(banner).getByRole("button", { name: "Disconnect" }));
     expect(api$.disconnect).toHaveBeenCalledWith(2);
+    await waitFor(() => expect(banner).toHaveTextContent("Disconnected — Save again"));
+    expect(within(banner).queryByRole("button", { name: /Disconnect/ })).toBeNull();
+    api$.updateNode.mockImplementation(async (id, patch) => ({ ...ALL_NODES[1]!, ...patch, id }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit node/ })).toBeNull());
+  });
+
+  it("a save that lands after its form was closed never closes the form opened after it", async () => {
+    const { api$ } = await openList("/nodes");
+    const success = vi.spyOn(toast, "success");
+    let finish: () => void = () => {};
+    api$.updateNode.mockImplementationOnce((id, patch) => new Promise((resolve) => { finish = () => resolve({ ...ALL_NODES[1]!, ...patch, id }); }));
+    await fromMenu("de-fra-01", "Edit");
+    const first = await screen.findByRole("dialog", { name: "Edit node · de-fra-01" });
+    await userEvent.click(within(first).getByRole("button", { name: "Save" }));
+    await userEvent.click(within(first).getByRole("button", { name: "Cancel" }));   // clean: closes at once, the save still out
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit node · de-fra-01" })).toBeNull());
+
+    await fromMenu("fi-hel-02", "Edit");
+    const second = await screen.findByRole("dialog", { name: "Edit node · fi-hel-02" });
+    await userEvent.type(within(second).getByLabelText("Note"), "draft");
+    await act(async () => finish());
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Saved de-fra-01", { duration: 8000 }));   // the write did happen
+    expect(screen.getByRole("dialog", { name: "Edit node · fi-hel-02" })).toBeInTheDocument();
+    expect(within(second).getByLabelText("Note")).toHaveValue("draft");
+    expect(within(second).queryByRole("alert")).toBeNull();
+  });
+
+  it("a form opens on its first field, and closing it gives focus back to what opened it", async () => {
+    await openList("/nodes?group=servers");
+    const add = screen.getByRole("button", { name: "Add server" });
+    await userEvent.click(add);
+    const sheet = await screen.findByRole("dialog", { name: "Add server" });
+    await waitFor(() => expect(within(sheet).getByLabelText("Name")).toHaveFocus());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add server" })).toBeNull());
+    await waitFor(() => expect(add).toHaveFocus());
   });
 
   it("an edit that clashes with another node's identity says so, without the active-node banner or Disconnect", async () => {
@@ -307,6 +348,18 @@ describe("Export (N16)", () => {
     expect(writeText).toHaveBeenCalledWith(vlessUri(ALL_NODES[0]!));
     await waitFor(() => expect(success).toHaveBeenCalledWith("copied", { duration: 8000 }));
     expect(within(within(dialog).getByRole("button", { name: "Copy link" })).getByText("Copied")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("opens focused on itself, not its ×, and gives focus back to the row's menu button on close", async () => {
+    await openList("/nodes");
+    await fromMenu("de-fra-01", "Export");
+    const dialog = await screen.findByRole("dialog", { name: /Export .*de-fra-01/ });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    await userEvent.tab();
+    expect(within(dialog).getByRole("button", { name: "Close" })).toHaveFocus();   // still the first stop by keyboard
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Export/ })).toBeNull());
+    await waitFor(() => expect(within(row("de-fra-01")).getByRole("button", { name: "More actions for de-fra-01" })).toHaveFocus());
   });
 
   it("a copy the browser refuses says so", async () => {

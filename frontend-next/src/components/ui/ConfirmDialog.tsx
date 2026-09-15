@@ -11,6 +11,12 @@ export function ConfirmDialog() {
       <OverlayPortal className="z-[60]">
         <Primitive.Content
           aria-describedby={undefined}
+          // The question first, not its Cancel button: focus the dialog, so it is read before anything is pressed.
+          onOpenAutoFocus={(event) => {
+            if (!(event.currentTarget instanceof HTMLElement)) return;
+            event.preventDefault();
+            event.currentTarget.focus();
+          }}
           className="glass fixed left-1/2 top-1/2 z-[60] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 p-5"
         >
           <Primitive.Title className="text-base font-bold text-t1">Confirm</Primitive.Title>

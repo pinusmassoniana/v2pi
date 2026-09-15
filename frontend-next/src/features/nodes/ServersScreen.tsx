@@ -9,12 +9,12 @@ import { keys, queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { cardFallback, staleNotice } from "../../components/data/CardState";
 import { Button } from "../../components/ui/Button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../components/ui/DropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, useAfterMenu } from "../../components/ui/DropdownMenu";
 import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
 import { notifyError } from "../../components/ui/Toaster";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { connectedState } from "../../lib/nodeHealth";
-import { BulkBar } from "./BulkBar";
+import { BulkBar, SelectionAnnouncer } from "./BulkBar";
 import { FailoverNote } from "./FailoverNote";
 import { GroupActions } from "./GroupActions";
 import {
@@ -69,6 +69,8 @@ function useReorder() {
     onError: (error, _ids, context) => {
       notifyError(error, "reorder failed");
       if (context?.previous) queryClient.setQueryData(keys.nodes, context.previous);
+      // The snapshot is only this move's best guess (a poll or another write may have landed meanwhile): re-read.
+      void queryClient.invalidateQueries({ queryKey: keys.nodes });
     },
   });
   // Reads the group's current order from the cache when a button is pressed (reordering only exists over the whole
@@ -152,6 +154,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
   const reorder = canReorder(group, sort, q) ? reorderControls : null;
   const selection = useSelection(group, shown);
   const dialogs = useNodeDialogs();
+  const headerMenu = useAfterMenu();
 
   // N1: a group that does not exist (any more) falls back to the default, without a history entry of its own.
   useEffect(() => {
@@ -200,9 +203,9 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
                 <DropdownMenuTrigger asChild>
                   <Button size="icon" aria-label="Add or import servers"><Ellipsis size={16} aria-hidden /></Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  <DropdownMenuItem onSelect={() => window.setTimeout(dialogs.openAdd, 0)}>Add server</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => window.setTimeout(dialogs.openImport, 0)}>Import</DropdownMenuItem>
+                <DropdownMenuContent onCloseAutoFocus={headerMenu.onCloseAutoFocus}>
+                  <DropdownMenuItem onSelect={() => headerMenu.after(dialogs.openAdd)}>Add server</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => headerMenu.after(dialogs.openImport)}>Import</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
@@ -241,6 +244,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
         {ready && health.isError && health.data === undefined ? <ErrorState message={HEALTH_FAILED} onRetry={() => void health.refetch()} /> : null}
         {body}
         {ready ? <RowCapFooter shown={rows.length} total={shown.length} onShowAll={() => setShowAllGroup(group)} /> : null}
+        <SelectionAnnouncer count={selection.nodes.length} />
         {selection.nodes.length > 0 ? <BulkBar group={group} selected={selection.nodes} onClear={selection.clear} /> : null}
         <NodeDialogs dialog={dialogs.dialog} onClose={dialogs.close} />
       </div>

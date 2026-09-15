@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { Dialog as Primitive } from "radix-ui";
-import { useCallback, useRef, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import { closeGuarded } from "../confirm";
 import { Button } from "./Button";
@@ -34,6 +34,34 @@ export function useEscapeWithin() {
   return { ref, onEscapeKeyDown };
 }
 
+/** Where an overlay puts focus when it opens: its first field, or the overlay itself (one to read, not fill in). */
+export type InitialFocus = "field" | "overlay";
+
+const FIELD = "input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)";
+
+/**
+ * Focus for an overlay opened by state or by a route rather than a Radix trigger. On open: its first field, else the
+ * overlay itself — never the × that heads it, which stays in the tab order. On close: whatever held focus the moment
+ * it mounted (the button, menu trigger or row link that opened it), since Radix has no trigger to return it to.
+ * Spread the result onto a radix Content.
+ */
+export function useOverlayFocus(initial: InitialFocus = "field") {
+  const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+  const onOpenAutoFocus = useCallback((event: Event) => {
+    const overlay = event.currentTarget;
+    if (!(overlay instanceof HTMLElement)) return;
+    event.preventDefault();
+    const field = initial === "field" ? overlay.querySelector<HTMLElement>(FIELD) : null;
+    (field ?? overlay).focus();
+  }, [initial]);
+  const onCloseAutoFocus = useCallback((event: Event) => {
+    if (!opener?.isConnected) return;
+    event.preventDefault();
+    opener.focus();
+  }, [opener]);
+  return { onOpenAutoFocus, onCloseAutoFocus };
+}
+
 /** The × in an overlay's header: closes it like Escape does, asking first when it holds unsaved edits. */
 export function CloseButton() {
   return (
@@ -55,17 +83,20 @@ export function OverlayPortal({ className, children }: { className?: string; chi
   );
 }
 
-export function DialogContent({ title, description, className, children }: {
+export function DialogContent({ title, description, initialFocus, className, children }: {
   title: string;
   description?: string;
+  initialFocus?: InitialFocus;
   className?: string;
   children: ReactNode;
 }) {
   const escape = useEscapeWithin();
+  const focus = useOverlayFocus(initialFocus);
   return (
     <OverlayPortal>
       <Primitive.Content
         {...escape}
+        {...focus}
         // without a description, opt out explicitly instead of pointing at an element that is not there
         {...(description ? {} : { "aria-describedby": undefined })}
         className={cn(

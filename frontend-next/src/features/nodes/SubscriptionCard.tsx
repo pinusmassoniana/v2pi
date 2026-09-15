@@ -39,7 +39,7 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
   const pause = useMutation({
     mutationFn: (enabled: boolean) => updateWrite(sub.id, { enabled }),
     onSuccess: (_saved, enabled) => notifyOk(enabled ? `Resumed ${sub.name}` : `Paused ${sub.name}`),
-    onError: (error) => notifyError(error, "pause failed"),
+    onError: (error, enabled) => notifyError(error, enabled ? "resume failed" : "pause failed"),
   });
   const remove = useMutation({
     mutationFn: () => deleteWrite(sub.id),

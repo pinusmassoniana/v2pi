@@ -43,6 +43,14 @@ function stopped(error: unknown, fallback: string): void {
   else notifyError(error, fallback);
 }
 
+/**
+ * The selection count for screen readers. Mounted with the list, before anything is selected — a live region that
+ * appears together with its first text is not announced — so the first "1 selected" is read too.
+ */
+export function SelectionAnnouncer({ count }: { count: number }) {
+  return <p aria-live="polite" data-selection-count={count} className="sr-only">{count > 0 ? `${count} selected` : ""}</p>;
+}
+
 export interface BulkBarProps {
   group: GroupKey;
   /** The selected rows that are still shown. */
@@ -111,7 +119,7 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
       aria-label="Selection"
       className={cn("glass sticky bottom-24 z-20 flex flex-wrap items-center gap-2 bg-solid p-2.5 md:bottom-4", className)}
     >
-      <p aria-live="polite" className="px-1 text-sm font-semibold text-t1">{count} selected</p>
+      <p className="px-1 text-sm font-semibold text-t1">{count} selected</p>
       <ProfileSelect
         aria-label="Assign tuning profile"
         profiles={profiles.data}

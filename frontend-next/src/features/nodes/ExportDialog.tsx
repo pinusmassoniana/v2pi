@@ -50,7 +50,7 @@ export function ExportDialog({ node, onClose }: { node: Node; onClose: () => voi
   const flag = flagEmoji(health?.egress_cc);
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent title={`Export ${flag ? `${flag} ` : ""}${node.name}`}>
+      <DialogContent title={`Export ${flag ? `${flag} ` : ""}${node.name}`} initialFocus="overlay">
         <div className="flex flex-col gap-3">
           <CopyBlock label="vless:// link" name="link" text={vlessUri(node)} rows={4} />
           <CopyBlock label="JSON · full node" name="JSON" text={nodeJson(node)} rows={10} />

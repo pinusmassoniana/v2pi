@@ -1,5 +1,5 @@
 import { DropdownMenu as Primitive } from "radix-ui";
-import type { ComponentProps, ReactNode } from "react";
+import { useCallback, useRef, type ComponentProps, type ReactNode } from "react";
 import { cn } from "../../lib/cn";
 
 export const DropdownMenu = Primitive.Root;
@@ -19,6 +19,24 @@ export function DropdownMenuContent({ className, children, ...props }: Component
       </Primitive.Content>
     </Primitive.Portal>
   );
+}
+
+/**
+ * For items that open a dialog or a confirmation: `after(action)` in an item's onSelect runs the action only once the
+ * menu has closed and given focus back to its trigger — spread `onCloseAutoFocus` onto the DropdownMenuContent. A
+ * dialog opened any earlier finds focus on nothing (the menu is already gone, the trigger not focused yet), so it
+ * has nothing to give focus back to when it closes.
+ */
+export function useAfterMenu() {
+  const pending = useRef<(() => void) | null>(null);
+  const after = useCallback((action: () => void) => { pending.current = action; }, []);
+  const onCloseAutoFocus = useCallback(() => {
+    const action = pending.current;
+    pending.current = null;
+    // Radix focuses the trigger right after this handler returns; the action runs after that.
+    if (action) window.setTimeout(action, 0);
+  }, []);
+  return { after, onCloseAutoFocus };
 }
 
 /** One action; a disabled item says why underneath, so the reason is read with it. */

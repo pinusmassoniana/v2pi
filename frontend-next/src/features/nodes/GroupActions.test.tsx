@@ -155,9 +155,15 @@ describe("Servers › selection and bulk (N18, T6)", () => {
   it("select all is tri-state over the shown rows; switching group clears the selection", async () => {
     await openList();
     const all = screen.getByRole("checkbox", { name: "Select all shown" });
+    // The live region is there, empty, before the first tick — so the first count is announced too.
+    const live = document.querySelector<HTMLElement>("[data-selection-count]")!;
+    expect(live).toHaveAttribute("aria-live", "polite");
+    expect(live).toBeEmptyDOMElement();
     await userEvent.click(within(row("de-fra-01")).getByRole("checkbox", { name: "Select de-fra-01" }));
     expect(all).toBePartiallyChecked();
-    expect(within(selectionBar()).getByText("1 selected")).toHaveAttribute("aria-live", "polite");
+    expect(document.querySelector("[data-selection-count]")).toBe(live);
+    expect(live).toHaveTextContent("1 selected");
+    expect(within(selectionBar()).getByText("1 selected")).toBeInTheDocument();
     await userEvent.click(all);
     expect(all).toBeChecked();
     expect(within(selectionBar()).getByText("6 selected")).toBeInTheDocument();

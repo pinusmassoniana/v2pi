@@ -206,6 +206,16 @@ describe("Subscriptions › actions (U2–U4, U6)", () => {
     expect(api$.updateSub).toHaveBeenCalledWith(3, { enabled: true });
   });
 
+  it("a failed Pause or Resume says which one failed", async () => {
+    const { api$ } = await openSubscriptions();
+    api$.updateSub.mockRejectedValue(new Error("offline"));
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(within(card("old")).getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("resume failed", { duration: 20000 }));
+    await userEvent.click(within(card("work")).getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("pause failed", { duration: 20000 }));
+  });
+
   it("Delete asks with the contract's words first", async () => {
     const { api$ } = await openSubscriptions();
     await userEvent.click(within(card("work")).getByRole("button", { name: "Delete" }));

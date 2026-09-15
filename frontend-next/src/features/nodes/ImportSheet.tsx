@@ -29,15 +29,19 @@ export function ImportSheet({ onClose }: { onClose: () => void }) {
   const dirty = text.trim() !== "";
   useUnsavedGuard(dirty);
   const tooBig = new TextEncoder().encode(text).length > IMPORT_MAX_BYTES;
+  // The result is said even if the sheet has gone; closing it or showing the failure in it is passed to mutate,
+  // which runs only while this sheet is still open for its latest import.
   const run = useMutation({
-    mutationFn: () => importWrite(text),
-    onSuccess: (result) => {
-      notifyOk(`imported ${result.added}/${result.total} node(s) (${result.format})`);
-      onClose();
-    },
-    // 422 "parse failed: …" and 409: nothing was imported; the text stays for another try.
-    onError: (failure) => setError(errText(failure, "import failed")),
+    mutationFn: (input: string) => importWrite(input),
+    onSuccess: (result) => notifyOk(`imported ${result.added}/${result.total} node(s) (${result.format})`),
   });
+  function start() {
+    run.mutate(text, {
+      onSuccess: () => onClose(),
+      // 422 "parse failed: …" and 409: nothing was imported; the text stays for another try.
+      onError: (failure) => setError(errText(failure, "import failed")),
+    });
+  }
 
   return (
     <Sheet open dirty={dirty} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -67,7 +71,7 @@ export function ImportSheet({ onClose }: { onClose: () => void }) {
           {error ? <p role="alert" className="whitespace-pre-wrap text-xs text-bad">{error}</p> : null}
           <div className="flex justify-end gap-2">
             <Button onClick={() => void closeGuarded(dirty, onClose)}>Cancel</Button>
-            <Button variant="primary" disabled={!dirty || tooBig || run.isPending} onClick={() => run.mutate()}>
+            <Button variant="primary" disabled={!dirty || tooBig || run.isPending} onClick={start}>
               <Upload size={14} aria-hidden />
               {run.isPending ? "Importing…" : "Import"}
             </Button>

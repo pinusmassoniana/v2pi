@@ -277,13 +277,15 @@ describe("Servers › reorder and row cap (N11, N19)", () => {
     await waitFor(() => expect(within(row("kz-ala-01")).getByRole("button", { name: "Move kz-ala-01 up" })).toBeEnabled());
   });
 
-  it("a failed reorder says so and reloads the real order", async () => {
+  it("a failed reorder says so, puts the order back and re-reads it", async () => {
     const { api$ } = await openList("/nodes?group=servers");
     api$.reorderNodes.mockRejectedValue(new ApiError(500, "reorder broke"));
     const error = vi.spyOn(toast, "error");
+    const reads = api$.listNodes.mock.calls.length;
     await userEvent.click(within(row("kz-ala-01")).getByRole("button", { name: "Move kz-ala-01 up" }));
     await waitFor(() => expect(error).toHaveBeenCalledWith("reorder broke", { duration: 20000 }));
     await waitFor(() => expect(rowNames()).toEqual(["vps-hel", "lab-lan", "kz-ala-01"]));
+    await waitFor(() => expect(api$.listNodes.mock.calls.length).toBeGreaterThan(reads));
   });
 
   it("no arrows outside Servers, with another sort, or while searching", async () => {
