@@ -217,6 +217,25 @@ describe("Anti-DPI › row actions (T2)", () => {
   });
 });
 
+describe("Anti-DPI › deleting the profile in the editor", () => {
+  it("New pressed while that delete runs keeps what is typed into the new profile when the delete finishes", async () => {
+    const { api$ } = await openAntiDpi();
+    let finish: () => void = () => {};
+    api$.deleteProfile.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ ok: true }); }));
+    await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Edit mux-heavy" }));
+    await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Delete mux-heavy" }));
+    await answer('Delete profile "mux-heavy"?', "Delete");
+    await waitFor(() => expect(api$.deleteProfile).toHaveBeenCalledWith(3));
+    await userEvent.click(within(editor()).getByRole("button", { name: "New" }));
+    await userEvent.type(within(editor()).getByLabelText("Name", { selector: "input" }), "fresh");
+    await act(async () => finish());
+    await waitFor(() => expect(within(row("balanced")).getByRole("button", { name: "Edit balanced" })).toBeEnabled());
+    // The editor no longer holds the deleted profile, so the delete leaves the new one alone.
+    expect(within(editor()).getByRole("heading", { name: "New profile" })).toBeInTheDocument();
+    expect(within(editor()).getByLabelText("Name", { selector: "input" })).toHaveValue("fresh");
+  });
+});
+
 describe("Anti-DPI on a phone (T1, T2)", () => {
   it("profile cards with badges, used by, features, ⚡ Apply and a ⋯ menu; the default's menu has no Make default or Delete", async () => {
     const { list } = await openAntiDpi({ phone: true });

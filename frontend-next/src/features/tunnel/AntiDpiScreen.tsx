@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { SLOW_POLL_MS } from "../../api/cadence";
 import { useConnectionBusy, useProfileBusy } from "../../api/invalidation";
 import { queries } from "../../api/keys";
@@ -31,9 +31,15 @@ export function AntiDpi() {
   const connectionBusy = useConnectionBusy();
   const editor = useProfileEditor();
   const { editing, reset } = editor;
+  // A delete finishes later than it was asked for: what the editor holds is read then, not when Delete was pressed
+  // (New may have been pressed meanwhile). Kept in a ref, so onDeleted — and every memoised row — stays stable.
+  const editingRef = useRef(editing);
+  useEffect(() => {
+    editingRef.current = editing;
+  }, [editing]);
   const onDeleted = useCallback((id: number) => {
-    if (editing === id) reset(false);
-  }, [editing, reset]);
+    if (editingRef.current === id) reset(false);
+  }, [reset]);
   const actions = useProfileActions({ edit: editor.edit, clone: editor.clone, onDeleted });
 
   const list = profiles.data;
