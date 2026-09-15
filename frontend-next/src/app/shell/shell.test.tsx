@@ -133,7 +133,7 @@ describe("shell", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Overview");
   });
 
-  it("a status poll that fails while a connection write holds the gateway's lock is not called unreachable; after it, it is", async () => {
+  it("a status poll that fails while a connection write holds the gateway's lock is not called unreachable; settling the write does not count that stale failure, only a later one", async () => {
     const api$ = mockApi();
     const { client } = renderApp("/");
     await screen.findByText("Tunnel online");
@@ -142,7 +142,15 @@ describe("shell", () => {
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
     await expect(screen.findByText(/Can't reach the panel/, {}, { timeout: 300 })).rejects.toThrow();
     expect(screen.getByText("Tunnel online")).toBeInTheDocument();
+
+    // The write settles: the only failure on record is the one that happened under its lock, so it still
+    // does not count — neither the banner nor the topbar's "Tunnel unknown" appear from it.
     await release();
+    await expect(screen.findByText(/Can't reach the panel/, {}, { timeout: 300 })).rejects.toThrow();
+    expect(screen.getByText("Tunnel online")).toBeInTheDocument();
+
+    // A fresh failure after the write settled is a different matter.
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
     expect(await screen.findByText(/Can't reach the panel — showing data from/)).toBeInTheDocument();
     expect(screen.getByText("Tunnel unknown")).toBeInTheDocument();
   });

@@ -90,6 +90,9 @@ describe("Subscriptions › fetch settings (G1)", () => {
     await userEvent.click(tunnel);
     expect(tunnel).not.toBeChecked();   // optimistic
     expect(api$.putSettings).toHaveBeenCalledWith({ tunneled_fetch: false });
+    // The success path re-reads settings in the background (invalidate → getSettings); the gateway now
+    // persists the new value too, as it would for real, so that read agrees with the optimistic one.
+    api$.getSettings.mockResolvedValue({ ...SETTINGS, tunneled_fetch: false });
     await act(async () => finish({ ...SETTINGS, tunneled_fetch: false }));
     expect(tunnel).not.toBeChecked();
   });
