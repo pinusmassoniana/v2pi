@@ -19,14 +19,17 @@ const system = () => import("../features/system/screens");
 
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: lazyRouteComponent(home, "Overview") });
 const trafficRoute = createRoute({ getParentRoute: () => rootRoute, path: "/traffic", component: lazyRouteComponent(home, "Traffic") });
-// The Servers list keeps its group, search and sort in the URL (N1–N3); a node's detail keeps the list's search and
-// sort, so closing it returns to the list as it was.
+// The Servers list keeps its group, search and sort in the URL (N1–N3). /nodes is a layout: it stays mounted
+// under both its index child (no node open) and its $nodeId child (a node's sheet on a desktop or its own page
+// on a phone, rendered through Outlet) — so opening or closing a node never remounts the list, and Test all,
+// selection and reorder all survive the round trip.
 const nodesRoute = createRoute({
   getParentRoute: () => rootRoute, path: "/nodes", validateSearch: nodesSearchSchema, component: lazyRouteComponent(nodes, "Servers"),
 });
+const nodesIndexRoute = createRoute({ getParentRoute: () => nodesRoute, path: "/" });
 const subscriptionsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nodes/subscriptions", component: lazyRouteComponent(nodes, "Subscriptions") });
 const nodeDetailRoute = createRoute({
-  getParentRoute: () => rootRoute, path: "/nodes/$nodeId", validateSearch: nodesSearchSchema, component: lazyRouteComponent(nodes, "NodeDetail"),
+  getParentRoute: () => nodesRoute, path: "$nodeId", component: lazyRouteComponent(nodes, "NodeDetail"),
 });
 const routingRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/routing", component: lazyRouteComponent(tunnel, "Routing") });
 const antiDpiRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/anti-dpi", component: lazyRouteComponent(tunnel, "AntiDpi") });
@@ -48,7 +51,7 @@ const fallbackRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  homeRoute, trafficRoute, nodesRoute, subscriptionsRoute, nodeDetailRoute,
+  homeRoute, trafficRoute, nodesRoute.addChildren([nodesIndexRoute, nodeDetailRoute]), subscriptionsRoute,
   routingRoute, antiDpiRoute, healthRoute, networkRoute, remoteAccessRoute,
   backupsRoute, accessRoute, logsRoute, panelRoute, fallbackRoute,
 ]);

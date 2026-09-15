@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
+import { Outlet, useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Node } from "../../api/client";
 import { SLOW_POLL_MS } from "../../api/cadence";
@@ -15,8 +15,8 @@ import { BulkBar } from "./BulkBar";
 import { FailoverNote } from "./FailoverNote";
 import { GroupActions } from "./GroupActions";
 import {
-  SERVERS, applyOrder, canReorder, groupChips, healthById, moveWithin, pruneSelection, resolveGroup, selectionState, shownNodes, visibleRows,
-  type GroupKey, type SortKey,
+  SERVERS, applyOrder, canReorder, groupChips, groupOf, healthById, moveWithin, parseGroup, pruneSelection, resolveGroup, selectionState, shownNodes,
+  visibleRows, type GroupKey, type SortKey,
 } from "./list";
 import { NodeCards } from "./NodeCards";
 import { NO_MENU_CALLBACKS } from "./NodeRowActions";
@@ -30,7 +30,9 @@ export interface ServersViewProps {
   search: NodesSearch;
   /** A node's detail shows the list of that node's group, whatever the URL's group says. */
   groupOverride?: GroupKey;
-  /** Rendered after the list: the node detail sheet. */
+  /** True while a node's detail replaces this list on a phone: the list stays mounted (its state alive) but hidden. */
+  hidden?: boolean;
+  /** Rendered after the list: the node detail (a sheet on a desktop; nothing extra on a phone, which shows its own page). */
   children?: ReactNode;
 }
 
@@ -107,10 +109,12 @@ function useSelection(group: GroupKey, shown: readonly Node[]) {
 }
 
 /**
- * Nodes › Servers: the polling owner of nodes, node health and subscriptions while it is mounted (the detail route
- * mounts it too, on a desktop). The search, sort and group live in the URL; density in localStorage.
+ * Nodes › Servers: the polling owner of nodes, node health and subscriptions — mounted continuously by the /nodes
+ * layout, under both the index route and a node's detail, so opening or closing a node never restarts the poll or
+ * resets local state (selection, Test all, reorder). The search, sort and group live in the URL; density in
+ * localStorage.
  */
-export function ServersView({ search, groupOverride, children }: ServersViewProps) {
+export function ServersView({ search, groupOverride, hidden, children }: ServersViewProps) {
   const navigate = useNavigate();
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const status = useQuery(queries.status());
@@ -171,43 +175,65 @@ export function ServersView({ search, groupOverride, children }: ServersViewProp
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {!desktop && ready ? (
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            size="sm"
-            aria-pressed={selecting}
-            onClick={() => {
-              if (selecting) selection.clear();
-              setSelecting(!selecting);
-            }}
-          >
-            {selecting ? "Done" : "Select"}
-          </Button>
-        </div>
-      ) : null}
-      <ServersToolbar
-        chips={chips}
-        group={group}
-        list={list}
-        onList={onList}
-        entry={entry}
-        dense={dense}
-        onDense={onDense}
-        actions={<GroupActions group={group} shown={shown} nodes={nodes.data} offline={status.isError} />}
-      />
-      <FailoverNote status={status.data} className="px-1" />
-      {status.isError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
-      {ready ? staleNotice([nodes, health, subs], "Servers did not refresh") : null}
-      {body}
-      {ready ? <RowCapFooter shown={rows.length} total={shown.length} onShowAll={() => setShowAllGroup(group)} /> : null}
-      {selection.nodes.length > 0 ? <BulkBar group={group} selected={selection.nodes} onClear={selection.clear} /> : null}
+    <>
+      {/* hidden, not omitted: on a phone with a node open, the child below replaces this as the page, but the
+          list stays mounted underneath it so its poll, selection and any running Test all survive the visit. */}
+      <div className="flex flex-col gap-3" hidden={hidden}>
+        {!desktop && ready ? (
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              size="sm"
+              aria-pressed={selecting}
+              onClick={() => {
+                if (selecting) selection.clear();
+                setSelecting(!selecting);
+              }}
+            >
+              {selecting ? "Done" : "Select"}
+            </Button>
+          </div>
+        ) : null}
+        <ServersToolbar
+          chips={chips}
+          group={group}
+          list={list}
+          onList={onList}
+          entry={entry}
+          dense={dense}
+          onDense={onDense}
+          actions={<GroupActions group={group} shown={shown} nodes={nodes.data} offline={status.isError} />}
+        />
+        <FailoverNote status={status.data} className="px-1" />
+        {status.isError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
+        {ready ? staleNotice([nodes, health, subs], "Servers did not refresh") : null}
+        {body}
+        {ready ? <RowCapFooter shown={rows.length} total={shown.length} onShowAll={() => setShowAllGroup(group)} /> : null}
+        {selection.nodes.length > 0 ? <BulkBar group={group} selected={selection.nodes} onClear={selection.clear} /> : null}
+      </div>
       {children}
-    </div>
+    </>
   );
 }
 
-/** The #/nodes route. */
+/**
+ * The #/nodes layout route: the Servers list, rendered once and kept mounted under both its index child (no node
+ * open) and its $nodeId child (a node's sheet on a desktop or its own page on a phone, rendered through Outlet)
+ * — so opening or closing a node never remounts the list. On a phone with a node open, the list stays mounted
+ * (its poll and state alive) but hidden, since the child renders a full page of its own there.
+ */
 export function Servers() {
-  return <ServersView search={useSearch({ from: "/nodes" })} />;
+  const search = useSearch({ from: "/nodes" });
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const { nodeId } = useParams({ strict: false });
+  const nodes = useQuery(queries.nodes());   // only to resolve the open node's group; the list below owns the poll
+  const openNode = nodeId === undefined ? undefined : nodes.data?.find((node) => String(node.id) === nodeId);
+  // On the index route there is no override (the list resolves its own group as before). On the detail route,
+  // pass through the open node's group once it is known, else the URL's own group param, else Servers — never
+  // resolveGroup's "replace" path, which must not fire while /nodes/$nodeId is open.
+  const group = nodeId === undefined ? undefined : (openNode ? groupOf(openNode) : (parseGroup(search.group) ?? SERVERS));
+  return (
+    <ServersView search={search} groupOverride={group} hidden={!desktop && nodeId !== undefined}>
+      <Outlet />
+    </ServersView>
+  );
 }

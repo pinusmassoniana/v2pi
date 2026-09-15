@@ -2,13 +2,20 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type Status } from "../../api/client";
+import { ApiError, type NodeHealth, type Status } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ALL_NODE_HEALTH, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
+import { ALL_NODE_HEALTH, NODE_HEALTH, NOW_SEC, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 
 afterEach(() => act(() => settleConfirm(false)));
+afterEach(() => vi.useRealTimers());
+
+/** On fake timers Testing Library's waitFor never polls: step the clock until `check` holds. */
+async function stepUntil(check: () => unknown) {
+  for (let i = 0; i < 80 && !check(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(check()).toBeTruthy();
+}
 
 const terms = (region: HTMLElement) => within(region).getAllByRole("term").map((term) => term.textContent);
 const value = (region: HTMLElement, key: string) => within(region).getByText(key, { selector: "dt" }).nextElementSibling!;
@@ -76,7 +83,9 @@ describe("Node detail › health and config (N5)", () => {
     expect(value(health, "TCP")).toHaveTextContent("31 ms");
     expect(value(health, "Egress")).toHaveTextContent("🇳🇱 185.107.56.21🇳🇱 2a0b:4d07::21");
     expect(health).toHaveTextContent("Latency trend · last 2 samples");
-    expect(screen.getByText(/^connected/)).toHaveTextContent("connected · 1m");
+    // Scoped to the page's own header: the hidden list underneath shows the same active row's "connected" text.
+    const header = (await screen.findByRole("heading", { level: 2, name: "🇳🇱 nl-ams-03" })).closest("header")!;
+    expect(within(header).getByText(/^connected/)).toHaveTextContent("connected · 1m");
   });
 
   it("a node never probed says so, and a standby has no failure counter", async () => {
@@ -109,10 +118,12 @@ describe("Node detail › health and config (N5)", () => {
 
   it("the header names the group, the stale badge and the kind", async () => {
     await openDetail("/nodes/10", { phone: true });
-    await screen.findByRole("heading", { level: 2, name: "🇺🇸 us-nyc-01" });
-    expect(screen.getByRole("link", { name: "home" })).toHaveAttribute("href", "/nodes?group=2");
-    expect(screen.getByText("stale")).toBeInTheDocument();
-    expect(screen.getByText("id 10")).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { level: 2, name: "🇺🇸 us-nyc-01" });
+    // Scoped to the page's own header: the hidden list underneath renders the same node's stale badge too.
+    const header = heading.closest("header")!;
+    expect(within(header).getByRole("link", { name: "home" })).toHaveAttribute("href", "/nodes?group=2");
+    expect(within(header).getByText("stale")).toBeInTheDocument();
+    expect(within(header).getByText("id 10")).toBeInTheDocument();
   });
 });
 
@@ -196,5 +207,77 @@ describe("Node detail › profile and actions (N6, N7, N15, T6)", () => {
     expect(within(actions).queryByRole("button", { name: "Delete" })).toBeNull();
     await userEvent.click(within(actions).getByRole("button", { name: "Detach" }));
     expect(api$.detachNodes).toHaveBeenCalledWith([2]);
+  });
+});
+
+// The /nodes layout keeps the Servers list mounted under a node's sheet or page (round-1 fix): opening or
+// closing a node must not restart a running sweep, drop the selection, or strand focus outside the document.
+describe("Node detail › the list survives opening and closing a node (fix round 1)", () => {
+  it("a running Test all keeps scheduling probes across opening and closing a node's sheet", async () => {
+    const api$ = mockNodeGroups(mockApi());
+    const pending: ((health: NodeHealth) => void)[] = [];
+    api$.probeNode.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    const { router } = renderApp("/nodes");
+    await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
+    const toolbar = within(screen.getByRole("region", { name: "Servers toolbar" }));
+    await userEvent.click(toolbar.getByRole("button", { name: "Test all (real)" }));
+    expect(api$.probeNode).toHaveBeenCalledTimes(1);
+
+    await act(() => router.navigate({ to: "/nodes/$nodeId", params: { nodeId: "2" } }));
+    await screen.findByRole("dialog", { name: "de-fra-01" });
+    await act(async () => pending.shift()!(NODE_HEALTH[0]!));
+    // The sweep kept scheduling its next probe while the sheet was open — it did not see the list as gone.
+    // hidden: true — Radix marks the list aria-hidden while its modal sheet is open.
+    await waitFor(() => expect(api$.probeNode).toHaveBeenCalledTimes(2));
+    expect(toolbar.getByRole("button", { name: /^Testing/, hidden: true })).toBeDisabled();
+
+    await act(() => router.navigate({ to: "/nodes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    for (let i = 0; i < 5; i++) await act(async () => pending.shift()!(NODE_HEALTH[0]!));   // nodes 2 through 6
+    await waitFor(() => expect(toolbar.getByRole("button", { name: "Test all (real)" })).toBeEnabled());
+    expect(api$.probeNode).toHaveBeenCalledTimes(6);   // all six of "work"'s nodes, uninterrupted by the detour
+  });
+
+  it("a selection on the list survives opening and closing a node", async () => {
+    mockNodeGroups(mockApi());
+    const { router } = renderApp("/nodes");
+    await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select de-fra-01" }));
+    await screen.findByRole("region", { name: "Selection" });
+
+    await act(() => router.navigate({ to: "/nodes/$nodeId", params: { nodeId: "2" } }));
+    await screen.findByRole("dialog", { name: "de-fra-01" });
+    await act(() => router.navigate({ to: "/nodes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    expect(screen.getByRole("region", { name: "Selection" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select de-fra-01" })).toBeChecked();
+  });
+
+  it("closing the sheet with Escape returns focus to the node's row link", async () => {
+    mockNodeGroups(mockApi());
+    renderApp("/nodes");
+    await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
+    const link = screen.getByRole("link", { name: "de-fra-01" });
+    await userEvent.click(link);   // the same row link the list never unmounts, so Radix can restore focus to it
+    await screen.findByRole("dialog", { name: "de-fra-01" });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(link);
+  });
+
+  it("the checked age keeps ticking while the sheet stays open, without a page-wide re-render", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_SEC * 1000));
+    const api$ = mockNodeGroups(mockApi());
+    // The shell polls status every 3 s and every resolution recalibrates the gateway clock (recordServerNow);
+    // track the fake clock so that recalibration doesn't erase the advance below.
+    api$.getStatus.mockImplementation(async () => ({ ...STATUS, server_now: Math.floor(Date.now() / 1000) }));
+    renderApp("/nodes/1");
+    await stepUntil(() => screen.queryByRole("dialog", { name: "nl-ams-03" }));
+    const health = screen.getByRole("region", { name: "Health" });
+    expect(health).toHaveTextContent("checked 5 s ago");
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+    expect(health).toHaveTextContent("checked 20 s ago");
   });
 });

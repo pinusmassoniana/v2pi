@@ -1,15 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
-import { SLOW_POLL_MS } from "../../api/cadence";
 import { queries } from "../../api/keys";
-import { usePolledQuery } from "../../api/live";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { SERVERS, groupOf, type GroupKey } from "./list";
 import { NodeDetailBody } from "./NodeDetail";
 import { listState, toSearch, type NodesSearch } from "./search";
-import { ServersView } from "./ServersScreen";
 
 interface DetailProps {
   nodeId: number;
@@ -21,28 +18,31 @@ function listSearch(search: NodesSearch, group: GroupKey | undefined): NodesSear
   return toSearch({ ...listState(search), group });
 }
 
-/** Desktop: the Servers list of the node's group stays on screen, the detail in a sheet over it. */
+/**
+ * Desktop: a Sheet over the Servers list, which the /nodes layout keeps mounted underneath (showing this node's
+ * group already, via its own groupOverride) — closing it never unmounts or resets that list.
+ */
 function DetailSheet({ nodeId, search }: DetailProps) {
   const navigate = useNavigate();
-  const nodes = useQuery(queries.nodes());   // the list behind polls it
+  const nodes = useQuery(queries.nodes());   // the list underneath already polls it; this only reads the title/group
   const node = nodes.data?.find((item) => item.id === nodeId);
   const group = node ? groupOf(node) : undefined;
   const title = node?.name ?? (nodes.data ? "Node not found" : "Node");
   return (
-    <ServersView search={search} groupOverride={group}>
-      <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group) }); }}>
-        <SheetContent title={title}>
-          <NodeDetailBody nodeId={nodeId} showName={false} />
-        </SheetContent>
-      </Sheet>
-    </ServersView>
+    <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group) }); }}>
+      <SheetContent title={title}>
+        <NodeDetailBody nodeId={nodeId} showName={false} />
+      </SheetContent>
+    </Sheet>
   );
 }
 
-/** Phone: a page of its own, the polling owner of nodes and node health, with a way back to its group. */
+/**
+ * Phone: a page of its own. The /nodes layout's Servers list keeps polling nodes and node health underneath it
+ * (hidden, not unmounted), so this reads them from the cache instead of polling a second time.
+ */
 function DetailPage({ nodeId, search }: DetailProps) {
-  const nodes = usePolledQuery(queries.nodes(), SLOW_POLL_MS);
-  usePolledQuery(queries.nodeHealth(), SLOW_POLL_MS);
+  const nodes = useQuery(queries.nodes());
   const subs = useQuery(queries.subs());   // the group's name only; read once
   const node = nodes.data?.find((item) => item.id === nodeId);
   const group = node ? groupOf(node) : undefined;
@@ -58,7 +58,7 @@ function DetailPage({ nodeId, search }: DetailProps) {
   );
 }
 
-/** The #/nodes/$nodeId route: a sheet over the list from 768 px, a page below. */
+/** The $nodeId child of the /nodes layout: a sheet over the still-mounted list from 768 px, a page below it. */
 export function NodeDetail() {
   const { nodeId } = useParams({ from: "/nodes/$nodeId" });
   const search = useSearch({ from: "/nodes/$nodeId" });
