@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api/client";
-import { NODES, SERVER_NODES } from "../../test/fixtures";
+import { NODES, SERVER_NODES, node } from "../../test/fixtures";
 import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, addNodeMessage, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
   nodeFormSchema, nodeMutationMessage, nodeToForm, profileFromValue, profileValue, validateMessage, type NodeFormValues,
@@ -59,6 +59,20 @@ describe("what the form sends", () => {
     expect(profileValue(2)).toBe("2");
     expect(profileFromValue("")).toBeNull();
     expect(profileFromValue("2")).toBe(2);
+  });
+
+  it("edit keeps the stored values of fields the current transport or security hides; add and validate-on-add still drop them", () => {
+    const reality = nodeToForm({ ...node(90, "reality-node"), security: "reality", alpn: "h2" });
+    expect(formToNodeIn(reality)).toMatchObject({ alpn: "" });
+    expect(formToNodeUpdate(reality)).toMatchObject({ alpn: "h2" });
+    expect(formToValidate(reality, true)).toMatchObject({ alpn: "h2" });
+    expect(formToValidate(reality, false)).toMatchObject({ alpn: "" });
+
+    const vision = nodeToForm({ ...node(91, "vision-node"), transport: "vision", path: "/stale", host: "old.example", mode: "auto" });
+    expect(formToNodeIn(vision)).toMatchObject({ path: "", host: "", mode: "" });
+    expect(formToNodeUpdate(vision)).toMatchObject({ path: "/stale", host: "old.example", mode: "auto" });
+    expect(formToValidate(vision, true)).toMatchObject({ path: "/stale", host: "old.example", mode: "auto" });
+    expect(formToValidate(vision, false)).toMatchObject({ path: "", host: "", mode: "" });
   });
 });
 

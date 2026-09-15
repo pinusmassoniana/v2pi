@@ -95,14 +95,8 @@ export function cloneToForm(node: Node): NodeFormValues {
   return { ...nodeToForm(node), name: `${node.name} copy`, tuning_profile_id: "" };
 }
 
-/**
- * What the form sends. Fields the chosen transport or security hides go out empty, so what was typed under a
- * choice that is no longer selected is never saved: reality keeps public key + short id, tls keeps ALPN, xhttp
- * keeps path / host / mode.
- */
-export function formToNodeIn(values: NodeFormValues): NodeIn {
-  const reality = values.security === "reality";
-  const xhttp = values.transport === "xhttp";
+/** The form's fields, trimmed, with no hiding applied — shared by the add and edit mappings below. */
+function trimmedFields(values: NodeFormValues): NodeIn {
   return {
     name: values.name.trim(),
     address: values.address.trim(),
@@ -111,26 +105,53 @@ export function formToNodeIn(values: NodeFormValues): NodeIn {
     transport: values.transport,
     security: values.security,
     sni: values.sni.trim(),
-    public_key: reality ? values.public_key.trim() : "",
-    short_id: reality ? values.short_id.trim() : "",
-    alpn: reality ? "" : values.alpn.trim(),
-    path: xhttp ? values.path.trim() : "",
-    host: xhttp ? values.host.trim() : "",
-    mode: xhttp ? values.mode.trim() : "",
+    public_key: values.public_key.trim(),
+    short_id: values.short_id.trim(),
+    alpn: values.alpn.trim(),
+    path: values.path.trim(),
+    host: values.host.trim(),
+    mode: values.mode.trim(),
     note: values.note,
     fingerprint: values.fingerprint.trim(),
   };
 }
 
-/** N13: the edit patch — every field plus the tuning profile. */
-export function formToNodeUpdate(values: NodeFormValues): NodeUpdate {
-  return { ...formToNodeIn(values), tuning_profile_id: profileFromValue(values.tuning_profile_id) };
+/**
+ * What Add sends. Fields the chosen transport or security hides go out empty, so what was typed under a choice
+ * that is no longer selected is never saved: reality keeps public key + short id, tls keeps ALPN, xhttp keeps
+ * path / host / mode. A new node has nothing stored to protect.
+ */
+export function formToNodeIn(values: NodeFormValues): NodeIn {
+  const reality = values.security === "reality";
+  const xhttp = values.transport === "xhttp";
+  const fields = trimmedFields(values);
+  return {
+    ...fields,
+    public_key: reality ? fields.public_key : "",
+    short_id: reality ? fields.short_id : "",
+    alpn: reality ? "" : fields.alpn,
+    path: xhttp ? fields.path : "",
+    host: xhttp ? fields.host : "",
+    mode: xhttp ? fields.mode : "",
+  };
 }
 
-/** N12 / N13: what Validate sends; on edit it checks the node with the selected profile. */
+/**
+ * N13: the edit patch — every field as-is (trimmed), hidden ones included, plus the tuning profile. Unlike Add,
+ * edit must not erase a value already stored under a transport or security that is no longer selected.
+ */
+export function formToNodeUpdate(values: NodeFormValues): NodeUpdate {
+  return { ...trimmedFields(values), tuning_profile_id: profileFromValue(values.tuning_profile_id) };
+}
+
+/**
+ * N12 / N13: what Validate sends. On edit it mirrors the edit payload exactly (unzeroed, with the selected
+ * profile), so Validate checks exactly what Save will send; on add it mirrors Add (zeroed, no profile).
+ */
 export function formToValidate(values: NodeFormValues, withProfile: boolean): NodeValidateIn {
-  const input = formToNodeIn(values);
-  return withProfile ? { ...input, tuning_profile_id: profileFromValue(values.tuning_profile_id) } : input;
+  return withProfile
+    ? { ...trimmedFields(values), tuning_profile_id: profileFromValue(values.tuning_profile_id) }
+    : formToNodeIn(values);
 }
 
 /** N13 / N15: an edit or delete that failed — any 409 is the active node. */
