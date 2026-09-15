@@ -3,8 +3,9 @@ import { api } from "../api/client";
 import { serverNow } from "../api/clock";
 import { trafficStore } from "../api/traffic";
 import {
-  ALL_NODES, ALL_NODE_HEALTH, NETWORK, NODES, NODE_HEALTH, PREVIEW, PREVIEW_NODES, PROFILES, REFRESH_ALL, ROUTING, SETTINGS, STATUS, SUBS,
-  TRAFFIC_FRAME, mockApi, mockNodeGroups,
+  ALL_NODES, ALL_NODE_HEALTH, FAILOVER_STATUS, NETWORK, NODES, NODE_HEALTH, NOW_SEC, PREVIEW, PREVIEW_NODES, PROFILES, PROFILE_PRESETS, REFRESH_ALL,
+  ROUTING, ROUTING_PRESETS, RU_DIRECT_PRESET, SETTINGS, STATUS, SUBS, TRAFFIC_FRAME, TUNNEL_PROFILES, TUNNEL_ROUTING, VALID, mockApi,
+  mockNodeGroups, mockTunnel,
 } from "./fixtures";
 
 describe("gateway fixtures", () => {
@@ -103,5 +104,50 @@ describe("gateway fixtures", () => {
     expect(PROFILES.filter((profile) => profile.is_default).map((profile) => profile.name)).toEqual(["balanced"]);
     expect(SUBS.filter((s) => s.last_error).map((s) => s.name)).toEqual(["home"]);
     expect(SUBS.filter((s) => !s.enabled).map((s) => s.name)).toEqual(["old"]);
+  });
+
+  it("mockApi answers Tunnel's reads and writes, and mockTunnel serves its ruleset and profiles", async () => {
+    const api$ = mockApi();
+    await expect(api.listRoutingPresets()).resolves.toBe(ROUTING_PRESETS);
+    await expect(api.routingPreset("ru-direct")).resolves.toBe(RU_DIRECT_PRESET);
+    await expect(api.validateRouting({ rules: [], default_action: "proxy" })).resolves.toBe(VALID);
+    await expect(api.putRouting({ rules: [{ type: "domain", value: "a.example", action: "proxy" }], default_action: "block" })).resolves.toEqual({
+      rules: [{ id: 100, position: 0, type: "domain", value: "a.example", action: "proxy", enabled: true, label: "" }],
+      default_action: "block", domain_strategy: "IPIfNonMatch",
+    });
+    await expect(api.listProfilePresets()).resolves.toBe(PROFILE_PRESETS);
+    await expect(api.validateProfile({ name: "x" })).resolves.toBe(VALID);
+    await expect(api.addProfile({ name: "e2e", quic: "drop" })).resolves.toMatchObject({ id: 4, name: "e2e", quic: "drop", is_default: false, is_active: false, node_count: 0 });
+    await expect(api.updateProfile(2, { frag_length: "80-160" })).resolves.toMatchObject({ id: 2, name: "fragment-tls", frag_length: "80-160", is_active: true });
+    await expect(api.setDefaultProfile(3)).resolves.toMatchObject({ id: 3, is_default: true });
+    await expect(api.applyProfileActive(3)).resolves.toEqual({ ok: true, node_id: 1 });
+    await expect(api.deleteProfile(3)).resolves.toEqual({ ok: true });
+    await expect(api.getRouting()).resolves.toBe(ROUTING);
+    mockTunnel(api$);
+    await expect(api.getRouting()).resolves.toBe(TUNNEL_ROUTING);
+    await expect(api.listProfiles()).resolves.toBe(TUNNEL_PROFILES);
+  });
+
+  it("the Tunnel ruleset has one rule of every type, labels, a switched-off rule, and a preset reply with one unsaved rule", () => {
+    expect(new Set(TUNNEL_ROUTING.rules.map((rule) => rule.type))).toEqual(new Set(["geoip", "geosite", "domain", "ip", "port"]));
+    expect(TUNNEL_ROUTING.rules.filter((rule) => !rule.enabled).map((rule) => rule.value)).toEqual(["netflix.com"]);
+    expect(TUNNEL_ROUTING.rules.filter((rule) => rule.label).length).toBeGreaterThan(1);
+    expect(ROUTING_PRESETS.map((preset) => preset.name)).toEqual(["ru-direct", "block-ads", "cn-direct", "lan-direct"]);
+    expect(RU_DIRECT_PRESET.rules.slice(0, TUNNEL_ROUTING.rules.length)).toEqual(TUNNEL_ROUTING.rules);
+    expect(RU_DIRECT_PRESET.rules.filter((rule) => rule.id === 0).map((rule) => `${rule.type}:${rule.value}`)).toEqual(["geosite:category-ru"]);
+  });
+
+  it("the Tunnel profiles: one default, one live, one unused; every feature switched on somewhere", () => {
+    expect(TUNNEL_PROFILES.filter((p) => p.is_default).map((p) => p.name)).toEqual(["balanced"]);
+    expect(TUNNEL_PROFILES.filter((p) => p.is_active).map((p) => p.name)).toEqual(["fragment-tls"]);
+    expect(TUNNEL_PROFILES.filter((p) => p.node_count === 0).map((p) => p.name)).toEqual(["mux-heavy"]);
+    for (const flag of ["frag_enabled", "noise_enabled", "mux_enabled", "doh_enabled"] as const) {
+      expect(TUNNEL_PROFILES.some((p) => p[flag])).toBe(true);
+    }
+    expect(new Set(TUNNEL_PROFILES.map((p) => p.quic))).toEqual(new Set(["allow", "drop", "proxy"]));
+    expect(TUNNEL_PROFILES[1]!.noises).toHaveLength(2);
+    expect(PROFILE_PRESETS.map((preset) => preset.name)).toEqual(["ru-hardened", "stealth-latency", "cdn-xhttp"]);
+    expect(SETTINGS).toMatchObject({ health_enabled: true, health_sweep_enabled: true, failover_enabled: true });
+    expect(FAILOVER_STATUS.last_failover_at).toBe(NOW_SEC - 720);
   });
 });

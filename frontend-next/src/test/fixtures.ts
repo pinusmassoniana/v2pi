@@ -2,8 +2,8 @@ import type { QueryClient } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi } from "vitest";
 import type {
-  Network, Node, NodeHealth, NodeIn, NodeUpdate, PreviewNodes, Preview, RefreshAllResult, Routing, Settings, Status, Subscription,
-  SubscriptionIn, TrafficFrame, TrafficMessage, TuningProfile,
+  Network, Node, NodeHealth, NodeIn, NodeUpdate, PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate, RefreshAllResult,
+  Routing, RoutingIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage, TuningProfile,
 } from "../api/client";
 import { api } from "../api/client";
 import { recordServerNow } from "../api/clock";
@@ -203,6 +203,97 @@ export const ROUTING: Routing = {
   ],
 };
 
+/**
+ * The ruleset Tunnel › Routing edits: one rule of every type, labels on some, the last one switched off, and an ip rule
+ * on a public range (a private one with an action other than direct is refused by the backend).
+ */
+export const TUNNEL_ROUTING: Routing = {
+  default_action: "proxy",
+  domain_strategy: "IPIfNonMatch",
+  rules: [
+    { id: 21, position: 0, type: "geosite", value: "category-ads-all", action: "block", enabled: true, label: "ads" },
+    { id: 22, position: 1, type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel" },
+    { id: 23, position: 2, type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "" },
+    { id: 24, position: 3, type: "ip", value: "45.83.0.0/16", action: "proxy", enabled: true, label: "office" },
+    { id: 25, position: 4, type: "port", value: "25", action: "block", enabled: true, label: "no SMTP" },
+    { id: 26, position: 5, type: "domain", value: "netflix.com", action: "proxy", enabled: false, label: "" },
+  ],
+};
+
+/** GET /routing/presets, as the backend lists them. */
+export const ROUTING_PRESETS: PresetInfo[] = [
+  { name: "ru-direct", title: "RU-direct — keep Russian traffic off the tunnel" },
+  { name: "block-ads", title: "Block ads & trackers" },
+  { name: "cn-direct", title: "CN-direct — Chinese traffic off the tunnel" },
+  { name: "lan-direct", title: "LAN-direct — private ranges direct (explicit)" },
+];
+
+/**
+ * POST /routing/preset/ru-direct over TUNNEL_ROUTING: the stored rules, then the preset's rules the store does not have
+ * yet (geoip ru direct is already there) — unsaved, so with id 0.
+ */
+export const RU_DIRECT_PRESET: Routing = {
+  ...TUNNEL_ROUTING,
+  rules: [
+    ...TUNNEL_ROUTING.rules,
+    { id: 0, position: 6, type: "geosite", value: "category-ru", action: "direct", enabled: true, label: "" },
+  ],
+};
+
+/** Validate replies: a pass, and the backend's refusal of a private range sent anywhere but direct. */
+export const VALID = { ok: true, error: "" };
+export const ROUTING_INVALID = {
+  ok: false,
+  error: "rule 4: '10.0.0.0/8' is a private range and the built-in 'geoip:private → direct' rule is matched first, so this rule could never send it to 'proxy' — only 'direct' is reachable for private ranges",
+};
+export const PROFILE_INVALID = { ok: false, error: "bad fragment length '0-5'" };
+
+function profile(patch: Partial<TuningProfile> & Pick<TuningProfile, "id" | "name">): TuningProfile {
+  return {
+    fingerprint: "chrome", frag_enabled: false, frag_packets: "tlshello", frag_length: "100-200", frag_interval: "10-20",
+    mux_enabled: false, mux_concurrency: "", xudp_proxy_udp443: "", doh_enabled: true, doh_url: "", quic: "allow",
+    noise_enabled: false, noises: [], xhttp_padding: "", xmux_max_concurrency: "", xmux_max_connections: "",
+    alpn: "", tls_min: "", tls_max: "", is_default: false, is_active: false, node_count: 0, ...patch,
+  };
+}
+
+/**
+ * Tunnel › Anti-DPI's profiles, every field set somewhere: balanced is the default (contract defaults); fragment-tls
+ * governs the live tunnel, with fragmentation, two noise rows and QUIC dropped; mux-heavy is unused, with mux, the
+ * XHTTP and TLS knobs, a DoH URL and QUIC proxied.
+ */
+export const TUNNEL_PROFILES: TuningProfile[] = [
+  profile({ id: 1, name: "balanced", is_default: true, node_count: 8 }),
+  profile({
+    id: 2, name: "fragment-tls", is_active: true, node_count: 3, frag_enabled: true, quic: "drop", noise_enabled: true,
+    noises: [{ type: "rand", packet: "50-150", delay: "10-16" }, { type: "hex", packet: "0a0b0c0d", delay: "20-40" }],
+  }),
+  profile({
+    id: 3, name: "mux-heavy", fingerprint: "firefox", mux_enabled: true, mux_concurrency: "8", xudp_proxy_udp443: "skip",
+    doh_enabled: false, doh_url: "https://1.1.1.1/dns-query", quic: "proxy", xhttp_padding: "100-1000",
+    xmux_max_concurrency: "16", xmux_max_connections: "0", alpn: "h2,http/1.1", tls_min: "1.2", tls_max: "1.3",
+  }),
+];
+
+/** GET /profiles/presets, as the backend lists them. */
+export const PROFILE_PRESETS: ProfilePreset[] = [
+  {
+    name: "ru-hardened", title: "RU-hardened — fragment + noise + QUIC drop",
+    fields: {
+      fingerprint: "chrome", frag_enabled: true, frag_packets: "tlshello", frag_length: "100-200", frag_interval: "10-20", quic: "drop",
+      noise_enabled: true, noises: [{ type: "rand", packet: "50-150", delay: "10-16" }],
+    },
+  },
+  { name: "stealth-latency", title: "Stealth (min latency) — fingerprint only, QUIC allowed", fields: { fingerprint: "chrome", frag_enabled: false, quic: "allow" } },
+  {
+    name: "cdn-xhttp", title: "CDN / XHTTP — padding + xmux",
+    fields: { fingerprint: "chrome", quic: "drop", xhttp_padding: "100-1000", xmux_max_concurrency: "16", xmux_max_connections: "0" },
+  },
+];
+
+/** Status as the Health & failover strip reads it after a switch twelve minutes ago. */
+export const FAILOVER_STATUS: Status = { ...STATUS, last_failover_at: NOW_SEC - 720, failovers_24h: 1, eligible_standby_count: 4 };
+
 /** One live frame: healthy tunnel through nl-ams-03, nothing leaking around it. */
 export const TRAFFIC_FRAME: TrafficFrame = {
   ts: NOW_SEC * 1000,
@@ -263,6 +354,25 @@ export function mockApi() {
     refreshAllSubs: vi.spyOn(api, "refreshAllSubs").mockResolvedValue(REFRESH_ALL),
     previewSub: vi.spyOn(api, "previewSub").mockResolvedValue(PREVIEW),
     previewSubNodes: vi.spyOn(api, "previewSubNodes").mockResolvedValue(PREVIEW_NODES),
+    listRoutingPresets: vi.spyOn(api, "listRoutingPresets").mockResolvedValue(ROUTING_PRESETS),
+    routingPreset: vi.spyOn(api, "routingPreset").mockResolvedValue(RU_DIRECT_PRESET),
+    validateRouting: vi.spyOn(api, "validateRouting").mockResolvedValue(VALID),
+    putRouting: vi.spyOn(api, "putRouting").mockImplementation(async (body: RoutingIn) => ({
+      rules: body.rules.map((rule, index) => ({ id: 100 + index, position: index, enabled: true, label: "", ...rule })),
+      default_action: body.default_action,
+      domain_strategy: body.domain_strategy ?? "IPIfNonMatch",
+    })),
+    listProfilePresets: vi.spyOn(api, "listProfilePresets").mockResolvedValue(PROFILE_PRESETS),
+    validateProfile: vi.spyOn(api, "validateProfile").mockResolvedValue(VALID),
+    addProfile: vi.spyOn(api, "addProfile").mockImplementation(async (input: ProfileIn) => profile({ ...input, id: 4 })),
+    updateProfile: vi.spyOn(api, "updateProfile").mockImplementation(async (id: number, patch: ProfileUpdate) => ({
+      ...(TUNNEL_PROFILES.find((p) => p.id === id) ?? profile({ id, name: `profile-${id}` })), ...patch,
+    })),
+    deleteProfile: vi.spyOn(api, "deleteProfile").mockResolvedValue({ ok: true }),
+    setDefaultProfile: vi.spyOn(api, "setDefaultProfile").mockImplementation(async (id: number) => ({
+      ...(TUNNEL_PROFILES.find((p) => p.id === id) ?? profile({ id, name: `profile-${id}` })), is_default: true,
+    })),
+    applyProfileActive: vi.spyOn(api, "applyProfileActive").mockResolvedValue({ ok: true, node_id: 1 }),
     /** Push one WebSocket message into the live-traffic store, as the socket would. */
     emitTraffic(message: TrafficMessage): void {
       const send = deliver;
@@ -278,6 +388,13 @@ export type MockApi = ReturnType<typeof mockApi>;
 export function mockNodeGroups(api$: MockApi): MockApi {
   api$.listNodes.mockResolvedValue(ALL_NODES);
   api$.listNodeHealth.mockResolvedValue(ALL_NODE_HEALTH);
+  return api$;
+}
+
+/** Serve Tunnel's ruleset and profiles instead of the Home ones (see TUNNEL_ROUTING, TUNNEL_PROFILES). */
+export function mockTunnel(api$: MockApi): MockApi {
+  api$.getRouting.mockResolvedValue(TUNNEL_ROUTING);
+  api$.listProfiles.mockResolvedValue(TUNNEL_PROFILES);
   return api$;
 }
 
