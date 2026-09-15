@@ -17,6 +17,9 @@ test("every screen names its controls and keeps dim text readable", async ({ pag
     const unnamed = await page.locator("a:visible, button:visible, input:visible, select:visible, textarea:visible")
       .evaluateAll((controls) => controls.flatMap((control, index) => {
         const element = control as HTMLElement;
+        // The screen being left can still be unmounting when the controls are collected: a detached input has lost
+        // its <label>, but it is not on the screen any more either.
+        if (!element.isConnected) return [];
         const labelledBy = element.getAttribute("aria-labelledby")
           ?.split(/\s+/)
           .some((id) => document.getElementById(id)?.textContent?.trim());

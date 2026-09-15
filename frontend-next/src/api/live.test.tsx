@@ -3,8 +3,9 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "../features/home/screens";   // loaded up front: the route's lazy import must not wait on fake timers
 import "../features/nodes/screens";
+import "../features/tunnel/screens";
 import { STATUS_POLL_MS } from "../app/shell/Shell";
-import { NOW_SEC, STATUS, mockApi } from "../test/fixtures";
+import { NOW_SEC, STATUS, mockApi, mockTunnel } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
 import { setViewportWidth } from "../test/viewport";
 import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
@@ -182,6 +183,45 @@ describe("Nodes polls each key at its owner's cadence and no faster", () => {
     expect(during).toEqual({
       status: 60_000 / STATUS_POLL_MS, nodes: 60_000 / SLOW_POLL_MS, nodeHealth: 60_000 / SLOW_POLL_MS, subs: 60_000 / SLOW_POLL_MS,
       profiles: 0, settings: 0, network: 0,
+    });
+  });
+});
+
+/** Mount a Tunnel `path` on fake timers, wait for `loaded`, then count each read over one minute. */
+async function countTunnelReads(path: string, loaded: () => HTMLElement | null) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const api$ = mockTunnel(mockApi());
+  renderApp(path);
+  for (let i = 0; i < 80 && !loaded(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(loaded()).not.toBeNull();
+  const reads = {
+    status: api$.getStatus, routing: api$.getRouting, profiles: api$.listProfiles, settings: api$.getSettings, nodes: api$.listNodes,
+    network: api$.getNetwork, routingPresets: api$.listRoutingPresets, profilePresets: api$.listProfilePresets,
+  };
+  const before = Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length]));
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  return Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length - before[key]!]));
+}
+
+describe("Tunnel polls each key at its owner's cadence and no faster", () => {
+  it("Routing: status 3 s (shell), routing 30 s; presets, profiles, settings, nodes and network not at all", async () => {
+    const during = await countTunnelReads("/tunnel/routing", () => screen.queryByRole("table", { name: "Routing rules" }));
+    expect(during).toEqual({
+      status: 60_000 / STATUS_POLL_MS, routing: 60_000 / SLOW_POLL_MS, profiles: 0, settings: 0, nodes: 0, network: 0, routingPresets: 0, profilePresets: 0,
+    });
+  });
+
+  it("Anti-DPI: status 3 s (shell), profiles 30 s; presets, routing, settings, nodes and network not at all", async () => {
+    const during = await countTunnelReads("/tunnel/anti-dpi", () => screen.queryByRole("table", { name: "Profiles" }));
+    expect(during).toEqual({
+      status: 60_000 / STATUS_POLL_MS, routing: 0, profiles: 60_000 / SLOW_POLL_MS, settings: 0, nodes: 0, network: 0, routingPresets: 0, profilePresets: 0,
+    });
+  });
+
+  it("Health & failover: status 3 s (shell); settings read once, not polled; nothing else", async () => {
+    const during = await countTunnelReads("/tunnel/health", () => screen.queryByRole("region", { name: "Health monitoring" }));
+    expect(during).toEqual({
+      status: 60_000 / STATUS_POLL_MS, routing: 0, profiles: 0, settings: 0, nodes: 0, network: 0, routingPresets: 0, profilePresets: 0,
     });
   });
 });

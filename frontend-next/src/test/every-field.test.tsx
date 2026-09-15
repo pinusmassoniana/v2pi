@@ -17,6 +17,9 @@ const LOADED: Readonly<Record<string, [region: string, text: string]>> = {
   "/nodes": ["Servers toolbar", "work"],
   "/nodes/subscriptions": ["home", "fetch failed: timeout"],
   "/nodes/1": ["Config", "nl-ams-03.example.org"],
+  "/tunnel/routing": ["Defaults", "used by the catch-all row"],
+  "/tunnel/anti-dpi": ["Anti-DPI profiles", "fragment-tls"],
+  "/tunnel/health": ["Health monitoring", "master switch"],
 };
 
 function fillEveryField(root: HTMLElement) {
