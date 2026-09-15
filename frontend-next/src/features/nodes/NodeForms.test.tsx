@@ -225,6 +225,20 @@ describe("Edit node (N13, T6)", () => {
     expect(api$.disconnect).toHaveBeenCalledWith(2);
   });
 
+  it("an edit that clashes with another node's identity says so, without the active-node banner or Disconnect", async () => {
+    const { api$ } = await openList("/nodes");
+    api$.updateNode.mockRejectedValue(new ApiError(409, "a node with this identity already exists"));
+    await fromMenu("de-fra-01", "Edit");
+    const sheet = await screen.findByRole("dialog", { name: "Edit node · de-fra-01" });
+    await userEvent.clear(within(sheet).getByLabelText("Note"));
+    await userEvent.type(within(sheet).getByLabelText("Note"), "dup");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("a node with this identity already exists");
+    expect(within(sheet).queryByText("That node is active. Disconnect → Edit → Connect, then try again.")).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: "Disconnect" })).toBeNull();
+    expect(within(sheet).getByLabelText("Note")).toHaveValue("dup");
+  });
+
   it("the active node's Edit is disabled in the menu with its reason", async () => {
     await openList("/nodes");
     await userEvent.click(within(row("nl-ams-03")).getByRole("button", { name: "More actions for nl-ams-03" }));

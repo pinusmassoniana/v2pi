@@ -154,8 +154,17 @@ export function formToValidate(values: NodeFormValues, withProfile: boolean): No
     : formToNodeIn(values);
 }
 
-/** N13 / N15: an edit or delete that failed — any 409 is the active node. */
+/**
+ * The backend's other 409 on an edit (`PATCH /nodes/{id}`): the edited fields collide with another node's identity.
+ * Told apart from the active-node 409 by the server's detail, so the form never offers a Disconnect that cannot help.
+ */
+export function isIdentityConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.detail === IDENTITY_MESSAGE;
+}
+
+/** N13 / N15: an edit or delete that failed — a 409 is the active node, unless the server reports an identity clash. */
 export function nodeMutationMessage(error: unknown, fallback: string): string {
+  if (isIdentityConflict(error)) return IDENTITY_MESSAGE;
   return error instanceof ApiError && error.status === 409 ? ACTIVE_NODE_MESSAGE : errText(error, fallback);
 }
 

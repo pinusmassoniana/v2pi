@@ -3,7 +3,7 @@ import { ApiError } from "../../api/client";
 import { NODES, SERVER_NODES, node } from "../../test/fixtures";
 import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, addNodeMessage, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
-  nodeFormSchema, nodeMutationMessage, nodeToForm, profileFromValue, profileValue, validateMessage, type NodeFormValues,
+  isIdentityConflict, nodeFormSchema, nodeMutationMessage, nodeToForm, profileFromValue, profileValue, validateMessage, type NodeFormValues,
 } from "./nodeForm";
 
 const VALID: NodeFormValues = { ...BLANK_NODE_FORM, name: "vps-ams-02", address: "198.51.100.77", uuid: "3f1c9a52" };
@@ -96,12 +96,21 @@ describe("prefilled forms", () => {
 });
 
 describe("messages", () => {
-  it("any 409 on edit or delete explains the active node; other errors carry the backend's text", () => {
+  it("a 409 on edit or delete explains the active node, unless the server says it is an identity clash; other errors carry the backend's text", () => {
     expect(nodeMutationMessage(new ApiError(409, "disconnect the active node before editing it"), "save failed")).toBe(ACTIVE_NODE_MESSAGE);
-    expect(nodeMutationMessage(new ApiError(409, "a node with this identity already exists"), "save failed")).toBe(ACTIVE_NODE_MESSAGE);
+    expect(nodeMutationMessage(new ApiError(409, "node 3 is active"), "delete failed")).toBe(ACTIVE_NODE_MESSAGE);
+    expect(nodeMutationMessage(new ApiError(409, "a node with this identity already exists"), "save failed")).toBe(IDENTITY_MESSAGE);
     expect(nodeMutationMessage(new ApiError(422, "tuning profile not found"), "save failed")).toBe("tuning profile not found");
     expect(nodeMutationMessage(new Error("boom"), "save failed")).toBe("save failed");
     expect(ACTIVE_NODE_MESSAGE).toBe("That node is active. Disconnect → Edit → Connect, then try again.");
+  });
+
+  it("an identity clash is the backend's 409 with the identity detail, and nothing else", () => {
+    expect(isIdentityConflict(new ApiError(409, "a node with this identity already exists"))).toBe(true);
+    expect(isIdentityConflict(new ApiError(409, "disconnect the active node before editing it"))).toBe(false);
+    expect(isIdentityConflict(new ApiError(422, "a node with this identity already exists"))).toBe(false);
+    expect(isIdentityConflict(new Error("a node with this identity already exists"))).toBe(false);
+    expect(isIdentityConflict(null)).toBe(false);
   });
 
   it("a 409 on add is a node with the same identity", () => {

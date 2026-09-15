@@ -16,7 +16,7 @@ import { cn } from "../../lib/cn";
 import { SERVERS } from "./list";
 import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, MAX_FIELD, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
-  nodeFormSchema, nodeToForm, validateMessage, type NodeFormValues,
+  isIdentityConflict, nodeFormSchema, nodeToForm, validateMessage, type NodeFormValues,
 } from "./nodeForm";
 import { SELECT_CLASS } from "./ServersToolbar";
 import { useNodeConnection } from "./useNodeActions";
@@ -69,7 +69,7 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   const profiles = useQuery({ ...queries.profiles(), enabled: edit });
   const [validation, setValidation] = useState<{ ok: boolean; text: string } | null>(null);
   const [validating, setValidating] = useState(false);
-  const [conflict, setConflict] = useState(false);
+  const [conflict, setConflict] = useState<"active" | "identity" | null>(null);
   const addWrite = useApiWrite("addNode");
   const updateWrite = useApiWrite("updateNode");
 
@@ -82,7 +82,8 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
       if (!edit) void navigate({ to: "/nodes", search: { group: SERVERS }, ignoreBlocker: true });
     },
     onError: (error) => {
-      if (error instanceof ApiError && error.status === 409) setConflict(true);
+      // Add has one 409 (the identity); edit has two, told apart by the server's detail.
+      if (error instanceof ApiError && error.status === 409) setConflict(edit && !isIdentityConflict(error) ? "active" : "identity");
       else notifyError(error, edit ? "save failed" : "add failed");
     },
   });
@@ -108,7 +109,7 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   const { errors } = formState;
   const title = edit ? `Edit node · ${node.name}` : "Add server";
   const submit = handleSubmit((values) => {
-    setConflict(false);
+    setConflict(null);
     save.mutate(values);
   });
 
@@ -121,7 +122,8 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
             {mode === "add" ? "Fields marked * are required. The tuning profile is set later, in Edit." : null}
             {edit && dirty ? <span className="font-semibold text-warn">● unsaved changes</span> : null}
           </p>
-          {conflict ? (edit ? <ActiveBanner node={node} /> : <p role="alert" className="rounded-xl border border-bad/40 bg-bad/10 p-3 text-sm text-t1">{IDENTITY_MESSAGE}</p>) : null}
+          {conflict === "active" && edit ? <ActiveBanner node={node} /> : null}
+          {conflict === "identity" ? <p role="alert" className="rounded-xl border border-bad/40 bg-bad/10 p-3 text-sm text-t1">{IDENTITY_MESSAGE}</p> : null}
 
           <Section title="Identity">
             <TextField label="Name" required hint={`≤ ${MAX_FIELD}`} error={errors.name?.message} autoComplete="off" {...register("name")} />
