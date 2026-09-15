@@ -75,25 +75,32 @@ function useReorder(shown: readonly Node[]) {
 const NONE: ReadonlySet<number> = new Set();
 
 /**
- * N18: the selection belongs to its group — switching group starts empty — and only rows still shown count as
- * selected, while a node hidden by the search keeps its tick for when it shows again.
+ * N18: the selection belongs to its group — switching group starts empty, even coming back to a group visited
+ * earlier in the same session — and only rows still shown count as selected, while a node hidden by the search
+ * keeps its tick for when it shows again.
  */
 function useSelection(group: GroupKey, shown: readonly Node[]) {
-  const [picked, setPicked] = useState<{ group: GroupKey; ids: ReadonlySet<number> }>({ group, ids: NONE });
-  const own = picked.group === group ? picked.ids : NONE;
-  const selected = useMemo(() => pruneSelection(own, shown), [own, shown]);
+  const [ids, setIds] = useState<ReadonlySet<number>>(NONE);
+  // Adjusting state while rendering (plain state, not a ref — react-hooks 7 forbids reading/writing ref.current
+  // during render) — a group change drops the old ticks in the same render, not an effect a frame later.
+  const [seenGroup, setSeenGroup] = useState(group);
+  if (seenGroup !== group) {
+    setSeenGroup(group);
+    if (ids.size > 0) setIds(NONE);
+  }
+  const selected = useMemo(() => pruneSelection(ids, shown), [ids, shown]);
   const state = selectionState(selected, shown);
-  const onToggle = useCallback((id: number) => setPicked((prev) => {
-    const ids = new Set(prev.group === group ? prev.ids : NONE);
-    if (ids.has(id)) ids.delete(id);
-    else ids.add(id);
-    return { group, ids };
-  }), [group]);
+  const onToggle = useCallback((id: number) => setIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  }), []);
   const onToggleAll = useCallback(
-    () => setPicked({ group, ids: state === "all" ? NONE : new Set(shown.map((node) => node.id)) }),
-    [group, shown, state],
+    () => setIds(state === "all" ? NONE : new Set(shown.map((node) => node.id))),
+    [shown, state],
   );
-  const clear = useCallback(() => setPicked({ group, ids: NONE }), [group]);
+  const clear = useCallback(() => setIds(NONE), []);
   const controls: SelectionControls = useMemo(() => ({ selected, state, onToggle, onToggleAll }), [selected, state, onToggle, onToggleAll]);
   const nodes = useMemo(() => shown.filter((node) => selected.has(node.id)), [shown, selected]);
   return { controls, nodes, clear };

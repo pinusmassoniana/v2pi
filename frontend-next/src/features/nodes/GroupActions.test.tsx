@@ -58,6 +58,20 @@ describe("Servers › group actions (N8–N10)", () => {
     await waitFor(() => expect(error).toHaveBeenCalledWith("request timed out", { duration: 20000 }));
   });
 
+  it("the ping lock survives the screen remounting mid-sweep", async () => {
+    const { api$, client, unmount } = await openList();
+    let finish: (rows: NodeHealth[]) => void = () => {};
+    api$.probeTcp.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await userEvent.click(toolbar().getByRole("button", { name: "TCP ping" }));
+    unmount();
+    renderApp("/nodes", { client });   // same client: a real remount, not a fresh app with an empty mutation cache
+    await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
+    expect(toolbar().getByRole("button", { name: /^Pinging… \d+ s$/ })).toBeDisabled();
+    expect(toolbar().getByRole("button", { name: "HTTP ping" })).toBeDisabled();
+    await act(async () => finish(ALL_NODE_HEALTH));
+    await waitFor(() => expect(toolbar().getByRole("button", { name: "TCP ping" })).toBeEnabled());
+  });
+
   it("Test all probes every shown row in order, counting down, past a failure", async () => {
     const { api$ } = await openList("/nodes?q=example&sort=name");
     const pending: ((health: NodeHealth) => void)[] = [];
@@ -73,6 +87,18 @@ describe("Servers › group actions (N8–N10)", () => {
     for (let i = 0; i < 4; i++) await act(async () => pending.shift()!(NODE_HEALTH[0]!));
     await waitFor(() => expect(toolbar().getByRole("button", { name: "Test all (real)" })).toBeEnabled());
     expect(api$.probeNode.mock.calls.map(([id]) => id)).toEqual([5, 2, 3, 1, 4, 6]);
+  });
+
+  it("Test all counts thrown probe failures and reports them once, at the end", async () => {
+    const { api$ } = await openList("/nodes?q=02");   // fi-hel-02 and ch-zrh-02 only, in position order
+    const error = vi.spyOn(toast, "error");
+    const pending: ((health: NodeHealth) => void)[] = [];
+    api$.probeNode.mockImplementation((id) => (id === 3 ? Promise.reject(new Error("probe failed")) : new Promise((resolve) => { pending.push(resolve); })));
+    await userEvent.click(toolbar().getByRole("button", { name: "Test all (real)" }));
+    await waitFor(() => expect(api$.probeNode.mock.calls.map(([id]) => id)).toEqual([3, 5]));
+    await act(async () => pending.shift()!(NODE_HEALTH[0]!));
+    await waitFor(() => expect(toolbar().getByRole("button", { name: "Test all (real)" })).toBeEnabled());
+    expect(error).toHaveBeenCalledWith("Test all: 1 of 2 probes failed — probe failed", { duration: 20000 });
   });
 
   it("Test all stops scheduling when the screen goes away", async () => {
@@ -138,6 +164,12 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     await userEvent.click(within(screen.getByRole("navigation", { name: "Node groups" })).getByRole("link", { name: "home 1" }));
     await waitFor(() => expect(row("us-nyc-01")).not.toBeNull());
     expect(screen.queryByRole("region", { name: "Selection" })).toBeNull();
+
+    // N1: A → B → A must not bring A's old ticks back — the group changed twice, so nothing was ever re-selected.
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Node groups" })).getByRole("link", { name: "work 6" }));
+    await waitFor(() => expect(row("de-fra-01")).not.toBeNull());
+    expect(screen.queryByRole("region", { name: "Selection" })).toBeNull();
+    expect(within(row("de-fra-01")).getByRole("checkbox", { name: "Select de-fra-01" })).not.toBeChecked();
   });
 
   it("the selection counts only rows still shown", async () => {
