@@ -20,7 +20,7 @@ export const GEO_TOKENS = ["ru", "cn", "private", "category-ru", "category-ads-a
 export const VALUE_PLACEHOLDERS: Readonly<Record<RuleType, string>> = {
   geoip: "ru | private | cn (comma-sep ok)",
   geosite: "category-ads-all",
-  domain: "example.com, *.ya.ru",
+  domain: "example.com, domain:ya.ru",
   ip: "1.2.3.0/24, 10.0.0.0/8",
   port: "443 | 1000-2000 | 80,443",
 };
@@ -371,10 +371,27 @@ function portMatches(token: string, port: number): boolean {
 }
 
 /**
+ * Whether one domain-rule token matches `host`, the way Xray evaluates it — the backend passes domain values through
+ * unchanged. No prefix or `keyword:` is a substring of the host; `domain:` is the name itself or any subdomain; `full:`
+ * is exact. `regexp:`, `geosite:` and `ext:` are not evaluated locally — null, like a geo rule (xray has no `*` wildcard,
+ * so a token such as `*.ya.ru` is a literal substring that no real host contains).
+ */
+function domainTokenMatches(token: string, host: string): boolean | null {
+  if (token.startsWith("regexp:") || token.startsWith("geosite:") || token.startsWith("ext:")) return null;
+  if (token.startsWith("full:")) return host === token.slice(5);
+  if (token.startsWith("domain:")) {
+    const name = token.slice(7);
+    return host === name || host.endsWith(`.${name}`);
+  }
+  const needle = token.startsWith("keyword:") ? token.slice(8) : token;
+  return host.includes(needle);
+}
+
+/**
  * R8: where a destination would go under the staged rules, evaluated here without the gateway. A private IPv4 goes
- * direct before any rule; then the rules in order, skipping switched-off and empty ones — domain (exact or a suffix, a
- * leading `*.` ignored), ip (IPv4 CIDRs), port (a port, a range or a list) — first match wins; geo rules are not
- * evaluated. Null for an empty input.
+ * direct before any rule; then the rules in order, skipping switched-off and empty ones — domain (as Xray reads it:
+ * `domainTokenMatches`), ip (IPv4 CIDRs), port (a port, a range or a list) — first match wins; geo rules, and any
+ * domain token not evaluated locally, are noted but not matched. Null for an empty input.
  */
 export function testDestination(input: string, state: StagedRouting): TesterResult | null {
   const raw = input.trim();
@@ -390,10 +407,16 @@ export function testDestination(input: string, state: StagedRouting): TesterResu
     const tokens = ruleTokens(row.value);
     let hit: boolean;
     if (row.type === "domain") {
+      let skippedToken = false;
       hit = tokens.some((token) => {
-        const base = token.replace(/^\*\.?/, "");
-        return host === base || host.endsWith(`.${base}`);
+        const matched = domainTokenMatches(token, host);
+        if (matched === null) {
+          skippedToken = true;
+          return false;
+        }
+        return matched;
       });
+      if (!hit && skippedToken) skippedGeo = true;
     } else if (row.type === "ip") {
       hit = isIp && tokens.some((token) => inIPv4Cidr(host, token));
     } else if (row.type === "port") {

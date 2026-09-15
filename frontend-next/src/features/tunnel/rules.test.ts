@@ -270,11 +270,32 @@ describe("testDestination (R8)", () => {
     expect(testDestination("192.0.0.9", state)?.detail).not.toContain("private");
   });
 
-  it("domain rules match the name or a subdomain, a leading *. ignored", () => {
-    expect(testDestination("ya.ru", state)).toEqual({ action: "direct", detail: '(matched domain "*.ya.ru, yandex.net")' });
-    expect(testDestination("mail.ya.ru:443", state)).toEqual({ action: "direct", detail: '(matched domain "*.ya.ru, yandex.net")' });
-    expect(testDestination("music.yandex.net", state)?.action).toBe("direct");
-    expect(testDestination("notyandex.net", state)?.detail).toBe("(default · geo rules not evaluated locally)");
+  it("domain rules match as Xray does: no prefix is a substring, so a literal '*.' token never matches", () => {
+    // the fixture rule is domain "*.ya.ru, yandex.net" → direct; "*.ya.ru" is a literal substring no real host
+    // contains, so ya.ru and mail.ya.ru fall through to the default, while "yandex.net" matches as a substring —
+    // including inside "notyandex.net", which contains it.
+    expect(testDestination("ya.ru", state)).toEqual({ action: "proxy", detail: "(default · geo rules not evaluated locally)" });
+    expect(testDestination("mail.ya.ru:443", state)).toEqual({ action: "proxy", detail: "(default · geo rules not evaluated locally)" });
+    expect(testDestination("yandex.net", state)).toEqual({ action: "direct", detail: '(matched domain "*.ya.ru, yandex.net")' });
+    expect(testDestination("mail.yandex.net", state)?.action).toBe("direct");
+    expect(testDestination("notyandex.net", state)?.action).toBe("direct");
+  });
+
+  it("honours domain: (name or subdomain), full: (exact) and keyword: (substring); regexp: is skipped like geo", () => {
+    const domainRule = updateRule(addRule(state, "n-domain"), "n-domain", { type: "domain", value: "domain:example.org", action: "block" });
+    expect(testDestination("example.org", domainRule)?.action).toBe("block");
+    expect(testDestination("www.example.org", domainRule)?.action).toBe("block");
+    expect(testDestination("notexample.org", domainRule)?.detail).toBe("(default · geo rules not evaluated locally)");
+
+    const fullRule = updateRule(addRule(state, "n-full"), "n-full", { type: "domain", value: "full:example.org", action: "block" });
+    expect(testDestination("example.org", fullRule)?.action).toBe("block");
+    expect(testDestination("www.example.org", fullRule)?.detail).toBe("(default · geo rules not evaluated locally)");
+
+    const keywordRule = updateRule(addRule(state, "n-keyword"), "n-keyword", { type: "domain", value: "keyword:ample", action: "block" });
+    expect(testDestination("example.org", keywordRule)?.action).toBe("block");
+
+    const regexpRule = updateRule(addRule(state, "n-regexp"), "n-regexp", { type: "domain", value: "regexp:^example", action: "block" });
+    expect(testDestination("example.org", regexpRule)).toEqual({ action: "proxy", detail: "(default · geo rules not evaluated locally)" });
   });
 
   it("ip rules match IPv4 CIDRs and port rules a port, a range or a list; the label follows the match", () => {
@@ -308,7 +329,7 @@ describe("constants", () => {
   it("geo suggestions and value placeholders, word for word", () => {
     expect(GEO_TOKENS).toEqual(["ru", "cn", "private", "category-ru", "category-ads-all", "geolocation-!cn", "google", "telegram"]);
     expect(VALUE_PLACEHOLDERS).toEqual({
-      geoip: "ru | private | cn (comma-sep ok)", geosite: "category-ads-all", domain: "example.com, *.ya.ru",
+      geoip: "ru | private | cn (comma-sep ok)", geosite: "category-ads-all", domain: "example.com, domain:ya.ru",
       ip: "1.2.3.0/24, 10.0.0.0/8", port: "443 | 1000-2000 | 80,443",
     });
     expect(keyOf(saved(), "ru")).toBe("s22");
