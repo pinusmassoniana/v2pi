@@ -163,13 +163,22 @@ export function blankProfileForm(): ProfileFormValues {
 
 const copyNoises = (noises: readonly NoiseSpec[]): NoiseRow[] => noises.map((noise) => ({ type: noise.type as NoiseType, packet: noise.packet, delay: noise.delay }));
 
+/**
+ * A stored xudpProxyUDP443 as the editor's choice. The backend stores any string there (no enum check), and a value
+ * the select does not offer would fail the form's schema with no visible field to fix — so it loads as the backend's
+ * default ("") instead.
+ */
+function xudpMode(value: string): XudpMode {
+  return (XUDP_MODES as readonly string[]).includes(value) ? (value as XudpMode) : "";
+}
+
 /** A stored profile as the editor's values. */
 export function profileToForm(profile: TuningProfile): ProfileFormValues {
   return {
     name: profile.name, fingerprint: profile.fingerprint as Fingerprint,
     frag_enabled: profile.frag_enabled, frag_packets: profile.frag_packets, frag_length: profile.frag_length, frag_interval: profile.frag_interval,
     noise_enabled: profile.noise_enabled, noises: copyNoises(profile.noises),
-    mux_enabled: profile.mux_enabled, mux_concurrency: profile.mux_concurrency, xudp_proxy_udp443: profile.xudp_proxy_udp443 as XudpMode,
+    mux_enabled: profile.mux_enabled, mux_concurrency: profile.mux_concurrency, xudp_proxy_udp443: xudpMode(profile.xudp_proxy_udp443),
     xhttp_padding: profile.xhttp_padding, xmux_max_concurrency: profile.xmux_max_concurrency, xmux_max_connections: profile.xmux_max_connections,
     alpn: profile.alpn, tls_min: profile.tls_min, tls_max: profile.tls_max,
     doh_enabled: profile.doh_enabled, doh_url: profile.doh_url, quic: profile.quic as QuicMode,

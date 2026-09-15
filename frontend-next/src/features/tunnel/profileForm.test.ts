@@ -143,6 +143,13 @@ describe("mapping", () => {
     expect(formToProfileIn({ ...form, name: "  spaced  " }).name).toBe("spaced");
   });
 
+  it("an xudpProxyUDP443 the editor does not offer (the backend stores any string) loads as the backend's default, so Save is not blocked", () => {
+    const form = profileToForm({ ...muxHeavy, xudp_proxy_udp443: "bogus" });
+    expect(form.xudp_proxy_udp443).toBe("");
+    expect(profileFormSchema.safeParse(form).success).toBe(true);
+    for (const mode of ["", "reject", "allow", "skip"]) expect(profileToForm({ ...muxHeavy, xudp_proxy_udp443: mode }).xudp_proxy_udp443).toBe(mode);
+  });
+
   it("noise rows are copied, never shared with the profile they came from", () => {
     const form = profileToForm(fragment);
     expect(form.noises).toEqual(fragment.noises);
