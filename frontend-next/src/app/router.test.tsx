@@ -33,7 +33,7 @@ describe("navigation model", () => {
 // Rebuilt screens show a card of their own instead of the placeholder.
 const BUILT: Readonly<Record<string, string>> = {
   "/": "Status", "/traffic": "Failover history", "/nodes": "Servers toolbar", "/nodes/subscriptions": "Subscription fetching",
-  "/tunnel/routing": "Rules", "/tunnel/anti-dpi": "Anti-DPI profiles",
+  "/tunnel/routing": "Rules", "/tunnel/anti-dpi": "Anti-DPI profiles", "/tunnel/health": "Current state",
 };
 
 describe("router", () => {
