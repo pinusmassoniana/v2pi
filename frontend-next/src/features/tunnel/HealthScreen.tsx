@@ -46,7 +46,7 @@ function Help({ children }: { children: ReactNode }) {
 function HealthForm({ settings }: { settings: Settings }) {
   const queryClient = useQueryClient();
   const baseline = useMemo(() => settingsToHealthForm(settings), [settings]);
-  const { register, control, handleSubmit, reset, formState: { errors, isDirty } } = useForm<HealthFormValues>({
+  const { register, control, handleSubmit, reset, getValues, setValue, formState: { errors, isDirty } } = useForm<HealthFormValues>({
     resolver: zodResolver(healthFormSchema),
     defaultValues: baseline,
     values: baseline,
@@ -75,7 +75,15 @@ function HealthForm({ settings }: { settings: Settings }) {
     save.mutate(patch, {
       onSuccess: (saved) => {
         queryClient.setQueryData(keys.settings, saved);
-        reset(settingsToHealthForm(saved));
+        // Reset clean so the saved fields follow the gateway again, then put back anything typed
+        // while the save was in flight — reset alone would inherit keepDirtyValues and wipe it.
+        const next = settingsToHealthForm(saved);
+        const edited = getValues();
+        reset(next, { keepDirtyValues: false });
+        for (const name of Object.keys(next) as (keyof HealthFormValues)[]) {
+          const submitted = name === "health_probe_url" ? values.health_probe_url.trim() : values[name];
+          if (edited[name] !== submitted) setValue(name, edited[name] as never, { shouldDirty: true, shouldValidate: true });
+        }
       },
     });
   });

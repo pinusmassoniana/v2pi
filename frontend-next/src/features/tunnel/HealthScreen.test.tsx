@@ -9,6 +9,7 @@ import { settleConfirm } from "../../components/confirm";
 import { FAILOVER_STATUS, SETTINGS, STATUS, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
+import { failoverLabel, healthState } from "./HealthStateStrip";
 
 afterEach(() => act(() => settleConfirm(false)));
 
@@ -36,11 +37,16 @@ describe("Health & failover › state strip", () => {
     expect(strip()).toHaveTextContent("Last switch12 min ago");
   });
 
-  it("checks off, no standby, never switched", async () => {
+  it("checks off, no standby, never switched: failover names health checks as the reason", async () => {
     await openHealth({ status: { ...STATUS, health_enabled: false, failover_ready: false, eligible_standby_count: 0, failovers_24h: 0, last_failover_at: null } });
     await waitFor(() => expect(strip()).toHaveTextContent("Health checksOff"));
-    expect(strip()).toHaveTextContent("Auto-failoverNo eligible standby0 eligible standby");
+    expect(strip()).toHaveTextContent("Auto-failoverNeeds health checks0 eligible standby");
     expect(strip()).toHaveTextContent("Last switchnever");
+  });
+
+  it("health checks on but no standby reads No eligible standby", async () => {
+    await openHealth({ status: { ...STATUS, failover_ready: false, eligible_standby_count: 0 } });
+    await waitFor(() => expect(strip()).toHaveTextContent("Auto-failoverNo eligible standby0 eligible standby"));
   });
 
   it("failover switched off reads Off; an unreachable gateway reads unknown", async () => {
@@ -49,6 +55,26 @@ describe("Health & failover › state strip", () => {
     api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
     await act(() => client.refetchQueries({ queryKey: keys.status }));
     await waitFor(() => expect(strip()).toHaveTextContent("Health checksunknownAuto-failoverunknownFailovers · 24 hunknownLast switchunknown"));
+  });
+});
+
+describe("failoverLabel", () => {
+  const base = healthState({ ...STATUS });
+
+  it("off beats every other reason", () => {
+    expect(failoverLabel({ ...base, failoverEnabled: false, healthEnabled: false, failoverReady: true, standbys: 4 })).toBe("Off");
+  });
+
+  it("names health checks as the reason they are needed", () => {
+    expect(failoverLabel({ ...base, failoverEnabled: true, healthEnabled: false, failoverReady: false, standbys: 4 })).toBe("Needs health checks");
+  });
+
+  it("reads ready once the backend says so", () => {
+    expect(failoverLabel({ ...base, failoverEnabled: true, healthEnabled: true, failoverReady: true, standbys: 4 })).toBe("Failover ready");
+  });
+
+  it("otherwise blames the missing standby", () => {
+    expect(failoverLabel({ ...base, failoverEnabled: true, healthEnabled: true, failoverReady: false, standbys: 0 })).toBe("No eligible standby");
   });
 });
 
@@ -152,6 +178,44 @@ describe("Health & failover › form (G3, G4)", () => {
     expect(within(failover()).getByLabelText("Cooldown")).toHaveValue(60);
     await userEvent.click(saveButton());
     await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ failover_cooldown: 60 }));
+  });
+
+  it("follows the gateway after a save, even for the field it just saved, and the next save sends only what changed since", async () => {
+    const { api$, client } = await openHealth();
+    await userEvent.clear(within(failover()).getByLabelText("Hysteresis"));
+    await userEvent.type(within(failover()).getByLabelText("Hysteresis"), "4");
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ health_hysteresis: 4 }));
+    await waitFor(() => expect(within(failover()).getByLabelText("Hysteresis")).toHaveValue(4));
+    // the gateway changes the field that was just saved, independently of this screen
+    api$.getSettings.mockResolvedValue({ ...SETTINGS, health_hysteresis: 7 });
+    await act(() => client.refetchQueries({ queryKey: keys.settings }));
+    await waitFor(() => expect(within(failover()).getByLabelText("Hysteresis")).toHaveValue(7));
+    await userEvent.clear(within(failover()).getByLabelText("Cooldown"));
+    await userEvent.type(within(failover()).getByLabelText("Cooldown"), "60");
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(api$.putSettings).toHaveBeenLastCalledWith({ failover_cooldown: 60 }));
+  });
+
+  it("keeps a value typed while the save that included other fields is still running", async () => {
+    const { api$ } = await openHealth();
+    await userEvent.clear(within(failover()).getByLabelText("Hysteresis"));
+    await userEvent.type(within(failover()).getByLabelText("Hysteresis"), "4");
+    let release: (saved: Settings) => void = () => {};
+    api$.putSettings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    // grab the button now: once the save starts, its own label changes to "Saving…"
+    const button = saveButton();
+    await userEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    // typed into another field while the save above is still in flight
+    await userEvent.clear(within(failover()).getByLabelText("Cooldown"));
+    await userEvent.type(within(failover()).getByLabelText("Cooldown"), "60");
+    await act(async () => release({ ...SETTINGS, health_hysteresis: 4 }));
+    await waitFor(() => expect(within(failover()).getByLabelText("Hysteresis")).toHaveValue(4));
+    expect(within(failover()).getByLabelText("Cooldown")).toHaveValue(60);
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(api$.putSettings).toHaveBeenLastCalledWith({ failover_cooldown: 60 }));
   });
 
   it("leaving with unsaved settings asks first", async () => {

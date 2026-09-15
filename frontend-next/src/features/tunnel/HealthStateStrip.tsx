@@ -22,6 +22,8 @@ export function healthState(status: Status) {
 /** What the strip shows for the auto-failover tile. */
 export function failoverLabel(state: ReturnType<typeof healthState>): string {
   if (state.failoverEnabled === false) return "Off";
+  // The backend's failover_ready also requires health checks on; name that cause instead of "No eligible standby".
+  if (state.healthEnabled === false) return "Needs health checks";
   return state.failoverReady ? "Failover ready" : "No eligible standby";
 }
 
