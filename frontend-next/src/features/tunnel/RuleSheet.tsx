@@ -37,7 +37,8 @@ export function RuleSheet({ row, index, count, disabled = false, onUpdate, onMov
 
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <SheetContent title={`Rule ${n} of ${count}`} className="max-md:max-h-[92dvh]">
+      {/* Focus the sheet, not its first field: that is the first Type radio, which is usually not the rule's type. */}
+      <SheetContent title={`Rule ${n} of ${count}`} initialFocus="overlay" className="max-md:max-h-[92dvh]">
         <div className="flex flex-col gap-3.5">
           {/* The page's own lock does not reach a sheet: it is portalled out of the page's fieldset. */}
           <fieldset disabled={disabled} className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0">

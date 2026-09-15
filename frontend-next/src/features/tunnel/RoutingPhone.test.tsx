@@ -78,6 +78,15 @@ describe("Routing on a phone", () => {
     expect(banner()).toHaveTextContent("STAGED · 1 change");
   });
 
+  it("a rule's sheet opens with focus on the sheet itself, not on a Type option the rule does not have", async () => {
+    const { list } = await openPhone();
+    await userEvent.click(within(list).getByRole("button", { name: "Edit rule 3" }));
+    const sheet = await screen.findByRole("dialog", { name: "Rule 3 of 6" });
+    expect(within(sheet).getByRole("radio", { name: "domain" })).toBeChecked();
+    await waitFor(() => expect(sheet).toHaveFocus());
+    expect(within(sheet).getByRole("radio", { name: "geoip" })).not.toHaveFocus();
+  });
+
   it("moves a rule from its sheet, deletes it, and adds a new one that opens at once", async () => {
     const { list } = await openPhone();
     await userEvent.click(within(list).getByRole("button", { name: "Edit rule 1" }));
