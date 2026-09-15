@@ -1,7 +1,7 @@
 import { Dialog as Primitive } from "radix-ui";
 import { useState, type ReactNode } from "react";
 import { cn } from "../../lib/cn";
-import { Dialog, OverlayPortal } from "./Dialog";
+import { CloseButton, Dialog, OverlayPortal, useEscapeWithin } from "./Dialog";
 
 /** A sheet root; `dirty` guards closing exactly as on Dialog. */
 export const Sheet = Dialog;
@@ -15,9 +15,11 @@ export const Sheet = Dialog;
  */
 export function SheetContent({ title, className, children }: { title: string; className?: string; children: ReactNode }) {
   const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+  const escape = useEscapeWithin();
   return (
     <OverlayPortal className="bg-[rgba(4,3,10,.5)]">
       <Primitive.Content
+        {...escape}
         aria-describedby={undefined}
         onCloseAutoFocus={(event) => {
           if (opener?.isConnected) {
@@ -31,7 +33,10 @@ export function SheetContent({ title, className, children }: { title: string; cl
           className,
         )}
       >
-        <Primitive.Title className="text-base font-bold text-t1">{title}</Primitive.Title>
+        <div className="flex items-start justify-between gap-3">
+          <Primitive.Title className="min-w-0 truncate text-base font-bold text-t1">{title}</Primitive.Title>
+          <CloseButton />
+        </div>
         <div className="mt-4">{children}</div>
       </Primitive.Content>
     </OverlayPortal>

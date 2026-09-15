@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
+import { Ellipsis, Plus, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Node } from "../../api/client";
 import { SLOW_POLL_MS } from "../../api/cadence";
@@ -8,6 +9,7 @@ import { keys, queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { cardFallback, staleNotice } from "../../components/data/CardState";
 import { Button } from "../../components/ui/Button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../components/ui/DropdownMenu";
 import { EmptyState, Skeleton } from "../../components/ui/States";
 import { notifyError } from "../../components/ui/Toaster";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
@@ -19,7 +21,7 @@ import {
   visibleRows, type GroupKey, type SortKey,
 } from "./list";
 import { NodeCards } from "./NodeCards";
-import { NO_MENU_CALLBACKS } from "./NodeRowActions";
+import { NodeDialogs, useNodeDialogs } from "./NodeDialogs";
 import { NodeTable, type SelectionControls } from "./NodeTable";
 import { RowCapFooter } from "./RowCapFooter";
 import { listState, readDense, toSearch, writeDense, type ListState, type NodesSearch } from "./search";
@@ -138,6 +140,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
   const reorderControls = useReorder(shown);
   const reorder = canReorder(group, sort, q) ? reorderControls : null;
   const selection = useSelection(group, shown);
+  const dialogs = useNodeDialogs();
 
   // N1: a group that does not exist (any more) falls back to the default, without a history entry of its own.
   useEffect(() => {
@@ -168,7 +171,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
   else if (shown.length === 0) body = <EmptyState title={group === SERVERS ? "No servers here — add one with Add server." : "No servers here"} />;
   else {
     const common = {
-      rows, health: healthMap, activeId, activeSince, dense, menu: NO_MENU_CALLBACKS, detailSearch, reorder,
+      rows, health: healthMap, activeId, activeSince, dense, menu: dialogs.menu, detailSearch, reorder,
       selection: desktop || selecting ? selection.controls : null,
     };
     body = desktop ? <NodeTable {...common} sort={sort} dir={dir} onSort={onSort} /> : <NodeCards {...common} />;
@@ -181,6 +184,17 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
       <div className="flex flex-col gap-3" hidden={hidden}>
         {!desktop && ready ? (
           <div className="flex items-center justify-end gap-2">
+            {group === SERVERS ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" aria-label="Add or import servers"><Ellipsis size={16} aria-hidden /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onSelect={() => window.setTimeout(dialogs.openAdd, 0)}>Add server</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => window.setTimeout(dialogs.openImport, 0)}>Import</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
             <Button
               size="sm"
               aria-pressed={selecting}
@@ -202,6 +216,12 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
           dense={dense}
           onDense={onDense}
           actions={<GroupActions group={group} shown={shown} nodes={nodes.data} offline={status.isError} />}
+          manage={desktop ? (group === SERVERS ? (
+            <>
+              <Button size="sm" onClick={dialogs.openImport}><Upload size={14} aria-hidden />Import</Button>
+              <Button size="sm" variant="primary" onClick={dialogs.openAdd}><Plus size={14} aria-hidden />Add server</Button>
+            </>
+          ) : <span className="text-[11px] text-t3">Add server and Import live in the Servers group</span>) : undefined}
         />
         <FailoverNote status={status.data} className="px-1" />
         {status.isError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
@@ -209,6 +229,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
         {body}
         {ready ? <RowCapFooter shown={rows.length} total={shown.length} onShowAll={() => setShowAllGroup(group)} /> : null}
         {selection.nodes.length > 0 ? <BulkBar group={group} selected={selection.nodes} onClear={selection.clear} /> : null}
+        <NodeDialogs dialog={dialogs.dialog} onClose={dialogs.close} />
       </div>
       {children}
     </>

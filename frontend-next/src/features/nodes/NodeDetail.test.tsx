@@ -194,11 +194,13 @@ describe("Node detail › profile and actions (N6, N7, N15, T6)", () => {
     expect(router.state.location.search).toEqual({ group: "servers" });
   });
 
-  it("the active manual server's Delete is disabled with its reason", async () => {
+  it("the active manual server's Edit and Delete are disabled with their reason", async () => {
     await openDetail("/nodes/8", { phone: true, status: { active_node_id: 8 } });
     const actions = await screen.findByRole("region", { name: "Node actions" });
     expect(within(actions).getByRole("button", { name: "Delete" })).toBeDisabled();
-    expect(within(actions).getByText("Disconnect first")).toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Edit" })).toBeDisabled();
+    expect(within(actions).getAllByText("Disconnect first")).toHaveLength(2);   // under Edit and under Delete
+    expect(within(actions).getByRole("button", { name: "Clone" })).toBeEnabled();
   });
 
   it("a subscription node is detached, never deleted", async () => {

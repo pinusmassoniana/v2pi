@@ -6,6 +6,7 @@ import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { SERVERS, groupOf, type GroupKey } from "./list";
 import { NodeDetailBody } from "./NodeDetail";
+import { NodeDialogs, useNodeDialogs } from "./NodeDialogs";
 import { listState, toSearch, type NodesSearch } from "./search";
 
 interface DetailProps {
@@ -28,12 +29,16 @@ function DetailSheet({ nodeId, search }: DetailProps) {
   const node = nodes.data?.find((item) => item.id === nodeId);
   const group = node ? groupOf(node) : undefined;
   const title = node?.name ?? (nodes.data ? "Node not found" : "Node");
+  const dialogs = useNodeDialogs();
   return (
-    <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group) }); }}>
-      <SheetContent title={title}>
-        <NodeDetailBody nodeId={nodeId} showName={false} />
-      </SheetContent>
-    </Sheet>
+    <>
+      <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group) }); }}>
+        <SheetContent title={title}>
+          <NodeDetailBody nodeId={nodeId} showName={false} menu={dialogs.menu} />
+        </SheetContent>
+      </Sheet>
+      <NodeDialogs dialog={dialogs.dialog} onClose={dialogs.close} />
+    </>
   );
 }
 
@@ -47,13 +52,15 @@ function DetailPage({ nodeId, search }: DetailProps) {
   const node = nodes.data?.find((item) => item.id === nodeId);
   const group = node ? groupOf(node) : undefined;
   const groupName = group === undefined ? null : group === SERVERS ? "Servers" : subs.data?.find((sub) => sub.id === group)?.name;
+  const dialogs = useNodeDialogs();
   return (
     <div className="flex flex-col gap-3">
       <Link to="/nodes" search={listSearch(search, group)} className="inline-flex min-h-11 items-center gap-1.5 self-start text-sm font-semibold text-t2 hover:text-t1">
         <ArrowLeft size={16} aria-hidden />
         Servers{groupName ? ` · ${groupName}` : ""}
       </Link>
-      <NodeDetailBody nodeId={nodeId} showName />
+      <NodeDetailBody nodeId={nodeId} showName menu={dialogs.menu} />
+      <NodeDialogs dialog={dialogs.dialog} onClose={dialogs.close} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -83,6 +83,50 @@ describe("Dialog and Sheet", () => {
     await userEvent.keyboard("{Escape}");
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(screen.queryByRole("dialog", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("Escape closes a sheet only when focus is in it, or nowhere — not in another overlay above it", () => {
+    const onOpenChange = vi.fn();
+    render(
+      <>
+        <button type="button">in another overlay</button>
+        <Sheet open onOpenChange={onOpenChange}><SheetContent title="Node 12"><button type="button">inside</button></SheetContent></Sheet>
+      </>,
+    );
+    fireEvent.keyDown(screen.getByText("in another overlay"), { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByText("inside"), { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    onOpenChange.mockClear();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("the × closes a clean overlay at once and asks first when it holds edits", async () => {
+    render(<ConfirmDialog />);
+    const onOpenChange = vi.fn();
+    const view = render(<Sheet open onOpenChange={onOpenChange}><SheetContent title="Node 12"><p>detail</p></SheetContent></Sheet>);
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    onOpenChange.mockClear();
+    view.rerender(<Dialog open dirty onOpenChange={onOpenChange}><DialogContent title="Edit"><p>form</p></DialogContent></Dialog>);
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("a dialog does the same", () => {
+    const onOpenChange = vi.fn();
+    render(
+      <>
+        <button type="button">elsewhere</button>
+        <Dialog open onOpenChange={onOpenChange}><DialogContent title="Export"><button type="button">copy</button></DialogContent></Dialog>
+      </>,
+    );
+    fireEvent.keyDown(screen.getByText("elsewhere"), { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByText("copy"), { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("a sheet is a dialog too", () => {
