@@ -2,14 +2,13 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { memo } from "react";
 import type { Node, NodeHealth } from "../../api/client";
-import { serverNow } from "../../api/clock";
 import { Sparkline } from "../../components/data/Sparkline";
 import { Uptime } from "../../components/data/Uptime";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
-import { checkedAgo, type SortDir, type SortKey } from "./list";
+import type { SortDir, SortKey } from "./list";
 import { NodeRowActions, type NodeMenuCallbacks } from "./NodeRowActions";
-import { ActiveRealPill, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
+import { ActiveRealPill, CheckedAgo, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
 import type { NodesSearch } from "./search";
 
 export interface ReorderControls {
@@ -60,7 +59,6 @@ interface RowProps {
 /** One row; memoised, so a poll that changes one node's health re-renders that row only. */
 const NodeRow = memo(function NodeRow({ node, index, last, health, active, activeSince, dense, menu, detailSearch, reorder }: RowProps) {
   const cell = cn("px-2.5 align-middle", dense ? "py-1" : "py-2.5");
-  const checked = checkedAgo(health?.checked_at, serverNow());
   const failCount = active ? (health?.fail_count ?? 0) : 0;
   return (
     <tr
@@ -113,7 +111,7 @@ const NodeRow = memo(function NodeRow({ node, index, last, health, active, activ
       <td className={cn(cell, MEDIUM, "w-20")}>
         {health && health.lat_history.length > 1 ? <Sparkline values={health.lat_history} width={64} height={18} className="h-[18px] w-16" /> : <span className="text-t3">—</span>}
       </td>
-      <td className={cn(cell, MEDIUM, "whitespace-nowrap text-t3")} title={health?.checked_at ?? undefined}>{checked ?? "—"}</td>
+      <td className={cn(cell, MEDIUM, "whitespace-nowrap text-t3")} title={health?.checked_at ?? undefined}><CheckedAgo at={health?.checked_at} /></td>
       <td className={cn(cell, "w-px")}><NodeRowActions node={node} active={active} menu={menu} /></td>
     </tr>
   );

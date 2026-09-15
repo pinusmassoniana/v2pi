@@ -39,16 +39,25 @@ function LoadingRows() {
   );
 }
 
-/** N11: reorder the Servers group. The cache takes the new order at once; a failed write puts the server's back. */
+/**
+ * N11: reorder the Servers group. The cache takes the new order at once; a failed write puts it back exactly
+ * as it was. Cancelling the nodes query first stops an in-flight refetch (the previous move's, or the 30 s
+ * poll's) from landing after this optimistic update and reverting it out from under the next move.
+ */
 function useReorder(shown: readonly Node[]) {
   const queryClient = useQueryClient();
   const reorderWrite = useApiWrite("reorderNodes");
   const { mutate, isPending } = useMutation({
     mutationFn: (ids: number[]) => reorderWrite(ids),
-    onMutate: (ids) => queryClient.setQueryData<Node[]>(keys.nodes, (old) => (old ? applyOrder(old, ids) : old)),
-    onError: (error) => {
+    onMutate: async (ids: number[]) => {
+      await queryClient.cancelQueries({ queryKey: keys.nodes });
+      const previous = queryClient.getQueryData<Node[]>(keys.nodes);
+      queryClient.setQueryData<Node[]>(keys.nodes, (old) => (old ? applyOrder(old, ids) : old));
+      return { previous };
+    },
+    onError: (error, _ids, context) => {
       notifyError(error, "reorder failed");
-      void queryClient.invalidateQueries({ queryKey: keys.nodes });
+      if (context?.previous) queryClient.setQueryData(keys.nodes, context.previous);
     },
   });
   const onMove = useCallback((index: number, delta: -1 | 1) => {

@@ -1,14 +1,13 @@
 import { Link } from "@tanstack/react-router";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import type { Node, NodeHealth } from "../../api/client";
-import { serverNow } from "../../api/clock";
 import { Uptime } from "../../components/data/Uptime";
 import { cn } from "../../lib/cn";
 import { flagEmoji } from "../../lib/flag";
-import { bestReading, checkedAgo } from "./list";
+import { bestReading } from "./list";
 import type { NodeListProps } from "./NodeTable";
 import { NodeRowActions } from "./NodeRowActions";
-import { ActiveRealPill, FailBadge, ProbePill, StaleBadge } from "./probe";
+import { ActiveRealPill, CheckedAgo, FailBadge, ProbePill, StaleBadge } from "./probe";
 import type { NodesSearch } from "./search";
 
 interface CardProps {
@@ -20,12 +19,21 @@ interface CardProps {
   detailSearch: NodesSearch;
 }
 
-/** "real 42 ms · 5 s ago", "checked 12 min ago", or "not probed". */
-function readingLine(health: NodeHealth | undefined): string {
-  const ago = checkedAgo(health?.checked_at, serverNow());
-  if (!ago) return "not probed";
+/** Whether `checkedAt` is a parseable timestamp — mirrors `checkedAgo`'s null case, but needs no current time. */
+function everChecked(checkedAt: string | null | undefined): boolean {
+  return checkedAt != null && Number.isFinite(Date.parse(checkedAt));
+}
+
+/** "real 42 ms · 5 s ago", "checked 12 min ago", or "not probed". The age ticks on its own (CheckedAgo). */
+function readingLine(health: NodeHealth | undefined): ReactNode {
+  const checkedAt = health?.checked_at;
+  if (!everChecked(checkedAt)) return "not probed";
   const reading = bestReading(health);
-  return reading ? `${reading.label} ${reading.ms} ms · ${ago}` : `checked ${ago}`;
+  return reading ? (
+    <>{reading.label} {reading.ms} ms · <CheckedAgo at={checkedAt} /></>
+  ) : (
+    <>checked <CheckedAgo at={checkedAt} /></>
+  );
 }
 
 /**

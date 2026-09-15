@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type NodeHealth, type Status } from "../../api/client";
+import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
 import {
-  ALL_NODES, ALL_NODE_HEALTH, NODE_HEALTH, STATUS, TRAFFIC_FRAME, holdConnectionWrite, mockApi, mockNodeGroups, node,
+  ALL_NODES, ALL_NODE_HEALTH, NODE_HEALTH, NOW_SEC, STATUS, TRAFFIC_FRAME, holdConnectionWrite, mockApi, mockNodeGroups, node,
 } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
@@ -18,10 +19,17 @@ vi.mock("./list", async (importOriginal) => {
 });
 
 afterEach(() => act(() => settleConfirm(false)));
+afterEach(() => vi.useRealTimers());
 
 const table = () => screen.getByRole("table", { name: "Nodes" });
 const row = (name: string) => table().querySelector<HTMLElement>(`tr[data-node-name="${name}"]`)!;
 const rowNames = () => [...document.querySelectorAll<HTMLElement>("[data-node-id]")].map((el) => el.dataset.nodeName);
+
+/** On fake timers Testing Library's waitFor never polls: step the clock until `check` holds. */
+async function stepUntil(check: () => unknown) {
+  for (let i = 0; i < 80 && !check(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(check()).toBeTruthy();
+}
 
 async function openList(path = "/nodes", status: Partial<Status> = {}) {
   const api$ = mockNodeGroups(mockApi());
@@ -102,6 +110,20 @@ describe("Servers › table (N5)", () => {
     expect(vi.mocked(checkedAgo).mock.calls.length).toBe(renders);
     api$.emitTraffic({ ...TRAFFIC_FRAME, ts: TRAFFIC_FRAME.ts + 9_000, active: { ...TRAFFIC_FRAME.active!, real_ok: false } });
     expect(real()).toHaveTextContent("failed");
+  });
+
+  it("a checked age keeps ticking on a row that would otherwise stay memoised", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_SEC * 1000));
+    const api$ = mockNodeGroups(mockApi());
+    // The shell polls status every 3 s and every resolution recalibrates the gateway clock (recordServerNow);
+    // track the fake clock so that recalibration doesn't erase the advance below.
+    api$.getStatus.mockImplementation(async () => ({ ...STATUS, server_now: Math.floor(Date.now() / 1000) }));
+    renderApp("/nodes");
+    await stepUntil(() => document.querySelectorAll("[data-node-id]").length > 0);
+    expect(row("nl-ams-03")).toHaveTextContent("5 s ago");
+    await act(() => vi.advanceTimersByTimeAsync(2 * 60_000));
+    expect(row("nl-ams-03")).toHaveTextContent("2 min ago");
   });
 });
 
@@ -261,6 +283,25 @@ describe("Servers › reorder and row cap (N11, N19)", () => {
     await userEvent.click(within(footer).getByRole("button", { name: "show all" }));
     await waitFor(() => expect(rowNames()).toHaveLength(240));
     expect(screen.queryByText(/Showing 100 of 240/)).toBeNull();
+  });
+
+  it("an in-flight nodes refetch does not undo an optimistic move; the next move includes it", async () => {
+    const { api$, client } = await openList("/nodes?group=servers");
+    let resolveRefetch: (nodes: typeof ALL_NODES) => void = () => {};
+    api$.listNodes.mockImplementation(() => new Promise((resolve) => { resolveRefetch = resolve; }));
+    const refetch = client.refetchQueries({ queryKey: keys.nodes });   // e.g. the 30 s poll landing mid-move
+    let finishReorder: () => void = () => {};
+    api$.reorderNodes.mockImplementation(() => new Promise((resolve) => { finishReorder = () => resolve({ ok: true }); }));
+    await userEvent.click(within(row("kz-ala-01")).getByRole("button", { name: "Move kz-ala-01 up" }));
+    expect(api$.reorderNodes).toHaveBeenCalledWith([7, 9, 8]);
+    expect(rowNames()).toEqual(["vps-hel", "kz-ala-01", "lab-lan"]);
+    resolveRefetch(ALL_NODES);   // the stale refetch resolves after the optimistic update, with the pre-move order
+    await act(async () => { await refetch.catch(() => {}); });
+    expect(rowNames()).toEqual(["vps-hel", "kz-ala-01", "lab-lan"]);   // still the moved order, not reverted
+    await act(async () => finishReorder());
+    api$.listNodes.mockResolvedValue(ALL_NODES);
+    await userEvent.click(within(row("vps-hel")).getByRole("button", { name: "Move vps-hel down" }));
+    expect(api$.reorderNodes).toHaveBeenCalledWith([9, 7, 8]);
   });
 });
 

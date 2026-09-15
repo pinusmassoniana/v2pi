@@ -1,12 +1,13 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { NodeHealth } from "../../api/client";
+import { serverNow } from "../../api/clock";
 import { useTrafficSelect, type TrafficSnapshot } from "../../api/traffic";
 import type { Tone } from "../../components/data/types";
 import { Pill } from "../../components/ui/Pill";
 import { cn } from "../../lib/cn";
 import { flagEmoji } from "../../lib/flag";
 import { probeFor } from "../../lib/nodeHealth";
-import { liveReading, pillTone, type PillState } from "./list";
+import { checkedAgo, liveReading, pillTone, type PillState } from "./list";
 
 const TONE: Record<PillState, Tone> = { ok: "ok", slow: "warn", failed: "bad", unknown: "neutral" };
 
@@ -50,6 +51,22 @@ export function ActiveRealPill({ nodeId, health, label }: { nodeId: number; heal
   const live = useTrafficSelect(select);
   if (live === null) return <ProbePill ok={health?.last_real_ok} ms={health?.last_real_ms} label={label} />;
   return <ProbePill ok={live !== "failed"} ms={live === "failed" ? null : live} label={label} live />;
+}
+
+/** How often {@link CheckedAgo} re-renders itself to keep its age from freezing. */
+const CHECKED_AGO_TICK_MS = 15_000;
+
+/**
+ * N5 "checked": owns its own coarse timer, so the age keeps advancing even on a row that is otherwise memoised
+ * and would not re-render again until its health changes (the background sweep runs every 30 min by default).
+ */
+export function CheckedAgo({ at }: { at: string | null | undefined }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((tick) => tick + 1), CHECKED_AGO_TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
+  return <>{checkedAgo(at, serverNow()) ?? "—"}</>;
 }
 
 /** N5 egress: the probed exit address with its country's flag, IPv6 underneath. */
