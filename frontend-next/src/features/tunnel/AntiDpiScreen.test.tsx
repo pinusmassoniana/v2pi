@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type Status } from "../../api/client";
+import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
 import { STATUS, TUNNEL_PROFILES, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
@@ -106,6 +107,27 @@ describe("Anti-DPI › row actions (T2)", () => {
     await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" }));
     await answer("Apply mux-heavy", "Apply");
     await waitFor(() => expect(error).toHaveBeenCalledWith("No active node", { duration: 20000 }));
+  });
+
+  it("Apply is not sent to a node the question did not name: a failover while it was open, or no active node any more", async () => {
+    const { api$, client } = await openAntiDpi();
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" }));
+    await screen.findByRole("dialog", { name: "Confirm" });
+    // Auto-failover moves the tunnel to another node while the question still names nl-ams-03.
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: 2 });
+    act(() => { client.setQueryData<Status>(keys.status, (old) => ({ ...old!, active_node_id: 2 })); });
+    await answer("Apply mux-heavy to nl-ams-03", "Apply");
+    expect(error).toHaveBeenCalledWith("the active node changed — ask again", { duration: 20000 });
+    expect(api$.applyProfileActive).not.toHaveBeenCalled();
+
+    await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" }));
+    await screen.findByRole("dialog", { name: "Confirm" });
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null });
+    act(() => { client.setQueryData<Status>(keys.status, (old) => ({ ...old!, active_node_id: null })); });
+    await answer("Apply mux-heavy", "Apply");
+    expect(error).toHaveBeenCalledWith("No active node", { duration: 20000 });
+    expect(api$.applyProfileActive).not.toHaveBeenCalled();
   });
 
   it("with no active node, ⚡ is off and says why", async () => {

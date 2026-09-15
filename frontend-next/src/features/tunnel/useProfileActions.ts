@@ -6,7 +6,7 @@ import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { nodeLabel } from "../../lib/nodeHealth";
-import { NO_ACTIVE_NODE, applyActiveConfirmMessage, deleteProfileMessage } from "./profileForm";
+import { ACTIVE_NODE_CHANGED, NO_ACTIVE_NODE, applyActiveConfirmMessage, deleteProfileMessage } from "./profileForm";
 
 /** Said when another profile write started while a question was open, so nothing was sent. */
 export const PROFILE_BUSY = "Another profile change is still running — try again when it finishes";
@@ -81,6 +81,13 @@ export function useProfileActions(editor: { edit: (profile: TuningProfile) => Pr
     if (!(await confirm(applyActiveConfirmMessage(profile.name, nodeLabel(nodes, activeId)), { confirmLabel: "Apply" }))) return;
     if (isConnectionBusy(queryClient) || isProfileBusy(queryClient)) {
       notifyError(null, isConnectionBusy(queryClient) ? CONNECTION_BUSY : PROFILE_BUSY);
+      return;
+    }
+    // The status poll kept running while the question was open, and auto-failover may have moved the tunnel: the
+    // gateway applies to whichever node is active when the request lands, so send it only to the node that was named.
+    const nowActiveId = queryClient.getQueryData<Status>(keys.status)?.active_node_id ?? null;
+    if (nowActiveId !== activeId) {
+      notifyError(null, nowActiveId === null ? NO_ACTIVE_NODE : ACTIVE_NODE_CHANGED);
       return;
     }
     applyMutate(profile);

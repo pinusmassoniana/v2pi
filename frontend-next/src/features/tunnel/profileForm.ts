@@ -27,6 +27,8 @@ export const HEADER_HINT =
   "Evasion profiles. Assign one per node from its Edit on the Nodes tab. The profile governing the live tunnel right now is marked ● active.";
 export const DISCARD_PROFILE_CONFIRM = "Discard unsaved profile changes?";
 export const NO_ACTIVE_NODE = "No active node";
+/** Said when another node became active while the Apply-to-active question was open, so nothing was sent. */
+export const ACTIVE_NODE_CHANGED = "the active node changed — ask again";
 
 export interface NoiseRow {
   type: NoiseType;
