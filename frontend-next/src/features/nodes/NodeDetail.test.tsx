@@ -98,6 +98,19 @@ describe("Node detail › health and config (N5)", () => {
     expect(within(header).queryByText(/^connected/)).toBeNull();
   });
 
+  it("node health that failed to load is an error with Retry in place of the health card", async () => {
+    setViewportWidth(390);
+    const api$ = mockNodeGroups(mockApi());
+    api$.listNodeHealth.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/nodes/2");
+    const page = (await screen.findByRole("region", { name: "Config" })).parentElement!;
+    const error = await within(page).findByText("Node health did not load", {}, { timeout: 3000 });
+    expect(within(page).queryByRole("region", { name: "Health" })).toBeNull();
+    api$.listNodeHealth.mockResolvedValue(ALL_NODE_HEALTH);
+    await userEvent.click(within(error.closest<HTMLElement>("[role=alert]")!).getByRole("button", { name: "Retry" }));
+    expect(await within(page).findByRole("region", { name: "Health" })).toHaveTextContent("checked 4 min ago");
+  });
+
   it("a node never probed says so, and a standby has no failure counter", async () => {
     await openDetail("/nodes/5", { phone: true });
     const health = await screen.findByRole("region", { name: "Health" });

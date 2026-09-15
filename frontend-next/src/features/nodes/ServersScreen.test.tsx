@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiError, type Node } from "../../api/client";
-import { NODES, NOW_SEC, SETTINGS, STATUS, SUBS, mockApi, mockNodeGroups } from "../../test/fixtures";
+import { NODES, NODE_HEALTH, NOW_SEC, SETTINGS, STATUS, SUBS, mockApi, mockNodeGroups } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
 afterEach(() => localStorage.clear());
@@ -138,6 +138,19 @@ describe("Servers › states (N19, N20)", () => {
     await act(() => client.refetchQueries({ queryKey: ["nodes"] }).catch(() => undefined));
     expect(await screen.findByText("Servers did not refresh — showing the last data")).toBeInTheDocument();
     expect(rowNames()).toHaveLength(6);
+  });
+
+  it("node health that failed to load says so with Retry, while the rows still show; Retry loads it", async () => {
+    const api$ = mockApi();
+    api$.listNodeHealth.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/nodes");
+    const notice = await screen.findByText("Node health did not load", {}, { timeout: 3000 });
+    expect(rowNames()).toHaveLength(6);
+    expect(screen.queryByText("Servers did not load")).toBeNull();
+    api$.listNodeHealth.mockResolvedValue(NODE_HEALTH);
+    await userEvent.click(within(notice.closest<HTMLElement>("[role=alert]")!).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText("Node health did not load")).toBeNull());
+    expect(document.querySelector('[data-node-name="de-fra-01"]')).toHaveTextContent("40 ms");
   });
 
   it("N20: auto-failover armed with the last switch, off with a past switch, nothing when neither", async () => {

@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
 import { flagEmoji } from "../../lib/flag";
 import { connectedState } from "../../lib/nodeHealth";
-import { SERVERS, groupOf } from "./list";
+import { HEALTH_FAILED, SERVERS, groupOf } from "./list";
 import { NodeConfigCard } from "./NodeConfigCard";
 import { NodeHealthCard } from "./NodeHealthCard";
 import { DISCONNECT_FIRST, NO_MENU_CALLBACKS, type NodeMenuCallbacks } from "./NodeRowActions";
@@ -135,7 +135,11 @@ export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: N
         {active ? <ActiveLine state={connectedState(status, statusError)} since={since} className="text-xs" /> : null}
       </header>
       <PrimaryActions node={node} active={active} />
-      <NodeHealthCard node={node} health={nodeHealth} active={active} />
+      {health.isError && health.data === undefined ? (
+        <ErrorState message={HEALTH_FAILED} onRetry={() => void health.refetch()} />
+      ) : (
+        <NodeHealthCard node={node} health={nodeHealth} active={active} />
+      )}
       <NodeConfigCard node={node} />
       <ProfileRow node={node} active={active} />
       <SecondaryActions node={node} active={active} menu={menu} />

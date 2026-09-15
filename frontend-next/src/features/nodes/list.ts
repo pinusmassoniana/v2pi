@@ -185,6 +185,9 @@ export function liveReading(probe: ActiveProbe): number | "failed" | null {
   return probe.real_ok === true ? probe.latency_ms : null;
 }
 
+/** Node health failed its first load: without it every probe cell would read as never probed. */
+export const HEALTH_FAILED = "Node health did not load";
+
 /** N15: the delete confirmation, word for word. */
 export function deleteNodeMessage(node: Pick<Node, "name" | "address">): string {
   return `Delete server "${node.name}" (${node.address})?`;

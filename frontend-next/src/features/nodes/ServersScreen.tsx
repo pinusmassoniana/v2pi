@@ -10,7 +10,7 @@ import { usePolledQuery } from "../../api/live";
 import { cardFallback, staleNotice } from "../../components/data/CardState";
 import { Button } from "../../components/ui/Button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../components/ui/DropdownMenu";
-import { EmptyState, Skeleton } from "../../components/ui/States";
+import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
 import { notifyError } from "../../components/ui/Toaster";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { connectedState } from "../../lib/nodeHealth";
@@ -18,7 +18,7 @@ import { BulkBar } from "./BulkBar";
 import { FailoverNote } from "./FailoverNote";
 import { GroupActions } from "./GroupActions";
 import {
-  SERVERS, applyOrder, canReorder, groupChips, groupOf, healthById, inScope, moveWithin, parseGroup, pruneSelection, resolveGroup, selectionState, shownNodes,
+  HEALTH_FAILED, SERVERS, applyOrder, canReorder, groupChips, groupOf, healthById, inScope, moveWithin, parseGroup, pruneSelection, resolveGroup, selectionState, shownNodes,
   visibleRows, type GroupKey, type SortKey,
 } from "./list";
 import { NodeCards } from "./NodeCards";
@@ -237,6 +237,8 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
         <FailoverNote lastFailoverAt={status?.lastFailoverAt ?? null} className="px-1" />
         {statusError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
         {ready ? staleNotice([nodes, health, subs], "Servers did not refresh") : null}
+        {/* The rows still show, but every probe cell would read as never probed: say the health is what's missing. */}
+        {ready && health.isError && health.data === undefined ? <ErrorState message={HEALTH_FAILED} onRetry={() => void health.refetch()} /> : null}
         {body}
         {ready ? <RowCapFooter shown={rows.length} total={shown.length} onShowAll={() => setShowAllGroup(group)} /> : null}
         {selection.nodes.length > 0 ? <BulkBar group={group} selected={selection.nodes} onClear={selection.clear} /> : null}
