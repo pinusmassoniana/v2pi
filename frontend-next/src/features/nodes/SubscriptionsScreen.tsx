@@ -1,9 +1,9 @@
-import { useMutation } from "@tanstack/react-query";
+import { useIsMutating, useMutation } from "@tanstack/react-query";
 import { Plus, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Subscription } from "../../api/client";
 import { SLOW_POLL_MS } from "../../api/cadence";
-import { useApiWrite } from "../../api/invalidation";
+import { SUBS_REFRESH_KEY, useApiWrite } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { cardFallback, staleNotice } from "../../components/data/CardState";
@@ -24,6 +24,7 @@ export function Subscriptions() {
   // The open form: "add", a subscription to edit, or none.
   const [form, setForm] = useState<"add" | Subscription | null>(null);
   const refreshAll = useMutation({
+    mutationKey: SUBS_REFRESH_KEY,
     mutationFn: () => refreshAllWrite(),
     onSuccess: (result) => {
       const next = refreshAllMessage(result);
@@ -37,6 +38,7 @@ export function Subscriptions() {
   const list = subs.data;
   const fallback = cardFallback([subs], "Subscriptions did not load", "h-40");
   const anyEnabled = list?.some((sub) => sub.enabled) ?? false;
+  const refreshing = useIsMutating({ mutationKey: SUBS_REFRESH_KEY }) > 0;   // this, a card's Refresh, or ⌘K's
 
   return (
     <div className="flex flex-col gap-3">
@@ -46,7 +48,7 @@ export function Subscriptions() {
           <p className="text-sm font-semibold text-t1">{list ? `${list.length} subscription${list.length === 1 ? "" : "s"}` : "Subscriptions"}</p>
           <p className="text-[11px] text-t3">Refresh all skips paused subscriptions; a manual Refresh still works.</p>
         </div>
-        <Button size="sm" disabled={!anyEnabled || refreshAll.isPending} onClick={() => refreshAll.mutate()}>
+        <Button size="sm" disabled={!anyEnabled || refreshing} onClick={() => refreshAll.mutate()}>
           <RefreshCw size={14} aria-hidden className={refreshAll.isPending ? "animate-spin" : undefined} />
           {refreshAll.isPending ? "Refreshing…" : "Refresh all"}
         </Button>

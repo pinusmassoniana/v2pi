@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, type Node } from "../../api/client";
-import { invalidate, useApiWrite, type MutationName } from "../../api/invalidation";
+import { BULK_KEY, invalidate, useApiWrite, type MutationName } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
@@ -11,7 +11,6 @@ import { profileFromValue, profileName } from "../../lib/profiles";
 import { SERVERS, type GroupKey } from "./list";
 import { nodeMutationMessage } from "./nodeForm";
 
-const BULK_KEY = ["nodes", "bulk"] as const;
 
 /** The node a sequential bulk write stopped at, and why. */
 class BulkStop extends Error {
@@ -90,7 +89,8 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
     onError: (error) => stopped(error, "delete failed"),
   });
 
-  const busy = assign.isPending || detach.isPending || remove.isPending;
+  // The shared key, not these instances' own state: a bulk write keeps the bar locked even if it remounts mid-run.
+  const busy = useIsMutating({ mutationKey: BULK_KEY }) > 0;
   const count = selected.length;
 
   function onAssign(value: string) {

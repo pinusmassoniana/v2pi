@@ -2,9 +2,9 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type RefreshAllResult, type Settings, type Subscription } from "../../api/client";
+import { ApiError, type RefreshAllResult, type RefreshResult, type Settings, type Subscription } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { NOW_SEC, SETTINGS, SUBS, mockApi } from "../../test/fixtures";
+import { NOW_SEC, REFRESH_ALL, SETTINGS, SUBS, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
 afterEach(() => act(() => settleConfirm(false)));
@@ -168,6 +168,24 @@ describe("Subscriptions › actions (U2–U4, U6)", () => {
     await waitFor(() => expect(screen.getByRole("status", { name: "Refresh all result" })).toHaveTextContent("2/2 refreshed"));
     await userEvent.click(screen.getByRole("button", { name: "Dismiss refresh result" }));
     expect(screen.queryByRole("status", { name: "Refresh all result" })).toBeNull();
+  });
+
+  it("one refresh at a time: Refresh all waits for a card's Refresh, and every card's Refresh waits for Refresh all", async () => {
+    const { api$ } = await openSubscriptions();
+    let finishOne: (result: RefreshResult) => void = () => {};
+    api$.refreshSub.mockImplementation(() => new Promise((resolve) => { finishOne = resolve; }));
+    await userEvent.click(within(card("work")).getByRole("button", { name: "Refresh" }));
+    expect(screen.getByRole("button", { name: "Refresh all" })).toBeDisabled();
+    expect(within(card("home")).getByRole("button", { name: "Refresh" })).toBeDisabled();
+    await act(async () => finishOne({ ok: true, status: "ok: +0 ~6 -0", error: null }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh all" })).toBeEnabled());
+
+    let finishAll: (result: RefreshAllResult) => void = () => {};
+    api$.refreshAllSubs.mockImplementation(() => new Promise((resolve) => { finishAll = resolve; }));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh all" }));
+    for (const name of ["work", "home", "old"]) expect(within(card(name)).getByRole("button", { name: "Refresh" })).toBeDisabled();
+    await act(async () => finishAll(REFRESH_ALL));
+    await waitFor(() => expect(within(card("work")).getByRole("button", { name: "Refresh" })).toBeEnabled());
   });
 
   it("Refresh all is off when every subscription is paused", async () => {

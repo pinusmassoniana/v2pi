@@ -70,6 +70,21 @@ type Api = typeof api;
  */
 export const CONNECTION_WRITE = ["connection"] as const;
 
+/** TCP or HTTP ping of a group (Servers) or of every node (⌘K): one sweep at a time; the variables say which kind. */
+export const PING_KEY = ["nodes", "ping"] as const;
+
+/** Test all (real) over a group's rows: one run at a time, however many screens show the button. */
+export const TEST_ALL_KEY = ["nodes", "testAll"] as const;
+
+/** A bulk assign, detach or delete over the selected nodes: one at a time. */
+export const BULK_KEY = ["nodes", "bulk"] as const;
+
+/** Refresh of one subscription or of all of them (Subscriptions, ⌘K): they block each other. */
+export const SUBS_REFRESH_KEY = ["subs", "refresh"] as const;
+
+/** A gateway settings write: one at a time, so a rollback or a re-read only ever reasons about one. */
+export const SETTINGS_WRITE = ["settings-write"] as const;
+
 /** A connection write (CONNECTION_WRITE) is running. */
 export function useConnectionBusy(): boolean {
   return useIsMutating({ mutationKey: CONNECTION_WRITE }) > 0;

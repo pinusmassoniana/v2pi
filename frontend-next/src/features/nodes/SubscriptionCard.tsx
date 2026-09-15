@@ -1,9 +1,9 @@
-import { useMutation } from "@tanstack/react-query";
+import { useIsMutating, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Pause, Pencil, Play, RefreshCw, Trash2 } from "lucide-react";
 import { memo, useState } from "react";
 import type { Subscription } from "../../api/client";
-import { useApiWrite } from "../../api/invalidation";
+import { SUBS_REFRESH_KEY, useApiWrite } from "../../api/invalidation";
 import { confirm } from "../../components/confirm";
 import { Ago } from "../../components/data/Ago";
 import { Chip } from "../../components/data/Chip";
@@ -27,6 +27,7 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
   const [errorOpen, setErrorOpen] = useState(false);
 
   const refresh = useMutation({
+    mutationKey: SUBS_REFRESH_KEY,
     mutationFn: () => refreshWrite(sub.id),
     onSuccess: (result) => {
       const outcome = refreshOneMessage(sub.name, result);
@@ -46,6 +47,9 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
     onError: (error) => notifyError(error, "delete failed"),
   });
 
+  // Any refresh — this card's, another card's or Refresh all — holds every Refresh button: they would fetch and
+  // merge the same subscriptions at once.
+  const refreshing = useIsMutating({ mutationKey: SUBS_REFRESH_KEY }) > 0;
   const fraction = quotaFraction(sub);
   const quota = quotaText(sub);
 
@@ -120,7 +124,7 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-2.5">
-        <Button size="sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>
+        <Button size="sm" disabled={refreshing} onClick={() => refresh.mutate()}>
           <RefreshCw size={14} aria-hidden className={refresh.isPending ? "animate-spin" : undefined} />
           {refresh.isPending ? "Refreshing…" : "Refresh"}
         </Button>

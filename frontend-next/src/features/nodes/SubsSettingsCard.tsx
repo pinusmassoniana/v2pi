@@ -1,6 +1,6 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Settings } from "../../api/client";
-import { useApiWrite } from "../../api/invalidation";
+import { SETTINGS_WRITE, useApiWrite } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { cardFallback } from "../../components/data/CardState";
 import { CardHeader } from "../../components/data/CardHeader";
@@ -9,11 +9,6 @@ import { Toggle } from "../../components/ui/Toggle";
 import { notifyError } from "../../components/ui/Toaster";
 
 type SubsSetting = "tunneled_fetch" | "subs_auto_switch";
-
-// Both rows share this mutation key: a save in flight disables every switch on the card, so a second click
-// (the same row twice, or the other row) never overlaps the first — the rollback/invalidate logic below
-// only has to reason about one write at a time.
-const SETTINGS_WRITE = ["settings-write"] as const;
 
 const ROWS: readonly { key: SubsSetting; label: string; text: string; note: string }[] = [
   {
@@ -35,6 +30,9 @@ export function SubsSettingsCard({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const settings = useQuery(queries.settings());   // read once; this card is its only writer on the screen
   const putSettings = useApiWrite("putSettings");
+  // Both rows share SETTINGS_WRITE: a save in flight disables every switch on the card, so a second click (the same
+  // row twice, or the other row) never overlaps the first — the rollback/invalidate logic below only has to reason
+  // about one write at a time.
   const toggle = useMutation({
     mutationKey: SETTINGS_WRITE,
     mutationFn: ({ key, on }: { key: SubsSetting; on: boolean }) => putSettings({ [key]: on }),

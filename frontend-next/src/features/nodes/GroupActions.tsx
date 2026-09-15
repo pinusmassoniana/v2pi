@@ -2,7 +2,7 @@ import { useIsMutating, useMutation, useMutationState, useQueryClient } from "@t
 import { Activity, Gauge, Radar, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api, errText, type Node, type NodeHealth } from "../../api/client";
-import { CONNECTION_WRITE, invalidate, useApiWrite, useConnectionBusy } from "../../api/invalidation";
+import { CONNECTION_WRITE, PING_KEY, TEST_ALL_KEY, invalidate, useApiWrite, useConnectionBusy } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { Button } from "../../components/ui/Button";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -11,8 +11,6 @@ import { Elapsed } from "./Elapsed";
 import { bestScope, mergeHealth, probeScope, type GroupKey } from "./list";
 
 export const NO_CONNECTABLE = "No connectable node in this group";
-const PING_KEY = ["nodes", "ping"] as const;
-const TEST_ALL_KEY = ["nodes", "testAll"] as const;
 
 export interface GroupActionsProps {
   group: GroupKey;

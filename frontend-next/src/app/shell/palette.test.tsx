@@ -2,8 +2,8 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
-import { api, type Status } from "../../api/client";
-import { STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
+import { api, type NodeHealth, type RefreshResult, type Status } from "../../api/client";
+import { NODE_HEALTH, STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { closePalette, openPalette } from "./palette";
 
@@ -78,6 +78,52 @@ describe("command palette", () => {
     act(() => closePalette());
     await act(async () => finish());
     await waitFor(() => expect(disconnect).toBeEnabled());
+  });
+
+  it("pings share one lock with the Servers screen: neither starts a sweep while the other's runs", async () => {
+    const api$ = mockApi();
+    let finishTcp: (rows: NodeHealth[]) => void = () => {};
+    api$.probeTcp.mockImplementation(() => new Promise((resolve) => { finishTcp = resolve; }));
+    renderApp("/nodes");
+    const toolbar = within(await screen.findByRole("region", { name: "Servers toolbar" }));
+    await waitFor(() => expect(toolbar.getByRole("button", { name: "TCP ping" })).toBeEnabled());
+    await userEvent.click(toolbar.getByRole("button", { name: "TCP ping" }));
+    act(() => openPalette());
+    const item = (text: string) => screen.getByText(text).closest("[cmdk-item]");
+    expect((await screen.findByText("TCP ping all nodes")).closest("[cmdk-item]")).toHaveAttribute("aria-disabled", "true");
+    expect(item("HTTP ping all nodes")).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(screen.getByText("HTTP ping all nodes"));
+    expect(api$.probeHttp).not.toHaveBeenCalled();
+    act(() => closePalette());
+    await act(async () => finishTcp(NODE_HEALTH));
+
+    let finishHttp: (rows: NodeHealth[]) => void = () => {};
+    api$.probeHttp.mockImplementation(() => new Promise((resolve) => { finishHttp = resolve; }));
+    act(() => openPalette());
+    await waitFor(() => expect(item("HTTP ping all nodes")).not.toHaveAttribute("aria-disabled", "true"));
+    await userEvent.click(screen.getByText("HTTP ping all nodes"));
+    expect(api$.probeHttp).toHaveBeenCalledWith();
+    await waitFor(() => expect(toolbar.getByRole("button", { name: /^Pinging… \d+ s$/ })).toBeDisabled());
+    expect(toolbar.getByRole("button", { name: "TCP ping" })).toBeDisabled();
+    await act(async () => finishHttp(NODE_HEALTH));
+    await waitFor(() => expect(toolbar.getByRole("button", { name: "HTTP ping" })).toBeEnabled());
+  });
+
+  it("refresh all subscriptions waits for a refresh the Subscriptions screen started", async () => {
+    const api$ = mockApi();
+    let finish: (result: RefreshResult) => void = () => {};
+    api$.refreshSub.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    renderApp("/nodes/subscriptions");
+    const work = await screen.findByRole("region", { name: "work" });
+    await userEvent.click(within(work).getByRole("button", { name: "Refresh" }));
+    act(() => openPalette());
+    expect((await screen.findByText("Refresh all subscriptions")).closest("[cmdk-item]")).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(screen.getByText("Refresh all subscriptions"));
+    expect(api$.refreshAllSubs).not.toHaveBeenCalled();
+    act(() => closePalette());
+    await act(async () => finish({ ok: true, status: "ok: +0 ~6 -0", error: null }));
+    act(() => openPalette());
+    await waitFor(() => expect(screen.getByText("Refresh all subscriptions").closest("[cmdk-item]")).not.toHaveAttribute("aria-disabled", "true"));
   });
 
   it("roll back is not offered when the gateway says it would not work", async () => {

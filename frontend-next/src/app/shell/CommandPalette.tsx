@@ -1,9 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import { useEffect } from "react";
 import type { Status } from "../../api/client";
-import { CONNECTION_BUSY, CONNECTION_WRITE, isConnectionBusy, useApiWrite, useConnectionBusy } from "../../api/invalidation";
+import {
+  CONNECTION_BUSY, CONNECTION_WRITE, PING_KEY, SUBS_REFRESH_KEY, isConnectionBusy, useApiWrite, useConnectionBusy,
+} from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
@@ -14,6 +16,10 @@ import { closePalette, openPalette, usePalette } from "./palette";
 const ITEM =
   "flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2 text-sm text-t1 data-[selected=true]:bg-glass-2 " +
   "data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-50";
+/** Said when ⌘K is asked for a ping or a subscription refresh while one already runs (here or on a screen). */
+const PING_BUSY = "A ping is still running — try again when it finishes";
+const REFRESH_BUSY = "A subscription refresh is still running — try again when it finishes";
+
 const GROUP =
   "px-1 pb-2 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] " +
   "[&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[.1em] [&_[cmdk-group-heading]]:text-t3";
@@ -34,6 +40,11 @@ export function CommandPalette() {
   // Connect, connect best and roll back run as connection writes: offered only while no other one is running.
   const connectionBusy = useConnectionBusy();
   const connection = useMutation({ mutationKey: CONNECTION_WRITE, mutationFn: (action: () => Promise<string>) => action() });
+  // The same keys as Servers' pings and the Subscriptions screen's refreshes, so neither overlaps the other's.
+  const ping = useMutation({ mutationKey: PING_KEY, mutationFn: (kind: "tcp" | "http") => (kind === "tcp" ? probeTcp() : probeHttp()) });
+  const refresh = useMutation({ mutationKey: SUBS_REFRESH_KEY, mutationFn: () => refreshAllSubs() });
+  const pingBusy = useIsMutating({ mutationKey: PING_KEY }) > 0;
+  const refreshBusy = useIsMutating({ mutationKey: SUBS_REFRESH_KEY }) > 0;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -63,6 +74,28 @@ export function CommandPalette() {
     } catch (error) {
       notifyError(error, failure);
     }
+  }
+
+  function pingAll(kind: "tcp" | "http") {
+    const label = kind === "tcp" ? "TCP" : "HTTP";
+    if (queryClient.isMutating({ mutationKey: PING_KEY }) > 0) {
+      closePalette();
+      notifyError(null, PING_BUSY);
+      return;
+    }
+    void run(async () => { await ping.mutateAsync(kind); return `${label} ping finished`; }, `${label} ping failed`);
+  }
+
+  function refreshAll() {
+    if (queryClient.isMutating({ mutationKey: SUBS_REFRESH_KEY }) > 0) {
+      closePalette();
+      notifyError(null, REFRESH_BUSY);
+      return;
+    }
+    void run(async () => {
+      const result = await refresh.mutateAsync();
+      return `${result.succeeded}/${result.attempted} subscriptions refreshed`;
+    }, "refresh failed");
   }
 
   async function rollBack() {
@@ -130,14 +163,7 @@ export function CommandPalette() {
               >
                 Connect best
               </Command.Item>
-              <Command.Item
-                value="action refresh all subscriptions"
-                onSelect={() => void run(async () => {
-                  const result = await refreshAllSubs();
-                  return `${result.succeeded}/${result.attempted} subscriptions refreshed`;
-                }, "refresh failed")}
-                className={ITEM}
-              >
+              <Command.Item value="action refresh all subscriptions" disabled={refreshBusy} onSelect={refreshAll} className={ITEM}>
                 Refresh all subscriptions
               </Command.Item>
               {rollbackAvailable ? (
@@ -145,18 +171,10 @@ export function CommandPalette() {
                   Roll back to previous node
                 </Command.Item>
               ) : null}
-              <Command.Item
-                value="action tcp ping all nodes"
-                onSelect={() => void run(async () => { await probeTcp(); return "TCP ping finished"; }, "TCP ping failed")}
-                className={ITEM}
-              >
+              <Command.Item value="action tcp ping all nodes" disabled={pingBusy} onSelect={() => pingAll("tcp")} className={ITEM}>
                 TCP ping all nodes
               </Command.Item>
-              <Command.Item
-                value="action http ping all nodes"
-                onSelect={() => void run(async () => { await probeHttp(); return "HTTP ping finished"; }, "HTTP ping failed")}
-                className={ITEM}
-              >
+              <Command.Item value="action http ping all nodes" disabled={pingBusy} onSelect={() => pingAll("http")} className={ITEM}>
                 HTTP ping all nodes
               </Command.Item>
             </Command.Group>
