@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api/client";
-import { NODES, SERVER_NODES, node } from "../../test/fixtures";
+import { NODES, PROFILES, SERVER_NODES, node } from "../../test/fixtures";
 import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, addNodeMessage, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
-  isIdentityConflict, nodeFormSchema, nodeMutationMessage, nodeToForm, profileFromValue, profileValue, validateMessage, type NodeFormValues,
+  isIdentityConflict, nodeFormSchema, nodeMutationMessage, nodeToForm, validateMessage, type NodeFormValues,
 } from "./nodeForm";
+import { GLOBAL_DEFAULT, profileFromValue, profileName, profileValue } from "../../lib/profiles";
 
 const VALID: NodeFormValues = { ...BLANK_NODE_FORM, name: "vps-ams-02", address: "198.51.100.77", uuid: "3f1c9a52" };
 const issues = (values: NodeFormValues) => {
@@ -59,6 +60,10 @@ describe("what the form sends", () => {
     expect(profileValue(2)).toBe("2");
     expect(profileFromValue("")).toBeNull();
     expect(profileFromValue("2")).toBe(2);
+    expect(GLOBAL_DEFAULT).toBe("(global default)");
+    expect(profileName(PROFILES, null)).toBe("(global default)");
+    expect(profileName(PROFILES, 2)).toBe("fragment-tls");
+    expect(profileName(undefined, 2)).toBe("profile #2");
   });
 
   it("edit keeps the stored values of fields the current transport or security hides; add and validate-on-add still drop them", () => {

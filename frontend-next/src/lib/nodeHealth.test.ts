@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { NodeHealth, Status, TrafficFrame } from "../api/client";
 import { NODES, NODE_HEALTH, NOW_SEC, STATUS, TRAFFIC_FRAME } from "../test/fixtures";
 import {
-  SLOW_LATENCY_MS, activeFlag, activeNode, activeNodeLabel, activeRow, nodeLabel, probeAge, probeFor, standbyRows,
+  SLOW_LATENCY_MS, activeFlag, activeNode, activeNodeLabel, activeRow, checkedAgo, everProbed, nodeLabel, probeAge, probeFor, standbyRows,
+  timestampMs,
 } from "./nodeHealth";
 
 const NOW_MS = NOW_SEC * 1000;
@@ -54,6 +55,18 @@ describe("probe results", () => {
     expect(probeAge(3 * 3_600_000)).toBe("3 h");
     expect(probeAge(50 * 3_600_000)).toBe("2 d");
     expect(probeAge(-1)).toBe("0 s");
+  });
+
+  it("never probed is a missing or unreadable checked_at; checked ago runs on the gateway clock", () => {
+    expect(timestampMs(NODE_HEALTH[0]!.checked_at)).toBe(NOW_MS - 5_000);
+    expect(everProbed(NODE_HEALTH[0]!.checked_at)).toBe(true);
+    for (const at of [null, undefined, "", "not a date"]) {
+      expect(timestampMs(at)).toBeNull();
+      expect(everProbed(at)).toBe(false);
+      expect(checkedAgo(at, NOW_MS)).toBeNull();
+    }
+    expect(checkedAgo(NODE_HEALTH[0]!.checked_at, NOW_MS)).toBe("5 s ago");
+    expect(checkedAgo(NODE_HEALTH[1]!.checked_at, NOW_MS)).toBe("4 min ago");
   });
 
   it("active row: live, probe failed, or health stale; flag only from a probe of this node", () => {

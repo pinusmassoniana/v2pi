@@ -1,7 +1,7 @@
 // Pure rules of Nodes › Servers: which group is shown, what the search keeps, how rows sort, when they can be
 // reordered, how many render, and how a probe result reads. Unit-tested without rendering.
 import type { Node, NodeHealth, Subscription } from "../../api/client";
-import { SLOW_LATENCY_MS, probeAge, type ActiveProbe } from "../../lib/nodeHealth";
+import { SLOW_LATENCY_MS, type ActiveProbe } from "../../lib/nodeHealth";
 
 /** The manual nodes' group: nodes that belong to no subscription. */
 export const SERVERS = "servers";
@@ -173,12 +173,6 @@ export function bestReading(health: NodeHealth | undefined): Reading | null {
   if (health.last_http_ok === true && health.last_http_ms !== null) return { label: "HTTP", ms: health.last_http_ms };
   if (health.last_tcp_ok === true && health.last_tcp_ms !== null) return { label: "TCP", ms: health.last_tcp_ms };
   return null;
-}
-
-/** N5 "checked": "5 s ago", "4 min ago"; null when never probed or the time is unreadable. */
-export function checkedAgo(checkedAt: string | null | undefined, nowMs: number): string | null {
-  const at = checkedAt ? Date.parse(checkedAt) : Number.NaN;
-  return Number.isFinite(at) ? `${probeAge(nowMs - at)} ago` : null;
 }
 
 /**

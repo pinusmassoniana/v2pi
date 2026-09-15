@@ -1,10 +1,10 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type NodeHealth, type Status } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ALL_NODE_HEALTH, NODE_HEALTH, NOW_SEC, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
+import { ALL_NODE_HEALTH, NODE_HEALTH, NOW_SEC, PROFILES, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 
@@ -128,16 +128,53 @@ describe("Node detail › health and config (N5)", () => {
 });
 
 describe("Node detail › profile and actions (N6, N7, N15, T6)", () => {
-  it("changes the tuning profile in place", async () => {
+  it("changes the tuning profile in place: a pick is staged, Save sends it", async () => {
     const { api$ } = await openDetail("/nodes/2", { phone: true });
     const success = vi.spyOn(toast, "success");
     const row = await screen.findByRole("region", { name: "Tuning profile" });
-    await waitFor(() => expect(row).toHaveTextContent("(default) · balanced"));
+    await waitFor(() => expect(row).toHaveTextContent("(global default) · balanced"));
     await userEvent.click(within(row).getByRole("button", { name: "Change" }));
-    await userEvent.selectOptions(within(row).getByRole("combobox", { name: "Tuning profile" }), "fragment-tls");
+    const select = within(row).getByRole("combobox", { name: "Tuning profile" });
+    expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual(["(global default)", "balanced", "fragment-tls"]);
+    await userEvent.selectOptions(select, "fragment-tls");
+    expect(api$.updateNode).not.toHaveBeenCalled();
+    await userEvent.click(within(row).getByRole("button", { name: "Save" }));
     expect(api$.updateNode).toHaveBeenCalledWith(2, { tuning_profile_id: 2 });
     await waitFor(() => expect(success).toHaveBeenCalledWith("Assigned fragment-tls to de-fra-01", { duration: 8000 }));
     expect(within(row).queryByRole("combobox")).toBeNull();
+  });
+
+  it("arrow keys on the closed select only stage a profile; Enter saves it", async () => {
+    const { api$ } = await openDetail("/nodes/2", { phone: true });
+    const row = await screen.findByRole("region", { name: "Tuning profile" });
+    await userEvent.click(within(row).getByRole("button", { name: "Change" }));
+    const select = within(row).getByRole("combobox", { name: "Tuning profile" });
+    await waitFor(() => expect(within(select).getByRole("option", { name: "fragment-tls" })).toBeInTheDocument());
+    expect(select).toHaveValue("");
+    // A closed select moves its value on ArrowDown and fires change for each step, with no click or blur.
+    select.focus();
+    for (const value of ["1", "2"]) fireEvent.change(select, { target: { value } });
+    expect(select).toHaveValue("2");
+    expect(api$.updateNode).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Enter}");
+    expect(api$.updateNode).toHaveBeenCalledWith(2, { tuning_profile_id: 2 });
+  });
+
+  it("the node's own profile shows once the profiles load, and the row locks if the node turns active meanwhile", async () => {
+    const { api$, client } = await openDetail("/nodes/1", { phone: true, status: { active_node_id: 2 } });   // nl-ams-03 uses fragment-tls
+    let loadProfiles: (profiles: typeof PROFILES) => void = () => {};
+    api$.listProfiles.mockImplementation(() => new Promise((resolve) => { loadProfiles = resolve; }));
+    const row = await screen.findByRole("region", { name: "Tuning profile" });
+    await userEvent.click(within(row).getByRole("button", { name: "Change" }));
+    const select = within(row).getByRole("combobox", { name: "Tuning profile" });
+    await act(async () => loadProfiles(PROFILES));
+    await waitFor(() => expect(select).toHaveValue("2"));
+
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: 1 });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(select).toBeDisabled());
+    expect(within(row).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 
   it("the active node's profile cannot change here: Change is disabled and says Disconnect first", async () => {
@@ -154,7 +191,8 @@ describe("Node detail › profile and actions (N6, N7, N15, T6)", () => {
     const error = vi.spyOn(toast, "error");
     const row = await screen.findByRole("region", { name: "Tuning profile" });
     await userEvent.click(within(row).getByRole("button", { name: "Change" }));
-    await userEvent.selectOptions(within(row).getByRole("combobox", { name: "Tuning profile" }), "(default)");
+    await userEvent.selectOptions(within(row).getByRole("combobox", { name: "Tuning profile" }), "(global default)");
+    await userEvent.click(within(row).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(error).toHaveBeenCalledWith("That node is active. Disconnect → Edit → Connect, then try again.", { duration: 20000 }));
   });
 

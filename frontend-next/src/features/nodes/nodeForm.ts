@@ -2,6 +2,7 @@
 // what is sent for them, and how a failed write is explained. Pure and unit-tested.
 import { z } from "zod";
 import { ApiError, errText, type Node, type NodeIn, type NodeUpdate, type NodeValidateIn } from "../../api/client";
+import { NO_PROFILE, profileFromValue, profileValue } from "../../lib/profiles";
 
 /** backend _MAX_FIELD / _MAX_HOST */
 export const MAX_FIELD = 512;
@@ -16,7 +17,7 @@ export const PORT_MESSAGE = "port must be 1–65535";
 export type Transport = "vision" | "xhttp";
 export type Security = "reality" | "tls";
 
-/** Every field is a string, as the inputs hold them; `tuning_profile_id` is the select's value ("" = the default). */
+/** Every field is a string, as the inputs hold them; `tuning_profile_id` is the select's value (NO_PROFILE = the global default). */
 export interface NodeFormValues {
   name: string;
   address: string;
@@ -66,17 +67,8 @@ export const nodeFormSchema = z.object({
 export const BLANK_NODE_FORM: NodeFormValues = {
   name: "", address: "", port: "443", uuid: "", transport: "vision", security: "reality",
   sni: "", public_key: "", short_id: "", alpn: "", path: "", host: "", mode: "", note: "",
-  fingerprint: "chrome", tuning_profile_id: "",
+  fingerprint: "chrome", tuning_profile_id: NO_PROFILE,
 };
-
-/** The select value of a profile id, and back: "" is "(default)". */
-export function profileValue(id: number | null): string {
-  return id === null ? "" : String(id);
-}
-
-export function profileFromValue(value: string): number | null {
-  return value === "" ? null : Number(value);
-}
 
 /** The form values of a stored node. */
 export function nodeToForm(node: Node): NodeFormValues {
@@ -92,7 +84,7 @@ export function nodeToForm(node: Node): NodeFormValues {
 
 /** N14: Add prefilled from a node — its name + " copy" and every field except the tuning profile. */
 export function cloneToForm(node: Node): NodeFormValues {
-  return { ...nodeToForm(node), name: `${node.name} copy`, tuning_profile_id: "" };
+  return { ...nodeToForm(node), name: `${node.name} copy`, tuning_profile_id: NO_PROFILE };
 }
 
 /** The form's fields, trimmed, with no hiding applied — shared by the add and edit mappings below. */

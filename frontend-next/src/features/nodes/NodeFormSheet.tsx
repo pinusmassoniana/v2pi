@@ -10,6 +10,7 @@ import { useUnsavedGuard } from "../../app/guard";
 import { closeGuarded } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { FieldShell, SegmentedField, TextField } from "../../components/ui/Field";
+import { ProfileSelect } from "../../components/ui/ProfileSelect";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
@@ -18,7 +19,6 @@ import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, MAX_FIELD, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
   isIdentityConflict, nodeFormSchema, nodeToForm, validateMessage, type NodeFormValues,
 } from "./nodeForm";
-import { SELECT_CLASS } from "./ServersToolbar";
 import { useNodeConnection } from "./useNodeActions";
 
 export type NodeFormMode = "add" | "clone" | "edit";
@@ -169,12 +169,7 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
               <Controller
                 control={control}
                 name="tuning_profile_id"
-                render={({ field }) => (
-                  <select id="node-form-profile" {...field} className={SELECT_CLASS}>
-                    <option value="">(default)</option>
-                    {profiles.data?.map((profile) => <option key={profile.id} value={String(profile.id)}>{profile.name}</option>)}
-                  </select>
-                )}
+                render={({ field }) => <ProfileSelect id="node-form-profile" profiles={profiles.data} {...field} />}
               />
             </FieldShell>
           ) : null}

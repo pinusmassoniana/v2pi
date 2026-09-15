@@ -188,6 +188,7 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     await userEvent.click(within(row("fi-hel-02")).getByRole("checkbox", { name: "Select fi-hel-02" }));
     const select = within(selectionBar()).getByRole("combobox", { name: "Assign tuning profile" });
     await waitFor(() => expect(within(select).getByRole("option", { name: "fragment-tls" })).toBeInTheDocument());
+    expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual(["Assign profile…", "(global default)", "balanced", "fragment-tls"]);
     await userEvent.selectOptions(select, "fragment-tls");
     await waitFor(() => expect(success).toHaveBeenCalledWith("Assigned fragment-tls to 2 node(s)", { duration: 8000 }));
     expect(api$.updateNode.mock.calls).toEqual([[2, { tuning_profile_id: 2 }], [3, { tuning_profile_id: 2 }]]);

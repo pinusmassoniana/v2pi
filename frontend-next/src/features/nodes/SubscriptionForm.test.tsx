@@ -100,6 +100,7 @@ describe("Edit subscription (U5, T6)", () => {
     expect(within(sheet).getByRole("textbox", { name: "Query param 1 name" })).toHaveValue("type");
     const profile = within(sheet).getByLabelText("Default tuning profile for new nodes");
     await waitFor(() => expect(within(profile).getByRole("option", { name: "fragment-tls" })).toBeInTheDocument());
+    expect(within(profile).getAllByRole("option").map((option) => option.textContent)).toEqual(["(global default)", "balanced", "fragment-tls"]);
 
     await userEvent.clear(within(sheet).getByLabelText("Auto-update, min"));
     await userEvent.type(within(sheet).getByLabelText("Auto-update, min"), "30");

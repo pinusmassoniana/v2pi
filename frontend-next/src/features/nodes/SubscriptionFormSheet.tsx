@@ -9,13 +9,13 @@ import { useUnsavedGuard } from "../../app/guard";
 import { closeGuarded } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { FieldShell, TextField } from "../../components/ui/Field";
+import { ProfileSelect } from "../../components/ui/ProfileSelect";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyOk } from "../../components/ui/Toaster";
 import { DryRunResult } from "./DryRunResult";
 import { KeyValueRowsEditor } from "./KeyValueRowsEditor";
 import { RequestPreview } from "./RequestPreview";
-import { SELECT_CLASS } from "./ServersToolbar";
 import { blankSubForm, buildInjection, formToSubIn, subFormSchema, subToForm, type SubFormValues } from "./subForm";
 
 // previewSubNodes' own fetch is the slow one — the backend budgets 20 s for it; give the client a
@@ -145,12 +145,7 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
                 <Controller
                   control={control}
                   name="default_profile_id"
-                  render={({ field }) => (
-                    <select id="sub-form-profile" {...field} className={SELECT_CLASS}>
-                      <option value="">(global default)</option>
-                      {profiles.data?.map((profile) => <option key={profile.id} value={String(profile.id)}>{profile.name}</option>)}
-                    </select>
-                  )}
+                  render={({ field }) => <ProfileSelect id="sub-form-profile" profiles={profiles.data} {...field} />}
                 />
               </FieldShell>
             </>

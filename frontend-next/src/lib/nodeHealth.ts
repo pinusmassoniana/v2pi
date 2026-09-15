@@ -53,6 +53,23 @@ export function probeAge(ageMs: number): string {
   return h < 48 ? `${h} h` : `${Math.floor(h / 24)} d`;
 }
 
+/** An API timestamp (ISO 8601) in epoch ms; null when it is missing or unreadable. */
+export function timestampMs(at: string | null | undefined): number | null {
+  const ms = at ? Date.parse(at) : Number.NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** The one "never probed" rule: a probe ran only when its `checked_at` is a readable time. */
+export function everProbed(checkedAt: string | null | undefined): boolean {
+  return timestampMs(checkedAt) !== null;
+}
+
+/** "5 s ago", "4 min ago"; null when the time is missing or unreadable (never probed, never fetched). */
+export function checkedAgo(at: string | null | undefined, nowMs: number): string | null {
+  const ms = timestampMs(at);
+  return ms === null ? null : `${probeAge(nowMs - ms)} ago`;
+}
+
 /** Active row: "42 ms · live", "probe failed", or "health stale"; dimmed while the frame is not live. */
 export function activeRow(node: Node | undefined, active: ActiveProbe, dim = false): LatencyRowData | null {
   if (!node) return null;
@@ -76,9 +93,9 @@ export function standbyRows(
   const byNode = new Map(health.map((row) => [row.node_id, row]));
   const rows = nodes.filter((n) => n.id !== activeId).map((n): LatencyRowData => {
     const probe = byNode.get(n.id);
-    const checked = probe?.checked_at ? Date.parse(probe.checked_at) : Number.NaN;
+    const checked = timestampMs(probe?.checked_at);
     const notProbed: LatencyRowData = { id: n.id, name: n.name, flag: "", ms: null, state: "not-probed", age: null, dim: false, active: false };
-    if (!probe || !Number.isFinite(checked)) return notProbed;
+    if (!probe || checked === null) return notProbed;
     const ageMs = Math.max(0, nowMs - checked);
     const probed = { ...notProbed, flag: flagEmoji(probe.egress_cc), age: probeAge(ageMs), dim: ageMs > PROBE_DIM_MS };
     if (probe.last_real_ok === false) return { ...probed, state: "failed" };

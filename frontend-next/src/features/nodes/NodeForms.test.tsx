@@ -252,6 +252,7 @@ describe("Edit node (N13, T6)", () => {
     await fromMenu("nl-ams-03", "Edit");
     const sheet = await screen.findByRole("dialog", { name: "Edit node · nl-ams-03" });
     await waitFor(() => expect(within(sheet).getByLabelText("Tuning profile")).toHaveValue("2"));
+    expect(within(within(sheet).getByLabelText("Tuning profile")).getAllByRole("option").map((option) => option.textContent)).toEqual(["(global default)", "balanced", "fragment-tls"]);
     expect(within(sheet).queryByText("● unsaved changes")).toBeNull();
   });
 

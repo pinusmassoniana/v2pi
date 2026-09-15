@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Node } from "../../api/client";
-import { ALL_NODES, ALL_NODE_HEALTH, NODES, NODE_HEALTH, NOW_SEC, SUBS, TRAFFIC_FRAME, node } from "../../test/fixtures";
+import { ALL_NODES, ALL_NODE_HEALTH, NODES, NODE_HEALTH, SUBS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
-  ROW_CAP, SERVERS, applyOrder, bestReading, bestScope, canReorder, checkedAgo, defaultGroup, deleteNodeMessage, groupChips, groupOf, healthById, inScope,
+  ROW_CAP, SERVERS, applyOrder, bestReading, bestScope, canReorder, defaultGroup, deleteNodeMessage, groupChips, groupOf, healthById, inScope,
   liveReading, matchesSearch, mergeHealth, moveWithin, parseGroup, pillTone, probeScope, pruneSelection, resolveGroup, selectionState, shownNodes,
   sortNodes, visibleRows,
 } from "./list";
@@ -165,13 +165,6 @@ describe("readings", () => {
     expect(bestReading(byId.get(8))).toEqual({ label: "TCP", ms: 2 });
     expect(bestReading({ ...NODE_HEALTH[0]!, last_real_ok: null, last_http_ok: false, last_tcp_ok: null })).toBeNull();
     expect(bestReading(undefined)).toBeNull();
-  });
-
-  it("checked ago on the gateway clock; nothing when never probed", () => {
-    expect(checkedAgo(NODE_HEALTH[0]!.checked_at, NOW_SEC * 1000)).toBe("5 s ago");
-    expect(checkedAgo(NODE_HEALTH[1]!.checked_at, NOW_SEC * 1000)).toBe("4 min ago");
-    expect(checkedAgo(null, NOW_SEC * 1000)).toBeNull();
-    expect(checkedAgo("not a date", NOW_SEC * 1000)).toBeNull();
   });
 
   it("the live probe's word on the active node: fresh latency, failed, or nothing", () => {

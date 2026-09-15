@@ -5,11 +5,11 @@ import { memo, useState } from "react";
 import type { Subscription } from "../../api/client";
 import { useApiWrite } from "../../api/invalidation";
 import { confirm } from "../../components/confirm";
+import { Ago } from "../../components/data/Ago";
 import { Chip } from "../../components/data/Chip";
 import { Button } from "../../components/ui/Button";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
-import { CheckedAgo } from "./probe";
 import { deleteSubMessage, intervalText, quotaFraction, quotaText, refreshOneMessage } from "./subForm";
 
 export interface SubscriptionCardProps {
@@ -115,7 +115,7 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
             <span className="truncate">{sub.last_status ?? "—"}{sub.last_path ? ` (${sub.last_path})` : ""}</span>
           </p>
           {errorOpen && sub.last_error ? <p className="mt-0.5 break-words text-[11px] text-bad">{sub.last_error}</p> : null}
-          <p className="text-[11px] text-t3">{sub.last_fetched ? <>fetched <CheckedAgo at={sub.last_fetched} /></> : "never fetched"}</p>
+          <p className="text-[11px] text-t3">{sub.last_fetched ? <>fetched <Ago at={sub.last_fetched} /></> : "never fetched"}</p>
         </div>
       </div>
 

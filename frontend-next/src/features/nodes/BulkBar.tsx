@@ -4,14 +4,14 @@ import { useApiWrite } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
+import { PICK_PROFILE, ProfileSelect } from "../../components/ui/ProfileSelect";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
+import { profileFromValue, profileName } from "../../lib/profiles";
 import { SERVERS, type GroupKey } from "./list";
 import { nodeMutationMessage } from "./nodeForm";
-import { SELECT_CLASS } from "./ServersToolbar";
 
 const BULK_KEY = ["nodes", "bulk"] as const;
-const DEFAULT_PROFILE = "default";
 
 /** The node a sequential bulk write stopped at, and why. */
 class BulkStop extends Error {
@@ -86,10 +86,9 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   const count = selected.length;
 
   function onAssign(value: string) {
-    if (value === "") return;
-    const profileId = value === DEFAULT_PROFILE ? null : Number(value);
-    const profileName = profileId === null ? "(global default)" : (profiles.data?.find((p) => p.id === profileId)?.name ?? `profile #${profileId}`);
-    assign.mutate({ nodes: selected, profileId, profileName });
+    if (value === PICK_PROFILE) return;
+    const profileId = profileFromValue(value);
+    assign.mutate({ nodes: selected, profileId, profileName: profileName(profiles.data, profileId) });
   }
 
   async function onDelete() {
@@ -105,11 +104,15 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
       className={cn("glass sticky bottom-24 z-20 flex flex-wrap items-center gap-2 bg-solid p-2.5 md:bottom-4", className)}
     >
       <p aria-live="polite" className="px-1 text-sm font-semibold text-t1">{count} selected</p>
-      <select aria-label="Assign tuning profile" value="" disabled={busy} onChange={(event) => onAssign(event.target.value)} className={cn(SELECT_CLASS, "h-9")}>
-        <option value="" disabled>Assign profile…</option>
-        <option value={DEFAULT_PROFILE}>(global default)</option>
-        {profiles.data?.map((profile) => <option key={profile.id} value={String(profile.id)}>{profile.name}</option>)}
-      </select>
+      <ProfileSelect
+        aria-label="Assign tuning profile"
+        profiles={profiles.data}
+        placeholder="Assign profile…"
+        value={PICK_PROFILE}
+        disabled={busy}
+        onChange={(event) => onAssign(event.target.value)}
+        className="h-9"
+      />
       {group === SERVERS ? (
         <Button size="sm" variant="danger" disabled={busy} onClick={() => void onDelete()}>{remove.isPending ? "Deleting…" : "Delete"}</Button>
       ) : (

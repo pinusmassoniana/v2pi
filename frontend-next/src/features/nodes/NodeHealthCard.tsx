@@ -1,13 +1,16 @@
 import type { Node, NodeHealth } from "../../api/client";
+import { Ago } from "../../components/data/Ago";
 import { CardHeader } from "../../components/data/CardHeader";
 import { KeyValueRows, type KeyValueRow } from "../../components/data/KeyValueRows";
 import { Sparkline } from "../../components/data/Sparkline";
 import { GlassCard } from "../../components/ui/GlassCard";
-import { ActiveRealPill, CheckedAgo, Egress, ProbePill } from "./probe";
+import { everProbed } from "../../lib/nodeHealth";
+import { ActiveRealPill, Egress, ProbePill } from "./probe";
 
 /** N5 / N7 for one node: TCP, HTTP and real with their age, the failure counter of the active node, egress, trend. */
 export function NodeHealthCard({ node, health, active }: { node: Node; health: NodeHealth | undefined; active: boolean }) {
   const history = health?.lat_history ?? [];
+  const probed = everProbed(health?.checked_at);
   const rows: KeyValueRow[] = [
     { key: "TCP", value: <ProbePill ok={health?.last_tcp_ok} ms={health?.last_tcp_ms} /> },
     { key: "HTTP", value: <ProbePill ok={health?.last_http_ok} ms={health?.last_http_ms} /> },
@@ -20,9 +23,9 @@ export function NodeHealthCard({ node, health, active }: { node: Node; health: N
       <CardHeader
         title="Health"
         level={3}
-        detail={health?.checked_at ? <>checked <CheckedAgo at={health.checked_at} /></> : "not probed"}
+        detail={probed ? <>checked <Ago at={health?.checked_at} /></> : "not probed"}
       />
-      {!health?.checked_at ? <p className="mb-2 text-xs text-t3">Not probed yet — Test runs TCP, HTTP and a real request through this node.</p> : null}
+      {!probed ? <p className="mb-2 text-xs text-t3">Not probed yet — Test runs TCP, HTTP and a real request through this node.</p> : null}
       <KeyValueRows rows={rows} />
       {history.length > 1 ? (
         <div className="mt-2 rounded-xl border border-line bg-glass px-3 py-2">

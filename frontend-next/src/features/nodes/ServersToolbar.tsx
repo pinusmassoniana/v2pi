@@ -2,16 +2,13 @@ import { ArrowDownWideNarrow, ArrowUpNarrowWide, Rows3, Rows4 } from "lucide-rea
 import { useState, type ReactNode } from "react";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
+import { Select } from "../../components/ui/Select";
 import { cn } from "../../lib/cn";
 import { GroupChips } from "./GroupChips";
 import type { GroupChip, GroupKey, SortKey } from "./list";
 import type { ListState } from "./search";
 
 const SORT_LABELS: Record<SortKey, string> = { pos: "Position", name: "Name", address: "Address", tcp: "TCP", http: "HTTP" };
-
-/** Native select styled like Input. */
-export const SELECT_CLASS =
-  "h-10 rounded-xl border border-line bg-glass-2 px-3 text-sm text-t1 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-g2 disabled:opacity-60";
 
 /**
  * Typing writes the URL (replacing the entry) while the field keeps what was typed; the parent remounts it (a new
@@ -61,14 +58,9 @@ export function ServersToolbar({ chips, group, list, onList, entry, dense, onDen
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <SearchField key={entry} q={list.q} onChange={(q) => onList({ q })} />
-        <select
-          aria-label="Sort by"
-          value={list.sort}
-          onChange={(event) => onList({ sort: event.target.value as SortKey })}
-          className={SELECT_CLASS}
-        >
+        <Select aria-label="Sort by" value={list.sort} onChange={(event) => onList({ sort: event.target.value as SortKey })}>
           {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => <option key={key} value={key}>{SORT_LABELS[key]}</option>)}
-        </select>
+        </Select>
         <Button
           size="icon"
           aria-label={descending ? "Sort descending" : "Sort ascending"}

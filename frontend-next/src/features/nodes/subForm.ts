@@ -2,6 +2,7 @@
 // query parameters, quota and refresh messages. Pure and unit-tested.
 import { z } from "zod";
 import type { RefreshAllResult, RefreshResult, Subscription, SubscriptionIn } from "../../api/client";
+import { NO_PROFILE, profileFromValue, profileValue } from "../../lib/profiles";
 
 /** backend _MAX_FIELD / _MAX_URL */
 export const MAX_NAME = 512;
@@ -16,7 +17,7 @@ export interface SubFormValues {
   /** Auto-update interval in minutes as typed; "0" is off. */
   minutes: string;
   enabled: boolean;
-  /** The select's value: "" is the global default. */
+  /** The select's value: NO_PROFILE is the global default. */
   default_profile_id: string;
   headers: KeyValue[];
   queries: KeyValue[];
@@ -41,7 +42,7 @@ export const subFormSchema = z.object({
 }) satisfies z.ZodType<SubFormValues, SubFormValues>;
 
 export function blankSubForm(): SubFormValues {
-  return { name: "", url: "", minutes: "0", enabled: true, default_profile_id: "", headers: DEFAULT_HEADERS.map((row) => ({ ...row })), queries: [] };
+  return { name: "", url: "", minutes: "0", enabled: true, default_profile_id: NO_PROFILE, headers: DEFAULT_HEADERS.map((row) => ({ ...row })), queries: [] };
 }
 
 /** U5: minutes to the interval the backend stores — 0 is off; the backend raises anything else to at least 60 s. */
@@ -79,7 +80,7 @@ export function injectionToRows(injection: Subscription["injection"] | null | un
 export function subToForm(sub: Subscription): SubFormValues {
   return {
     name: sub.name, url: sub.url, minutes: String(secondsToMinutes(sub.interval_sec)), enabled: sub.enabled,
-    default_profile_id: sub.default_profile_id === null ? "" : String(sub.default_profile_id),
+    default_profile_id: profileValue(sub.default_profile_id),
     ...injectionToRows(sub.injection),
   };
 }
@@ -93,7 +94,7 @@ export function formToSubIn(values: SubFormValues, edit: boolean): SubscriptionI
     injection: buildInjection(values.headers, values.queries),
   };
   if (!edit) return base;
-  return { ...base, enabled: values.enabled, default_profile_id: values.default_profile_id === "" ? null : Number(values.default_profile_id) };
+  return { ...base, enabled: values.enabled, default_profile_id: profileFromValue(values.default_profile_id) };
 }
 
 /** "18.4 GB", "100 GB", "512 MB": decimal units, at most one decimal. */

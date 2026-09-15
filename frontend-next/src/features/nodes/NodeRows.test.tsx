@@ -10,11 +10,11 @@ import {
 } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
-import { checkedAgo } from "./list";
+import { checkedAgo } from "../../lib/nodeHealth";
 
-// Pass-through spy: every row calls checkedAgo when it renders, so its call count shows how many rows re-render.
-vi.mock("./list", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./list")>();
+// Pass-through spy: every row's checked age calls checkedAgo when the row renders, so its call count shows how many rows re-render.
+vi.mock("../../lib/nodeHealth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/nodeHealth")>();
   return { ...actual, checkedAgo: vi.fn(actual.checkedAgo) };
 });
 

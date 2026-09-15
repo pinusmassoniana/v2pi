@@ -2,13 +2,14 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { memo } from "react";
 import type { Node, NodeHealth } from "../../api/client";
+import { Ago } from "../../components/data/Ago";
 import { Sparkline } from "../../components/data/Sparkline";
 import { Uptime } from "../../components/data/Uptime";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
 import type { SortDir, SortKey } from "./list";
 import { NodeRowActions, type NodeMenuCallbacks } from "./NodeRowActions";
-import { ActiveRealPill, CheckedAgo, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
+import { ActiveRealPill, Egress, FailBadge, ProbePill, StaleBadge } from "./probe";
 import type { NodesSearch } from "./search";
 
 export interface ReorderControls {
@@ -132,7 +133,7 @@ const NodeRow = memo(function NodeRow({ node, index, last, health, active, activ
       <td className={cn(cell, MEDIUM, "w-20")}>
         {health && health.lat_history.length > 1 ? <Sparkline values={health.lat_history} width={64} height={18} className="h-[18px] w-16" /> : <span className="text-t3">—</span>}
       </td>
-      <td className={cn(cell, MEDIUM, "whitespace-nowrap text-t3")} title={health?.checked_at ?? undefined}><CheckedAgo at={health?.checked_at} /></td>
+      <td className={cn(cell, MEDIUM, "whitespace-nowrap text-t3")} title={health?.checked_at ?? undefined}><Ago at={health?.checked_at} /></td>
       <td className={cn(cell, "w-px")}><NodeRowActions node={node} active={active} menu={menu} /></td>
     </tr>
   );
