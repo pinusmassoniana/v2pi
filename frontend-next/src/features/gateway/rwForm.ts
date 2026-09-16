@@ -344,8 +344,3 @@ export function rwWarnings(rw: Rw, form: Pick<RwFormValues, "dest" | "serverName
   }
   return warnings;
 }
-
-/** The editable inbound fields saved on the gateway, to tell whether they moved since an edit started (never clients). */
-export function savedRwEditable(rw: Rw): string {
-  return JSON.stringify(rwToForm(rw));
-}

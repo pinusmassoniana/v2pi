@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, isNoAnswer, type Network, type Settings, type Status } from "../../api/client";
+import { ApiError, isNoAnswer, type Network, type Settings } from "../../api/client";
 import {
   CONNECTION_BUSY, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE, invalidateRefused, isConnectionBusy, isSettingsBusy, saveRefusedMessage, useApiWrite,
   useConnectionBusy, useSettingsBusy,
@@ -8,7 +8,7 @@ import { keys, queries } from "../../api/keys";
 import { cardFallback } from "../../components/data/CardState";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
-import { confirmTunnelStart } from "../../lib/tunnelStart";
+import { confirmTunnelStart, knownStatus } from "../../lib/tunnelStart";
 import { NO_ANSWER } from "./networkForm";
 
 interface Flip {
@@ -68,7 +68,8 @@ export function useGatewayDns() {
       notifyError(null, isConnectionBusy(queryClient) ? CONNECTION_BUSY : SETTINGS_BUSY);
       return;
     }
-    const active = (queryClient.getQueryData<Status>(keys.status)?.active_node_id ?? null) !== null;
+    // knownStatus, not the raw cache entry: a status whose last poll failed cannot say the tunnel is live.
+    const active = (knownStatus(queryClient)?.active_node_id ?? null) !== null;
     mutation.mutate({ on, active });
   }
 

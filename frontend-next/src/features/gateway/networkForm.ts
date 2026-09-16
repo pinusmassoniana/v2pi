@@ -213,8 +213,3 @@ export const KILL_SWITCH_CAPTION = {
   OPEN: "⚠ clients may leak around the tunnel",
   UNKNOWN: "configured, but host enforcement is not confirmed",
 } as const;
-
-/** The editable fields saved on the gateway, to tell whether they moved since an edit started. */
-export function savedEditable(network: Network): string {
-  return JSON.stringify(networkToForm(network));
-}

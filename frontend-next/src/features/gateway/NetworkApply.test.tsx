@@ -294,6 +294,19 @@ describe("Network › Gateway DNS (G1)", () => {
     await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
   });
 
+  it("while the status poll is failing it does not claim the flip reached the live tunnel", async () => {
+    const { api$, client } = await openNetwork();
+    const success = vi.spyOn(toast, "success");
+    await waitFor(() => expect(dns()).toBeEnabled());
+    api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));   // the cache still holds an active node
+    await act(() => client.refetchQueries({ queryKey: keys.status }));
+
+    await userEvent.click(dns());
+    await answer("Continue");   // a status that is not known counts as stopped, so it asks first
+    await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ dns_intercept: true }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
+  });
+
   it("a 502 puts the switch back and says nothing was saved; no answer warns and re-reads", async () => {
     const { api$ } = await openNetwork();
     const error = vi.spyOn(toast, "error");
