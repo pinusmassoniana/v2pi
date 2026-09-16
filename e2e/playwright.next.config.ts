@@ -20,7 +20,7 @@ export default defineConfig({
   projects: [
     { name: "phone", use: { ...devices["Pixel 7"], viewport: { width: 390, height: 844 } } },
     { name: "desktop", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
-    { name: "laptop", testMatch: /(nodes|tunnel|gateway)\.spec\.ts$/, use: { ...devices["Desktop Chrome"], viewport: { width: 1024, height: 768 } } },
+    { name: "laptop", testMatch: /(nodes|tunnel|gateway|system)\.spec\.ts$/, use: { ...devices["Desktop Chrome"], viewport: { width: 1024, height: 768 } } },
   ],
   webServer: {
     command: "bash run-server.sh",

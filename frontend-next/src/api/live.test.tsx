@@ -5,11 +5,12 @@ import "../features/home/screens";   // loaded up front: the route's lazy import
 import "../features/nodes/screens";
 import "../features/tunnel/screens";
 import "../features/gateway/screens";
+import "../features/system/screens";
 import { STATUS_POLL_MS } from "../app/shell/Shell";
-import { NOW_SEC, STATUS, holdWrite, mockApi, mockGateway, mockTunnel } from "../test/fixtures";
+import { NOW_SEC, STATUS, holdWrite, mockApi, mockGateway, mockSystem, mockTunnel } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
 import { setViewportWidth } from "../test/viewport";
-import { GATEWAY_NETWORK_POLL_MS, NETWORK_POLL_MS, RW_POLL_MS, SLOW_POLL_MS } from "./cadence";
+import { GATEWAY_NETWORK_POLL_MS, LOGS_POLL_MS, NETWORK_POLL_MS, RW_POLL_MS, SLOW_POLL_MS } from "./cadence";
 import { ApiError, api } from "./client";
 import { NETWORK_WRITE } from "./invalidation";
 import { keys, queries } from "./keys";
@@ -289,5 +290,78 @@ describe("Gateway polls each key at its owner's cadence and no faster", () => {
     await release();
     const after = await count(60_000);
     expect(after.network).toBe(60_000 / GATEWAY_NETWORK_POLL_MS);
+  });
+});
+
+/** Mount a System `path` on fake timers, wait for `loaded`, then count each read over one minute. */
+async function countSystemReads(path: string, loaded: () => HTMLElement | null) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const api$ = mockSystem(mockApi());
+  const view = renderApp(path);
+  for (let i = 0; i < 80 && !loaded(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(loaded()).not.toBeNull();
+  const reads = {
+    status: api$.getStatus, settings: api$.getSettings, tokens: api$.listTokens, audit: api$.listAudit,
+    diagnostics: api$.getDiagnostics, logs: api$.getLogs, network: api$.getNetwork, nodes: api$.listNodes,
+    subs: api$.listSubs, profiles: api$.listProfiles, routing: api$.getRouting,
+  };
+  const total = (key: keyof typeof reads) => reads[key].mock.calls.length;
+  const before = Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length]));
+  return {
+    api$, view, total,
+    async count(ms = 60_000) {
+      await act(() => vi.advanceTimersByTimeAsync(ms));
+      return Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length - before[key]!]));
+    },
+  };
+}
+
+describe("System polls each key at its owner's cadence and no faster", () => {
+  it("Backups: status 3 s (shell), settings 30 s, and the four lists the file-holds card counts exactly once each", async () => {
+    const { count, total } = await countSystemReads("/system/backups", () => screen.queryByRole("region", { name: "What the file holds" }));
+    expect(await count()).toEqual({
+      status: 60_000 / STATUS_POLL_MS, settings: 60_000 / SLOW_POLL_MS,
+      nodes: 0, subs: 0, profiles: 0, routing: 0,
+      tokens: 0, audit: 0, diagnostics: 0, logs: 0, network: 0,
+    });
+    // a key with no interval is read once on mount and never again — the price of the approved card
+    for (const key of ["nodes", "subs", "profiles", "routing"] as const) expect(total(key)).toBe(1);
+  });
+
+  it("Access: status 3 s, settings and tokens 30 s, and the audit log not at all until Show", async () => {
+    const { count } = await countSystemReads("/system/access", () => screen.queryByRole("region", { name: "API tokens" }));
+    expect(await count()).toEqual({
+      status: 60_000 / STATUS_POLL_MS, settings: 60_000 / SLOW_POLL_MS, tokens: 60_000 / SLOW_POLL_MS,
+      audit: 0, diagnostics: 0, logs: 0, network: 0, nodes: 0, subs: 0, profiles: 0, routing: 0,
+    });
+  });
+
+  it("Logs: status 3 s and nothing else before Load; after it, only while auto-refresh is on", async () => {
+    const { count, view } = await countSystemReads("/system/logs", () => screen.queryByRole("region", { name: "Log output" }));
+    expect(await count()).toEqual({
+      status: 60_000 / STATUS_POLL_MS,
+      logs: 0, settings: 0, tokens: 0, audit: 0, diagnostics: 0, network: 0, nodes: 0, subs: 0, profiles: 0, routing: 0,
+    });
+
+    const button = (name: RegExp | string) => screen.getByRole("button", { name });
+    await act(async () => { button(/^(Load|Loading…)$/).click(); });
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    const afterLoad = await count();
+    expect(afterLoad.logs).toBe(1);        // the read Load asked for, and no interval behind it
+
+    await act(async () => { screen.getByRole("switch", { name: "Auto-refresh" }).click(); });
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    const polling = await count();
+    // one read the moment the interval is armed (the key went stale when its freshness became 5 s), then one per tick
+    expect(polling.logs).toBe(1 + 60_000 / LOGS_POLL_MS);
+    expect(view.client.getQueryCache().getAll().filter((query) => query.queryKey[0] === "logs" && query.observers.length > 0)).toHaveLength(1);
+  });
+
+  it("Panel: status 3 s, settings and diagnostics 30 s; tokens, audit and logs not at all", async () => {
+    const { count } = await countSystemReads("/system/panel", () => screen.queryByRole("region", { name: "System" }));
+    expect(await count()).toEqual({
+      status: 60_000 / STATUS_POLL_MS, settings: 60_000 / SLOW_POLL_MS, diagnostics: 60_000 / SLOW_POLL_MS,
+      tokens: 0, audit: 0, logs: 0, network: 0, nodes: 0, subs: 0, profiles: 0, routing: 0,
+    });
   });
 });

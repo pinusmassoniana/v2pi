@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type Status } from "../../api/client";
-import { STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
+import { STATUS, holdConnectionWrite, mockApi, mockSystem } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { SECTIONS } from "../nav";
@@ -156,7 +156,7 @@ describe("shell", () => {
   });
 
   it("log out sits in the topbar on desktop and in the System section on a phone", async () => {
-    mockApi();
+    mockSystem(mockApi());
     const { logout } = renderApp("/system/panel");
     const buttons = await screen.findAllByRole("button", { name: "Log out" });
     expect(buttons).toHaveLength(2);

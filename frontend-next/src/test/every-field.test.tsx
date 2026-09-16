@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SECTIONS } from "../app/nav";
 import { closePalette } from "../app/shell/palette";
 import { settleConfirm } from "../components/confirm";
-import { TRAFFIC_FRAME, mockApi, mockGateway } from "./fixtures";
+import { TRAFFIC_FRAME, mockApi, mockGateway, mockSystem } from "./fixtures";
 import { renderApp } from "./renderApp";
 
 // React's version of the freeze fixed in the Svelte panel in v1.17.26: an effect that writes state
@@ -23,6 +23,11 @@ const LOADED: Readonly<Record<string, [region: string, text: string]>> = {
   "/tunnel/health": ["Health monitoring", "master switch"],
   "/gateway/network": ["Router checklist", "eth0.2"],
   "/gateway/remote-access": ["Clients", "iphone-anna"],
+  "/system/backups": ["Backup & restore", "Create backup"],
+  "/system/access": ["API tokens", "ci-deploy"],
+  // A card's own prose, not a control's label or an input's value: a text query matches neither.
+  "/system/logs": ["Logs", "on demand"],
+  "/system/panel": ["Traffic stats", "the live graph on Home"],
 };
 
 function fillEveryField(root: HTMLElement) {
@@ -41,8 +46,9 @@ afterEach(() => act(() => {
 
 describe.each(PATHS)("%s", (path) => {
   it("does not fall into a render loop when every field is used", async () => {
-    // Gateway's screens get their own network read, so flipped switches and questions stay in mocks.
-    const api$ = path.startsWith("/gateway") ? mockGateway(mockApi()) : mockApi();
+    // Gateway's screens get their own network read, and System's their own reads and writes, so flipped switches
+    // and questions stay in mocks.
+    const api$ = path.startsWith("/gateway") ? mockGateway(mockApi()) : path.startsWith("/system") ? mockSystem(mockApi()) : mockApi();
     const logged: unknown[][] = [];
     vi.spyOn(console, "error").mockImplementation((...args) => { logged.push(args); });
     renderApp(path);
