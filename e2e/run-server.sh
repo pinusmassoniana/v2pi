@@ -12,6 +12,11 @@ export PI_GW_NET_BACKEND="dryrun"                              # never touch the
 export PI_GW_XRAY_BIN="${PI_GW_XRAY_BIN:-/bin/true}"           # no real xray needed for the smoke
 export PI_GW_SESSION_SECRET="${PI_GW_SESSION_SECRET:-e2e-not-a-real-secret-with-32-bytes}"
 export PI_GW_LOGIN_LOCKOUT_SEC="${PI_GW_LOGIN_LOCKOUT_SEC:-2}"  # rate-limit spec waits it out
+# The suite proves the packaged default serves the app (config.py _packaged_static), so an inherited
+# override is dropped: Playwright's webServer always passes the parent environment through.
+unset PI_GW_STATIC_DIR
+index="$ROOT/backend/pi_gw_panel/static/index.html"
+[[ -f "$index" ]] || { echo "no SPA build at $index: run npm run build:spa first" >&2; exit 1; }
 cleanup_data=""
 if [[ -z "${PI_GW_DATA_DIR:-}" ]]; then
   PI_GW_DATA_DIR="$(mktemp -d)"

@@ -26,6 +26,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: { proxy: { "/api": { target, ws: true, secure: false } } },
   build: {
+    // Straight into the backend's packaged static dir, which the panel serves with no override
+    // (config.py _packaged_static). Vite empties a folder outside the project only when told to.
+    // The image build passes its own --outDir on the command line.
+    outDir: "../backend/pi_gw_panel/static",
+    emptyOutDir: true,
     rolldownOptions: {
       output: {
         // Name each section's lazy chunk after its section (screens-home, screens-nodes, …).

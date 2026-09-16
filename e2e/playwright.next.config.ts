@@ -1,12 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
-import path from "node:path";
 
-// The new frontend, full stack: FastAPI (dry-run network backend, throwaway data dir) serving
-// frontend-next/dist through PI_GW_STATIC_DIR — no backend change — at a phone and a desktop width, plus a
-// 1024 px desktop for the Servers table, whose columns fold by width, the routing rules table and the gateway screens.
+// The new frontend, full stack: FastAPI (dry-run network backend, throwaway data dir) serving the build from its
+// packaged default, backend/pi_gw_panel/static, at a phone and a desktop width, plus a 1024 px desktop for the
+// Servers table, whose columns fold by width, the routing rules table and the gateway screens.
 const PORT = process.env.PI_GW_NEXT_PORT ?? "8098";
 const BASE = `http://127.0.0.1:${PORT}`;
-const STATIC_DIR = path.resolve(__dirname, "..", "frontend-next", "dist");
 
 export default defineConfig({
   testDir: "./tests-next",
@@ -30,6 +28,6 @@ export default defineConfig({
     stdout: "pipe",
     stderr: "pipe",
     // keep PATH and friends; only add what the new frontend needs
-    env: { ...(process.env as Record<string, string>), PI_GW_PORT: PORT, PI_GW_STATIC_DIR: STATIC_DIR },
+    env: { ...(process.env as Record<string, string>), PI_GW_PORT: PORT },
   },
 });
