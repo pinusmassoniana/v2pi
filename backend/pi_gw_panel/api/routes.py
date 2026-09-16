@@ -1143,17 +1143,29 @@ def probe_node(node_id: int, request: Request,
 
 
 _LOG_SOURCES = {"xray-error": "xray_error_log", "xray-access": "xray_access_log", "app": "app_log"}
+# The supervisor's in-memory stderr tail, already scrubbed by status(). It is NOT an entry of
+# _LOG_SOURCES: those values are Settings attribute names resolved with getattr, and this source
+# has no file behind it at all. xray is built with "access": "none" and no error path, so the two
+# file sources above are permanently empty and this is the only place xray's own output lives.
+_SUPERVISOR_LOG_SOURCE = "xray-stderr"
 
 
 # --- logs (read-only tail) ---
 @router.get("/logs")
 def get_logs(request: Request, source: str = "xray-error", lines: int = 200,
              _: None = Depends(require_auth)) -> dict:
+    count = max(1, min(lines, 1000))
+    if source == _SUPERVISOR_LOG_SOURCE:
+        # status() scrubs the tail under the supervisor's own locks before returning it, so no
+        # unscrubbed byte can reach this response. `.get`, not `[...]`: tests stub status() with
+        # partial dicts, which is why `running` is read the same way elsewhere in this module.
+        tail = get_state(request).supervisor.status().get("stderr_tail", "")
+        return {"source": source, "lines": tail.splitlines()[-count:]}
     attr = _LOG_SOURCES.get(source)
     if attr is None:
         raise HTTPException(status_code=400, detail="unknown log source")
     path = getattr(get_state(request).settings, attr)
-    return {"source": source, "lines": logs_mod.tail(path, max(1, min(lines, 1000)))}
+    return {"source": source, "lines": logs_mod.tail(path, count)}
 
 
 # --- backup / restore ---

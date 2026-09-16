@@ -98,7 +98,7 @@ class XraySupervisor:
                                          "grants access that has been revoked")
                 return
             # Refresh the secret vocabulary used to scrub the stderr tail (exposed as
-            # /api/status.last_error). On failure KEEP the last one we managed to read: the
+            # /api/logs?source=xray-stderr). On failure KEEP the last one we managed to read: the
             # config being unreadable is exactly when xray is loudest, and dropping to {}
             # switched redaction off wholesale — the uuid/keys of the config it last ran with
             # are still the ones its complaints quote.
