@@ -34,6 +34,7 @@ describe("navigation model", () => {
 const BUILT: Readonly<Record<string, string>> = {
   "/": "Status", "/traffic": "Failover history", "/nodes": "Servers toolbar", "/nodes/subscriptions": "Subscription fetching",
   "/tunnel/routing": "Rules", "/tunnel/anti-dpi": "Anti-DPI profiles", "/tunnel/health": "Current state", "/gateway/network": "Gateway Segment",
+  "/gateway/remote-access": "Remote Access Inbound",
 };
 
 describe("router", () => {
