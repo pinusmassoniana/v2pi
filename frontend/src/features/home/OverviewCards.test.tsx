@@ -44,6 +44,15 @@ describe("Overview › layout", () => {
     expect(grid.lastElementChild).toHaveClass("md:hidden");
   });
 
+  it("on a tablet the connection path and events each take the full row, side by side again from xl; routing and network pair", async () => {
+    await openOverview();
+    for (const name of ["Connection path", "Events"]) expect(region(name)).toHaveClass("md:col-span-2", "xl:col-span-6");
+    for (const name of ["Routing", "Network"]) {
+      expect(region(name)).toHaveClass("xl:col-span-6");
+      expect(region(name)).not.toHaveClass("md:col-span-2");
+    }
+  });
+
   it("the phone xray-core card lives on Overview only; the sidebar keeps its own", async () => {
     const api$ = mockApi();
     const { router } = renderApp("/");

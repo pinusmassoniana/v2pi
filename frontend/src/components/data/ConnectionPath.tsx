@@ -53,7 +53,7 @@ const FLOW = "motion-reduce:animate-none";
 const ALARM = "origin-center [transform-box:fill-box] animate-[path-alarm_1.8s_ease-out_infinite] motion-reduce:animate-none motion-reduce:opacity-45";
 
 // Stats under each point: a wide card sets a key beside its value, a narrow one on its own line above it. At the
-// narrowest card (half of a 768 px page) a value that cannot fit wraps where it may, or truncates with a title.
+// narrowest card (a phone's: from md the card takes the full row) a value that cannot fit wraps where it may, or truncates with a title.
 const COLUMN = "flex min-w-0 flex-col items-center gap-px px-[3px] @max-md:px-px";
 const TITLE = "max-w-full truncate text-[12.5px] font-semibold text-t1 @max-md:text-[10.5px]";
 const BIG = "flex max-w-full flex-wrap items-baseline justify-center gap-x-[3px] text-[15px] font-bold leading-tight tracking-tight @max-md:text-[13px]";
