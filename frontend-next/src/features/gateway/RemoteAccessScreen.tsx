@@ -13,9 +13,11 @@ import { Chip } from "../../components/data/Chip";
 import { Button } from "../../components/ui/Button";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { ErrorState, Skeleton } from "../../components/ui/States";
+import { AddClientForm, CLIENTS_NOTE, ClientsTable, MAX_CLIENTS } from "./Clients";
 import { HOSTS_NOTE, EnableToggle, HostRows, InboundFields, RwChecklist, SubnetFields, WithCode } from "./RwFields";
 import { MAX_HOSTS, rwWarnings } from "./rwForm";
 import { useRwForm, type RwFormState } from "./useRwForm";
+import { useRwClientActions } from "./useRwClientActions";
 import { useRwSave, type RwSave } from "./useRwSave";
 
 export const RW_GATEWAY_CHANGED = "Changed on the gateway since you started editing — Discard to load it";
@@ -57,12 +59,28 @@ export function RwToolbar({ state, save, className }: { state: RwFormState; save
   );
 }
 
+/**
+ * Focus after a client is removed: the row that took its place, else the one before it, else the add field — never
+ * the page itself. The row's own buttons are gone, and focus would otherwise fall to <body>.
+ */
+function focusAfterRemove(client: { email: string }) {
+  // Rows are found by name — names are unique on a gateway, and a uuid must never be in an attribute.
+  const rows = [...document.querySelectorAll<HTMLElement>("[data-client]")];
+  const index = rows.findIndex((row) => row.dataset.client === client.email);
+  window.setTimeout(() => {
+    const remaining = [...document.querySelectorAll<HTMLElement>("[data-client]")];
+    const target = remaining[Math.min(Math.max(index, 0), remaining.length - 1)];
+    (target?.querySelector<HTMLElement>("[data-client-actions] button") ?? document.querySelector<HTMLElement>("[data-add-client]"))?.focus();
+  }, 0);
+}
+
 /** The editor over one remote-access read. */
 function RemoteAccessEditor({ rw }: { rw: Rw }) {
   const state = useRwForm(rw);
   const save = useRwSave(rw, state);
   const locked = useWriting(RW_WRITE);
   const hosts = useWatch({ control: state.form.control, name: "hosts" });
+  const clientActions = useRwClientActions({ onRemoved: focusAfterRemove });
   const filledHosts = hosts.filter((row) => row.name.trim() !== "" || row.ip.trim() !== "").length;
   return (
     <>
@@ -88,7 +106,13 @@ function RemoteAccessEditor({ rw }: { rw: Rw }) {
         </div>
       </div>
       <div className="grid items-start gap-3 md:grid-cols-[minmax(0,8fr)_minmax(0,4fr)]">
-        <GlassCard aria-label="Router checklist" className="md:col-start-2">
+        <GlassCard aria-label="Clients" className="flex min-w-0 flex-col gap-2.5">
+          <CardHeader title="Clients" detail="one per device" aside={<span className="font-mono text-[11px] text-t3">{rw.clients.length} / {MAX_CLIENTS}</span>} className="mb-0" />
+          <p className="text-xs leading-relaxed text-t2">{CLIENTS_NOTE}</p>
+          <ClientsTable clients={rw.clients} actions={clientActions} />
+          <AddClientForm actions={clientActions} count={rw.clients.length} />
+        </GlassCard>
+        <GlassCard aria-label="Router checklist">
           <CardHeader title="Router checklist" detail="not automated" />
           <RwChecklist port={rw.port} />
         </GlassCard>
