@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, type Status, type TrafficFrame } from "../../api/client";
 import { closePalette } from "../../app/shell/palette";
 import { settleConfirm } from "../../components/confirm";
-import { NETWORK, NOW_SEC, STATUS, SUBS, TRAFFIC_FRAME, holdConnectionWrite, mockApi } from "../../test/fixtures";
+import { NETWORK, NODES, NOW_SEC, STATUS, SUBS, TRAFFIC_FRAME, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
 afterEach(() => {
@@ -139,6 +139,20 @@ describe("Overview › status block", () => {
     expect(within(block).getByText("12 / 50")).toBeInTheDocument();
     expect(within(block).getByText(/^00:01:4\d$/)).toBeInTheDocument();
     expect(within(block).queryByText("stale config")).toBeNull();
+  });
+
+  it("O4: a node named with its own flag shows one flag — the egress one once a probe reports it", async () => {
+    const api$ = mockApi();
+    api$.listNodes.mockResolvedValue(NODES.map((n) => (n.id === 1 ? { ...n, name: "🇪🇪 Эстония" } : n)));
+    renderApp("/");
+    const block = await screen.findByRole("region", { name: "Status" });
+    expect(await within(block).findByText("🇪🇪 Эстония")).toBeInTheDocument();   // no probe yet: the name's own flag
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, egress_cc: "EE" } });
+    expect(within(block).getByText("🇪🇪 Эстония")).toBeInTheDocument();
+    expect(block.textContent!.match(/🇪🇪/gu)).toHaveLength(1);
+    api$.emitTraffic(TRAFFIC_FRAME);   // the egress is in the Netherlands: its flag wins
+    expect(within(block).getByText("🇳🇱 Эстония")).toBeInTheDocument();
+    expect(block).not.toHaveTextContent("🇪🇪");
   });
 
   it("O4: xray reconnecting, kill-switch open, and a stopped xray is an offline tunnel", async () => {

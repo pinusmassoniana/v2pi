@@ -1,4 +1,5 @@
 import { cn } from "../../lib/cn";
+import { splitLeadingFlag } from "../../lib/flag";
 import { SLOW_LATENCY_MS } from "../../lib/nodeHealth";
 import type { LatencyRowData } from "./types";
 
@@ -20,6 +21,9 @@ const WIDE = "col-span-2 text-left text-[11.5px]";
 
 function BarRow({ row, scaleMs, warnMs, thresholdLine }: { row: LatencyRowData; scaleMs: number; warnMs: number; thresholdLine: boolean }) {
   const slow = row.ms !== null && row.ms > warnMs;
+  // One flag: the egress one when a probe reported it, else the one the name starts with.
+  const named = splitLeadingFlag(row.name);
+  const flag = row.flag || named.flag;
   const width = row.ms === null ? 0 : Math.min(100, Math.round((row.ms / scaleMs) * 1000) / 10);
   return (
     <li
@@ -32,7 +36,7 @@ function BarRow({ row, scaleMs, warnMs, thresholdLine }: { row: LatencyRowData; 
       )}
     >
       <span className={cn("truncate", row.dim && "opacity-45", row.state === "not-probed" && "text-t2")}>
-        {row.flag ? `${row.flag} ` : ""}{row.name}
+        {flag ? `${flag} ` : ""}{named.name}
       </span>
       <span
         aria-hidden

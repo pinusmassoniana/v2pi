@@ -31,6 +31,24 @@ describe("LatencyBars", () => {
     ]);
   });
 
+  it("a name that starts with its own flag shows one flag: the egress one when a probe reported it, else its own", () => {
+    render(
+      <LatencyBars
+        rows={[
+          row({ id: 1, name: "🇪🇪 Эстония", flag: "🇪🇪", state: "measured", ms: 58, age: "4 min" }),
+          row({ id: 2, name: "🇪🇪 Tallinn", flag: "🇫🇮", state: "measured", ms: 61, age: "5 min" }),
+          row({ id: 3, name: "🇪🇪 Tartu", state: "not-probed" }),
+        ]}
+        label="Upstream latency"
+      />,
+    );
+    expect(items().map((li) => li.textContent)).toEqual([
+      "🇪🇪 Эстония58 ms· 4 min",
+      "🇫🇮 Tallinn61 ms· 5 min",
+      "🇪🇪 Tartunot probed",
+    ]);
+  });
+
   it("bars on a shared 0–250 ms scale: brand for the active node, amber above 150 ms, none without a number", () => {
     render(<LatencyBars rows={ROWS} label="Upstream latency" />);
     const [live, fast, slow, failed, none] = items().map((li) => li.querySelector("i"));

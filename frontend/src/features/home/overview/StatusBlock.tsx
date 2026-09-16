@@ -15,6 +15,7 @@ import { Skeleton } from "../../../components/ui/States";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
 import { useDisconnect } from "../../../lib/disconnect";
+import { splitLeadingFlag } from "../../../lib/flag";
 import { killSwitchState } from "../../../lib/network";
 import {
   ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, activeNodeLabel, hasConfigDrift, liveLatency, nodeEndpoint, poolSize, probeFor,
@@ -60,7 +61,9 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const latency = liveLatency(probe);
   const active = activeNode(nodes, status.active_node_id);
   const activeName = activeNodeLabel(status, nodes);
-  const flag = activeFlag(probe);
+  // One flag: the egress one when a probe reported it, else the one the name starts with.
+  const named = splitLeadingFlag(activeName);
+  const flag = activeFlag(probe) || named.flag;
   const prevId = status.prev_active_node_id;
   // Offered only when the gateway says a rollback would work (§12.5); the previous node only supplies the name.
   const prevName = status.rollback_available === true && prevId !== null && prevId !== status.active_node_id
@@ -103,7 +106,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
             <span className="text-[11.5px] text-t3">uptime <Uptime since={status.active_since} running={online} className="text-t1" /></span>
           </div>
           <p className="mt-1.5 truncate text-[19px] font-bold tracking-tight md:text-[21px]">
-            {flag ? `${flag} ` : ""}{activeName}
+            {flag ? `${flag} ` : ""}{named.name}
           </p>
           {active ? <p className="truncate text-xs text-t2">{nodeEndpoint(active)}</p> : null}
           <div className="mt-2.5 flex flex-wrap gap-1.5">
