@@ -219,7 +219,7 @@ test("Access: the panel password changes and changes straight back, and this ses
   // landed (the toast assertion at the end of change() timing out, for example — flagged in re-review 1) still
   // skipped the revert. The try must start before the first change, not after it, or a path that leaves the
   // password changed can fall outside the net. PASS is the one password `ensureLoggedIn`
-  // (e2e/tests-next/auth-helper.ts) hard-codes for every spec sharing this one `webServer` instance, so any path
+  // (e2e/tests/auth-helper.ts) hard-codes for every spec sharing this one `webServer` instance, so any path
   // that leaves the gateway on NEXT would cascade-fail the rest of the run.
   let midError: unknown;
   try {

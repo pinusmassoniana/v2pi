@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch the panel for e2e: safe dry-run net backend, throwaway data dir, no real xray.
 # Used both locally (Playwright webServer) and in CI. Requires the SPA to be built into
-# backend/pi_gw_panel/static first (`cd frontend && npm run build`, or the CI build step).
+# backend/pi_gw_panel/static first (npm run build:spa here, or the CI build step).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -17,6 +17,7 @@ export PI_GW_LOGIN_LOCKOUT_SEC="${PI_GW_LOGIN_LOCKOUT_SEC:-2}"  # rate-limit spe
 unset PI_GW_STATIC_DIR
 index="$ROOT/backend/pi_gw_panel/static/index.html"
 [[ -f "$index" ]] || { echo "no SPA build at $index: run npm run build:spa first" >&2; exit 1; }
+grep -q 'id="root"' "$index" || { echo "$index is not the React panel's build (stale?): run npm run build:spa" >&2; exit 1; }
 cleanup_data=""
 if [[ -z "${PI_GW_DATA_DIR:-}" ]]; then
   PI_GW_DATA_DIR="$(mktemp -d)"
