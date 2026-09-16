@@ -17,6 +17,7 @@ import { cn } from "../../../lib/cn";
 import { useDisconnect } from "../../../lib/disconnect";
 import { splitLeadingFlag } from "../../../lib/flag";
 import { killSwitchState } from "../../../lib/network";
+import { SLOW_LATENCY_MS } from "../../../lib/nodeHealth";
 import {
   ROLLBACK_TARGET_CHANGED, activeFlag, activeNode, activeNodeLabel, hasConfigDrift, liveLatency, nodeEndpoint, poolSize, probeFor,
   nodeLabel, rollbackStillValid, tunnelLabel, xrayLabel,
@@ -75,8 +76,10 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   const clients = network?.status.dhcp_clients;
   const busy = connectionBusy;   // this block's own writes, or any other connection write
 
+  // A slow node reads amber here as on the connection path, with the word, not the colour alone.
+  const slow = latency !== null && latency > SLOW_LATENCY_MS;
   const orb = online
-    ? { value: latency === null ? "—" : String(latency), caption: latency === null ? "ONLINE" : "ms · ONLINE", tone: "ok" as const }
+    ? { value: latency === null ? "—" : String(latency), caption: latency === null ? "ONLINE" : "ms · ONLINE", tone: slow ? "warn" as const : "ok" as const, note: slow ? "slow" : undefined }
     : tunnel.label === "UNKNOWN"
       ? { value: "—", caption: "UNKNOWN", tone: "neutral" as const }
       : { value: "×", caption: "OFFLINE", tone: "bad" as const };
@@ -99,7 +102,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   return (
     <GlassCard aria-label="Status" data-stale={statusError || undefined} className={cn("transition-opacity duration-200", statusError && "opacity-60", className)}>
       <div className="flex items-center gap-4">
-        <StatusOrb value={orb.value} caption={orb.caption} tone={orb.tone} dim={online && liveStale} />
+        <StatusOrb value={orb.value} caption={orb.caption} tone={orb.tone} note={orb.note} dim={online && liveStale} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <Pill tone={tunnel.tone} dot>Tunnel {tunnel.label}</Pill>

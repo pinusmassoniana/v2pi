@@ -183,4 +183,12 @@ describe("StatusOrb", () => {
     expect(screen.getByRole("img", { name: "42 ms · ONLINE" })).toHaveAttribute("data-tone", "ok");
     expect(screen.getByRole("img", { name: "× OFFLINE" })).toHaveAttribute("data-tone", "bad");
   });
+
+  it("an amber orb says why in a word under its caption, and in its name", () => {
+    render(<StatusOrb value="831" caption="ms · ONLINE" tone="warn" note="slow" />);
+    const orb = screen.getByRole("img", { name: "831 ms · ONLINE · slow" });
+    expect(orb).toHaveAttribute("data-tone", "warn");
+    expect(within(orb).getByText("slow")).toHaveClass("text-warn");
+    expect(within(orb).getByText("831")).toHaveClass("text-warn");
+  });
 });

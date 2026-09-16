@@ -143,6 +143,21 @@ describe("Overview › status block", () => {
     expect(within(block).queryByText("stale config")).toBeNull();
   });
 
+  it("O4: a live latency above 150 ms turns the orb amber with the word slow, as on the connection path; exactly 150 ms is not slow", async () => {
+    const { api$, block } = await openOverview();
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, latency_ms: 831 } });
+    const slow = within(block).getByRole("img", { name: "831 ms · ONLINE · slow" });
+    expect(slow).toHaveAttribute("data-tone", "warn");
+    expect(within(slow).getByText("slow")).toBeInTheDocument();
+    expect(within(block).getByText("Tunnel ONLINE")).toBeInTheDocument();   // slow is still online
+    expect(within(screen.getByRole("region", { name: "Connection path" }).querySelector("[data-live]") as HTMLElement).getByText("slow")).toBeInTheDocument();
+
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, latency_ms: 150 } });
+    const ok = within(block).getByRole("img", { name: "150 ms · ONLINE" });
+    expect(ok).toHaveAttribute("data-tone", "ok");
+    expect(within(ok).queryByText("slow")).toBeNull();
+  });
+
   it("O4: a node named with its own flag shows one flag — the egress one once a probe reports it", async () => {
     const api$ = mockApi();
     api$.listNodes.mockResolvedValue(NODES.map((n) => (n.id === 1 ? { ...n, name: "🇪🇪 Эстония" } : n)));

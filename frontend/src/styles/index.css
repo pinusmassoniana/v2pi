@@ -145,6 +145,10 @@
     background: conic-gradient(from 210deg, var(--g1), var(--g2), var(--g3), var(--g1));
     box-shadow: 0 0 46px color-mix(in srgb, var(--g2) 45%, transparent);
   }
+  .orb[data-tone="warn"] {
+    background: conic-gradient(from 210deg, var(--warn), color-mix(in srgb, var(--warn) 35%, var(--bg)), var(--warn));
+    box-shadow: 0 0 30px color-mix(in srgb, var(--warn) 30%, transparent);
+  }
   .orb[data-tone="neutral"] {
     background: conic-gradient(from 210deg, var(--t3), var(--line), var(--t3));
   }
