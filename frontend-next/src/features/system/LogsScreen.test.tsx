@@ -41,6 +41,45 @@ describe("Logs (G9)", () => {
     );
   });
 
+  it("states the pinned auto-refresh explainer under the toolbar", async () => {
+    await openLogs();
+
+    expect(screen.getByRole("region", { name: "Logs" })).toHaveTextContent(
+      "While it is on, this screen is the only thing polling — every 5 s for the current source and line count. " +
+        "Changing either starts a new read and drops the old one; leaving the screen switches it off.",
+    );
+  });
+
+  it("coerces a fractional line count to a whole number before it reaches the gateway", async () => {
+    const { api$ } = await openLogs();
+    const linesField = screen.getByLabelText("lines");
+    await userEvent.clear(linesField);
+    await userEvent.type(linesField, "10.5");
+
+    await userEvent.click(load());
+
+    await waitFor(() => expect(api$.getLogs).toHaveBeenCalledWith("app", 10));
+  });
+
+  it("the Load label follows the operator's own load, not the background poll", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const { api$ } = await openLogs();
+    await userEvent.click(load());
+    await waitFor(() => expect(api$.getLogs).toHaveBeenCalledTimes(1));
+    await userEvent.click(screen.getByRole("switch", { name: "Auto-refresh" }));
+
+    let resolveNext: (value: { source: string; lines: string[] }) => void = () => {};
+    api$.getLogs.mockImplementationOnce(() => new Promise((resolve) => { resolveNext = resolve; }));
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    await waitFor(() => expect(api$.getLogs).toHaveBeenCalledTimes(2));
+
+    // the background poll is in flight, but the operator never pressed Load: the label must not flicker
+    expect(screen.getByRole("button", { name: "Load" })).toBeInTheDocument();
+
+    resolveNext({ source: "app", lines: LOG_LINES });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load" })).toBeInTheDocument());
+  });
+
   it("Load reads the default source once, at the default line count", async () => {
     const { api$ } = await openLogs();
 

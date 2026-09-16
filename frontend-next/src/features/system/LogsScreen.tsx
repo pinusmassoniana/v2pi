@@ -15,8 +15,8 @@ import { downloadText } from "../../lib/download";
 import { cn } from "../../lib/cn";
 import {
   DEFAULT_LOG_LINES, DEFAULT_LOG_SOURCE, LOGS_EXPLAINER, LOGS_REDACTION_NOTE, LOG_SOURCES, MAX_LOG_LINES, MIN_LOG_LINES,
-  beforeLoadMessage, downloadNote, emptyMessage, filterLines, highlightParts, logSource, logSourceLabel, parseLogLine,
-  shortLogger, shortTime, showingLabel, truncationNote,
+  autoRefreshNote, beforeLoadMessage, downloadNote, emptyMessage, filterLines, highlightParts, logSource, logSourceLabel,
+  parseLogLine, shortLogger, shortTime, showingLabel, truncationNote,
 } from "./logSources";
 
 const LEVEL_TONE: Record<string, string> = { ERROR: "text-bad", WARNING: "text-warn", INFO: "text-[#6ee7ff]", DEBUG: "text-t3" };
@@ -53,7 +53,7 @@ export function useLogs() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  const count = Math.min(MAX_LOG_LINES, Math.max(MIN_LOG_LINES, Number(lines) || DEFAULT_LOG_LINES));
+  const count = Math.min(MAX_LOG_LINES, Math.max(MIN_LOG_LINES, Math.trunc(Number(lines)) || DEFAULT_LOG_LINES));
   // One owner, and only while auto-refresh is on: an interval of 0 arms no timer. Changing the source or the count
   // makes a new key, so the previous one is left with no observer and drops — two owners are never armed at once.
   const query = usePolledQuery({ ...queries.logs(source, count), enabled: loaded }, autoRefresh && loaded ? LOGS_POLL_MS : 0);
@@ -143,7 +143,7 @@ export function Logs() {
           />
         </label>
         <span className="pb-2 text-[11px] text-t3">1–1000</span>
-        <Button variant="primary" onClick={logs.load}>{logs.query.isFetching ? "Loading…" : "Load"}</Button>
+        <Button variant="primary" onClick={logs.load}>{logs.query.isFetching && !logs.autoRefresh ? "Loading…" : "Load"}</Button>
         <label className="flex min-w-40 flex-1 flex-col gap-1 text-xs font-semibold text-t2">
           filter
           <Input type="search" placeholder="filter…" value={logs.filter} onChange={(event) => logs.setFilter(event.target.value)} />
@@ -154,6 +154,7 @@ export function Logs() {
         </span>
         <Button className="mb-0" disabled={logs.shown.length === 0} onClick={logs.download}>Download</Button>
       </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-t3">{autoRefreshNote()}</p>
       <p className="mt-3 rounded-xl border border-line bg-glass px-3 py-2 text-[11.5px] leading-relaxed text-t2">{LOGS_EXPLAINER}</p>
       {logs.query.isError ? (
         <div className="mt-3">

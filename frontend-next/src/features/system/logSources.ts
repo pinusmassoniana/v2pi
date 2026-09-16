@@ -123,6 +123,12 @@ export const LOGS_EXPLAINER =
 export const LOGS_REDACTION_NOTE =
   "The app log can name interfaces, addresses and the commands the panel runs on the host. It is not redacted.";
 
+/** Design §2's "Logs · auto-refresh copy" — pinned word for word, rendered under the toolbar next to Auto-refresh. */
+export function autoRefreshNote(): string {
+  return "While it is on, this screen is the only thing polling — every 5 s for the current source and line count. " +
+    "Changing either starts a new read and drops the old one; leaving the screen switches it off.";
+}
+
 /** Before Load: the screen reads nothing on its own, and says what pressing it will do. */
 export function beforeLoadMessage(lines: number): string {
   return `Press Load to read the last ${lines} lines.`;
