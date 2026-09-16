@@ -79,10 +79,21 @@ const MAX_DNS_NAME = 253;
 const MAX_FIELD = 512;
 export const MAX_HOSTS = 32;
 export const MAX_HOST_NAME = 40;
+export const MAX_CLIENTS = 16;
 const ANY_HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
 const DOTTED_HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 const B64_KEY = /^[A-Za-z0-9+/_-]{43}=?$/;
 const SHORT_ID = /^[0-9a-fA-F]+$/;
+
+/**
+ * Focus after removing item `index` out of `previousCount`: the index of the item that took its place, else the one
+ * before it, else null once none remain. Shared by HostRows (react-hook-form indices) and the remote-access client
+ * list (DOM order), which both restore focus this same way after a row disappears.
+ */
+export function focusIndexAfterRemove(index: number, previousCount: number): number | null {
+  const remaining = previousCount - 1;
+  return remaining > 0 ? Math.min(Math.max(index, 0), remaining - 1) : null;
+}
 
 /** rw_inbound.validate_hostname: a DNS name safe to put in the generated artifacts. */
 function hostnameIssue(name: string, what: string): string | null {

@@ -13,7 +13,7 @@ import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
 import { CsvChipsField } from "./CsvChipsField";
 import { Help } from "./NetworkFields";
-import { MAX_HOSTS, canTurnOn, destHost, parseCsv, sniMismatch } from "./rwForm";
+import { MAX_HOSTS, canTurnOn, destHost, focusIndexAfterRemove, parseCsv, sniMismatch } from "./rwForm";
 import type { RwFormState } from "./useRwForm";
 
 /** Text whose `backticked` parts are code, as the contract writes them. */
@@ -155,13 +155,14 @@ export function HostRows({ state, disabled }: { state: RwFormState; disabled: bo
   const deps = fields.flatMap((_row, index) => [`hosts.${index}.name`, `hosts.${index}.ip`] as const);
 
   function removeRow(index: number) {
-    const remaining = fields.length - 1;
+    const previousCount = fields.length;
     remove(index);
     // The rows left are checked again (a duplicate may be gone). Focus stays in the list: the row that took this one's
     // place, else the one before it, else Add host.
     window.setTimeout(() => {
       void trigger("hosts");
-      if (remaining > 0) setFocus(`hosts.${Math.min(index, remaining - 1)}.name`);
+      const target = focusIndexAfterRemove(index, previousCount);
+      if (target !== null) setFocus(`hosts.${target}.name`);
       else addRef.current?.focus();
     }, 0);
   }

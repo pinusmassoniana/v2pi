@@ -1,16 +1,16 @@
-import { Copy, Download, Eye, EyeOff, Plus } from "lucide-react";
+import { Copy, Download, Ellipsis, Eye, EyeOff, Plus } from "lucide-react";
 import { memo, useId, useState, type FormEvent } from "react";
 import type { RwClient } from "../../api/client";
 import { RW_WRITE, useConnectionBusy, useWriting } from "../../api/invalidation";
 import { Chip } from "../../components/data/Chip";
 import { Button } from "../../components/ui/Button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, useAfterMenu } from "../../components/ui/DropdownMenu";
 import { Input } from "../../components/ui/Input";
+import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { cn } from "../../lib/cn";
 import { maskUuid } from "./revocation";
-import { clientNameIssue } from "./rwForm";
+import { MAX_CLIENTS, clientNameIssue } from "./rwForm";
 import type { RwClientActions, RwClientCallbacks } from "./useRwClientActions";
-
-export const MAX_CLIENTS = 16;
 
 export const CLIENTS_NOTE = (
   <>
@@ -99,6 +99,59 @@ export function ClientsTable({ clients, actions }: { clients: readonly RwClient[
         </tbody>
       </table>
     </div>
+  );
+}
+
+const ClientCard = memo(function ClientCard({ client, actions, reads, writes }: { client: RwClient; actions: RwClientCallbacks; reads: boolean; writes: boolean }) {
+  // Remove's question and Resume's opens only once the menu has closed and given focus back to its trigger.
+  const { after, onCloseAutoFocus } = useAfterMenu();
+  return (
+    <li aria-label={client.email} data-client={client.email} className="glass flex flex-col gap-2 bg-solid p-3">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-t1">{client.email}</span>
+        <ClientStatus client={client} />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon" variant="ghost" className="size-8" aria-label={`More actions for ${client.email}`} disabled={writes}><Ellipsis size={16} aria-hidden /></Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent onCloseAutoFocus={onCloseAutoFocus}>
+            {client.enabled ? (
+              <DropdownMenuItem onSelect={() => actions.onSuspend(client)}>Suspend</DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onSelect={() => after(() => actions.onResume(client))}>Resume</DropdownMenuItem>
+            )}
+            <DropdownMenuItem className="text-bad" onSelect={() => after(() => actions.onRemove(client))}>Remove…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <MaskedUuid client={client} />
+      <div data-client-actions className="grid grid-cols-2 gap-2">
+        <Button size="sm" aria-label={`Download .conf for ${client.email}`} disabled={reads} onClick={() => actions.onConfig(client)}><Download size={13} aria-hidden />.conf</Button>
+        <Button size="sm" aria-label={`Copy link for ${client.email}`} disabled={reads} onClick={() => actions.onCopyLink(client)}><Copy size={13} aria-hidden />Copy link</Button>
+      </div>
+    </li>
+  );
+});
+
+/** Phone: a card per device — name, status, masked uuid, .conf and Copy link, and a ⋯ menu for Suspend / Resume and Remove. */
+export function ClientCards({ clients, actions }: { clients: readonly RwClient[]; actions: RwClientCallbacks }) {
+  const busy = useClientBusy();
+  if (clients.length === 0) return <p className="px-1 text-sm text-t3">No clients yet.</p>;
+  return (
+    <ul aria-label="Clients" className="flex flex-col gap-2">
+      {clients.map((client) => <ClientCard key={client.id} client={client} actions={actions} reads={busy.reads} writes={busy.writes} />)}
+    </ul>
+  );
+}
+
+/** Phone: Add client opens a sheet with the name field focused; closing it gives focus back to Add client. */
+export function AddClientSheet({ actions, count, onClose }: { actions: Pick<RwClientActions, "add">; count: number; onClose: () => void }) {
+  return (
+    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent title="Add client">
+        <AddClientForm actions={actions} count={count} onAdded={onClose} />
+      </SheetContent>
+    </Sheet>
   );
 }
 
