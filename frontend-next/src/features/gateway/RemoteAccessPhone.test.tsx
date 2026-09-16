@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Status } from "../../api/client";
 import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
-import { RW_CLIENTS, RW_PENDING, STATUS, mockApi } from "../../test/fixtures";
+import { RW, RW_CLIENTS, RW_PENDING, STATUS, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 
@@ -64,6 +64,26 @@ describe("Remote access on a phone", () => {
     await waitFor(() => expect(dialog).toHaveFocus());
     await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(api$.deleteRwClient).toHaveBeenCalledWith(RW_CLIENTS[2]!.id));
+  });
+
+  it("removing the last client on a phone moves focus to Add client, not the page", async () => {
+    const { api$ } = await openPhone();
+    const removed = new Set<string>();
+    api$.deleteRwClient.mockImplementation(async (id: string) => {
+      removed.add(id);
+      return { ...RW, clients: RW_CLIENTS.filter((client) => !removed.has(client.id)), revocation: "reapplied" };
+    });
+    const add = screen.getByRole("button", { name: "Add client" });
+    for (const client of RW_CLIENTS) {
+      await userEvent.click(within(card(client.email)).getByRole("button", { name: `More actions for ${client.email}` }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: "Remove…" }));
+      const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+      await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(api$.deleteRwClient).toHaveBeenCalledWith(client.id));
+    }
+    await waitFor(() => expect(screen.queryByRole("list", { name: "Clients" })).toBeNull());
+    expect(screen.getByText("No clients yet.")).toBeInTheDocument();
+    await waitFor(() => expect(add).toHaveFocus());
   });
 
   it("Resume from the menu asks before starting a stopped tunnel", async () => {

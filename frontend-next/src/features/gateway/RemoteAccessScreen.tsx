@@ -171,7 +171,7 @@ function RwPhone({ rw, state, save, clientActions, locked, filledHosts }: RwPart
         <div className="flex items-center gap-2 px-1">
           <h2 className="text-[15px] font-bold text-t1">Clients</h2>
           <span className="font-mono text-[11px] text-t3">{rw.clients.length} / {MAX_CLIENTS}</span>
-          <Button size="sm" className="ml-auto" disabled={locked || rw.clients.length >= MAX_CLIENTS} onClick={() => setAdding(true)}><Plus size={14} aria-hidden />Add client</Button>
+          <Button size="sm" data-add-client className="ml-auto" disabled={locked || rw.clients.length >= MAX_CLIENTS} onClick={() => setAdding(true)}><Plus size={14} aria-hidden />Add client</Button>
         </div>
         <ClientCards clients={rw.clients} actions={clientActions} />
       </section>
