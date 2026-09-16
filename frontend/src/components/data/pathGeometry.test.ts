@@ -31,13 +31,15 @@ describe("connection path geometry", () => {
     expect(g.tunnelPill.cx + worst / 2).toBeLessThanOrEqual(g.xs[2] - g.marker.node);
   });
 
-  it("narrow: the tunnel pill hangs below the line and its markers, inside the drawing", () => {
+  it("narrow: the tunnel pill hangs below the line, clear of the node marker's ring, inside the drawing", () => {
     const g = PATH_GEOMETRY.narrow;
     const height = pillHeight(g.tunnelPill, 2);
     const top = g.tunnelPill.cy - height / 2;
-    expect(top).toBe(91);
-    expect(top).toBeGreaterThanOrEqual(g.y + g.marker.node);
-    expect(top + height).toBeLessThanOrEqual(g.height);
+    expect(top).toBe(93);
+    // A stroke is centred on its edge: the pill's 1 u hairline reaches 0.5 u outside it, the node ring's 2 u stroke 1 u past its radius.
+    // A rate line of 12 characters or more widens the pill under the node marker, so this clearance is what keeps them apart.
+    expect(top - 0.5).toBeGreaterThanOrEqual(g.y + g.marker.node + 1);
+    expect(top + height + 0.5).toBeLessThanOrEqual(g.height);
     expect(g.tunnelPill.cx).toBe((g.xs[1] + g.xs[2]) / 2);
   });
 

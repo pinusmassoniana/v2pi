@@ -49,7 +49,7 @@ describe("ConnectionPath", () => {
     expect(wide).toHaveAttribute("aria-hidden", "true");
     expect(narrow).toHaveAttribute("aria-hidden", "true");
     expect(wide).toHaveAttribute("viewBox", "0 0 568 98");
-    expect(narrow).toHaveAttribute("viewBox", "0 0 334 120");
+    expect(narrow).toHaveAttribute("viewBox", "0 0 334 122");
     expect(wide).toHaveClass("block", "@max-md:hidden");
     expect(narrow).toHaveClass("hidden", "@max-md:block");
   });
