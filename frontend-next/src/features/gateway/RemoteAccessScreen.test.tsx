@@ -374,6 +374,17 @@ describe("Remote access › Save (A4)", () => {
     expect(api$.putRw).not.toHaveBeenCalled();
     expect(screen.queryByText(/not-a-key/)).toBeNull();
   });
+
+  it("a Save blocked by an invalid field focuses that field and says why; nothing is sent", async () => {
+    const { api$ } = await openRemoteAccess();
+    await fill(field("Listen port"), "abc");
+    expect(await within(inbound()).findByText("rw_port must be an integer, got 'abc'")).toBeInTheDocument();
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(field("Listen port")).toHaveFocus());
+    expect(await screen.findByText("not saved — fix the highlighted fields first")).toHaveAttribute("role", "status");
+    expect(api$.putRw).not.toHaveBeenCalled();
+  });
 });
 
 describe("Remote access › following the gateway and leaving", () => {

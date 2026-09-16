@@ -52,6 +52,12 @@ export interface RwSave {
  * one handed to `form.handleSubmit`, which is called at render time to build the bound submit function and so cannot
  * be proven by the ref-safety check to run after render — so `save` instead calls `form.trigger()` (the same
  * resolver-driven validation `handleSubmit` runs) and reads `form.getValues()` itself once the form is valid.
+ *
+ * `form.trigger()` does not do everything `handleSubmit` did for free, though: `handleSubmit` focuses the first
+ * invalid field on refusal (`shouldFocusError`, on by default) and `trigger()` only does that with `{ shouldFocus:
+ * true }` — passed below. Nor does `trigger()` report anything on its own, so a save blocked by a value in a
+ * card taller than the viewport (a host row, the port) would otherwise be a dead click: the toolbar's status line
+ * says so, the same way it already does for a refusal the backend sends back.
  */
 export function useRwSave(rw: Rw, state: RwFormState): RwSave {
   const queryClient = useQueryClient();
@@ -89,7 +95,10 @@ export function useRwSave(rw: Rw, state: RwFormState): RwSave {
 
   async function save(): Promise<void> {
     setFormError(null);
-    if (!(await form.trigger())) return;
+    if (!(await form.trigger(undefined, { shouldFocus: true }))) {
+      setFormError("not saved — fix the highlighted fields first");
+      return;
+    }
     const values = form.getValues();
     if (!provablyNarrows(rw, values) && !(await confirmTunnelStart(queryClient))) return;
     if (isConnectionBusy(queryClient)) {
