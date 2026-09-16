@@ -2,6 +2,7 @@
 // patch a save sends, and what the collector's health says. Pure and unit-tested.
 import { z } from "zod";
 import type { Diagnostics, Settings } from "../../api/client";
+import { SETTINGS_REAPPLY_KEYS } from "../../api/client";
 
 /** The gateway reserves its tproxy port and its local proxy port (config.py), and refuses either here. */
 export const RESERVED_PORTS = [52345, 10808] as const;
@@ -63,14 +64,19 @@ export function statsPatch(values: StatsFormValues, initial: StatsFormValues): P
   return patch;
 }
 
-/** Whether this save waits on a rebuild at all: only the two keys baked into the xray config do (routes.py). */
+/** Whether this save waits on a rebuild at all: only the keys baked into the xray config do (routes.py _SETTINGS_CONFIG_KEYS, shared here as SETTINGS_REAPPLY_KEYS). */
 export function statsPatchReapplies(patch: Partial<Pick<Settings, StatsSettingKey>>): boolean {
-  return "stats_enabled" in patch || "stats_api_port" in patch;
+  return SETTINGS_REAPPLY_KEYS.some((key) => key in patch);
 }
 
-/** What the save says. With no selected node the gateway re-applies nothing, and the toast must not claim otherwise. */
+/**
+ * What the save says. Two things must both hold for a live-apply claim: a node is active, AND the patch is one
+ * `_reapply_or_502` actually runs for (routes.py:1449-1450 only reapplies when the patch intersects
+ * `_SETTINGS_CONFIG_KEYS`) — `traffic_sample_ms` alone never rebuilds anything, so an interval-only save with a
+ * node connected must still read as "applies on next Connect", not as a live apply that did not happen.
+ */
 export function statsSavedMessage(patch: Partial<Pick<Settings, StatsSettingKey>>, active: boolean): string {
-  if (!active) return "saved — applies on next Connect";
+  if (!active || !statsPatchReapplies(patch)) return "saved — applies on next Connect";
   if ("stats_enabled" in patch) return `traffic stats ${patch.stats_enabled ? "on" : "off"} · applied to the live tunnel`;
   return "saved · applied to the live tunnel";
 }
