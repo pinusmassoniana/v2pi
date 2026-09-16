@@ -102,17 +102,19 @@ describe("Overview › alerts", () => {
     expect(screen.getByRole("group", { name: "Subscriptions" })).toHaveTextContent("work: expired");
   });
 
-  it("O5: untunneled traffic raises the banner only above 50 000 bps", async () => {
+  it("O5: direct traffic raises no banner at any rate; the connection path shows it", async () => {
     const { api$ } = await openOverview();
-    api$.emitTraffic(withDirect(10_000, 40_000));
-    expect(screen.queryByRole("status", { name: "Traffic bypassing the tunnel" })).toBeNull();
-    api$.emitTraffic(withDirect(20_000, 100_000));
-    expect(screen.getByRole("status", { name: "Traffic bypassing the tunnel" })).toHaveTextContent(/^Traffic bypassing the tunnel$/);
-    const rate = within(screen.getByRole("group", { name: "Traffic bypassing the tunnel" })).getByText("· 120 kbit/s");
-    expect(rate).toHaveAttribute("aria-live", "off");
-    api$.emitTraffic(withDirect(30_000, 100_000));   // the rate changes; the live region does not
-    expect(rate).toHaveTextContent("· 130 kbit/s");
-    expect(screen.getByRole("status", { name: "Traffic bypassing the tunnel" })).toHaveTextContent(/^Traffic bypassing the tunnel$/);
+    await screen.findByRole("status", { name: "Subscriptions" });
+    const groups = () => screen.queryAllByRole("group").map((group) => group.getAttribute("aria-label"));
+    const before = groups();
+    expect(before).toContain("Subscriptions");   // the alerts row is on screen: a new banner would join it
+    for (const [up, down] of [[800, 0], [20_000, 100_000], [300_000, 4_500_000]] as const) {
+      api$.emitTraffic(withDirect(up, down));
+      expect(groups()).toEqual(before);
+    }
+    const path = screen.getByRole("region", { name: "Connection path" });
+    expect(within(path).getByRole("img")).toHaveAccessibleName(/ Direct by routing rules: down 4\.5 Mbit\/s, up 300 kbit\/s\. /);
+    expect(path.querySelector('svg[data-layout="wide"] path[data-direct]')).toHaveAttribute("data-direct", "flowing");
   });
 
   it("nothing is wrong: no alerts at all", async () => {
@@ -121,7 +123,7 @@ describe("Overview › alerts", () => {
     renderApp("/");
     await screen.findByRole("region", { name: "Status" });
     await waitFor(() => expect(api$.listSubs).toHaveBeenCalled());
-    expect(screen.queryByRole("status", { name: /Auto-failover|Subscriptions|bypassing/ })).toBeNull();
+    expect(screen.queryByRole("status", { name: /Auto-failover|Subscriptions/ })).toBeNull();
     expect(screen.queryByRole("alert", { name: "Config drift" })).toBeNull();
   });
 });

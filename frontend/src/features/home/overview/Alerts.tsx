@@ -4,16 +4,12 @@ import type { Status, Subscription } from "../../../api/client";
 import { serverNow } from "../../../api/clock";
 import { CONNECTION_WRITE, useApiWrite, useConnectionBusy } from "../../../api/invalidation";
 import { keys } from "../../../api/keys";
-import { useTraffic } from "../../../api/traffic";
 import { AlertBanner } from "../../../components/data/AlertBanner";
 import { Chip } from "../../../components/data/Chip";
 import { notifyError, notifyOk } from "../../../components/ui/Toaster";
 import { cn } from "../../../lib/cn";
 import { agoLabel, subWarnings } from "../../../lib/dashboard";
-import { fmtRate } from "../../../lib/format";
-import {
-  UNTUNNELED_ALERT_BPS, bypassState, failoverBanner, hasConfigDrift, readFailoverDismissed, writeFailoverDismissed,
-} from "../derive";
+import { failoverBanner, hasConfigDrift, readFailoverDismissed, writeFailoverDismissed } from "../derive";
 
 export interface AlertsProps {
   status: Status | undefined;
@@ -23,9 +19,8 @@ export interface AlertsProps {
   className?: string;
 }
 
-/** O1 config drift, O2 auto-failover, O3 subscriptions, O5 untunneled traffic. Nothing renders when all is well. */
+/** O1 config drift, O2 auto-failover, O3 subscriptions. Nothing renders when all is well. */
 export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
-  const traffic = useTraffic();
   const [dismissed, setDismissed] = useState<number | null>(readFailoverDismissed);
   const queryClient = useQueryClient();
   const apply = useApiWrite("apply");
@@ -42,9 +37,8 @@ export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
   const drift = hasConfigDrift(status) && activeId !== null;
   const failoverAt = failoverBanner(status?.last_failover_at, dismissed, nowMs);
   const warnings = subWarnings(subs ?? [], nowMs / 1000);
-  const bypass = bypassState(traffic.disabled ? null : traffic.live);
 
-  if (!drift && failoverAt === null && warnings.length === 0 && !bypass.alert) return null;
+  if (!drift && failoverAt === null && warnings.length === 0) return null;
 
   // Re-apply the node that is active when the button is pressed, not the one this render saw.
   function reloadActive() {
@@ -82,11 +76,6 @@ export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
               <Chip key={`${w.name}-${w.text}`} tone={w.level} plain title={`Subscription ${w.name}`}>{w.name}: {w.text}</Chip>
             ))}
           </div>
-        </AlertBanner>
-      ) : null}
-      {bypass.alert ? (
-        <AlertBanner tone="warn" icon="↯" title="Traffic bypassing the tunnel" text={`· ${fmtRate(bypass.total)}`}>
-          <p className="text-[11px] text-t2">threshold {fmtRate(UNTUNNELED_ALERT_BPS)}</p>
         </AlertBanner>
       ) : null}
     </div>

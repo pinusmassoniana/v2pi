@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnEvent, Routing, Status, TrafficFrame } from "../../api/client";
 import { NETWORK, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
-  FAILOVER_DISMISSED_KEY, bypassState, chartStale, clockTime, eventLevel, failoverBanner, failoverHistory, failoverPill, hasConfigDrift,
+  FAILOVER_DISMISSED_KEY, chartStale, clockTime, eventLevel, failoverBanner, failoverHistory, failoverPill, hasConfigDrift,
   latencyStats, liveLatency, nodeEndpoint, nodeHealthSlot, outboundRates, pathLabel, peakOf, poolSize, rateLines, readFailoverDismissed,
   rollbackStillValid, recentEvents, recentValues, routeBadge, routingSummary, sessionTotals, sinceLabel, tunnelLabel, tunnelLeg, whenLabel,
   writeFailoverDismissed, xrayLabel,
@@ -96,15 +96,6 @@ describe("live traffic", () => {
     expect(sessionTotals(noSession)).toEqual({ up: 9_000_000_000, down: 120_000_000_000, source: "lifetime" });
     expect(sessionTotals({ ...noSession, lifetime: undefined })).toEqual({ up: 1_300_000_000, down: 19_000_000_000, source: "totals" });
     expect(sessionTotals(null)).toBeNull();
-  });
-
-  it("bypass: any direct traffic leaks, the alert waits for more than 50 000 bps", () => {
-    const frame = (up: number, down: number): TrafficFrame => ({ ...TRAFFIC_FRAME, outbounds: { ...TRAFFIC_FRAME.outbounds, direct: { up_bps: up, down_bps: down } } });
-    expect(bypassState(TRAFFIC_FRAME)).toEqual({ down: 0, up: 0, total: 0, alert: false, leaking: false });
-    expect(bypassState(frame(10_000, 40_000))).toMatchObject({ total: 50_000, alert: false, leaking: true });
-    expect(bypassState(frame(10_001, 40_000))).toMatchObject({ total: 50_001, alert: true, leaking: true });
-    expect(bypassState({ ...TRAFFIC_FRAME, outbounds: {} })).toMatchObject({ total: 0, leaking: false });
-    expect(bypassState(null).alert).toBe(false);
   });
 
   it("recent values: the trailing window of one direction, thinned to the point budget", () => {

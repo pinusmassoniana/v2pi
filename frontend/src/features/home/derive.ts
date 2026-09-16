@@ -15,8 +15,6 @@ export {
 
 export interface Labelled<L extends string> { label: L; tone: Tone }
 
-/** Direct (untunneled) throughput above this raises the Overview alert. The path's bypass line reacts to any. */
-export const UNTUNNELED_ALERT_BPS = 50_000;
 /** The auto-failover alert stays for a day unless dismissed. */
 export const FAILOVER_ALERT_SEC = 86_400;
 /** Same key as the Svelte panel, so a dismissal survives the switch to this one. */
@@ -104,17 +102,6 @@ export function sessionTotals(frame: TrafficFrame | null): SessionTotals | null 
   if (frame.session) return { ...frame.session, source: "session" };
   if (frame.lifetime) return { ...frame.lifetime, source: "lifetime" };
   return frame.totals ? { ...frame.totals, source: "totals" } : null;
-}
-
-export interface Bypass { down: number; up: number; total: number; alert: boolean; leaking: boolean }
-
-/** O5 / O8: the direct outbound. The alert waits for 50 000 bps; the path's bypass line reacts to any traffic. */
-export function bypassState(frame: TrafficFrame | null): Bypass {
-  const direct = frame?.outbounds.direct;
-  const down = direct?.down_bps ?? 0;
-  const up = direct?.up_bps ?? 0;
-  const total = down + up;
-  return { down, up, total, alert: total > UNTUNNELED_ALERT_BPS, leaking: total > 0 };
 }
 
 /** The last `windowMs` of one direction, thinned to at most `maxPoints` values, for a KPI sparkline. */
