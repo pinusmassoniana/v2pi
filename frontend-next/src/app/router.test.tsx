@@ -1,13 +1,13 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { mockApi } from "../test/fixtures";
+import { mockApi, mockSystem } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
 import { LEGACY_REDIRECTS, SECTIONS, isTabActive, sectionForPath, titleForPath } from "./nav";
 
-// The shell needs the query client, auth context and a backend.
+// The shell needs the query client, auth context and a backend; System's screens read their own routes.
 function renderAt(path: string) {
-  mockApi();
+  mockSystem(mockApi());
   return renderApp(path).router;
 }
 
@@ -34,7 +34,7 @@ describe("navigation model", () => {
 const BUILT: Readonly<Record<string, string>> = {
   "/": "Status", "/traffic": "Failover history", "/nodes": "Servers toolbar", "/nodes/subscriptions": "Subscription fetching",
   "/tunnel/routing": "Rules", "/tunnel/anti-dpi": "Anti-DPI profiles", "/tunnel/health": "Current state", "/gateway/network": "Gateway Segment",
-  "/gateway/remote-access": "Remote Access Inbound", "/system/backups": "Backup & restore",
+  "/gateway/remote-access": "Remote Access Inbound", "/system/backups": "Backup & restore", "/system/access": "Password",
 };
 
 describe("router", () => {

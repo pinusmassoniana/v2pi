@@ -593,13 +593,14 @@ export function mockGateway(api$: MockApi): MockApi {
 
 /**
  * Answer every System read and write: the backup document and its restore, the token list and its two writes, the
- * audit log, the log tail, diagnostics and the settings reset. Kept out of `mockApi` because no screen outside System
+ * audit log, the log tail, diagnostics, the password rotation and the settings reset. Kept out of `mockApi` because no screen outside System
  * reads any of them, and a test that forgets this mock should fail loudly rather than quietly polling a real fetch.
  */
 export function mockSystem(api$: MockApi): MockApi & SystemMocks {
   const extra: SystemMocks = {
     getBackup: vi.spyOn(api, "getBackup").mockResolvedValue(BACKUP_DOC),
     restore: vi.spyOn(api, "restore").mockResolvedValue(RESTORE_RESULT),
+    changePassword: vi.spyOn(api, "changePassword").mockResolvedValue({ ok: true }),
     listTokens: vi.spyOn(api, "listTokens").mockResolvedValue(TOKENS),
     createToken: vi.spyOn(api, "createToken").mockImplementation(async (name: string, scope: ApiTokenScope, expiresAt?: number) => ({
       ...TOKEN_CREATED, name, scope, expires_at: expiresAt ?? null,
@@ -620,6 +621,7 @@ export function mockSystem(api$: MockApi): MockApi & SystemMocks {
 }
 
 interface SystemMocks {
+  changePassword: MockedFunction<typeof api.changePassword>;
   getBackup: MockedFunction<typeof api.getBackup>;
   restore: MockedFunction<typeof api.restore>;
   listTokens: MockedFunction<typeof api.listTokens>;

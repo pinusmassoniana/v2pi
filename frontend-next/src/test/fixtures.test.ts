@@ -199,6 +199,7 @@ describe("gateway fixtures", () => {
     await expect(api.getDiagnostics()).resolves.toBe(DIAGNOSTICS);
     await expect(api.resetSettings()).resolves.toBe(SETTINGS);
     await expect(api.deleteToken(1)).resolves.toBeUndefined();
+    await expect(api.changePassword("old", "new")).resolves.toEqual({ ok: true });
     await expect(api.createToken("home-assistant", "monitor", NOW_SEC + 30 * 86_400)).resolves.toMatchObject({
       name: "home-assistant", scope: "monitor", expires_at: NOW_SEC + 30 * 86_400, token: TOKEN_CREATED.token,
     });
