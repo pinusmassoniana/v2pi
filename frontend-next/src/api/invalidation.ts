@@ -93,10 +93,21 @@ export const SETTINGS_WRITE = ["settings-write"] as const;
  */
 export const SETTINGS_CONNECTION_WRITE = [...CONNECTION_WRITE, "settings"] as const;
 
-/** The mutation key a settings patch saves under: a connection write when it re-applies the tunnel. */
+/**
+ * The mutation key a settings PATCH saves under: a connection write when the patch holds a re-apply key. A reset is
+ * not a patch and must not be classified here — it carries no keys at all, so it would come back SETTINGS_WRITE:
+ * use RESET_WRITE_KEY.
+ */
 export function settingsWriteKey(patch: Partial<Settings>): typeof SETTINGS_WRITE | typeof SETTINGS_CONNECTION_WRITE {
   return SETTINGS_REAPPLY_KEYS.some((key) => key in patch) ? SETTINGS_CONNECTION_WRITE : SETTINGS_WRITE;
 }
+
+/**
+ * The mutation key a settings RESET saves under. `resetSettings` writes every re-apply key back to its default, so it
+ * re-applies the live tunnel whatever the gateway currently holds — which is why `api.resetSettings` takes the
+ * re-apply timeout unconditionally. It is always a connection write.
+ */
+export const RESET_WRITE_KEY = SETTINGS_CONNECTION_WRITE;
 
 /**
  * Routing Save. It always re-applies the tunnel (put_routing -> reapply_active_node), so it is a connection write: its

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { api } from "./client";
 import clientSource from "./client.ts?raw";
 import {
-  CONNECTION_WRITE, GATEWAY_REFUSED, INVALIDATES, NETWORK_WRITE, PROFILE_BUSY, RW_WRITE, invalidateRefused, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
+  CONNECTION_WRITE, GATEWAY_REFUSED, INVALIDATES, NETWORK_WRITE, PROFILE_BUSY, RESET_WRITE_KEY, RW_WRITE, invalidateRefused, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
   SETTINGS_WRITE, invalidate, isConnectionBusy, isProfileBusy, isSettingsBusy, isWriting, settingsWriteKey, useApiWrite, useConnectionBusy,
   useProfileBusy, useSettingsBusy, useWriting, type MutationName,
 } from "./invalidation";
@@ -191,6 +191,20 @@ describe("settings writes that re-apply the tunnel", () => {
     for (const patch of [{ subs_auto_switch: false }, { health_interval: 60, failover_cooldown: 0 }, {}]) {
       expect(settingsWriteKey(patch)).toBe(SETTINGS_WRITE);
     }
+  });
+
+  it("a reset always re-applies, so it has a key of its own — classifying it as an empty patch would be wrong", async () => {
+    // POST /settings/reset carries no patch and rewrites every re-apply key to its default: it re-applies whatever the
+    // stored settings were, which is why api.resetSettings takes the re-apply timeout unconditionally.
+    expect(clientSource).toContain('resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS)');
+    expect(settingsWriteKey({})).toBe(SETTINGS_WRITE);   // the answer a reset must not be filed under
+    expect(RESET_WRITE_KEY).toBe(SETTINGS_CONNECTION_WRITE);
+
+    const client = new QueryClient();
+    const release = hold(client, RESET_WRITE_KEY);
+    expect([isSettingsBusy(client), isConnectionBusy(client)]).toEqual([true, true]);
+    await release();
+    expect([isSettingsBusy(client), isConnectionBusy(client)]).toEqual([false, false]);
   });
 
   it("either settings key is settings-busy; only the re-applying one is also a connection write", async () => {
