@@ -11,9 +11,11 @@ import { cardFallback } from "../../components/data/CardState";
 import { AlertBanner } from "../../components/data/AlertBanner";
 import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, useAfterMenu } from "../../components/ui/DropdownMenu";
 import { SegmentedField, TextField } from "../../components/ui/Field";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { Pill } from "../../components/ui/Pill";
+import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { EmptyState } from "../../components/ui/States";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
 import { copyText } from "../../lib/clipboard";
@@ -157,7 +159,8 @@ export function SecretPanel({ tokens }: { tokens: TokensState }) {
   );
 }
 
-export function TokenFormCard({ tokens }: { tokens: TokensState }) {
+/** The create form's own state, shared by the desktop card and the phone sheet. */
+export function useTokenForm(tokens: TokensState) {
   const { control, handleSubmit, register, reset, formState: { errors, isValid } } = useForm<TokenFormValues>({
     resolver: zodResolver(tokenFormSchema), defaultValues: EMPTY, mode: "onChange",
   });
@@ -171,6 +174,46 @@ export function TokenFormCard({ tokens }: { tokens: TokensState }) {
       { onSuccess: () => reset(EMPTY) },
     );
   });
+  return { control, register, errors, isValid, expiry, nowMs, submit };
+}
+
+export function TokenFormFields({ form }: { form: ReturnType<typeof useTokenForm> }) {
+  const { control, register, errors, expiry, nowMs } = form;
+  return (
+    <>
+      <TextField label="Name" hint="(1–64 characters)" placeholder="a name for this token" error={errors.name?.message} {...register("name")} />
+      <Controller
+        control={control}
+        name="expiry"
+        render={({ field }) => (
+          <SegmentedField
+            legend="Token expiry"
+            options={EXPIRY_CHOICES.map((choice) => ({ value: choice, label: EXPIRY_LABELS[choice] }))}
+            value={field.value}
+            onValueChange={field.onChange}
+          />
+        )}
+      />
+      <p className="-mt-1 text-[11px] text-t3">{expiryHelper(expiry, nowMs)}</p>
+      <Controller
+        control={control}
+        name="scope"
+        render={({ field }) => (
+          <SegmentedField
+            legend="Token scope"
+            options={TOKEN_SCOPES.map((scope) => ({ value: scope, label: scopeLabel(scope) }))}
+            value={field.value}
+            onValueChange={field.onChange}
+          />
+        )}
+      />
+      <p className="-mt-1 text-[11px] text-t3">{SCOPE_HELPER}</p>
+    </>
+  );
+}
+
+export function TokenFormCard({ tokens }: { tokens: TokensState }) {
+  const form = useTokenForm(tokens);
   return (
     <GlassCard aria-label="New API token">
       <CardHeader
@@ -181,42 +224,92 @@ export function TokenFormCard({ tokens }: { tokens: TokensState }) {
         <SecretPanel tokens={tokens} />
       ) : (
         <div className="flex flex-col gap-2.5">
-          <TextField label="Name" hint="(1–64 characters)" placeholder="a name for this token" error={errors.name?.message} {...register("name")} />
-          <Controller
-            control={control}
-            name="expiry"
-            render={({ field }) => (
-              <SegmentedField
-                legend="Token expiry"
-                options={EXPIRY_CHOICES.map((choice) => ({ value: choice, label: EXPIRY_LABELS[choice] }))}
-                value={field.value}
-                onValueChange={field.onChange}
-              />
-            )}
-          />
-          <p className="-mt-1 text-[11px] text-t3">{expiryHelper(expiry, nowMs)}</p>
-          <Controller
-            control={control}
-            name="scope"
-            render={({ field }) => (
-              <SegmentedField
-                legend="Token scope"
-                options={TOKEN_SCOPES.map((scope) => ({ value: scope, label: scopeLabel(scope) }))}
-                value={field.value}
-                onValueChange={field.onChange}
-              />
-            )}
-          />
-          <p className="-mt-1 text-[11px] text-t3">{SCOPE_HELPER}</p>
+          <TokenFormFields form={form} />
           <div className="mt-1 flex flex-wrap items-center gap-2 border-t border-line pt-3">
             <p className="min-w-0 flex-1 text-[11px] text-t3">{CREATE_FOOTER}</p>
             <Button onClick={tokens.closeForm}>Cancel</Button>
-            <Button variant="primary" disabled={!isValid || tokens.busy} onClick={() => void submit()}>
+            <Button variant="primary" disabled={!form.isValid || tokens.busy} onClick={() => void form.submit()}>
               {tokens.create.isPending ? "Creating…" : "Create token"}
             </Button>
           </div>
         </div>
       )}
+    </GlassCard>
+  );
+}
+
+/** The phone's create sheet: the same form, and after a create the secret in its place — with one sticky button. */
+export function TokenSheet({ tokens, open, onOpenChange }: { tokens: TokensState; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const form = useTokenForm(tokens);
+  return (
+    <Sheet open={open} onOpenChange={(next) => { if (!next) tokens.dismissSecret(); onOpenChange(next); }}>
+      <SheetContent title="New token">
+        <div className="flex flex-col gap-2.5">
+          {tokens.secret ? <SecretPanel tokens={tokens} /> : <TokenFormFields form={form} />}
+          {tokens.secret ? <p className="text-[11px] text-t3">{FINISH_COPYING}</p> : <p className="text-[11px] text-t3">{CREATE_FOOTER}</p>}
+          <div className="glass sticky bottom-0 -mx-1 flex bg-solid p-2">
+            <Button
+              variant="primary"
+              className="flex-1"
+              disabled={!form.isValid || tokens.busy || tokens.secret !== null}
+              onClick={() => void form.submit()}
+            >
+              {tokens.create.isPending ? "Creating…" : "Create token"}
+            </Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/** One token as a phone card: its facts on two lines, and a ⋯ menu whose Revoke opens after the menu closed. */
+export function TokenCard({ token, tokens, nowSec }: { token: ApiToken; tokens: TokensState; nowSec: number }) {
+  const menu = useAfterMenu();
+  const badge = expiryBadge(token.expires_at, nowSec);
+  return (
+    <li className="rounded-xl border border-line bg-glass px-3 py-2">
+      <div className="flex items-baseline gap-2">
+        <span className="min-w-0 truncate text-[13px] font-semibold text-t1">{token.name}</span>
+        <Pill className="shrink-0">{scopeLabel(token.scope)}</Pill>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon" variant="ghost" className="ml-auto" aria-label={`More actions for ${token.name}`}>⋯</Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent onCloseAutoFocus={menu.onCloseAutoFocus}>
+            <DropdownMenuItem disabled={tokens.busy} onSelect={() => menu.after(() => void tokens.askRevoke(token))}>Revoke…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <p className="truncate font-mono text-[11px] text-t3">
+        {token.prefix} · created {localDate(token.created_at)} · last used {lastUsedLabel(token.last_used_at)}
+      </p>
+      <p className="text-[11px] text-t3">
+        {token.expires_at ? `expires ${expiryLabel(token.expires_at)}` : "never expires"}
+        {badge ? <Pill tone="warn" className="ml-1.5">{badge}</Pill> : null}
+      </p>
+    </li>
+  );
+}
+
+export function TokensPhoneCard({ list, tokens, nowSec }: { list: UseQueryResult<ApiToken[]>; tokens: TokensState; nowSec: number }) {
+  const fallback = cardFallback([list], "API tokens did not load");
+  const rows = list.data ?? [];
+  return (
+    <GlassCard aria-label="API tokens">
+      <CardHeader
+        title="API tokens"
+        detail={list.data ? `${rows.length} issued` : undefined}
+        aside={<Button size="sm" disabled={tokens.busy} onClick={tokens.openForm}>Create token</Button>}
+      />
+      {fallback ?? (rows.length === 0 ? (
+        <EmptyState title="No tokens yet." />
+      ) : (
+        <ul aria-label="Tokens" className="flex flex-col gap-2">
+          {rows.map((token) => <TokenCard key={token.id} token={token} tokens={tokens} nowSec={nowSec} />)}
+        </ul>
+      ))}
+      <p className="mt-3 text-[11px] leading-relaxed text-t3">{TOKENS_FOOTER_1}</p>
     </GlassCard>
   );
 }

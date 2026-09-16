@@ -25,8 +25,10 @@ import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
 import { downloadText } from "../../lib/download";
 import { fmtBytes, fmtUptimeCoarse } from "../../lib/format";
 import { cn } from "../../lib/cn";
+import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { confirmTunnelStart, knownStatus, startsStoppedTunnel } from "../../lib/tunnelStart";
 import { NO_ANSWER } from "../gateway/networkForm";
+import { EditorSection } from "../tunnel/EditorSection";
 import { CheckRow } from "./BackupsScreen";
 import { FilePicker } from "./FilePicker";
 import { ResultLine } from "./ResultLine";
@@ -47,7 +49,7 @@ const DIAGNOSTICS_HINT = "Uptime is the panel process, not the host and not the 
 const XRAY_STATES = new Set(["unavailable", "unknown"]);
 
 /** P3. 30 s and never faster: each GET spawns `xray -version` with a 5 s timeout. */
-export function SystemCard() {
+export function SystemCard({ phone = false }: { phone?: boolean }) {
   const diagnostics = usePolledQuery(queries.diagnostics(), SLOW_POLL_MS);
   const data = diagnostics.data;
   const isState = data ? XRAY_STATES.has(data.xray_version) : false;
@@ -55,7 +57,7 @@ export function SystemCard() {
     <GlassCard aria-label="System">
       <CardHeader
         title="System"
-        detail="re-read every 30 s"
+        detail={phone ? "30 s" : "re-read every 30 s"}
         aside={<Button size="sm" disabled={diagnostics.isFetching} onClick={() => void diagnostics.refetch()}>Refresh</Button>}
       />
       {staleNotice([diagnostics], "diagnostics did not refresh")}
@@ -286,11 +288,10 @@ export function useSettingsFile(settings: Settings | undefined) {
 
 export type SettingsFileState = ReturnType<typeof useSettingsFile>;
 
-export function SettingsFileCard({ file, settings }: { file: SettingsFileState; settings: Settings | undefined }) {
+export function SettingsFileBody({ file, settings }: { file: SettingsFileState; settings: Settings | undefined }) {
   const unknown = file.parsed?.unknown ?? [];
   return (
-    <GlassCard aria-label="Settings file">
-      <CardHeader title="Settings file" detail="export / import" aside={<Chip plain>max 1 MB</Chip>} />
+    <>
       <p className="text-[11.5px] leading-relaxed text-t2">{EXPORT_INTRO}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button disabled={!settings} onClick={file.exportFile}>Export settings</Button>
@@ -317,6 +318,15 @@ export function SettingsFileCard({ file, settings }: { file: SettingsFileState; 
         </div>
       </div>
       <p className="mt-3 rounded-xl border border-line bg-glass px-3 py-2 text-[11.5px] leading-relaxed text-t2">{IMPORT_NOTE}</p>
+    </>
+  );
+}
+
+export function SettingsFileCard({ file, settings }: { file: SettingsFileState; settings: Settings | undefined }) {
+  return (
+    <GlassCard aria-label="Settings file">
+      <CardHeader title="Settings file" detail="export / import" aside={<Chip plain>max 1 MB</Chip>} />
+      <SettingsFileBody file={file} settings={settings} />
     </GlassCard>
   );
 }
@@ -357,11 +367,10 @@ export function useResetSettings() {
   return { reset, resetting: run.isPending, busy: settingsBusy || connectionBusy };
 }
 
-export function DangerZoneCard({ danger, condensed = false }: { danger: ReturnType<typeof useResetSettings>; condensed?: boolean }) {
+export function DangerZoneBody({ danger, condensed = false }: { danger: ReturnType<typeof useResetSettings>; condensed?: boolean }) {
   const chips = condensed ? RESET_KEYS.slice(0, 9) : RESET_KEYS;
   return (
-    <GlassCard aria-label="Danger zone" className="border-bad/40 bg-bad/5">
-      <CardHeader title="Danger zone" detail="16 settings" />
+    <>
       <p className="text-sm font-semibold text-t1">Reset panel settings to defaults</p>
       <p className="mt-1 text-[11.5px] leading-relaxed text-t3">{DANGER_ZONE_HINT}</p>
       <ul className="mt-3 flex flex-wrap gap-1">
@@ -376,16 +385,78 @@ export function DangerZoneCard({ danger, condensed = false }: { danger: ReturnTy
           {danger.resetting ? "Resetting…" : "Reset settings"}
         </Button>
       </div>
+    </>
+  );
+}
+
+export function DangerZoneCard({ danger }: { danger: ReturnType<typeof useResetSettings> }) {
+  return (
+    <GlassCard aria-label="Danger zone" className="border-bad/40 bg-bad/5">
+      <CardHeader title="Danger zone" detail="16 settings" />
+      <DangerZoneBody danger={danger} />
     </GlassCard>
+  );
+}
+
+function PanelPhone({ stats, file, danger, settings }: {
+  stats: StatsState; file: SettingsFileState; danger: ReturnType<typeof useResetSettings>; settings: CardQuery & { data: Settings | undefined };
+}) {
+  const [open, setOpen] = useState<"stats" | "file" | "danger" | null>("stats");
+  const section = (id: "stats" | "file" | "danger") => ({
+    collapsible: true as const,
+    open: open === id,
+    onToggle: () => setOpen((current) => (current === id ? null : id)),
+  });
+  return (
+    <div className="flex flex-col gap-3">
+      <SystemCard phone />
+      <GlassCard>
+        <EditorSection
+          title="Traffic stats"
+          note="the live graph on Home"
+          {...section("stats")}
+          aside={stats.dirty ? <Chip tone="warn">● unsaved</Chip> : null}
+        >
+          {cardFallback([settings], "Settings did not load") ?? (
+            <>
+              <TrafficStatsFields stats={stats} />
+              <CollectorHealth stats={stats} />
+            </>
+          )}
+        </EditorSection>
+        <EditorSection title="Settings file" note="export / import" {...section("file")}>
+          <SettingsFileBody file={file} settings={settings.data} />
+        </EditorSection>
+        <EditorSection title="Danger zone" note="16 settings" {...section("danger")}>
+          <DangerZoneBody danger={danger} condensed />
+        </EditorSection>
+      </GlassCard>
+      {stats.dirty ? (
+        <div className="glass sticky bottom-24 z-20 flex flex-col gap-2 bg-solid p-2.5">
+          <ResultLine
+            result={stats.errorCount ? { ok: false, text: statsInvalidMessage(stats.errorCount) } : stats.result}
+          />
+          <p className="text-[11px] text-t3">{STATS_FOOTER}</p>
+          <div className="flex gap-2">
+            <Button className="flex-1" disabled={stats.busy} onClick={stats.discard}>Discard</Button>
+            <Button variant="primary" className="flex-1" disabled={stats.errorCount > 0 || stats.busy} onClick={() => void stats.submit()}>
+              {stats.saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 /** System › Panel (P3, P5, G2 and G6's file half). It owns `settings` and `diagnostics` at the slow cadence. */
 export function Panel() {
+  const desktop = useMediaQuery(DESKTOP_QUERY);
   const settings = usePolledQuery(queries.settings(), SLOW_POLL_MS);
   const stats = useStatsForm(settings.data);
   const file = useSettingsFile(settings.data);
   const danger = useResetSettings();
+  if (!desktop) return <PanelPhone stats={stats} file={file} danger={danger} settings={settings} />;
   return (
     <div className="grid gap-3 md:grid-cols-[7fr_5fr] md:items-start">
       <div className="flex flex-col gap-3">

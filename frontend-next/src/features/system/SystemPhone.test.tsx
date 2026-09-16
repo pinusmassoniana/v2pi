@@ -182,3 +182,127 @@ describe("Logs on a phone", () => {
     expect(within(sheet).getByPlaceholderText("filter…")).toHaveValue("");
   });
 });
+
+describe("Access on a phone", () => {
+  async function openAccess() {
+    const api$ = mockSystem(mockApi());
+    const view = renderApp("/system/access");
+    await screen.findByRole("region", { name: "API tokens" });
+    await screen.findByText("ci-deploy");
+    return { api$, ...view };
+  }
+
+  it("renders the tokens as cards with a ⋯ menu, not a table", async () => {
+    await openAccess();
+
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Scopes" })).toBeNull();
+    const rows = within(screen.getByRole("list", { name: "Tokens" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[1]!).getByText(/pgwp_Vt9pLs1 · created .* · last used /)).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("never expires")).toBeInTheDocument();
+    expect(within(rows[1]!).getByRole("button", { name: "More actions for ci-deploy" })).toBeInTheDocument();
+  });
+
+  it("Revoke opens its question only once the menu has closed", async () => {
+    const { api$ } = await openAccess();
+
+    await userEvent.click(screen.getByRole("button", { name: "More actions for ci-deploy" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Revoke…" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(dialog).toHaveTextContent("Revoke token “ci-deploy”? Anything using it stops working immediately.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+    await screen.findByText("token “ci-deploy” revoked");
+    expect(api$.deleteToken).toHaveBeenCalledWith(2);
+  });
+
+  it("Create token opens a sheet whose one button is refused while the secret is on display", async () => {
+    await openAccess();
+
+    await userEvent.click(within(region("API tokens")).getByRole("button", { name: "Create token" }));
+    const sheet = await screen.findByRole("dialog", { name: "New token" });
+    await userEvent.type(within(sheet).getByLabelText("Name"), "home-assistant");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Create token" }));
+
+    await within(sheet).findByRole("group", { name: "New token home-assistant" });
+    expect(within(sheet).getByRole("button", { name: "Create token" })).toBeDisabled();
+    expect(within(sheet).getByText("Finish copying the visible token first.")).toBeInTheDocument();
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
+  });
+
+  it("the password question says this browser survives it", async () => {
+    await openAccess();
+    expect(within(region("Session")).getByText("saved on change")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Current password"), "old-password");
+    await userEvent.type(screen.getByLabelText("New password"), "New-passw0rd!");
+    await userEvent.type(screen.getByLabelText("Confirm new password"), "New-passw0rd!");
+
+    await userEvent.click(within(region("Password")).getByRole("button", { name: "Change password" }));
+
+    expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent("This browser stays signed in.");
+  });
+
+  it("the audit log is one card per row, with the same masking", async () => {
+    await openAccess();
+    const audit = region("Audit log");
+
+    await userEvent.click(within(audit).getByRole("button", { name: "Show" }));
+
+    const rows = within(await within(audit).findByRole("list", { name: "Audit entries" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(8);
+    expect(within(rows[0]!).getByText("/api/rw/clients/3f2a1c4e…")).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain("3f2a1c4e-77b0");
+  });
+});
+
+describe("Panel on a phone", () => {
+  async function openPanel() {
+    const api$ = mockSystem(mockApi());
+    const view = renderApp("/system/panel");
+    await screen.findByRole("region", { name: "System" });
+    return { api$, ...view };
+  }
+
+  it("is the diagnostics card and three collapsible sections", async () => {
+    await openPanel();
+
+    expect(within(region("System")).getByText("30 s")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Traffic stats" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Traffic stats/ })).toHaveAttribute("aria-expanded", "true");
+    for (const name of [/Settings file/, /Danger zone/]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
+    }
+  });
+
+  it("the sticky footer appears only while the stats form is dirty, and Save is in it", async () => {
+    const { api$ } = await openPanel();
+    const interval = () => screen.getByLabelText("Sample interval") as HTMLInputElement;
+    await waitFor(() => expect(interval()).toHaveValue(1000));
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+
+    await userEvent.clear(interval());
+    await userEvent.click(interval());
+    await userEvent.paste("2000");
+
+    const save = await screen.findByRole("button", { name: "Save" });
+    expect(await screen.findByText("● unsaved")).toBeInTheDocument();
+    await userEvent.click(save);
+
+    await screen.findByText(/^traffic stats|^saved/);
+    expect(api$.putSettings).toHaveBeenCalledWith({ traffic_sample_ms: 2000 });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull());
+  });
+
+  it("the danger zone keeps its condensed chips and the same question", async () => {
+    await openPanel();
+    await userEvent.click(screen.getByRole("button", { name: /Danger zone/ }));
+
+    const zone = screen.getByRole("button", { name: /Danger zone/ }).closest("fieldset")!;
+    expect(within(zone).getAllByRole("listitem")).toHaveLength(9);
+    await userEvent.click(within(zone).getByRole("button", { name: "Reset settings" }));
+    expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent("turns gateway DNS over DoH off");
+  });
+});

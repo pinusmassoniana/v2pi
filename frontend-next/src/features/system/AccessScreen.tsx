@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
-import { ApiError, isNoAnswer, type Settings } from "../../api/client";
+import { ApiError, isNoAnswer, type ApiToken, type Settings } from "../../api/client";
 import { SLOW_POLL_MS } from "../../api/cadence";
 import {
   PASSWORD_WRITE, SETTINGS_BUSY, TOKEN_BUSY, isSettingsBusy, isTokenBusy, settingsWriteKey, useApiWrite,
@@ -20,6 +20,7 @@ import { TextField } from "../../components/ui/Field";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
+import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { NO_ANSWER } from "../gateway/networkForm";
 import {
   MISMATCH, TIMEOUT_MESSAGE, WRONG_CURRENT, idleTimeoutMessage, parseIdleTimeout, passwordChangedMessage, passwordConfirm,
@@ -27,9 +28,11 @@ import {
 } from "./passwordForm";
 import { ResultLine } from "./ResultLine";
 import { AuditCard } from "./AuditLog";
-import { ScopesCard, TokenFormCard, TokensCard, useTokens } from "./Tokens";
+import { ScopesCard, TokenFormCard, TokenSheet, TokensCard, TokensPhoneCard, useTokens } from "./Tokens";
 
 const EMPTY: PasswordFormValues = { current: "", next: "", confirm: "" };
+/** The handler adopts the new epoch, so the session that made the change survives — say so before it runs. */
+const THIS_DEVICE_STAYS = "This browser stays signed in.";
 const STRENGTH_BARS: Record<string, number> = { weak: 1, ok: 2, good: 3, strong: 4 };
 const SESSION_NOTE =
   "Signs you out after this long with no activity. An open, visible tab keeps polling, so this measures time with the " +
@@ -133,7 +136,7 @@ export function usePasswordChange(tokenCount: number | undefined) {
   async function submit() {
     if (!(await form.trigger(undefined, { shouldFocus: true }))) return;
     const values = form.getValues();
-    if (!(await confirm(passwordConfirm(tokenCount), { confirmLabel: "Change password" }))) return;
+    if (!(await confirm(`${passwordConfirm(tokenCount)}\n\n${THIS_DEVICE_STAYS}`, { confirmLabel: "Change password" }))) return;
     // The question was open while anything could have started: check again before sending.
     if (isTokenBusy(queryClient)) return void notifyError(null, TOKEN_BUSY);
     if (isSettingsBusy(queryClient)) return void notifyError(null, SETTINGS_BUSY);
@@ -244,10 +247,10 @@ export function useIdleTimeout(settings: Settings | undefined) {
   };
 }
 
-export function SessionCard({ timeout }: { timeout: ReturnType<typeof useIdleTimeout> }) {
+export function SessionCard({ timeout, phone = false }: { timeout: ReturnType<typeof useIdleTimeout>; phone?: boolean }) {
   return (
     <GlassCard aria-label="Session">
-      <CardHeader title="Session" aside={<Chip plain>saved as soon as you change it</Chip>} />
+      <CardHeader title="Session" aside={<Chip plain>{phone ? "saved on change" : "saved as soon as you change it"}</Chip>} />
       <TextField
         label="Idle timeout"
         hint="(minutes, 0 = off)"
@@ -267,6 +270,25 @@ export function SessionCard({ timeout }: { timeout: ReturnType<typeof useIdleTim
   );
 }
 
+function AccessPhone({ password, timeout, tokens, list, tokenCount, nowSec }: {
+  password: ReturnType<typeof usePasswordChange>;
+  timeout: ReturnType<typeof useIdleTimeout>;
+  tokens: ReturnType<typeof useTokens>;
+  list: ReturnType<typeof usePolledQuery<ApiToken[], typeof keys.tokens>>;
+  tokenCount: number | undefined;
+  nowSec: number;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <PasswordCard password={password} tokenCount={tokenCount} />
+      <SessionCard timeout={timeout} phone />
+      <TokensPhoneCard list={list} tokens={tokens} nowSec={nowSec} />
+      <AuditCard phone />
+      <TokenSheet tokens={tokens} open={tokens.formOpen || tokens.secret !== null} onOpenChange={(open) => { if (!open) tokens.closeForm(); }} />
+    </div>
+  );
+}
+
 /** System › Access (P4, G5's idle-timeout half, G7, G8). It owns `settings` and `tokens` at the slow cadence. */
 export function Access() {
   const settings = usePolledQuery(queries.settings(), SLOW_POLL_MS);
@@ -277,6 +299,8 @@ export function Access() {
   const tokens = useTokens();
   // One clock read for the whole screen's relative dates, through the shared now.
   const nowSec = Math.floor(useNow(60_000) / 1000);
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  if (!desktop) return <AccessPhone password={passwordState} timeout={timeout} tokens={tokens} list={list} tokenCount={tokenCount} nowSec={nowSec} />;
   return (
     <div className="flex flex-col gap-3">
       <div className="grid gap-3 md:grid-cols-[5fr_7fr] md:items-start">
