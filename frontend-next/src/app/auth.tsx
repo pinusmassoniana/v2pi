@@ -9,6 +9,7 @@ import { confirm, settleConfirm } from "../components/confirm";
 import { Button } from "../components/ui/Button";
 import { LoginScreen } from "../features/auth/LoginScreen";
 import { SetupScreen } from "../features/auth/SetupScreen";
+import { clearLastRestore } from "../features/system/lastRestore";
 import { hasUnsavedEdits } from "./guard";
 import { closePalette } from "./shell/palette";
 
@@ -44,10 +45,12 @@ export async function resolvePhase(queryClient: QueryClient): Promise<Phase> {
 /**
  * Forget everything the old session left in memory, so none of it reappears after the next login:
  * the query cache, the clock skew, a pending confirmation (answered "no", so a queued risky action
- * never runs), the command palette, the live traffic stream and any toasts.
+ * never runs), the command palette, the live traffic stream, any toasts, and the last restore's reply — which names
+ * a path on the gateway's filesystem and belongs to the session that made it.
  */
 export function endSession(queryClient: QueryClient): void {
   queryClient.clear();
+  clearLastRestore();
   resetClock();
   settleConfirm(false);
   closePalette();

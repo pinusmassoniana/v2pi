@@ -100,6 +100,15 @@ export function snapshotNote(result: RestoreResult): string {
 }
 
 /**
+ * Why `GET /backup` refused: the panel validates its own export and answers 500 when it would fail its own restore —
+ * deliberately, so the drift surfaces now rather than during a recovery, when the file is the only copy left.
+ */
+export function backupFailedMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message : "";
+  return detail ? `backup failed — ${detail}` : "backup failed";
+}
+
+/**
  * `POST /restore` re-wraps its refusals by hand: a field failure reads `invalid backup: settings.health_interval: …`
  * and a model-level one — every reference check, the settings-value check, the DHCP-range check and the lockout guard —
  * has an empty `loc`, so it reads `invalid backup: : Value error, …`. A model validator on a nested model (for
