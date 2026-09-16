@@ -58,13 +58,13 @@ describe("Access — password (P4)", () => {
 
     await userEvent.type(field("Current password"), "old-password");
     await userEvent.type(field("New password"), "short");
-    expect(await screen.findByLabelText("password strength: too short (min 8)")).toBeInTheDocument();
+    expect(await screen.findByText("too short (min 8)")).toBeInTheDocument();
     await userEvent.clear(field("New password"));
     await userEvent.type(field("New password"), "aaaaaaaa");
-    expect(await screen.findByLabelText("password strength: weak")).toBeInTheDocument();
+    expect(await screen.findByText("weak")).toBeInTheDocument();
     await userEvent.clear(field("New password"));
     await userEvent.type(field("New password"), "New-passw0rd!");
-    expect(await screen.findByLabelText("password strength: strong")).toBeInTheDocument();
+    expect(await screen.findByText("strong")).toBeInTheDocument();
 
     await userEvent.type(field("Confirm new password"), "New-passw0rd");
     expect(await screen.findByText("does not match")).toBeInTheDocument();
@@ -135,10 +135,17 @@ describe("Access — password (P4)", () => {
     expect(api$.changePassword).toHaveBeenCalledWith("old-password", "New-passw0rd!");
     for (const label of ["Current password", "New password", "Confirm new password"]) expect(field(label)).toHaveValue("");
     await waitFor(() => expect(invalidate.mock.calls.some(([filters]) => filters?.queryKey === keys.tokens)).toBe(true));
+    // Neither password is a mutation variable: TanStack keeps a settled mutation's state.variables in the
+    // MutationCache for its gcTime, so a leak here would outlive the form having cleared them.
+    const mutations = client.getMutationCache().getAll();
+    expect(mutations.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(mutations.map((m) => m.state.variables));
+    expect(serialized).not.toContain("old-password");
+    expect(serialized).not.toContain("New-passw0rd!");
   });
 
-  it("a wrong current password lands on that field, not in a banner", async () => {
-    const { api$ } = await openAccess();
+  it("a wrong current password lands on that field, not in a banner, and neither password reaches the MutationCache", async () => {
+    const { api$, client } = await openAccess();
     api$.changePassword.mockRejectedValueOnce(new ApiError(403, "current password incorrect"));
     await fillPasswords();
 
@@ -150,6 +157,10 @@ describe("Access — password (P4)", () => {
     expect(field("Current password")).toHaveFocus();
     // nothing is cleared: the operator retypes one field, not three
     expect(field("New password")).toHaveValue("New-passw0rd!");
+    // A failed attempt is a settled mutation too — its variables must not carry the passwords either.
+    const serialized = JSON.stringify(client.getMutationCache().getAll().map((m) => m.state.variables));
+    expect(serialized).not.toContain("old-password");
+    expect(serialized).not.toContain("New-passw0rd!");
   });
 
   it("a request that never answered keeps the fields and re-reads the tokens, because it may have committed", async () => {
