@@ -234,22 +234,45 @@ describe("Access on a phone", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
   });
 
-  it("closing the sheet discards what was typed, exactly as closing the desktop form does", async () => {
+  it("an Escape or a tap outside asks before throwing away a typed token, and keeps it when the answer is no", async () => {
+    await openAccess();
+    await userEvent.click(within(region("API tokens")).getByRole("button", { name: "Create token" }));
+    const sheet = await screen.findByRole("dialog", { name: "New token" });
+    await userEvent.type(within(sheet).getByLabelText("Name"), "half-typed");
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent("Discard unsaved changes?");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog", { name: "New token" })).toBeInTheDocument();
+    expect(within(sheet).getByLabelText("Name")).toHaveValue("half-typed");
+
+    // A backdrop tap: Radix defers an outside pointerdown to the click that follows it.
+    fireEvent.pointerDown(document.body, { button: 0 });
+    fireEvent.click(document.body);
+
+    expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent("Discard unsaved changes?");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Cancel" }));
+    expect(within(sheet).getByLabelText("Name")).toHaveValue("half-typed");
+  });
+
+  it("a close the operator meant clears the form, so it does not outlive its sheet with stale values", async () => {
     await openAccess();
     const create = () => within(region("API tokens")).getByRole("button", { name: "Create token" });
     await userEvent.click(create());
     await userEvent.type(within(await screen.findByRole("dialog", { name: "New token" })).getByLabelText("Name"), "half-typed");
 
-    await userEvent.keyboard("{Escape}");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "New token" })).getByRole("button", { name: "Close" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Discard" }));
+
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
     await userEvent.click(create());
-
-    // The desktop form unmounts when it closes, so it starts empty; the sheet's form outlives it and
-    // has to be put back by hand — otherwise it holds the unsaved-edit guard with nothing on screen.
+    // The desktop form unmounts when it closes, so it starts empty; the sheet's form outlives it and has
+    // to be put back by hand — otherwise it holds the unsaved-edit guard with nothing on screen.
     expect(within(await screen.findByRole("dialog", { name: "New token" })).getByLabelText("Name")).toHaveValue("");
-    await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
 
+    await userEvent.click(within(screen.getByRole("dialog", { name: "New token" })).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
     await userEvent.click(within(screen.getByRole("navigation", { name: "System tabs" })).getByRole("link", { name: "Backups" }));
 
     await screen.findByRole("region", { name: "Backup & restore" });

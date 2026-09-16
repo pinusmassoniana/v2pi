@@ -191,7 +191,7 @@ export function useTokenForm(tokens: TokensState) {
       { onSuccess: () => reset(EMPTY) },
     );
   });
-  return { control, register, errors, isValid, expiry, nowMs, submit, discard: () => reset(EMPTY) };
+  return { control, register, errors, isValid, dirty: isDirty, expiry, nowMs, submit, discard: () => reset(EMPTY) };
 }
 
 export function TokenFormFields({ form }: { form: ReturnType<typeof useTokenForm> }) {
@@ -262,12 +262,16 @@ export function TokenSheet({ tokens, open, onOpenChange }: { tokens: TokensState
   // only clears `formOpen`, `AccessScreen.tsx`), so the sheet refuses those two paths while the secret is on
   // display. Explicit dismissal — Done, or × (`Primitive.Close`, which never raises this event) — still works.
   const keepSecretOnScreen = (event: { preventDefault: () => void }) => { if (tokens.secret) event.preventDefault(); };
-  // The desktop's form unmounts when it closes, which is what drops a half-typed name there. This one
-  // outlives its sheet, so closing puts it back by hand — otherwise it would keep holding the unsaved-edit
-  // guard, and the next tab would ask about edits that are nowhere on screen.
+  // `dirty` routes every close through `closeGuarded`, as the four other form sheets do
+  // (`SubscriptionFormSheet`, `NodeFormSheet`, `ImportSheet`, `ImportJsonSheet`): an Escape or a tap
+  // outside a 390 px sheet asks before throwing away a typed name rather than discarding it.
+  // This callback therefore runs only on a close that was allowed — and only then is the form put back.
+  // The desktop's form unmounts when it closes, which is what drops a half-typed name there; this one
+  // outlives its sheet, so without the reset it would keep holding the unsaved-edit guard and the next
+  // tab would ask about edits that are nowhere on screen.
   const close = (next: boolean) => { if (!next) { tokens.dismissSecret(); form.discard(); } onOpenChange(next); };
   return (
-    <Sheet open={open} onOpenChange={close}>
+    <Sheet open={open} dirty={form.dirty} onOpenChange={close}>
       <SheetContent title="New token" onEscapeKeyDown={keepSecretOnScreen} onPointerDownOutside={keepSecretOnScreen}>
         <div className="flex flex-col gap-2.5">
           {tokens.secret ? <SecretPanel tokens={tokens} /> : <TokenFormFields form={form} />}

@@ -25,6 +25,12 @@ import {
 // glass): bad 5.4 / 5.6, warn 5.1 / 8.4, t2 8.4 / 7.3, t3 5.7 / 4.3 (light / dark). INFO is the body
 // token rather than an accent — it is the majority of every app-log read, and colour is left to the two
 // levels that mean something. The mockup's cyan literal measured 1.4:1 on the light theme.
+//
+// DEBUG's t3 is 4.3 on dark, marginally under the 4.5 this pass applied to INFO, and stays: t3 is the
+// panel's tertiary token, and this pane already renders every line's timestamp and logger in it (:42,
+// :44), so the four-letter marker is no dimmer than the columns beside it and raising it alone would
+// only make it inconsistent. The line's own message is `text-t1` (18.0 / 13.7), so nothing a DEBUG line
+// actually says is at that ratio. Raising t3 itself is a design-system change, not one to this map.
 const LEVEL_TONE: Record<string, string> = { ERROR: "text-bad", WARNING: "text-warn", INFO: "text-t2", DEBUG: "text-t3" };
 
 /** One rendered line. An ERROR line is tinted whole and bar-marked; a WARNING tints only its level. */
