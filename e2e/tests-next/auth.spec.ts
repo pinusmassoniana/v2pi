@@ -48,8 +48,17 @@ test("mutations without a CSRF token are refused", async ({ page }) => {
   expect(response.status()).toBe(403);
 });
 
-test("losing the session mid-use drops back to the Login screen", async ({ page, context }) => {
+test("losing the session mid-use drops back to Login on the next thing the operator does", async ({ page, context }, info) => {
   await ensureLoggedIn(page);
+  await page.goto("/#/system/logs");
+  await expect(page.locator("h1.page-title")).toHaveText("Logs");
+  await page.waitForResponse((r) => new URL(r.url()).pathname === "/api/status");   // a poll just landed; the next is ~3 s away
   await context.clearCookies();
+  const firstRefusal = page.waitForResponse((r) => r.status() === 401);
+  const nav = info.project.name === "phone"
+    ? page.getByRole("navigation", { name: "System tabs" })     // SegmentedTabs.tsx:9
+    : page.getByRole("navigation", { name: "Primary" });        // Sidebar.tsx:16
+  await nav.getByRole("link", { name: "Access", exact: true }).click();
+  expect(new URL((await firstRefusal).url()).pathname).not.toBe("/api/status");  // the click's read, not the poll
   await expect(page.getByRole("button", { name: "Log in" })).toBeVisible({ timeout: 15_000 });
 });
