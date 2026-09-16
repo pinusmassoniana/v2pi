@@ -6,6 +6,7 @@ import "../features/nodes/screens";
 import "../features/tunnel/screens";
 import "../features/gateway/screens";
 import "../features/system/screens";
+import { SECTIONS } from "../app/nav";
 import { STATUS_POLL_MS } from "../app/shell/Shell";
 import { NOW_SEC, STATUS, holdWrite, mockApi, mockGateway, mockSystem, mockTunnel } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
@@ -363,5 +364,119 @@ describe("System polls each key at its owner's cadence and no faster", () => {
       status: 60_000 / STATUS_POLL_MS, settings: 60_000 / SLOW_POLL_MS, diagnostics: 60_000 / SLOW_POLL_MS,
       tokens: 0, audit: 0, logs: 0, network: 0, nodes: 0, subs: 0, profiles: 0, routing: 0,
     });
+  });
+});
+
+/**
+ * The api read behind each key root in keys.ts. `trafficHistory` counts every read of the history endpoint, including
+ * the live traffic store's one seed of its last hour when a screen first shows live traffic.
+ */
+const READ_OF = {
+  status: "getStatus", nodes: "listNodes", nodeHealth: "listNodeHealth", subs: "listSubs", profiles: "listProfiles",
+  profilePresets: "listProfilePresets", routing: "getRouting", routingPresets: "listRoutingPresets", network: "getNetwork",
+  rw: "getRw", settings: "getSettings", tokens: "listTokens", diagnostics: "getDiagnostics", audit: "listAudit",
+  logs: "getLogs", trafficHistory: "getTrafficHistory",
+} as const satisfies Record<keyof typeof keys, keyof ReturnType<typeof mockSystem>>;
+
+type KeyRoot = keyof typeof READ_OF;
+
+const MINUTE = 60_000;
+const SHELL = MINUTE / STATUS_POLL_MS;
+const SLOW = MINUTE / SLOW_POLL_MS;
+const HOME_NETWORK = MINUTE / NETWORK_POLL_MS;
+const GATEWAY_NETWORK = MINUTE / GATEWAY_NETWORK_POLL_MS;
+const REMOTE = MINUTE / RW_POLL_MS;
+
+/**
+ * The whole app's polling table: how many times each key is read in the minute after a route has loaded, for all 13
+ * tabs and for node detail on a phone. A key's cell is its owner's cadence or 0; no route polls a key faster than its
+ * owner, and no route polls a key another section owns.
+ */
+const POLLING: Record<string, Record<KeyRoot, number>> = {
+  "/": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: SLOW, routingPresets: 0, network: HOME_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/traffic": { status: SHELL, nodes: 0, nodeHealth: SLOW, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: HOME_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/nodes": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/nodes/subscriptions": { status: SHELL, nodes: 0, nodeHealth: 0, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/nodes/1": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/tunnel/routing": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: SLOW, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/tunnel/anti-dpi": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: SLOW, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/tunnel/health": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/gateway/network": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: GATEWAY_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/gateway/remote-access": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: REMOTE, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/backups": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/access": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: SLOW, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/logs": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/panel": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: 0, diagnostics: SLOW, audit: 0, logs: 0, trafficHistory: 0 },
+};
+
+/** The keys a route reads exactly once, on mount, and never again. Every other 0 in its row is never read at all. */
+const READ_ONCE: Record<string, readonly KeyRoot[]> = {
+  "/": ["trafficHistory"],
+  "/traffic": ["nodes", "trafficHistory"],
+  "/nodes": ["trafficHistory"],
+  "/nodes/subscriptions": ["settings"],
+  "/nodes/1": ["profiles", "trafficHistory"],
+  "/tunnel/routing": ["routingPresets"],
+  "/tunnel/anti-dpi": ["profilePresets"],
+  "/tunnel/health": ["settings"],
+  "/gateway/network": ["settings"],
+  "/gateway/remote-access": [],
+  "/system/backups": ["nodes", "subs", "profiles", "routing"],
+  "/system/access": [],
+  "/system/logs": [],
+  "/system/panel": [],
+};
+
+/** What shows a route has loaded; node detail is mounted at phone width, where it is a page of its own. */
+const LOADED: Record<string, { landmark: () => Element | null; phone?: true }> = {
+  "/": { landmark: () => screen.queryByRole("list", { name: "Standby nodes" }) },
+  "/traffic": { landmark: () => screen.queryByRole("list", { name: "Nodes by latency" }) },
+  "/nodes": { landmark: () => document.querySelector("tr[data-node-id]") },
+  "/nodes/subscriptions": { landmark: () => screen.queryByRole("region", { name: "work" }) },
+  "/nodes/1": { landmark: () => screen.queryByRole("region", { name: "Config" }), phone: true },
+  "/tunnel/routing": { landmark: () => screen.queryByRole("table", { name: "Routing rules" }) },
+  "/tunnel/anti-dpi": { landmark: () => screen.queryByRole("table", { name: "Profiles" }) },
+  "/tunnel/health": { landmark: () => screen.queryByRole("region", { name: "Health monitoring" }) },
+  "/gateway/network": { landmark: () => screen.queryByRole("region", { name: "DHCP leases" }) },
+  "/gateway/remote-access": { landmark: () => screen.queryByRole("table", { name: "Clients" }) },
+  "/system/backups": { landmark: () => screen.queryByRole("region", { name: "What the file holds" }) },
+  "/system/access": { landmark: () => screen.queryByRole("region", { name: "API tokens" }) },
+  "/system/logs": { landmark: () => screen.queryByRole("region", { name: "Log output" }) },
+  "/system/panel": { landmark: () => screen.queryByRole("region", { name: "System" }) },
+};
+
+describe("the whole app polls each key at its one owner's cadence", () => {
+  it("has a row for every tab and node detail, and a column for every key root", () => {
+    const routes = [...SECTIONS.flatMap((section) => section.tabs.map((tab) => tab.to)), "/nodes/1"].sort();
+    expect(Object.keys(POLLING).sort()).toEqual(routes);
+    expect(Object.keys(READ_ONCE).sort()).toEqual(routes);
+    expect(Object.keys(LOADED).sort()).toEqual(routes);
+    expect(Object.keys(READ_OF)).toEqual(Object.keys(keys));
+    for (const [path, row] of Object.entries(POLLING)) {
+      expect(Object.keys(row), path).toEqual(Object.keys(keys));
+      // a key read once is not polled
+      for (const key of READ_ONCE[path]!) expect(row[key], `${path} ${key}`).toBe(0);
+    }
+  });
+
+  it.each(Object.keys(POLLING))("%s", async (path) => {
+    const { landmark, phone } = LOADED[path]!;
+    if (phone) setViewportWidth(390);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const api$ = mockSystem(mockGateway(mockTunnel(mockApi())));
+    renderApp(path);
+    for (let i = 0; i < 80 && !landmark(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+    expect(landmark()).not.toBeNull();
+
+    const columns = Object.keys(READ_OF) as KeyRoot[];
+    const reads = () => Object.fromEntries(columns.map((key) => [key, api$[READ_OF[key]].mock.calls.length])) as Record<KeyRoot, number>;
+    const mounted = reads();
+    await act(() => vi.advanceTimersByTimeAsync(MINUTE));
+    const total = reads();
+
+    expect(Object.fromEntries(columns.map((key) => [key, total[key] - mounted[key]]))).toEqual(POLLING[path]);
+    const unpolled = columns.filter((key) => POLLING[path]![key] === 0);
+    expect(Object.fromEntries(unpolled.map((key) => [key, total[key]])))
+      .toEqual(Object.fromEntries(unpolled.map((key) => [key, READ_ONCE[path]!.includes(key) ? 1 : 0])));
   });
 });
