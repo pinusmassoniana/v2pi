@@ -171,7 +171,7 @@ function NodeMarker({ cx, cy, r, flagSize, node, flag }: { cx: number; cy: numbe
   const fill = node.state === "slow" || node.state === "bad" ? tint(stroke) : "var(--bg)";
   // No active node: an empty ring. Otherwise the flag, or a plain dot when no flag is known.
   const flagOrDot = flag
-    ? <text y={0.35 * flagSize} textAnchor="middle" fontSize={flagSize}>{flag}</text>
+    ? <text y={0.35 * flagSize} textAnchor="middle" fontSize={flagSize} style={{ fill: "var(--t1)" }}>{flag}</text>
     : <circle r={r * 0.32} style={{ fill: stroke }} />;
   return (
     <g data-node={node.state} transform={`translate(${cx},${cy})`}>
@@ -255,12 +255,13 @@ function PathDrawing({ layout, className, node, nodeFlag, rates, tunnelLines, di
           style={{ stroke: "var(--bg)" }}
         />
       ) : null}
+      {/* Before the pills: the OPEN alarm ring grows past the lock and passes under their opaque ground, not over their text. */}
+      <Lock cx={gateway} cy={y} r={g.marker.lock} state={killSwitch.label} />
       <RatePill kind="direct" pill={g.directPill} lines={directLines} oneLine={g.directPill.lines === 1} dim={dim} />
       {node.state === "bad"
         ? <Badge cx={g.badge.cx} cy={g.badge.cy} r={g.badge.r} />
         : <RatePill kind="tunnel" pill={g.tunnelPill} lines={tunnelLines} oneLine={false} dim={dim} />}
       <Dot cx={devices} cy={y} ring={g.marker.ring} dot={g.marker.dot} color="var(--g1)" />
-      <Lock cx={gateway} cy={y} r={g.marker.lock} state={killSwitch.label} />
       <NodeMarker cx={nodeX} cy={y} r={g.marker.node} flagSize={g.marker.flag} node={node} flag={nodeFlag} />
       <Dot cx={internet} cy={y} ring={g.marker.ring} dot={g.marker.dot} color={healthy ? "var(--g3)" : "var(--t3)"} />
     </svg>

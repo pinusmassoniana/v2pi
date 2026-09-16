@@ -82,6 +82,8 @@ describe("ConnectionPath", () => {
     for (const svg of drawings(container)) {
       expect(svg.querySelector("[data-node]")!.textContent).toBe("🇳🇱");
       expect(svg.textContent!.match(/🇳🇱/gu)).toHaveLength(1);
+      // Where flag emoji are missing the pair falls back to letters, painted in the text colour, not black.
+      expect(svg.querySelector("[data-node] text")).toHaveAttribute("style", "fill: var(--t1);");
     }
     expect(container.querySelector("[data-stats]")).not.toHaveTextContent("🇳🇱");
   });
@@ -178,6 +180,14 @@ describe("ConnectionPath", () => {
     expect(lock()).toHaveAttribute("data-kill", "OPEN");
     expect(lock().querySelector("[data-alarm]")).toHaveClass("animate-[path-alarm_1.8s_ease-out_infinite]", "motion-reduce:animate-none", "motion-reduce:opacity-45");
     expect(within(columns(container)[1]!).getByText("OPEN")).toHaveClass("text-bad");
+    // The ring grows past the lock: it is painted before both rate pills, so their opaque ground covers it.
+    for (const svg of drawings(container)) {
+      const kill = svg.querySelector("[data-kill] [data-alarm]")!;
+      const pills = [...svg.querySelectorAll("[data-pill]")];
+      expect(kill).not.toBeNull();
+      expect(pills).toHaveLength(2);
+      for (const pill of pills) expect(kill.compareDocumentPosition(pill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
 
     rerender(<ConnectionPath {...PATH} killSwitch={{ label: "UNKNOWN", tone: "neutral" }} />);
     expect(lock()).toHaveAttribute("data-kill", "UNKNOWN");
