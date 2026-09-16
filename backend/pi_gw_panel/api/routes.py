@@ -1666,7 +1666,7 @@ def delete_token(token_id: int, request: Request,
 @router.get("/audit", response_model=list[AuditEntryOut])
 def audit_log(request: Request, limit: int = 100,
               _: None = Depends(require_auth)) -> list[AuditEntryOut]:
-    """Newest-first log of successful mutations (recorded by the audit middleware)."""
+    """Newest-first log of every mutation attempt and its final status, whatever the outcome (recorded by the audit middleware)."""
     return [AuditEntryOut(**e) for e in get_state(request).store.list_audit(limit)]
 
 
