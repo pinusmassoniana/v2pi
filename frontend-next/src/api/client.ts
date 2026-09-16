@@ -67,6 +67,10 @@ export const SETTINGS_REAPPLY_KEYS = ["tunneled_fetch", "dns_intercept", "stats_
 export interface Diagnostics {
   app_version: string; xray_version: string; uptime_sec: number;
   db_path: string; db_bytes: number; disk_free_bytes: number; disk_total_bytes: number;
+  // The xray StatsService client's own health (api/schemas.py DiagnosticsOut), the only place the
+  // panel can say why the Home graph is flat: when the last sample succeeded (null = never),
+  // the last error text, and how many reads have failed since the process started.
+  stats_last_ok_at: number | null; stats_error: string; stats_fail_count: number;
 }
 
 // --- Wave 3a: live traffic graph ---
@@ -209,8 +213,26 @@ export type ApiTokenScope = "monitor" | "read" | "readwrite";
 export interface ApiToken { id: number; name: string; scope: ApiTokenScope; prefix: string; created_at: number; last_used_at: number | null; expires_at?: number | null; }
 export interface ApiTokenCreated extends ApiToken { token: string; }
 
-// audit log (N2): successful mutations — who/what/when
+/**
+ * One audit row: every `/api` POST / PUT / PATCH / DELETE the middleware saw, whatever its outcome —
+ * 2xx, 4xx, 5xx and its own 413, which is raised before the session is even checked (app.py). The
+ * route's docstring still says "successful mutations" and is wrong. `path` never carries the query
+ * string, but it does carry a remote-access client uuid on /api/rw/clients/‹id›.
+ */
 export interface AuditEntry { ts: number; actor: string; method: string; path: string; status: number; }
+
+/**
+ * POST /restore's reply (routes.py post_restore; `restored` is backup/__init__.py's summary). A restore
+ * always leaves the gateway disconnected — xray stopped, no active node, fail-closed guard — even when it
+ * succeeds, so `runtime` has one value. `rw_disabled` is empty unless the restore had to turn remote access
+ * off, and `pre_restore_snapshot` is an absolute path on the gateway that no route reads back.
+ */
+export interface RestoreResult {
+  ok: true;
+  restored: { nodes: number; subscriptions: number; profiles: number; routing_rules: number; rw_disabled: string };
+  runtime: "disconnected";
+  pre_restore_snapshot: string;
+}
 
 function formatApiDetail(detail: unknown, fallback: string): string {
   if (typeof detail === "string" && detail) return detail;
@@ -419,13 +441,17 @@ export const api = {
   rwClientConfig(id: string): Promise<RwClientConfig> { return req(`/rw/clients/${encodeURIComponent(id)}/config`); },
 
   listTokens(): Promise<ApiToken[]> { return req("/tokens"); },
-  createToken(name: string, scope: ApiTokenScope): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope }); },
+  // expires_at is OMITTED when there is none, never sent as null: TokenCreateIn is a StrictIn whose
+  // expires_at is `int | None` with ge=1, so 0 and null are both refused by the schema.
+  createToken(name: string, scope: ApiTokenScope, expiresAt?: number): Promise<ApiTokenCreated> { return mutate("POST", "/tokens", { name, scope, ...(expiresAt ? { expires_at: expiresAt } : {}) }); },
   deleteToken(id: number) { return mutate("DELETE", `/tokens/${id}`); },
 
   listAudit(limit = 100): Promise<AuditEntry[]> { return req(`/audit?limit=${limit}`); },
 
   getBackup(): Promise<BackupDoc> { return req("/backup"); },
-  restore(doc: BackupDoc): Promise<any> { return mutate("POST", "/restore", doc).then(announceCapabilityChange); },
+  // The handler validates, snapshots, stops xray, installs the fail-closed guard and runs a full
+  // host_provision under apply_lock — the longest write in the app, so it gets the host-apply timeout.
+  restore(doc: BackupDoc): Promise<RestoreResult> { return mutate("POST", "/restore", doc, NETWORK_APPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   getLogs(source: string, lines = 200): Promise<{ source: string; lines: string[] }> {
     return req(`/logs?source=${encodeURIComponent(source)}&lines=${lines}`);
   },

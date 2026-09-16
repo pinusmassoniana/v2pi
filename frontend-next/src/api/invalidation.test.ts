@@ -5,9 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import { api } from "./client";
 import clientSource from "./client.ts?raw";
 import {
-  CONNECTION_WRITE, GATEWAY_REFUSED, INVALIDATES, NETWORK_WRITE, PROFILE_BUSY, RESET_WRITE_KEY, RW_WRITE, invalidateRefused, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
-  SETTINGS_WRITE, invalidate, isConnectionBusy, isProfileBusy, isSettingsBusy, isWriting, settingsWriteKey, useApiWrite, useConnectionBusy,
-  useProfileBusy, useSettingsBusy, useWriting, type MutationName,
+  CONNECTION_WRITE, GATEWAY_REFUSED, INVALIDATES, NETWORK_WRITE, PASSWORD_WRITE, PROFILE_BUSY, RESET_WRITE_KEY, RESTORE_WRITE, RW_WRITE, TOKEN_BUSY, TOKEN_WRITE, invalidateRefused, PROFILE_CONNECTION_WRITE, PROFILE_WRITE, ROUTING_WRITE, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE,
+  SETTINGS_WRITE, invalidate, isConnectionBusy, isProfileBusy, isSettingsBusy, isTokenBusy, isWriting, settingsWriteKey, useApiWrite, useConnectionBusy,
+  usePasswordBusy, useProfileBusy, useSettingsBusy, useTokenBusy, useWriting, type MutationName,
 } from "./invalidation";
 import { keys } from "./keys";
 
@@ -36,7 +36,8 @@ describe("invalidation map", () => {
   it("matches the spec's table for the rows later screens depend on", () => {
     expect(INVALIDATES.apply).toEqual([keys.status, keys.nodes, keys.nodeHealth, keys.network]);
     expect(INVALIDATES.probeNode).toEqual([keys.nodeHealth]);
-    expect(INVALIDATES.changePassword).toEqual([]);
+    // A password change deletes every API token row, and the list is on the same screen as the form.
+    expect(INVALIDATES.changePassword).toEqual([keys.tokens]);
     expect(INVALIDATES.restore).toBe("all");
   });
 
@@ -225,5 +226,56 @@ describe("settings writes that re-apply the tunnel", () => {
     expect(isSettingsBusy(client)).toBe(false);
     await waitFor(() => expect(result.current).toEqual({ settings: false, connection: false }));
     expect(SETTINGS_BUSY).toBe("Another settings change is still running — try again when it finishes");
+  });
+});
+
+describe("System writes", () => {
+  it("a restore is a connection write; a token write and a password change are not", async () => {
+    const client = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => ({ connection: useConnectionBusy(), token: useTokenBusy(), password: usePasswordBusy() }), { wrapper });
+
+    // A restore stops xray, installs the fail-closed guard and re-provisions the host: every Connect
+    // control in the app must wait on it, which is what the CONNECTION_WRITE prefix buys.
+    expect(RESTORE_WRITE.slice(0, CONNECTION_WRITE.length)).toEqual([...CONNECTION_WRITE]);
+    expect(TOKEN_WRITE.slice(0, CONNECTION_WRITE.length)).not.toEqual([...CONNECTION_WRITE]);
+    expect(PASSWORD_WRITE.slice(0, CONNECTION_WRITE.length)).not.toEqual([...CONNECTION_WRITE]);
+    // No two System keys collide with each other or with an existing one.
+    expect(new Set([RESTORE_WRITE, TOKEN_WRITE, PASSWORD_WRITE, NETWORK_WRITE, RW_WRITE, SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE].map((key) => key.join("/"))).size).toBe(7);
+
+    let release = hold(client, RESTORE_WRITE);
+    expect(isConnectionBusy(client)).toBe(true);
+    await waitFor(() => expect(result.current).toEqual({ connection: true, token: false, password: false }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ connection: false, token: false, password: false }));
+
+    release = hold(client, TOKEN_WRITE);
+    expect([isTokenBusy(client), isConnectionBusy(client)]).toEqual([true, false]);
+    await waitFor(() => expect(result.current).toEqual({ connection: false, token: true, password: false }));
+    await release();
+    expect(isTokenBusy(client)).toBe(false);
+
+    release = hold(client, PASSWORD_WRITE);
+    expect([isConnectionBusy(client), isTokenBusy(client), isSettingsBusy(client)]).toEqual([false, false, false]);
+    await waitFor(() => expect(result.current).toEqual({ connection: false, token: false, password: true }));
+    await release();
+    await waitFor(() => expect(result.current).toEqual({ connection: false, token: false, password: false }));
+    expect(TOKEN_BUSY).toBe("Another token change is still running — try again when it finishes");
+  });
+
+  it("every System settings patch is classified by the keys it carries, and a reset never through settingsWriteKey", () => {
+    // The traffic-stats card sends only what changed, so a sample-interval-only save stays a plain write.
+    expect(settingsWriteKey({ traffic_sample_ms: 2000 })).toBe(SETTINGS_WRITE);
+    expect(settingsWriteKey({ stats_api_port: 10086 })).toBe(SETTINGS_CONNECTION_WRITE);
+    expect(settingsWriteKey({ stats_enabled: false })).toBe(SETTINGS_CONNECTION_WRITE);
+    expect(settingsWriteKey({ stats_enabled: true, traffic_sample_ms: 2000 })).toBe(SETTINGS_CONNECTION_WRITE);
+    // Access: neither of its two settings re-applies anything.
+    expect(settingsWriteKey({ auto_backup_enabled: true })).toBe(SETTINGS_WRITE);
+    expect(settingsWriteKey({ session_timeout_min: 30 })).toBe(SETTINGS_WRITE);
+    // An imported file is classified the same way — by what it actually carries.
+    expect(settingsWriteKey({ health_interval: 1800, session_timeout_min: 0 })).toBe(SETTINGS_WRITE);
+    expect(settingsWriteKey({ health_interval: 1800, dns_intercept: true })).toBe(SETTINGS_CONNECTION_WRITE);
+    // And a reset is not a patch: it would come back SETTINGS_WRITE, which is why it has its own key.
+    expect(RESET_WRITE_KEY).toBe(SETTINGS_CONNECTION_WRITE);
   });
 });

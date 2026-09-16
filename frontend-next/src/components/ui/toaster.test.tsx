@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { Toaster, notifyError, notifyOk, notifyWarn } from "./Toaster";
+import toasterSource from "./Toaster.tsx?raw";
 
 afterEach(() => toast.dismiss());
 
@@ -32,9 +33,17 @@ describe("toasts", () => {
     expect(surface(NO_ANSWER)).toHaveAttribute("data-type", "warning");
     expect(surface(NO_ANSWER)).toHaveClass("text-warn!", "border-warn/40!");
     for (const text of ["saved", "apply failed"]) {
-      expect(surface(text)).toHaveClass("glass", "text-t1");
+      // The `!` is load-bearing: sonner's own unlayered [data-sonner-toast][data-styled] rule sets a
+      // background, a colour and a border, and outranks a layered utility without it — the surface was
+      // being drawn by sonner, not by the panel.
+      expect(surface(text)).toHaveClass("glass!", "text-t1!");
       expect(surface(text)).not.toHaveClass("text-warn!");
     }
+  });
+
+  it("the shared surface carries the important modifier on both of its utilities", () => {
+    expect(toasterSource).toContain('const TOAST = "glass! text-t1!";');
+    expect(toasterSource).not.toContain('"glass text-t1"');
   });
 
   it("a sticky error stays until it is dismissed", () => {

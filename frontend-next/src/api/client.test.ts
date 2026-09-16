@@ -42,7 +42,10 @@ function mockFetch() {
     if (url.endsWith("/api/setup")) return jsonRes({ needs_setup: false });
     if (url.endsWith("/api/password")) return jsonRes({ ok: true });
     if (url.endsWith("/api/backup")) return jsonRes(backupFixture());
-    if (url.endsWith("/api/restore")) return jsonRes({ ok: true, restored: { nodes: 1 } });
+    if (url.endsWith("/api/restore")) return jsonRes({
+      ok: true, runtime: "disconnected", pre_restore_snapshot: "/app/data/backups/pre-restore-1700000000.json",
+      restored: { nodes: 1, subscriptions: 0, profiles: 0, routing_rules: 0, rw_disabled: "" },
+    });
     if (url.includes("/api/logs")) return jsonRes({ source: "xray-error", lines: ["a", "b"] });
     return jsonRes({ ok: true });
   });
@@ -329,6 +332,23 @@ describe("api client", () => {
     expect(del.opts.headers["X-CSRF-Token"]).toBe("tok-123");
   });
 
+  it("createToken sends an expiry as an epoch and omits the key entirely when there is none", async () => {
+    const { calls } = mockFetch();
+    await api.login("admin", "pw");
+    await api.ensureCsrf();
+    const posts = () => calls.filter((c) => c.url.endsWith("/api/tokens") && c.opts.method === "POST");
+
+    await api.createToken("ci", "readwrite", 1_800_000_000);
+    expect(JSON.parse(posts()[0].opts.body)).toEqual({ name: "ci", scope: "readwrite", expires_at: 1_800_000_000 });
+
+    // "never" must not send `expires_at: null`: TokenCreateIn is strict and its field is int|None ge=1,
+    // so a null is refused with a 422 the operator never asked for.
+    await api.createToken("ci", "readwrite");
+    expect(JSON.parse(posts()[1].opts.body)).toEqual({ name: "ci", scope: "readwrite" });
+    await api.createToken("ci", "readwrite", 0);
+    expect(JSON.parse(posts()[2].opts.body)).toEqual({ name: "ci", scope: "readwrite" });
+  });
+
   it("setup: reads bootstrap policy and sends the one-time proof as a header", async () => {
     const { calls } = mockFetch();
     expect((await api.getSetup()).needs_setup).toBe(false);
@@ -356,6 +376,10 @@ describe("api client", () => {
     expect(doc.schema_version).toBe(1);
     const r = await api.restore(doc);
     expect(r.restored.nodes).toBe(1);
+    // The reply is typed now, so `rw_disabled` and the snapshot path are visible to the screen.
+    expect(r.runtime).toBe("disconnected");
+    expect(r.pre_restore_snapshot).toBe("/app/data/backups/pre-restore-1700000000.json");
+    expect(r.restored.rw_disabled).toBe("");
     const post = calls.find((c) => c.url.endsWith("/api/restore"));
     expect(post.opts.headers["X-CSRF-Token"]).toBe("tok-123");
   });
@@ -439,6 +463,9 @@ describe("api client", () => {
       enabled: false, port: 443, dest: "", server_names: "", short_ids: "", public_key: "", endpoint: "", private_key: "", hosts: {}, routed_nets: "",
     };
     expect(await abortsAfter(() => api.putNetwork({ dhcp_end: "192.168.10.250" }))).toBe(180_000);
+    // A restore runs a guard install, an xray stop and a full host_provision under apply_lock — the
+    // longest write there is. On the 20 s default it was the app's likeliest no-answer.
+    expect(await abortsAfter(() => api.restore({ schema_version: 2 }))).toBe(180_000);
     expect(await abortsAfter(() => api.putRw(body))).toBe(60_000);
     expect(await abortsAfter(() => api.addRwClient("iphone"))).toBe(60_000);
     expect(await abortsAfter(() => api.setRwClientEnabled("cid", false))).toBe(60_000);

@@ -47,7 +47,10 @@ export const INVALIDATES = {
   putSettings: [keys.settings, keys.status, keys.network],
   resetSettings: [keys.settings, keys.status, keys.network],
   createToken: [keys.tokens], deleteToken: [keys.tokens],
-  changePassword: [],
+  // The rotation deletes every API token row (auth/service.py change_password): require_auth
+  // short-circuits on a Bearer token and never consults the session epoch, so the tokens themselves
+  // have to go. The list is on the same screen as the form — it must be re-read.
+  changePassword: [keys.tokens],
   restore: "all",
 } satisfies Record<string, readonly QueryKey[] | "all">;
 
@@ -152,6 +155,18 @@ export const NETWORK_WRITE = [...CONNECTION_WRITE, "network"] as const;
 export const RW_WRITE = [...CONNECTION_WRITE, "rw"] as const;
 
 /**
+ * A restore (POST /restore): it stops xray, installs the fail-closed guard and re-provisions the host, so it is a
+ * connection write — every Connect control in the app waits while it runs, for up to three minutes.
+ */
+export const RESTORE_WRITE = [...CONNECTION_WRITE, "restore"] as const;
+
+/** Creating or revoking an API token: one at a time. Neither moves the runtime, so this is not a connection write. */
+export const TOKEN_WRITE = ["tokens", "write"] as const;
+
+/** The password rotation: one at a time. It changes no setting and no runtime, so it is not a connection write. */
+export const PASSWORD_WRITE = ["password"] as const;
+
+/**
  * What a Gateway write that was refused (502) or never answered can have moved: a failed re-apply rolls the store back
  * but may reload the previous config, stop xray or assert the guard. useApiWrite invalidates only on success, so these
  * are invalidated explicitly.
@@ -188,6 +203,21 @@ export function isSettingsBusy(client: QueryClient): boolean {
   return isWriting(client, SETTINGS_WRITE, SETTINGS_CONNECTION_WRITE);
 }
 
+/** An API-token write (create or revoke) is running: one token write at a time. */
+export function useTokenBusy(): boolean {
+  return useWriting(TOKEN_WRITE);
+}
+
+/** An API-token write is running right now (for code that awaited a question first). */
+export function isTokenBusy(client: QueryClient): boolean {
+  return isWriting(client, TOKEN_WRITE);
+}
+
+/** The password rotation is running. */
+export function usePasswordBusy(): boolean {
+  return useWriting(PASSWORD_WRITE);
+}
+
 /** Said when another connection write started while a confirmation was open, so nothing was sent. */
 export const CONNECTION_BUSY = "Another connection change is still running — try again when it finishes";
 
@@ -196,6 +226,9 @@ export const PROFILE_BUSY = "Another profile change is still running — try aga
 
 /** Said when another settings write started while a question was open, so nothing was sent. */
 export const SETTINGS_BUSY = "Another settings change is still running — try again when it finishes";
+
+/** Said when a token write started while a question was open, so nothing was sent. */
+export const TOKEN_BUSY = "Another token change is still running — try again when it finishes";
 
 /**
  * A 502 on a connection write: the write and its re-apply run in one store transaction (spec §13.2), so a failed

@@ -11,8 +11,15 @@ export const TOAST_MS = { ok: 8_000, warn: 20_000, error: 20_000 } as const;
  */
 const WARN_TOAST = "border-warn/40! text-warn!";
 
+/**
+ * The shared surface. `!` for the same reason WARN_TOAST needs it: sonner's unlayered
+ * `[data-sonner-toast][data-styled]` rule sets its own background, colour and border, and outranks any
+ * layered utility — without the modifier the glass surface and the text colour are simply not applied.
+ */
+const TOAST = "glass! text-t1!";
+
 export function Toaster() {
-  return <Sonner position="top-center" toastOptions={{ classNames: { toast: "glass text-t1", description: "text-t2", warning: WARN_TOAST } }} />;
+  return <Sonner position="top-center" toastOptions={{ classNames: { toast: TOAST, description: "text-t2", warning: WARN_TOAST } }} />;
 }
 
 export function notifyOk(message: string): void {
