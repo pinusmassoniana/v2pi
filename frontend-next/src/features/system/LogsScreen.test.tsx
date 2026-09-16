@@ -92,6 +92,20 @@ describe("Logs (G9)", () => {
     expect(screen.getByRole("region", { name: "Logs" })).toHaveTextContent("source app · data/app.log");
   });
 
+  it("tints every level with a theme token, so the pane stays legible on both themes", async () => {
+    await openLogs();
+    await userEvent.click(load());
+    await within(pane()).findByText(/stats client reconfigured/);
+
+    const tone = (level: string) => within(pane()).getAllByText(level)[0]!.className;
+    expect(tone("ERROR")).toContain("text-bad");
+    expect(tone("WARNING")).toContain("text-warn");
+    expect(tone("INFO")).toContain("text-t2");
+    // A raw colour is theme-blind, and INFO is the majority of every app-log read: the cyan literal
+    // this replaced measured 1.4:1 against the light theme's pane.
+    expect(pane().innerHTML).not.toMatch(/text-\[#/);
+  });
+
   it("changing the source or the line count makes a new key and leaves exactly one observer armed", async () => {
     const { api$, client } = await openLogs();
     await userEvent.click(load());

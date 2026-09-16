@@ -21,7 +21,11 @@ import {
   parseLogLine, shortLogger, shortTime, showingLabel, truncationNote,
 } from "./logSources";
 
-const LEVEL_TONE: Record<string, string> = { ERROR: "text-bad", WARNING: "text-warn", INFO: "text-[#6ee7ff]", DEBUG: "text-t3" };
+// Tokens only, and each one measured against the pane on BOTH themes (`bg-glass` over the card's own
+// glass): bad 5.4 / 5.6, warn 5.1 / 8.4, t2 8.4 / 7.3, t3 5.7 / 4.3 (light / dark). INFO is the body
+// token rather than an accent — it is the majority of every app-log read, and colour is left to the two
+// levels that mean something. The mockup's cyan literal measured 1.4:1 on the light theme.
+const LEVEL_TONE: Record<string, string> = { ERROR: "text-bad", WARNING: "text-warn", INFO: "text-t2", DEBUG: "text-t3" };
 
 /** One rendered line. An ERROR line is tinted whole and bar-marked; a WARNING tints only its level. */
 function LogLine({ line, query, phone }: { line: string; query: string; phone: boolean }) {
