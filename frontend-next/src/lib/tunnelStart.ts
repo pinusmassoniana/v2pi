@@ -6,16 +6,20 @@ import { confirm } from "../components/confirm";
 /** Asked before a write that re-applies the tunnel would start an xray the operator stopped. */
 export const START_TUNNEL_CONFIRM = "This starts the tunnel again. Continue?";
 
+/** The status as the cache holds it now — undefined when it never loaded or its last poll failed (not known). */
+export function knownStatus(client: QueryClient): Status | undefined {
+  const state = client.getQueryState<Status>(keys.status);
+  return state?.status === "error" ? undefined : state?.data;
+}
+
 /**
  * Whether a re-apply now would start a stopped xray: it was stopped on purpose (`xray_state` "stopped") while a node
  * is still selected, since only a selected node is re-applied. A status that is not known — never loaded, or its last
  * poll failed — counts as stopped, so the question is asked rather than skipped.
  */
 export function startsStoppedTunnel(client: QueryClient): boolean {
-  const state = client.getQueryState<Status>(keys.status);
-  const status = state?.data;
-  if (!status || state.status === "error") return true;
-  return status.xray_state === "stopped" && status.active_node_id !== null;
+  const status = knownStatus(client);
+  return status === undefined || (status.xray_state === "stopped" && status.active_node_id !== null);
 }
 
 /**

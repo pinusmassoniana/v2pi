@@ -1,18 +1,22 @@
 import { useWatch } from "react-hook-form";
 import type { Network as NetworkRead } from "../../api/client";
 import { GATEWAY_NETWORK_POLL_MS } from "../../api/cadence";
-import { NETWORK_WRITE, useWriting } from "../../api/invalidation";
+import { NETWORK_WRITE, useConnectionBusy, useWriting } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { CardHeader } from "../../components/data/CardHeader";
 import { staleNotice } from "../../components/data/CardState";
 import { Chip } from "../../components/data/Chip";
+import { Elapsed } from "../../components/data/Elapsed";
 import { Button } from "../../components/ui/Button";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { ErrorState, Skeleton } from "../../components/ui/States";
+import { GatewayDnsBody, useGatewayDns } from "./GatewayDnsCard";
 import { ChecklistCard, KillSwitchState, LeasesCard, NetworkAlerts } from "./NetworkCards";
 import { KillSwitchToggle, LanIpv6Fields, SegmentFields } from "./NetworkFields";
-import { useNetworkForm } from "./useNetworkForm";
+import { poolIssue } from "./networkForm";
+import { useNetworkApply, type NetworkApply } from "./useNetworkApply";
+import { useNetworkForm, type NetworkFormState } from "./useNetworkForm";
 
 export const GATEWAY_CHANGED = "Changed on the gateway since you started editing — Discard to load it";
 
@@ -20,12 +24,60 @@ function UnsavedChip({ dirty }: { dirty: boolean }) {
   return dirty ? <span className="text-[11px] font-semibold text-warn">● unsaved changes</span> : null;
 }
 
+/** Apply is possible: something changed, nothing is invalid, the pool fits, and no connection write runs. */
+function useCanApply(state: NetworkFormState, apply: NetworkApply): boolean {
+  const { control, formState: { errors } } = state.form;
+  const [ip, dhcpStart, dhcpEnd] = useWatch({ control, name: ["ip", "dhcpStart", "dhcpEnd"] });
+  const connectionBusy = useConnectionBusy();
+  return state.dirty && Object.keys(errors).length === 0 && poolIssue({ ip, dhcpStart, dhcpEnd }) === null && !connectionBusy && !apply.applying;
+}
+
+export function ApplyButton({ apply, enabled }: { apply: NetworkApply; enabled: boolean }) {
+  return (
+    <Button size="sm" variant="primary" disabled={!enabled} onClick={() => void apply.apply()}>
+      {apply.applying ? "Applying…" : "Apply to host"}
+    </Button>
+  );
+}
+
+/**
+ * Where Apply reports: one polite status line, mounted before it has anything to say — the pool that blocks Apply, a
+ * refusal that belongs to no field, or an Apply in progress with its bar and clock.
+ */
+export function ApplyStatus({ state, apply }: { state: NetworkFormState; apply: NetworkApply }) {
+  const [ip, dhcpStart, dhcpEnd] = useWatch({ control: state.form.control, name: ["ip", "dhcpStart", "dhcpEnd"] });
+  const pool = poolIssue({ ip, dhcpStart, dhcpEnd });
+  return (
+    <div role="status" className="flex min-w-0 flex-1 items-center gap-2 text-[11.5px]">
+      {apply.applying ? (
+        <>
+          <span role="progressbar" aria-label="Applying to host" className="relative h-1 min-w-16 flex-1 overflow-hidden rounded-full bg-glass-2">
+            <span className="absolute inset-y-0 w-1/3 animate-pulse rounded-full bg-brand" />
+          </span>
+          {apply.startedAt !== null ? <span className="font-mono text-t2"><Elapsed since={apply.startedAt} format="clock" /></span> : null}
+        </>
+      ) : pool ? (
+        <>
+          <b className="font-semibold text-bad">✕ DHCP pool invalid</b>
+          <span className="text-t3">fix it to apply</span>
+        </>
+      ) : apply.formError ? (
+        <span className="whitespace-pre-wrap text-bad">{apply.formError}</span>
+      ) : null}
+    </div>
+  );
+}
+
 /** The editor over one network read: the segment, LAN / IPv6 and kill-switch cards, leases and the router checklist. */
 function NetworkEditor({ network, writing }: { network: NetworkRead; writing: boolean }) {
   const state = useNetworkForm(network);
   const { dirty, gatewayChanged, discard, form } = state;
   const killSwitch = useWatch({ control: form.control, name: "killSwitch" });
-  const locked = writing;
+  const apply = useNetworkApply(network, state);
+  const canApply = useCanApply(state, apply);
+  const dns = useGatewayDns();
+  // While an Apply runs, what it sends cannot be edited.
+  const locked = writing || apply.applying;
 
   return (
     <>
@@ -36,7 +88,9 @@ function NetworkEditor({ network, writing }: { network: NetworkRead; writing: bo
             <CardHeader title="Gateway Segment" detail={<Chip>nftables tproxy + policy routing</Chip>} aside={<UnsavedChip dirty={dirty} />} className="mb-0" />
             <SegmentFields state={state} disabled={locked} />
             <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line pt-3">
+              <ApplyStatus state={state} apply={apply} />
               <Button size="sm" disabled={!dirty || locked} onClick={discard}>Discard</Button>
+              <ApplyButton apply={apply} enabled={canApply} />
             </div>
           </GlassCard>
           <GlassCard aria-label="LAN access & IPv6" className="flex flex-col gap-3">
@@ -49,6 +103,11 @@ function NetworkEditor({ network, writing }: { network: NetworkRead; writing: bo
             <CardHeader title="Kill-switch" className="mb-0" />
             <KillSwitchState network={network} stagedOff={!killSwitch} />
             <KillSwitchToggle state={state} disabled={locked} applyHint />
+            {dirty ? <div className="flex justify-end"><ApplyButton apply={apply} enabled={canApply} /></div> : null}
+          </GlassCard>
+          <GlassCard aria-label="Gateway DNS" className="flex flex-col gap-3">
+            <CardHeader title="Gateway DNS" aside={<Chip>applies live when a node is connected</Chip>} className="mb-0" />
+            <GatewayDnsBody dns={dns} network={network} />
           </GlassCard>
           <LeasesCard network={network} />
         </div>
