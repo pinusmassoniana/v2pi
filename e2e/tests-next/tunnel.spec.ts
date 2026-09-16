@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ensureLoggedIn } from "../tests/auth-helper";
+import { ensureLoggedIn } from "./auth-helper";
 
 // The e2e backend is fresh and has no active node: a routing save applies on the next Connect, and nothing here is
 // applied live. Every test starts and ends with an empty ruleset, no e2e-* profile and the stock active-check interval —

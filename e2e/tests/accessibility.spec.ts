@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ensureLoggedIn } from "./auth-helper";
+import { ensureLoggedIn } from "../tests-next/auth-helper";
 
 const screens = [
   "Overview", "Health & Traffic", "Nodes", "Anti-DPI", "Routing",

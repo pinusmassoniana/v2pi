@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { ensureLoggedIn, PASS, USER } from "./auth-helper";
+import { ensureLoggedIn, PASS, USER } from "../tests-next/auth-helper";
 
 // Negative-path auth coverage (audit I5): bad credentials, the per-IP login rate limit
 // (run-server.sh sets PI_GW_LOGIN_LOCKOUT_SEC=2 so the lockout clears between tests),

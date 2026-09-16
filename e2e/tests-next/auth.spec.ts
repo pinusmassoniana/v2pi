@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { PASS, USER, ensureLoggedIn } from "../tests/auth-helper";
+import { PASS, USER, ensureLoggedIn } from "./auth-helper";
 
 async function logOut(page: Page) {
   await page.goto("/#/system/panel");   // Log out is reachable here at every width

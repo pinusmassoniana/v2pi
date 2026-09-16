@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ensureLoggedIn } from "../tests/auth-helper";
+import { ensureLoggedIn } from "./auth-helper";
 
 const TABS = [
   ["Home", "Overview", "/"], ["Home", "Traffic", "/traffic"],

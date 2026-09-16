@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ensureLoggedIn } from "../tests/auth-helper";
+import { ensureLoggedIn } from "./auth-helper";
 
 const PATHS = [
   "/", "/traffic", "/nodes", "/nodes/subscriptions", "/nodes/1",

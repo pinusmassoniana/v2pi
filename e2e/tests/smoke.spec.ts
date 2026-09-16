@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { fillBootstrapProofIfRequired, fillCredentials, PASS } from "./auth-helper";
+import { fillBootstrapProofIfRequired, fillCredentials, PASS } from "../tests-next/auth-helper";
 
 // One full-stack smoke covering the auth surface + SPA routing against the real backend:
 //   first-run setup (or login if already provisioned) → dashboard → log out → log in → navigate.

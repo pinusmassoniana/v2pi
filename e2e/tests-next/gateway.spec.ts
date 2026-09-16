@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ensureLoggedIn } from "../tests/auth-helper";
+import { ensureLoggedIn } from "./auth-helper";
 
 // The e2e backend runs the dry-run network backend (run-server.sh forces PI_GW_NET_BACKEND=dryrun): host provisioning
 // renders and returns, nothing is applied to this machine, and xray is /bin/true, so no node is ever connected — an

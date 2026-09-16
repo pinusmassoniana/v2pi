@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ensureLoggedIn } from "../tests/auth-helper";
+import { ensureLoggedIn } from "./auth-helper";
 
 // The e2e backend is fresh: no nodes, no active tunnel, no recorded failovers. These checks are about the
 // screens' structure and empty states at each width, never about live numbers.

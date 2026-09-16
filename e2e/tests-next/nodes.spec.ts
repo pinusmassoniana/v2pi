@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ensureLoggedIn } from "../tests/auth-helper";
+import { ensureLoggedIn } from "./auth-helper";
 
 // The e2e backend is fresh and has no live xray, so nothing here connects. Every test starts and ends with no
 // e2e-* node or subscription and with the fetch settings at their defaults: the other specs expect an empty gateway.
