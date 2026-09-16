@@ -9,6 +9,12 @@ from pi_gw_panel.xray_config.validate import config_digest, scrub_output
 
 logger = logging.getLogger(__name__)
 
+# Served in place of xray's own output — through `status()`, so both `stderr_tail` (which
+# `GET /api/logs?source=xray-stderr` returns) and `last_error` are covered — when the panel has no
+# secret vocabulary to redact that output with. See `_capture_stderr`.
+STDERR_WITHHELD = ("xray's output is withheld: the panel could not read its config, so it cannot "
+                   "redact the secrets that output may quote")
+
 
 class SupervisorStatus(TypedDict):
     running: bool
@@ -59,7 +65,10 @@ class XraySupervisor:
         self._stderr_tail = ""
         self._stderr_thread: threading.Thread | None = None
         self._stderr_lock = threading.Lock()
-        self._redaction_config: dict = {}
+        # None = no config read has ever succeeded, so there is no vocabulary to scrub with. That is
+        # NOT the same as `{}`, which is a config that WAS read and simply holds no secrets — and
+        # whose xray output is safe to serve.
+        self._redaction_config: dict | None = None
         # Fingerprint of the config the live child loaded at spawn time — the only record of
         # what the PROCESS is serving, as opposed to what the file now says. None = unknown.
         self._loaded_digest: str | None = None
@@ -101,7 +110,9 @@ class XraySupervisor:
             # /api/logs?source=xray-stderr). On failure KEEP the last one we managed to read: the
             # config being unreadable is exactly when xray is loudest, and dropping to {}
             # switched redaction off wholesale — the uuid/keys of the config it last ran with
-            # are still the ones its complaints quote.
+            # are still the ones its complaints quote. Before the FIRST successful read there is
+            # nothing to keep, and `_capture_stderr` then withholds this child's output rather than
+            # serving it unredacted.
             #
             # The same read is where the loaded-config fingerprint is taken, because this is the
             # content the child about to be exec'd will parse. Taken any later — by re-reading the
@@ -150,6 +161,14 @@ class XraySupervisor:
         assert proc.stderr is not None
         while chunk := proc.stderr.read(4096):
             with self._stderr_lock:
+                # Whether this child's output can be redacted was settled before it was spawned: the
+                # vocabulary is read in start(), just above the Popen, and nothing else writes it. With
+                # none, scrub_output would collect no secrets and hand a caller xray's complaints
+                # verbatim — uuids, Reality keys and all. Dropped rather than filtered on the way out,
+                # so the unredactable bytes are never held in memory for a second consumer to find.
+                if self._redaction_config is None:
+                    self._stderr_tail = STDERR_WITHHELD
+                    continue
                 self._stderr_tail = (self._stderr_tail + chunk)[-self.STDERR_TAIL_CHARS:]
 
     def _join_stderr(self) -> None:
@@ -292,7 +311,9 @@ class XraySupervisor:
                 self._last_exit_code = self._proc.returncode
                 self._join_stderr()
             with self._stderr_lock:
-                last_error = scrub_output(self._stderr_tail, self._redaction_config)
+                # `or {}` only ever applies to a tail the panel wrote itself (a refused start, a
+                # missing binary): xray's own output is never kept without a vocabulary.
+                last_error = scrub_output(self._stderr_tail, self._redaction_config or {})
             return {
                 "running": running,
                 "pid": self._proc.pid if running else None,

@@ -20,7 +20,7 @@ from pi_gw_panel.net_control.dryrun import DryRunBackend
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.state import build_state
 from pi_gw_panel.xray_config.validate import ConfigManager, config_digest, scrub_output
-from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
+from pi_gw_panel.xray_supervisor.supervisor import STDERR_WITHHELD, XraySupervisor
 
 
 def _wire(settings, stub_xray):
@@ -152,6 +152,50 @@ def test_supervisor_keeps_redacting_when_the_config_becomes_unreadable(settings,
         assert "***" in last_error
     finally:
         sup.stop()
+
+
+def _loud_xray(tmp_path, line: str) -> str:
+    """A stub xray that prints one line to stderr and dies, so the capture thread has real output."""
+    assert "'" not in line, "the line is embedded in a single-quoted shell string"
+    path = tmp_path / "loud-xray"
+    path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{line}' >&2\nexit 23\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_a_start_that_never_read_a_config_withholds_xrays_own_output(settings, tmp_path):
+    """The vocabulary is empty until a config read succeeds, and a failed read deliberately keeps the
+    PREVIOUS one — of which there is none on the first start after the panel booted. Scrubbing with no
+    vocabulary is not scrubbing, so xray's output (which quotes uuids and Reality keys when it is
+    loudest) must not be kept at all, let alone served through GET /api/logs."""
+    with open(settings.config_path, "w") as f:
+        f.write('{"inbounds": [')      # truncated by an unclean shutdown, exactly when xray complains
+    secret = "deadbeefcafe1234"
+    sup = XraySupervisor(_loud_xray(tmp_path, f"reality: bad shortId {secret}"), settings.config_path)
+
+    sup.start()
+    sup._proc.wait(timeout=10)
+    status = sup.status()
+
+    assert secret not in sup._stderr_tail, "the unredactable output was kept in memory"
+    assert secret not in status["stderr_tail"], "the unredactable output reached a caller"
+    assert secret not in status["last_error"], "the other consumer of the same string is not covered"
+    assert status["stderr_tail"] == STDERR_WITHHELD
+    assert status["last_exit_code"] == 23, "withholding the tail must not hide that xray died"
+
+
+def test_a_config_read_that_found_no_secrets_is_not_a_missing_vocabulary(settings, tmp_path):
+    """`{}` read successfully is a vocabulary that happens to be empty, not "we never read one".
+    Conflating the two would withhold xray's output from every gateway whose config holds no
+    secrets — and the tail is the only place xray's errors live."""
+    with open(settings.config_path, "w") as f:
+        f.write("{}")
+    sup = XraySupervisor(_loud_xray(tmp_path, "failed to bind :443"), settings.config_path)
+
+    sup.start()
+    sup._proc.wait(timeout=10)
+
+    assert sup.status()["stderr_tail"].strip() == "failed to bind :443"
 
 
 # --- F4-15: a build failure is a reported result, not a 500 ---------------------------
