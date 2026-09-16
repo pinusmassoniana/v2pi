@@ -203,7 +203,8 @@ describe("gateway fixtures", () => {
       name: "home-assistant", scope: "monitor", expires_at: NOW_SEC + 30 * 86_400, token: TOKEN_CREATED.token,
     });
     await expect(api.createToken("forever", "read")).resolves.toMatchObject({ expires_at: null });
-    // Only `app` has content: xray writes neither file, so those two sources answer empty.
+    // Only `app` has content: xray writes neither xray-error nor xray-access, and xray-stderr — the
+    // supervisor's own in-memory tail — is empty here only because this fixture models a healthy gateway.
     await expect(api.getLogs("app", 200)).resolves.toEqual({ source: "app", lines: LOG_LINES });
     for (const source of ["xray-stderr", "xray-error", "xray-access"]) {
       await expect(api.getLogs(source, 200)).resolves.toEqual({ source, lines: [] });

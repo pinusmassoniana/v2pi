@@ -433,7 +433,7 @@ export const LOG_LINES: string[] = [
   "2023-11-14 22:10:58,003 INFO pi_gw_panel.xray_supervisor.supervisor starting xray (pid 2417)",
   "2023-11-14 22:11:02,447 INFO pi_gw_panel.controller applied node 12 — xray reloaded in 1.4s",
   "2023-11-14 22:12:44,118 ERROR pi_gw_panel.xray_supervisor.supervisor refusing to start xray: the config on disk may not be served",
-  "2023-11-14 22:12:47,902 ERROR pi_gw_panel.proc xray (pid 2417) is still running 5s after SIGKILL; it was NOT stopped",
+  "2023-11-14 22:12:47,902 ERROR pi_gw_panel xray (pid 2417) is still running 5s after SIGKILL; it was NOT stopped",
   "2023-11-14 22:13:05,660 WARNING pi_gw_panel.xray_config.validate rolled back to the last good xray config",
   "2023-11-14 22:13:09,214 INFO pi_gw_panel.xray_supervisor.supervisor xray running again (pid 2604)",
   "2023-11-14 22:38:12,417 INFO pi_gw_panel.api.routes stats client reconfigured to 127.0.0.1:10085 — xray StatsService reachable",
@@ -447,12 +447,17 @@ export const DIAGNOSTICS: Diagnostics = {
   stats_last_ok_at: NOW_SEC - 2, stats_error: "", stats_fail_count: 0,
 };
 
-/** What `GET /backup` hands back: the whole configuration, and no `created_at` — only the daily job stamps one. */
+/**
+ * What `GET /backup` hands back: the whole configuration, and no `created_at` — only the daily job stamps one.
+ * Nodes, subscriptions and profiles each carry `id`, as the real export always does — `BackupNode`, `BackupSubscription`
+ * and `BackupProfile` declare it `Field(gt=0)` with no default (backend/pi_gw_panel/backup/__init__.py:182,148,124),
+ * and `export_state`'s `_node_dict`/`_profile_dict`/the subscription literal always include it (:405-441).
+ */
 export const BACKUP_DOC: BackupDoc = {
   schema_version: 2,
-  nodes: [{ name: "nl-ams-03", address: "nl-ams-03.example.org", port: 443, uuid: "uuid-1" }],
-  subscriptions: [{ name: "work", url: "https://example.org/sub" }],
-  profiles: [{ name: "fragment-tls" }],
+  nodes: [{ id: 1, name: "nl-ams-03", address: "nl-ams-03.example.org", port: 443, uuid: "uuid-1" }],
+  subscriptions: [{ id: 1, name: "work", url: "https://example.org/sub" }],
+  profiles: [{ id: 1, name: "fragment-tls" }],
   routing: { rules: [{ type: "geoip", value: "ru", action: "direct" }], default_action: "proxy" },
   settings: { stats_enabled: "1", traffic_sample_ms: "1000" },
 };
@@ -602,7 +607,10 @@ export function mockSystem(api$: MockApi): MockApi & SystemMocks {
     deleteToken: vi.spyOn(api, "deleteToken").mockResolvedValue(undefined),
     listAudit: vi.spyOn(api, "listAudit").mockResolvedValue(AUDIT),
     getLogs: vi.spyOn(api, "getLogs").mockImplementation(async (source: string) => ({
-      // Only `app` has content: xray is built with no error path and "access": "none".
+      // Only `app` has content, for two different reasons: xray-error/xray-access are empty because
+      // nothing ever writes those files (xray is built with no error path and "access": "none"), while
+      // xray-stderr — the supervisor's in-memory redacted tail — is empty here only because this fixture
+      // models a healthy gateway with nothing to report.
       source, lines: source === "app" ? LOG_LINES : [],
     })),
     getDiagnostics: vi.spyOn(api, "getDiagnostics").mockResolvedValue(DIAGNOSTICS),
