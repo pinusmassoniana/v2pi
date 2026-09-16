@@ -98,10 +98,15 @@ export const EMPTY_BY_CONFIG =
 /**
  * What an empty pane says. `logs.tail` answers `[]` for a missing file, an unreadable one and an empty one alike, so
  * for a source that CAN have content the sentence must not claim the log is empty. For the two files xray is not
- * configured to write, the reason is known and is named instead.
+ * configured to write, the reason is known and is named instead. `xray-stderr` is neither a file nor a log that is
+ * simply "empty": it is the supervisor's in-memory tail, reset to `""` on every `start()`, so its own empty reading
+ * names the real cause instead of borrowing the generic file wording.
  */
 export function emptyMessage(source: string): string {
   if (logSource(source)?.emptyByConfig) return EMPTY_BY_CONFIG;
+  if (source === "xray-stderr") {
+    return "Nothing to show — xray has not written anything yet, typically because it has not run since the panel started.";
+  }
   return "Nothing to show — this log is empty, or the gateway has no file for it yet.";
 }
 

@@ -102,13 +102,17 @@ export function snapshotNote(result: RestoreResult): string {
 /**
  * `POST /restore` re-wraps its refusals by hand: a field failure reads `invalid backup: settings.health_interval: …`
  * and a model-level one — every reference check, the settings-value check, the DHCP-range check and the lockout guard —
- * has an empty `loc`, so it reads `invalid backup: : Value error, …`. Strip all three technical fragments.
+ * has an empty `loc`, so it reads `invalid backup: : Value error, …`. A model validator on a nested model (for
+ * example `BackupSubscription.bounded_injection`, keyed by list position) instead carries a non-empty loc, so the
+ * fragment reads `invalid backup: subscriptions.0: Value error, …` — `Value error, ` can land right after any
+ * `: `, not only at the very start. Strip the `invalid backup: ` prefix, the bare leading `: ` of an empty loc, and
+ * `Value error, ` wherever pydantic put it, keeping a real loc (like `subscriptions.0`) so the operator still knows
+ * which entry was refused.
  */
 function refusalDetail(message: string): string {
   let detail = message.startsWith("invalid backup: ") ? message.slice("invalid backup: ".length) : message;
   if (detail.startsWith(": ")) detail = detail.slice(2);
-  if (detail.startsWith("Value error, ")) detail = detail.slice("Value error, ".length);
-  return detail;
+  return detail.replace(/(^|: )Value error, /, "$1");
 }
 
 export interface RestoreRefusal {

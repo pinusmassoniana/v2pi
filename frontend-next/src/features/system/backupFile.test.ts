@@ -118,6 +118,16 @@ describe("restoreRefusedMessage", () => {
     });
   });
 
+  it("a nested model-level refusal keeps its loc but loses the technical fragment", () => {
+    // BackupSubscription.bounded_injection is a model_validator on a child model, so its loc is
+    // non-empty ("subscriptions.0") — "Value error, " lands after that loc, not at the very start.
+    const error = new ApiError(400, "invalid backup: subscriptions.0: Value error, subscription injection is too large");
+    expect(restoreRefusedMessage(error)).toEqual({
+      message: "not restored — subscriptions.0: subscription injection is too large",
+      sticky: false,
+    });
+  });
+
   it("a field refusal keeps its field", () => {
     expect(restoreRefusedMessage(new ApiError(400, "invalid backup: settings.health_interval: Input should be a valid integer"))).toEqual({
       message: "not restored — settings.health_interval: Input should be a valid integer",

@@ -91,13 +91,16 @@ describe("parseLogLine", () => {
 });
 
 describe("empty and truncation copy", () => {
-  it("a source that is empty by configuration says why; one that can have content does not claim to be empty", () => {
+  it("a source that is empty by configuration says why; the in-memory tail says xray has not run; a file source does not claim emptiness it cannot know", () => {
     expect(emptyMessage("xray-error")).toBe(EMPTY_BY_CONFIG);
     expect(emptyMessage("xray-access")).toBe(EMPTY_BY_CONFIG);
     // logs.tail answers [] for a missing file, an unreadable one and an empty one alike.
-    for (const source of ["app", "xray-stderr"]) {
-      expect(emptyMessage(source)).toBe("Nothing to show — this log is empty, or the gateway has no file for it yet.");
-    }
+    expect(emptyMessage("app")).toBe("Nothing to show — this log is empty, or the gateway has no file for it yet.");
+    // xray-stderr is the supervisor's in-memory tail, reset on every start — an empty pane here means
+    // xray has not printed anything since it last started, not that a file is missing or unreadable.
+    expect(emptyMessage("xray-stderr")).toBe(
+      "Nothing to show — xray has not written anything yet, typically because it has not run since the panel started.",
+    );
   });
 
   it("only the in-memory tail can start mid-line, so only it carries the note", () => {
