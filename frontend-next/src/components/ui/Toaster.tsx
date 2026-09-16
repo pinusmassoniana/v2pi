@@ -4,8 +4,15 @@ import { errText } from "../../api/client";
 // Status messages expire: 8 s for success, 20 s for warnings and errors so they can actually be read.
 export const TOAST_MS = { ok: 8_000, warn: 20_000, error: 20_000 } as const;
 
+/**
+ * Colour means state: a warning has to be amber, or "no answer yet" reads exactly like a failure. It is the one type
+ * that gets a colour of its own — success and error keep the shared surface. The `!` is needed: sonner injects its own
+ * unlayered stylesheet, whose `[data-sonner-toast][data-styled]` rule outranks any layered utility.
+ */
+const WARN_TOAST = "border-warn/40! text-warn!";
+
 export function Toaster() {
-  return <Sonner position="top-center" toastOptions={{ classNames: { toast: "glass text-t1", description: "text-t2" } }} />;
+  return <Sonner position="top-center" toastOptions={{ classNames: { toast: "glass text-t1", description: "text-t2", warning: WARN_TOAST } }} />;
 }
 
 export function notifyOk(message: string): void {

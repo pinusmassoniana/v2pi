@@ -1,7 +1,10 @@
+import { render, screen } from "@testing-library/react";
 import { toast } from "sonner";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
-import { notifyError, notifyOk, notifyWarn } from "./Toaster";
+import { Toaster, notifyError, notifyOk, notifyWarn } from "./Toaster";
+
+afterEach(() => toast.dismiss());
 
 describe("toasts", () => {
   it("success for 8 s; a warning in amber and an error for 20 s", () => {
@@ -15,6 +18,23 @@ describe("toasts", () => {
     expect(success).toHaveBeenCalledWith("saved", { duration: 8000 });
     expect(warning).toHaveBeenCalledWith("no answer yet — the gateway may still be applying; reloading", { duration: 20000 });
     expect(error.mock.calls).toEqual([["segment_iface: must not be blank", { duration: 20000 }], ["apply failed", { duration: 20000 }]]);
+  });
+
+  it("a warning is amber on the screen, so it never reads as a failure; success and error keep the shared surface", async () => {
+    render(<Toaster />);
+    const NO_ANSWER = "no answer yet — the gateway may still be applying; reloading";
+    notifyOk("saved");
+    notifyWarn(NO_ANSWER);
+    notifyError(null, "apply failed");
+    for (const text of ["saved", NO_ANSWER, "apply failed"]) await screen.findByText(text);
+    const surface = (text: string) => screen.getByText(text).closest("[data-sonner-toast]")!;
+
+    expect(surface(NO_ANSWER)).toHaveAttribute("data-type", "warning");
+    expect(surface(NO_ANSWER)).toHaveClass("text-warn!", "border-warn/40!");
+    for (const text of ["saved", "apply failed"]) {
+      expect(surface(text)).toHaveClass("glass", "text-t1");
+      expect(surface(text)).not.toHaveClass("text-warn!");
+    }
   });
 
   it("a sticky error stays until it is dismissed", () => {
