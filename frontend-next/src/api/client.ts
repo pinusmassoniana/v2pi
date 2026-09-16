@@ -69,7 +69,8 @@ export interface Diagnostics {
   db_path: string; db_bytes: number; disk_free_bytes: number; disk_total_bytes: number;
   // The xray StatsService client's own health (api/schemas.py DiagnosticsOut), the only place the
   // panel can say why the Home graph is flat: when the last sample succeeded (null = never),
-  // the last error text, and how many reads have failed since the process started.
+  // the last error text, and how many reads have failed consecutively since the last success or
+  // port change (stats/client.py resets fail_count to 0 on both — it is never a since-boot total).
   stats_last_ok_at: number | null; stats_error: string; stats_fail_count: number;
 }
 
