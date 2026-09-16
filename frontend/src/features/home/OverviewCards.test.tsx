@@ -176,6 +176,8 @@ describe("Overview › connection path, events and summaries", () => {
     expect(path).not.toHaveTextContent("185.107.56.21");
     expect(path.querySelector("[data-node]")).not.toHaveTextContent("🇩🇪");
     expect(path.querySelector("path[data-leg]")).toHaveAttribute("data-leg", "off");
+    // what the pill shows, not OFF: the Status block still says the tunnel is ONLINE
+    expect(within(path).getByRole("img")).toHaveAccessibleName(/ Tunnel health stale, down 12\.4 Mbit\/s, up 1\.8 Mbit\/s\. /);
     const active = within(within(region("Upstream health")).getByRole("list", { name: "Active node" })).getByRole("listitem");
     expect(active).toHaveTextContent("health stale");
     expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale");

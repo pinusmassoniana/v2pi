@@ -200,12 +200,22 @@ export interface PathLabelInput {
   dim: boolean;
 }
 
+/** The tunnel in the path's name, in the latency pill's words: OFF only while nothing can carry it, never while health is just unknown. */
+const TUNNEL_WORDS: Record<NodeSlot["state"], string> = {
+  none: "OFF, no node",
+  stopped: "OFF, xray stopped",
+  "no-frame": "health unknown",
+  stale: "health stale",
+  bad: "DOWN, real check failed",
+  slow: "slow",
+  ok: "OK",
+};
+
 /** O8: the connection path's accessible name — the stops, the tunnel with its rates, direct traffic and the kill-switch. */
 export function pathLabel({ name, slot, rates, killSwitch, dim }: PathLabelInput): string {
-  const tunnel = slot.state === "bad" ? "DOWN, real check failed" : slot.state === "slow" ? "slow" : slot.leg === "ok" ? "OK" : "OFF";
   const parts = [
     `Connection path: devices, gateway, ${name}, internet.`,
-    `Tunnel ${tunnel}${slot.ms === null ? "" : `, ${slot.ms} ms`}, ${rateWords(rates?.proxy ?? null)}.`,
+    `Tunnel ${TUNNEL_WORDS[slot.state]}${slot.ms === null ? "" : `, ${slot.ms} ms`}, ${rateWords(rates?.proxy ?? null)}.`,
     `Direct by routing rules: ${rateWords(rates?.direct ?? null)}.`,
     `Kill-switch ${killSwitch}.`,
   ];

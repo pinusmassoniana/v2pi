@@ -426,6 +426,6 @@ describe("Overview › KPIs", () => {
     expect(screen.getByRole("region", { name: "↓ Download" }).querySelector("svg")).toBeNull();
     const path = screen.getByRole("region", { name: "Connection path" });
     expect(within(path).getByText("stats off")).toHaveAttribute("data-tone", "neutral");
-    expect(within(path).getByRole("img")).toHaveAccessibleName(/ Tunnel OFF, rates unknown\. Direct by routing rules: rates unknown\. /);
+    expect(within(path).getByRole("img")).toHaveAccessibleName(/ Tunnel health unknown, rates unknown\. Direct by routing rules: rates unknown\. /);
   });
 });

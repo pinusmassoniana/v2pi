@@ -204,9 +204,21 @@ describe("connection path", () => {
     );
   });
 
-  it("label: an unused leg is OFF, no frame leaves the rates unknown, and a frozen frame says the stats paused", () => {
+  it("label: an unused leg says why in the latency pill's words, no frame leaves the rates unknown, and a frozen frame says the stats paused", () => {
     expect(pathLabel({ name: "No node", slot: nodeHealthSlot(status({ active_node_id: null }), null, null), rates: null, killSwitch: "UNKNOWN", dim: false })).toBe(
-      "Connection path: devices, gateway, No node, internet. Tunnel OFF, rates unknown. Direct by routing rules: rates unknown. Kill-switch UNKNOWN.",
+      "Connection path: devices, gateway, No node, internet. Tunnel OFF, no node, rates unknown. Direct by routing rules: rates unknown. Kill-switch UNKNOWN.",
+    );
+    const idle = withRates([0, 0], [0, 0]);
+    expect(pathLabel({ name: "nl-ams-03", slot: nodeHealthSlot(status({ running: false }), idle, active), rates: outboundRates(idle), killSwitch: "ARMED", dim: false })).toBe(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel OFF, xray stopped, idle. Direct by routing rules: idle. Kill-switch ARMED.",
+    );
+    // stats off, or no frame yet: nothing says whether the tunnel works
+    expect(pathLabel({ name: "nl-ams-03", slot: nodeHealthSlot(STATUS, null, active), rates: null, killSwitch: "ARMED", dim: false })).toBe(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel health unknown, rates unknown. Direct by routing rules: rates unknown. Kill-switch ARMED.",
+    );
+    // after a node switch, until the new node's first real check: traffic flows while health is stale
+    expect(pathLabel({ name: "nl-ams-03", slot: nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ stale: true })), rates: outboundRates(TRAFFIC_FRAME), killSwitch: "ARMED", dim: false })).toBe(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel health stale, down 12.4 Mbit/s, up 1.8 Mbit/s. Direct by routing rules: idle. Kill-switch ARMED.",
     );
     expect(pathLabel({ name: "nl-ams-03", slot: nodeHealthSlot(STATUS, TRAFFIC_FRAME, active), rates: outboundRates(TRAFFIC_FRAME), killSwitch: "ARMED", dim: true }))
       .toMatch(/Kill-switch ARMED\. Live stats paused\.$/);
