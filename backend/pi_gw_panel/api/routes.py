@@ -2354,8 +2354,11 @@ def rw_reconcile_pending(state) -> bool:
     granting, and make sure nothing is still serving an older one.
 
     IT CANNOT WEDGE THE PANEL, by construction:
-      * No request handler reads the marker. A marker that never clears refuses nothing, blocks
-        nothing, and changes no response.
+      * The marker is surfaced read-only, and nothing branches on it. One request handler reads it:
+        `_rw_out` reports it as `RwOut.revocation_pending` so the panel can warn, and a read that
+        fails raises there — deliberately, like every other read in that response, so a marker that
+        cannot be read is never reported as cleared. A marker that never clears refuses nothing and
+        blocks nothing; it leaves that one field true until the reconcile succeeds.
       * It never STARTS xray. It reloads only through `reload_if_running`, which decides under the
         supervisor's own lock, so a stuck marker cannot become a restart loop — the failure mode a
         naive "pending → restart" recovery would have.
