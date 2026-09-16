@@ -312,7 +312,7 @@ export const GATEWAY_NETWORK: Network = {
       { ip: "192.168.50.140", mac: "aa:bb:cc:00:01:40", hostname: "thinkpad-work", expiry: NOW_SEC + 3 * 3_600 + 120 },
       { ip: "192.168.50.101", mac: "aa:bb:cc:00:01:01", hostname: "iphone-anna", expiry: NOW_SEC + 11 * 3_600 + 900 },
       { ip: "192.168.50.176", mac: "aa:bb:cc:00:01:76", hostname: "ipad", expiry: NOW_SEC + 38 * 60 + 20 },
-      { ip: "192.168.50.112", mac: "aa:bb:cc:00:01:12", hostname: "", expiry: NOW_SEC + 47 * 60 },
+      { ip: "192.168.50.112", mac: "aa:bb:cc:00:01:12", hostname: "", expiry: NOW_SEC + 47 * 60 + 30 },
       { ip: "192.168.50.123", mac: "aa:bb:cc:00:01:23", hostname: "appletv", expiry: 0 },
       { ip: "192.168.50.104", mac: "aa:bb:cc:00:01:04", hostname: "macbook-pro", expiry: NOW_SEC + 9 * 3_600 + 60 },
       { ip: "192.168.50.118", mac: "aa:bb:cc:00:01:18", hostname: "pixel-8", expiry: NOW_SEC + 6 * 3_600 + 1_800 },
