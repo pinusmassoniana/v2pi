@@ -22,6 +22,19 @@ from pi_gw_panel.stats.history import bounded_interval_ms
 from pi_gw_panel.api.schemas import ReadinessOut
 
 
+class SpaStaticFiles(StaticFiles):
+    """The SPA mount. index.html is revalidated on every load (Cache-Control: no-cache), so after an
+    upgrade a browser — an installed phone app included — picks up the new entry point and, through it,
+    the new hashed assets instead of heuristically reusing the old page. Every other file keeps
+    Starlette's defaults (ETag + Last-Modified)."""
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        if os.path.basename(full_path) == "index.html":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 AUTH_BODY_LIMIT = 4 * 1024
 IMPORT_BODY_LIMIT = 600 * 1024
 RESTORE_BODY_LIMIT = 2 * 1024 * 1024
@@ -377,6 +390,6 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     app.include_router(router)
 
     if settings.static_dir and os.path.isdir(settings.static_dir):
-        app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="spa")
+        app.mount("/", SpaStaticFiles(directory=settings.static_dir, html=True), name="spa")
 
     return app
