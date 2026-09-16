@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "description": "Full-stack Playwright suite for the v2pi panel at phone, laptop and desktop widths.",
   "scripts": {
-    "build:spa": "npm --prefix ../frontend-next ci && npm --prefix ../frontend-next run build",
+    "build:spa": "npm --prefix ../frontend ci && npm --prefix ../frontend run build",
     "test": "playwright test"
   },
   "devDependencies": {

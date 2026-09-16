@@ -4,9 +4,9 @@
 **/*.pyc
 .git
 **/data
-!frontend-next/src/components/data
+!frontend/src/components/data
 backend/pi_gw_panel/static
-frontend-next/dist
+frontend/dist
 .planning
 .claude
 docs

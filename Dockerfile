@@ -29,9 +29,9 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION}@${UV_IMAGE_DIGEST} AS uv
 # architecture-independent static files, so the arm64 image never runs npm or Vite under emulation. ---
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}@${NODE_IMAGE_DIGEST} AS frontend
 WORKDIR /fe
-COPY frontend-next/package.json frontend-next/package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-COPY frontend-next/ ./
+COPY frontend/ ./
 RUN npx vite build --outDir /spa --emptyOutDir
 
 # --- runtime: panel + pinned xray + nft/dnsmasq/iproute2 (cutover-ready) ---

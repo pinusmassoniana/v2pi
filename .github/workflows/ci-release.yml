@@ -39,18 +39,18 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: frontend-next/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
       - name: Install locked dependencies
-        working-directory: frontend-next
+        working-directory: frontend
         run: npm ci
       - name: Types and lint
-        working-directory: frontend-next
+        working-directory: frontend
         run: npm run check
       - name: Vitest
-        working-directory: frontend-next
+        working-directory: frontend
         run: npm test
       - name: Build SPA into backend static
-        working-directory: frontend-next
+        working-directory: frontend
         run: npm run build
       - name: Chunk sizes (informational, never fails the job)
         continue-on-error: true
@@ -72,7 +72,7 @@ jobs:
             echo "Boot total (gzip -9): $total bytes"
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: npm advisory gate (high and critical)
-        working-directory: frontend-next
+        working-directory: frontend
         run: npm audit --audit-level=high
 
   dep-audit:
@@ -144,7 +144,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Build SPA into backend static
-        working-directory: frontend-next
+        working-directory: frontend
         run: npm ci && npm run build
       - name: Sync locked backend dependencies
         working-directory: backend
