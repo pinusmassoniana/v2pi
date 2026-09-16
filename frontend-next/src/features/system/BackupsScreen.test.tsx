@@ -162,6 +162,24 @@ describe("Backups — restore (P2)", () => {
     expect(within(last).getByText("runtime: disconnected")).toBeInTheDocument();
   });
 
+  it("keeps the parsed document out of the MutationCache after a restore", async () => {
+    const { api$, client } = await openBackups();
+    await pick(backupFile("v2pi-backup-2026-09-14.json", BACKUP_DOC, 214_000));
+    await userEvent.click(restoreButton());
+    await answer("Restore");
+    // Not the toast text: an identical message from an earlier test in this file can still be on screen (sonner's
+    // own toast store outlives a test's unmounted render), which would make that query ambiguous instead of unique.
+    await screen.findByRole("region", { name: "Last restore" });
+    expect(api$.restore).toHaveBeenCalledWith(BACKUP_DOC);
+    // A settled mutation's state.variables sits in the MutationCache for its gcTime: the parsed document must
+    // never be one of them, the same guard `useRwSave` and `usePasswordChange` already carry for their secrets.
+    const mutations = client.getMutationCache().getAll();
+    expect(mutations.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(mutations.map((mutation) => mutation.state.variables));
+    expect(serialized).not.toContain("nl-ams-03");
+    expect(serialized).not.toContain("uuid-1");
+  });
+
   it("a restore that turned remote access off is a warning, and says which", async () => {
     const { api$ } = await openBackups();
     api$.restore.mockResolvedValueOnce({

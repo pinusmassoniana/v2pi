@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { ApiError, api, isNoAnswer, type Settings } from "../../api/client";
+import { useRef, useState } from "react";
+import { ApiError, api, isNoAnswer, type RestoreResult, type Settings } from "../../api/client";
 import {
   CONNECTION_BUSY, RESTORE_WRITE, isConnectionBusy, isSettingsBusy, settingsWriteKey, useApiWrite, useConnectionBusy, useSettingsBusy,
 } from "../../api/invalidation";
@@ -21,12 +21,15 @@ import { GlassCard } from "../../components/ui/GlassCard";
 import { Pill } from "../../components/ui/Pill";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
+import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { downloadText } from "../../lib/download";
+import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { cn } from "../../lib/cn";
 import { NO_ANSWER } from "../gateway/networkForm";
+import { EditorSection } from "../tunnel/EditorSection";
 import {
-  BACKUP_CAPS, backupFailedMessage, backupFilename, backupPreChecks, checksPass, fileTooLarge, restoreConfirm,
-  restoreRefusedMessage, restoredMessage, snapshotNote, type PreCheck,
+  BACKUP_CAPS, backupFailedMessage, backupFilename, backupPreChecks, checksPass, condensedBackupChecks, fileTooLarge,
+  restoreConfirm, restoreRefusedMessage, restoredMessage, snapshotNote, type PreCheck,
 } from "./backupFile";
 import { FilePicker } from "./FilePicker";
 import { recordLastRestore, useLastRestore } from "./lastRestore";
@@ -94,16 +97,36 @@ interface PickedFile {
   text: string;
 }
 
-/** P2: the picked file, its checks, and the write that replaces the whole configuration with it. */
+interface RestoreVariables {
+  filename: string;
+}
+
+/**
+ * P2: the picked file, its checks, and the write that replaces the whole configuration with it.
+ *
+ * Deviation from the brief (folded in from the Task 7 review): the brief's `mutation.mutate({ doc, filename })`
+ * makes the whole parsed document a mutation variable. TanStack keeps a settled mutation's `state.variables` in the
+ * MutationCache for its gcTime (default 5 min) — after success and after a failed attempt alike — so the document
+ * would sit there reachable long after `picked` cleared it, against the "secrets/large payloads out of the cache"
+ * constraint. The repo already paid for this once, for the remote-access private key (`useRwSave`) and the panel
+ * password (`usePasswordChange`): the document travels through a ref instead (`pendingDoc`), read once by
+ * `mutationFn` and cleared the moment it is, so the only thing `mutate()` ever hands TanStack is the filename.
+ */
 export function useRestore() {
   const queryClient = useQueryClient();
   const [picked, setPicked] = useState<PickedFile | null>(null);
   const restore = useApiWrite("restore");
   const connectionBusy = useConnectionBusy();
+  const pendingDoc = useRef<Record<string, unknown> | null>(null);
 
-  const mutation = useMutation({
+  const mutation = useMutation<RestoreResult, Error, RestoreVariables>({
     mutationKey: RESTORE_WRITE,
-    mutationFn: ({ doc }: { doc: Record<string, unknown>; filename: string }) => restore(doc),
+    mutationFn: () => {
+      const doc = pendingDoc.current;
+      pendingDoc.current = null;
+      if (!doc) throw new Error("useRestore: restore fired with no pending document");
+      return restore(doc);
+    },
     onSuccess: (result, { filename }) => {
       recordLastRestore({ result, filename, at: Date.now() });
       setPicked(null);
@@ -146,9 +169,9 @@ export function useRestore() {
 
   const checks = picked ? backupPreChecks(picked.text, picked.file.size) : [];
 
-  async function send() {
+  /** Sends, having already asked — the phone sheet IS the question, so it calls this instead of `send`. */
+  function run() {
     if (!picked || !checksPass(checks) || mutation.isPending) return;
-    if (!(await confirm(restoreConfirm(picked.file.name, picked.file.size), { confirmLabel: "Restore" }))) return;
     // The question was open for as long as it took to answer: another connection write may have started.
     if (isConnectionBusy(queryClient)) return void notifyError(null, CONNECTION_BUSY);
     let doc: Record<string, unknown>;
@@ -157,11 +180,19 @@ export function useRestore() {
     } catch {
       return void notifyError(null, "not restored — not a valid backup file");
     }
-    mutation.mutate({ doc, filename: picked.file.name });
+    pendingDoc.current = doc;
+    mutation.mutate({ filename: picked.file.name });
+  }
+
+  async function send() {
+    if (!picked || !checksPass(checks) || mutation.isPending) return;
+    if (!(await confirm(restoreConfirm(picked.file.name, picked.file.size), { confirmLabel: "Restore" }))) return;
+    run();
   }
 
   return {
-    picked, checks, send, mutation,
+    picked, checks, send, run, mutation,
+    condensed: picked ? condensedBackupChecks(picked.text, picked.file.size) : [],
     tooLarge: picked ? fileTooLarge(picked.file.size) : null,
     clear: () => setPicked(null),
     pick,
@@ -362,11 +393,107 @@ export function FileHoldsCard() {
   );
 }
 
+/** The restore question on a phone: the file, its checks and the sentence in one place, over its own sticky footer. */
+export function RestoreSheet({ restore, open, onOpenChange }: { restore: RestoreState; open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent title="Replace everything?" initialFocus="overlay">
+        <div className="flex flex-col gap-3">
+          <Pill tone="bad" className="self-start">Restore</Pill>
+          <FilePicker label="Choose file…" file={restore.picked?.file ?? null} onPick={(file) => void restore.pick(file)} disabled={restore.busy} />
+          <ul className="flex flex-col gap-1">
+            {restore.condensed.map((check) => <CheckRow key={check.label} check={check} />)}
+          </ul>
+          <p className="text-[11.5px] leading-relaxed text-t2">
+            Restore replaces every node, subscription, anti-DPI profile, routing rule and panel setting with the ones in
+            this file, and disconnects the gateway. The Reality private key and the remote-access client list are not
+            restored. Continue?
+          </p>
+          <p className="text-[11px] leading-relaxed text-t3">
+            A copy of what this replaces is saved on the gateway first. It can take up to three minutes, and Connect
+            stays blocked everywhere until it answers.
+          </p>
+          <div className="glass sticky bottom-0 -mx-1 flex items-center gap-2 bg-solid p-2">
+            <Button className="flex-1" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button
+              variant="danger"
+              className="flex-1"
+              disabled={!restore.picked || !checksPass(restore.checks) || restore.busy}
+              onClick={() => { restore.run(); onOpenChange(false); }}
+            >
+              {restore.mutation.isPending ? "Restoring…" : "Restore"}
+            </Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function BackupsPhone({ create, restore, auto }: { create: ReturnType<typeof useCreateBackup>; restore: RestoreState; auto: ReturnType<typeof useAutoBackup> }) {
+  const [open, setOpen] = useState<"restore" | "auto" | null>("restore");
+  const [sheet, setSheet] = useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GlassCard aria-label="Backup & restore">
+        <CardHeader title="Backup & restore" aside={<Chip plain>one JSON file</Chip>} />
+        <p className="text-xs leading-relaxed text-t2">{BACKUP_NOTE}</p>
+        <Button variant="primary" className="mt-3 w-full" disabled={create.preparing || restore.busy} onClick={() => void create.create()}>
+          {create.preparing ? "Preparing…" : "Create backup"}
+        </Button>
+      </GlassCard>
+      <GlassCard>
+        <EditorSection
+          title="Restore from file"
+          collapsible
+          open={open === "restore"}
+          onToggle={() => setOpen((current) => (current === "restore" ? null : "restore"))}
+          summary="replaces everything"
+        >
+          <FilePicker label="Choose file…" file={restore.picked?.file ?? null} onPick={(file) => void restore.pick(file)} disabled={restore.busy} />
+          {restore.tooLarge ? (
+            <AlertBanner tone="bad" title={restore.tooLarge.title} text={restore.tooLarge.text} />
+          ) : restore.picked ? (
+            <ul className="flex flex-col gap-1">
+              {restore.condensed.map((check) => <CheckRow key={check.label} check={check} />)}
+            </ul>
+          ) : null}
+          <Button
+            variant="danger"
+            className="w-full"
+            disabled={!restore.picked || !checksPass(restore.checks) || restore.busy}
+            onClick={() => setSheet(true)}
+          >
+            {restore.mutation.isPending ? "Restoring…" : "Restore"}
+          </Button>
+        </EditorSection>
+        <EditorSection
+          title="Daily auto-backup"
+          note="data/backups · the newest 7"
+          collapsible
+          open={open === "auto"}
+          onToggle={() => setOpen((current) => (current === "auto" ? null : "auto"))}
+          // Beside the header button, never inside it: no nested interactive controls.
+          aside={<AutoBackupSwitch auto={auto} />}
+        >
+          <p className="text-[11.5px] leading-relaxed text-t3">
+            They stay on the box — download a backup above to take one off it. {AUTO_BACKUP_ON_NOTE}
+          </p>
+        </EditorSection>
+      </GlassCard>
+      <LastRestoreCard phone />
+      <RestoreSheet restore={restore} open={sheet} onOpenChange={setSheet} />
+    </div>
+  );
+}
+
 /** System › Backups (P1, P2 and G5's daily-copy half). `settings` is this route's polling owner at 30 s. */
 export function Backups() {
+  const desktop = useMediaQuery(DESKTOP_QUERY);
   const create = useCreateBackup();
   const restore = useRestore();
   const auto = useAutoBackup();
+  if (!desktop) return <BackupsPhone create={create} restore={restore} auto={auto} />;
   return (
     <div className="grid gap-3 md:grid-cols-[7fr_5fr] md:items-start">
       <div className="flex flex-col gap-3">

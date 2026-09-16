@@ -8,10 +8,12 @@ import { Button } from "../../components/ui/Button";
 import { SegmentedField } from "../../components/ui/Field";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { Input } from "../../components/ui/Input";
+import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { ErrorState } from "../../components/ui/States";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyOk } from "../../components/ui/Toaster";
 import { downloadText } from "../../lib/download";
+import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { cn } from "../../lib/cn";
 import {
   DEFAULT_LOG_LINES, DEFAULT_LOG_SOURCE, LOGS_EXPLAINER, LOGS_REDACTION_NOTE, LOG_SOURCES, MAX_LOG_LINES, MIN_LOG_LINES,
@@ -118,9 +120,92 @@ export function LogFooter({ logs }: { logs: LogsState }) {
   );
 }
 
+/** The phone's "Source & filter" sheet: every source with its annotation, the line count, the filter and Load. */
+export function LogsSheet({ logs, open, onOpenChange }: { logs: LogsState; open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent title="Source & filter" initialFocus="overlay">
+        <div className="flex flex-col gap-3">
+          <fieldset className="flex flex-col gap-1">
+            <legend className="mb-1 text-xs font-semibold text-t2">Log source</legend>
+            {LOG_SOURCES.map((entry) => (
+              <label
+                key={entry.value}
+                className={cn(
+                  "flex min-h-11 cursor-pointer items-center justify-between gap-2 rounded-xl border border-line px-3 text-[13px]",
+                  "has-[:checked]:bg-glass-2 has-[:checked]:shadow-[inset_0_0_0_1px_var(--line)]",
+                  entry.emptyByConfig ? "text-t3" : "text-t1",
+                )}
+              >
+                <span className="flex items-center gap-2">
+                  <input type="radio" name="phone-log-source" value={entry.value} checked={logs.source === entry.value} onChange={() => logs.setSource(entry.value)} className="sr-only" />
+                  {entry.label}
+                </span>
+                <span className="truncate font-mono text-[11px] text-t3">{entry.emptyByConfig ? "empty by configuration" : entry.origin}</span>
+              </label>
+            ))}
+          </fieldset>
+          <p className="text-[11px] leading-relaxed text-t3">xray is not configured to write either file — its output is in xray output.</p>
+          <div className="flex items-end gap-3">
+            <label className="flex flex-1 flex-col gap-1 text-xs font-semibold text-t2">
+              Lines
+              <Input type="number" inputMode="numeric" min={MIN_LOG_LINES} max={MAX_LOG_LINES} value={logs.lines} onChange={(event) => logs.setLines(event.target.value)} />
+            </label>
+            <span className="flex items-center gap-2 pb-2.5 text-xs font-semibold text-t2">
+              <Toggle label="Auto-refresh" checked={logs.autoRefresh} onCheckedChange={logs.setAutoRefresh} />
+              every 5 s
+            </span>
+          </div>
+          <label className="flex flex-col gap-1 text-xs font-semibold text-t2">
+            Filter
+            <Input type="search" placeholder="filter…" value={logs.filter} onChange={(event) => logs.setFilter(event.target.value)} />
+          </label>
+          <p className="-mt-1 text-[11px] text-t3">applied to the lines already loaded · not sent to the gateway</p>
+          <div className="flex gap-2">
+            <Button className="flex-1" disabled={!logs.filter} onClick={() => logs.setFilter("")}>Clear filter</Button>
+            <Button className="flex-1" disabled={logs.shown.length === 0} onClick={logs.download}>Download shown</Button>
+          </div>
+          <div className="glass sticky bottom-0 -mx-1 flex bg-solid p-2">
+            <Button variant="primary" className="flex-1" onClick={() => { logs.load(); onOpenChange(false); }}>Load</Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function LogsPhone({ logs }: { logs: LogsState }) {
+  const [sheet, setSheet] = useState(false);
+  return (
+    <GlassCard aria-label="Logs">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Chip plain>{logSourceLabel(logs.source)}</Chip>
+        <Chip plain>{logs.count} lines</Chip>
+        {logs.filter.trim() ? <Chip plain>{logs.filter.trim()}</Chip> : null}
+        <Button size="icon" variant="ghost" className="ml-auto" title="Source, lines, filter" aria-label="Source, lines, filter" onClick={() => setSheet(true)}>⋯</Button>
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <Button variant="primary" className="flex-1" onClick={logs.load}>{logs.query.isFetching ? "Loading…" : "Load"}</Button>
+        <Button className="flex-1" disabled={logs.shown.length === 0} onClick={logs.download}>Download</Button>
+        {logs.autoRefresh ? <Chip tone="ok">5 s</Chip> : null}
+      </div>
+      {logs.query.isError ? (
+        <div className="mt-3">
+          <ErrorState message={`Could not read the log — ${logs.query.error.message}`} onRetry={() => void logs.query.refetch()} />
+        </div>
+      ) : null}
+      <LogPane logs={logs} phone />
+      <LogFooter logs={logs} />
+      <LogsSheet logs={logs} open={sheet} onOpenChange={setSheet} />
+    </GlassCard>
+  );
+}
+
 /** System › Logs (G9). Nothing here is a write: no mutation key, no invalidation, and nothing disables on a busy flag. */
 export function Logs() {
+  const desktop = useMediaQuery(DESKTOP_QUERY);
   const logs = useLogs();
+  if (!desktop) return <LogsPhone logs={logs} />;
   return (
     <GlassCard aria-label="Logs">
       <CardHeader

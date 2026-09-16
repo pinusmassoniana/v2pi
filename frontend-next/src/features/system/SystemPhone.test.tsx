@@ -1,0 +1,160 @@
+import { act, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settleConfirm } from "../../components/confirm";
+import { BACKUP_DOC, LOG_LINES, mockApi, mockSystem } from "../../test/fixtures";
+import { renderApp } from "../../test/renderApp";
+import { setViewportWidth } from "../../test/viewport";
+import { clearLastRestore } from "./lastRestore";
+
+beforeEach(() => setViewportWidth(390));
+afterEach(() => {
+  act(() => settleConfirm(false));
+  act(() => clearLastRestore());
+});
+
+const region = (name: string) => screen.getByRole("region", { name });
+
+function backupFile(name = "v2pi-backup-2026-09-14.json", body: unknown = BACKUP_DOC, size?: number): File {
+  const file = new File([JSON.stringify(body)], name, { type: "application/json" });
+  if (size !== undefined) Object.defineProperty(file, "size", { value: size });
+  return file;
+}
+
+describe("Backups on a phone", () => {
+  it("stacks the same cards, with the restore and the daily copy as collapsible sections", async () => {
+    mockSystem(mockApi());
+    renderApp("/system/backups");
+    await screen.findByRole("region", { name: "Backup & restore" });
+
+    // Create backup is one full-width button; the file-holds card is a desktop-only aside.
+    expect(screen.getByRole("button", { name: "Create backup" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "What the file holds" })).toBeNull();
+
+    const restore = screen.getByRole("button", { name: /Restore from file/ });
+    expect(restore).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Daily auto-backup/ })).toHaveAttribute("aria-expanded", "false");
+    // The section's switch sits beside its header button, never inside it: no nested controls.
+    const toggle = await screen.findByRole("switch", { name: "Daily auto-backup" });
+    expect(screen.getByRole("button", { name: /Daily auto-backup/ })).not.toContainElement(toggle);
+  });
+
+  it("the restore question is a sheet with the file, its checks and the sentence in one place", async () => {
+    const api$ = mockSystem(mockApi());
+    renderApp("/system/backups");
+    await screen.findByRole("region", { name: "Backup & restore" });
+    await userEvent.upload(screen.getByLabelText("Choose file…"), backupFile());
+    await screen.findByText("parses as JSON, and is an object");
+
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    const sheet = await screen.findByRole("dialog", { name: "Replace everything?" });
+    expect(sheet).toHaveTextContent("Restore replaces every node, subscription, anti-DPI profile, routing rule and panel setting");
+    expect(sheet).toHaveTextContent("It can take up to three minutes, and Connect stays blocked everywhere until it answers.");
+    expect(within(sheet).getByLabelText("Change…")).toBeInTheDocument();
+    expect(within(sheet).getAllByText(/under the 2 MB limit/)).not.toHaveLength(0);
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "Restore" }));
+
+    await screen.findByText(/^restored 24 nodes/);
+    expect(api$.restore).toHaveBeenCalledWith(BACKUP_DOC);
+    // the outcome card uses the phone's shorter labels and its own button
+    const last = await screen.findByRole("region", { name: "Last restore" });
+    expect(within(last).getByText("PROFILES")).toBeInTheDocument();
+    expect(within(last).getByText("disconnected")).toBeInTheDocument();
+    expect(within(last).getByRole("link", { name: "Go to Home and connect" })).toBeInTheDocument();
+  });
+
+  it("Cancel in the sheet sends nothing", async () => {
+    const api$ = mockSystem(mockApi());
+    renderApp("/system/backups");
+    await screen.findByRole("region", { name: "Backup & restore" });
+    await userEvent.upload(screen.getByLabelText("Choose file…"), backupFile());
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+    const sheet = await screen.findByRole("dialog", { name: "Replace everything?" });
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Replace everything?" })).toBeNull());
+    expect(api$.restore).not.toHaveBeenCalled();
+  });
+});
+
+describe("Logs on a phone", () => {
+  async function openLogs() {
+    const api$ = mockSystem(mockApi());
+    const view = renderApp("/system/logs");
+    await screen.findByRole("region", { name: "Logs" });
+    return { api$, ...view };
+  }
+
+  it("folds the controls into one strip of chips and a ⋯ that opens the sheet", async () => {
+    await openLogs();
+
+    expect(within(region("Logs")).getAllByText("app").length).toBeGreaterThan(0);
+    expect(within(region("Logs")).getByText("200 lines")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Log source" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Source, lines, filter" }));
+
+    const sheet = await screen.findByRole("dialog", { name: "Source & filter" });
+    expect(within(sheet).getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual([
+      "app", "xray-stderr", "xray-error", "xray-access",
+    ]);
+    expect(within(sheet).getAllByText("empty by configuration")).toHaveLength(2);
+    expect(within(sheet).getByText("data/app.log")).toBeInTheDocument();
+    expect(within(sheet).getByText("applied to the lines already loaded · not sent to the gateway")).toBeInTheDocument();
+  });
+
+  it("the sheet's Load reads the source it was left on and closes", async () => {
+    const { api$ } = await openLogs();
+    await userEvent.click(screen.getByRole("button", { name: "Source, lines, filter" }));
+    const sheet = await screen.findByRole("dialog", { name: "Source & filter" });
+
+    await userEvent.click(within(sheet).getByRole("radio", { name: /xray output/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Load" }));
+
+    await waitFor(() => expect(api$.getLogs).toHaveBeenCalledWith("xray-stderr", 200));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Source & filter" })).toBeNull());
+    expect(within(region("Logs")).getAllByText("xray output").length).toBeGreaterThan(0);
+  });
+
+  it("truncates the timestamp and the logger name, and marks auto-refresh with a live badge", async () => {
+    await openLogs();
+    await userEvent.click(within(region("Logs")).getByRole("button", { name: /^(Load|Loading…)$/ }));
+    await screen.findByText(/stats client reconfigured/);
+
+    const pane = screen.getByRole("region", { name: "Log output" });
+    expect(within(pane).getAllByText("…supervisor").length).toBeGreaterThan(0);
+    expect(within(pane).getByText("22:10:58,003")).toBeInTheDocument();
+    expect(within(pane).queryByText(LOG_LINES[0]!.slice(0, 23))).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Source, lines, filter" }));
+    const sheet = await screen.findByRole("dialog", { name: "Source & filter" });
+    await userEvent.click(within(sheet).getByRole("switch", { name: "Auto-refresh" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Load" }));
+
+    expect(await within(region("Logs")).findByText("5 s")).toBeInTheDocument();
+  });
+
+  it("Download shown writes the filtered lines from inside the sheet", async () => {
+    const blobs: Blob[] = [];
+    URL.createObjectURL = vi.fn((blob: Blob) => { blobs.push(blob); return "blob:log"; });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await openLogs();
+    await userEvent.click(within(region("Logs")).getByRole("button", { name: /^(Load|Loading…)$/ }));
+    await screen.findByText(/stats client reconfigured/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Source, lines, filter" }));
+    const sheet = await screen.findByRole("dialog", { name: "Source & filter" });
+    await userEvent.type(within(sheet).getByPlaceholderText("filter…"), "ERROR");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Download shown" }));
+
+    await screen.findByText("app.log downloaded · 2 lines");
+    expect((await blobs[0]!.text()).split("\n")).toHaveLength(2);
+    // Clear filter puts every loaded line back
+    await userEvent.click(within(sheet).getByRole("button", { name: "Clear filter" }));
+    expect(within(sheet).getByPlaceholderText("filter…")).toHaveValue("");
+  });
+});
