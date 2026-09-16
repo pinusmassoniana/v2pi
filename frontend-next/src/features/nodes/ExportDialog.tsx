@@ -6,6 +6,7 @@ import { queries } from "../../api/keys";
 import { Button } from "../../components/ui/Button";
 import { Dialog, DialogContent } from "../../components/ui/Dialog";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
+import { copyText } from "../../lib/clipboard";
 import { flagEmoji } from "../../lib/flag";
 import { nodeJson, vlessUri } from "./vless";
 
@@ -15,7 +16,7 @@ function CopyBlock({ label, name, text, rows }: { label: string; name: string; t
   const [copied, setCopied] = useState(false);
   async function copy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);   // the panel is served over plain HTTP, where navigator.clipboard does not exist
       notifyOk("copied");
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2_000);

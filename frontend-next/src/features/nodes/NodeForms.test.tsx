@@ -14,7 +14,23 @@ const writeText = vi.fn<(text: string) => Promise<void>>();
 beforeEach(() => {
   writeText.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  Object.defineProperty(document, "execCommand", { value: undefined, configurable: true, writable: true });
 });
+
+/** Take the Clipboard API away, as plain HTTP does, and record what the selection fallback copies. */
+function plainHttpClipboard(): string[] {
+  const copied: string[] = [];
+  Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+  Object.defineProperty(document, "execCommand", {
+    value: (command: string) => {
+      copied.push(`${command}:${document.querySelector<HTMLTextAreaElement>('textarea[aria-hidden="true"]')?.value}`);
+      return true;
+    },
+    configurable: true,
+    writable: true,
+  });
+  return copied;
+}
 afterEach(() => act(() => settleConfirm(false)));
 
 const row = (name: string) => document.querySelector<HTMLElement>(`tr[data-node-name="${name}"]`)!;
@@ -363,6 +379,17 @@ describe("Export (N16)", () => {
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: /Export/ })).toBeNull());
     await waitFor(() => expect(within(row("de-fra-01")).getByRole("button", { name: "More actions for de-fra-01" })).toHaveFocus());
+  });
+
+  it("copies over plain HTTP, where there is no Clipboard API at all", async () => {
+    await openList("/nodes");
+    const success = vi.spyOn(toast, "success");
+    const copied = plainHttpClipboard();
+    await fromMenu("nl-ams-03", "Export");
+    const dialog = await screen.findByRole("dialog", { name: "Export 🇳🇱 nl-ams-03" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("copied", { duration: 8000 }));
+    expect(copied).toEqual([`copy:${vlessUri(ALL_NODES[0]!)}`]);
   });
 
   it("a copy the browser refuses says so", async () => {

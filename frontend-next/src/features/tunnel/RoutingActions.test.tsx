@@ -13,6 +13,7 @@ const writeText = vi.fn<(text: string) => Promise<void>>();
 beforeEach(() => {
   writeText.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  Object.defineProperty(document, "execCommand", { value: undefined, configurable: true, writable: true });
 });
 afterEach(() => act(() => settleConfirm(false)));
 
@@ -238,6 +239,25 @@ describe("Routing › JSON (R7) and Reset (R6)", () => {
     const error = vi.spyOn(toast, "error");
     await userEvent.click(toolbarButton("Export JSON"));
     await waitFor(() => expect(error).toHaveBeenCalledWith("copy failed", { duration: 20000 }));
+  });
+
+  it("Export copies over plain HTTP, where there is no Clipboard API at all", async () => {
+    await openRouting();
+    const success = vi.spyOn(toast, "success");
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    Object.defineProperty(document, "execCommand", {
+      value: (command: string) => {
+        copied.push(`${command}:${document.querySelector<HTMLTextAreaElement>('textarea[aria-hidden="true"]')?.value}`);
+        return true;
+      },
+      configurable: true,
+      writable: true,
+    });
+    await userEvent.click(toolbarButton("Export JSON"));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("ruleset copied as JSON", { duration: 8000 }));
+    expect(copied).toHaveLength(1);
+    expect(JSON.parse(copied[0]!.slice("copy:".length))).toMatchObject({ default_action: "proxy", domain_strategy: "IPIfNonMatch" });
   });
 
   it("Import explains a bad paste, then replaces the rules with a good one", async () => {

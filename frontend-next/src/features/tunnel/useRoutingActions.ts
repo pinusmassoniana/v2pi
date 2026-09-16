@@ -5,6 +5,7 @@ import { CONNECTION_BUSY, ROUTING_WRITE, invalidate, isConnectionBusy, saveRefus
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
+import { copyText } from "../../lib/clipboard";
 import { checkResult, runKey, type CheckResult } from "../../lib/staleResult";
 import {
   BLOCK_DEFAULT_CONFIRM, DISCARD_STAGED_CONFIRM, RESET_CONFIRM, applyPreset, exportJson, resetRouting, toRoutingIn, type StagedRouting,
@@ -131,7 +132,7 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
   async function exportRules() {
     if (!current) return;
     try {
-      await navigator.clipboard.writeText(exportJson(current));
+      await copyText(exportJson(current));   // the panel is served over plain HTTP, where navigator.clipboard does not exist
       notifyOk("ruleset copied as JSON");
     } catch {
       notifyError(null, "copy failed");
