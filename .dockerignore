@@ -6,6 +6,7 @@
 **/data
 !frontend-next/src/components/data
 backend/pi_gw_panel/static
+frontend-next/dist
 .planning
 .claude
 docs

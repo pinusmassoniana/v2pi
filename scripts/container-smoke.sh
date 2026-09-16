@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Smoke an exact published image digest: start the panel in isolated dry-run mode,
-# wait for its liveness endpoint, then validate an app-generated config with bundled Xray.
+# Smoke an exact published image digest: start the panel in isolated dry-run mode, wait for its
+# liveness endpoint, check that it serves the React SPA, then validate an app-generated config with
+# bundled Xray.
 set -euo pipefail
 
 image_ref="${1:-}"
@@ -47,23 +48,24 @@ if [[ -z "$host_port" ]]; then
   exit 1
 fi
 
-ready=0
+base=""
 for _ in {1..60}; do
-  if curl -kfsS "https://127.0.0.1:${host_port}/api/health" >/dev/null 2>&1 || \
-     curl -fsS "http://127.0.0.1:${host_port}/api/health" >/dev/null 2>&1; then
-    ready=1
-    break
-  fi
-  if [[ "$(docker inspect -f '{{.State.Running}}' "$container_id")" != "true" ]]; then
-    break
-  fi
+  if curl -kfsS "https://127.0.0.1:${host_port}/api/health" >/dev/null 2>&1; then base="https://127.0.0.1:${host_port}"; break; fi
+  if curl -fsS "http://127.0.0.1:${host_port}/api/health" >/dev/null 2>&1; then base="http://127.0.0.1:${host_port}"; break; fi
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container_id")" == "true" ]] || break
   sleep 1
 done
-if [[ "$ready" != 1 ]]; then
-  echo "panel liveness smoke failed" >&2
-  docker logs "$container_id" >&2 || true
-  exit 1
-fi
+[[ -n "$base" ]] || { echo "panel liveness smoke failed" >&2; docker logs "$container_id" >&2 || true; exit 1; }
+
+# The panel serves the React SPA from its packaged static dir: the page, its revalidation header,
+# and one script the page loads.
+page="$(curl -kfsS -D - "$base/")" || { echo "GET / failed" >&2; docker logs "$container_id" >&2 || true; exit 1; }
+grep -q 'id="root"' <<<"$page" || { echo "GET / is not the panel's SPA (no id=\"root\")" >&2; exit 1; }
+grep -qiE '^cache-control:[[:space:]]*no-cache' <<<"$page" || { echo "GET / lacks Cache-Control: no-cache" >&2; exit 1; }
+asset="$(grep -oE '/assets/[^"]+\.js' <<<"$page" | head -n1)"
+[[ -n "$asset" ]] || { echo "GET / references no /assets/*.js" >&2; exit 1; }
+read -r code type < <(curl -kfsS -o /dev/null -w '%{http_code} %{content_type}\n' "$base$asset")
+[[ "$code" == 200 && "$type" == *javascript* ]] || { echo "GET $asset -> $code $type" >&2; exit 1; }
 
 docker run --rm "${platform_args[@]}" \
   --volume "$tmp_dir:/smoke" \
