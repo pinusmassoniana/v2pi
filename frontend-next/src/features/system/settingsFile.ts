@@ -107,7 +107,9 @@ function parsed(text: string): unknown {
  * Everything the browser can decide before the confirm. `SettingsIn` is strict: ONE unknown key refuses the whole
  * patch with an opaque 422, so the unknown ones are named here instead, and an explicit null gives its own 422 — so
  * they are named too. A file with no keys at all is a no-op the gateway would accept; it is refused here because
- * importing nothing is never what the operator meant.
+ * importing nothing is never what the operator meant — and (fix round 1) so is a file whose only keys are the
+ * routing-owned one: `EXPORT_EXCLUDED` is dropped below, so a file holding only `routing_default_action` would
+ * otherwise pass every check and still send an empty `PUT /settings` while claiming success.
  */
 export function importChecks(text: string): ImportChecks {
   const value = parsed(text);
@@ -120,9 +122,10 @@ export function importChecks(text: string): ImportChecks {
   const known = new Set<string>(SETTINGS_KEYS);
   const unknown = keys.filter((key) => !known.has(key));
   const nulls = keys.filter((key) => doc[key] === null);
+  const sendable = keys.filter((key) => key !== EXPORT_EXCLUDED);
   const keysCheck: PreCheck = unknown.length
     ? { ok: false, label: `${unknown.length} field${unknown.length === 1 ? " is not a settings key" : "s are not settings keys"}: ${unknown.join(", ")}` }
-    : { ok: keys.length > 0, label: keys.length ? `${keys.length} fields, all known settings keys` : "no settings in this file" };
+    : { ok: sendable.length > 0, label: sendable.length ? `${keys.length} fields, all known settings keys` : "no settings in this file" };
 
   const issues = keys.filter((key) => known.has(key) && doc[key] !== null).map((key) => settingValueIssue(key, doc[key])).filter((issue): issue is string => issue !== null);
   const problems = [...nulls.map((key) => `${key} may be omitted but not null`), ...issues];
@@ -192,14 +195,18 @@ export const RESET_KEYS: readonly (readonly [key: string, value: string])[] = [
 export const STOPPED_XRAY_CLAUSE = "This will also start xray, which is currently stopped.";
 
 /**
- * The reset names every section it reaches, because two of its keys belong to Subscriptions and one to Gateway ›
- * Network, and `_reapply_or_502` runs unconditionally — so it always rebuilds the live tunnel.
+ * The reset names every section it reaches, because two of its keys belong to Subscriptions, one to Gateway ›
+ * Network, and — owner decision 8, fix round 1 — the last two (`session_timeout_min`, `auto_backup_enabled`,
+ * `routes.py` `_SETTINGS_RESET_KEYS`) belong to the sibling System screens Access and Backups; `_reapply_or_502`
+ * runs unconditionally, so it always rebuilds the live tunnel. The two added clauses sit last, in the same
+ * order the route resets them.
  */
 export function resetConfirm(startsTunnel: boolean): string {
   const text =
     "Reset panel settings to their defaults? This also turns subscription auto-switch and tunnelled subscription " +
-    "fetch back on, turns gateway DNS over DoH off, and rebuilds the live tunnel — devices may drop briefly. " +
-    "Nodes, subscriptions, anti-DPI profiles and routing rules are kept.";
+    "fetch back on, turns gateway DNS over DoH off, turns the idle timeout off, turns daily auto-backup off, and " +
+    "rebuilds the live tunnel — devices may drop briefly. Nodes, subscriptions, anti-DPI profiles and routing " +
+    "rules are kept.";
   return startsTunnel ? `${text}\n\n${STOPPED_XRAY_CLAUSE}` : text;
 }
 

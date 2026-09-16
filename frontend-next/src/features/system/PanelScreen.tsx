@@ -36,8 +36,8 @@ import {
   settingsFileTooLarge,
 } from "./settingsFile";
 import {
-  STATS_NOTE, collectorOkLabel, collectorWarning, settingsToStatsForm, statsFormSchema, statsPatch,
-  statsPatchReapplies, statsSavedMessage, type StatsFormValues,
+  STATS_NOTE, collectorOkLabel, collectorWarning, settingsToStatsForm, statsFormSchema, statsInvalidMessage,
+  statsPatch, statsPatchReapplies, statsSavedMessage, type StatsFormValues,
 } from "./statsForm";
 
 const SAMPLE_HELPER = "the traffic socket's tick · plain save, no rebuild";
@@ -210,7 +210,7 @@ export function TrafficStatsCard({ stats, settings }: { stats: StatsState; setti
           <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
             <ResultLine
               className="min-w-0 flex-1"
-              result={stats.errorCount ? { ok: false, text: `${stats.errorCount} fields invalid · fix them to save` } : stats.result}
+              result={stats.errorCount ? { ok: false, text: statsInvalidMessage(stats.errorCount) } : stats.result}
             />
             <Button disabled={!stats.dirty || stats.busy} onClick={stats.discard}>Discard</Button>
             <Button variant="primary" disabled={!stats.dirty || stats.errorCount > 0 || stats.busy} onClick={() => void stats.submit()}>

@@ -191,7 +191,6 @@ describe("Panel — traffic stats (G2)", () => {
     renderApp("/system/panel");
 
     const warning = await screen.findByRole("group", { name: "The panel cannot reach xray's stats API on port 10085" });
-    expect(within(region("Traffic stats"))).toBeTruthy();
     expect(region("Traffic stats")).toContainElement(warning);
     expect(warning).toHaveTextContent("connection refused. This is why the Home graph is flat");
     expect(within(await screen.findByRole("region", { name: "System" })).queryByText(/stats API/)).toBeNull();
@@ -236,6 +235,21 @@ describe("Panel — settings file (G6)", () => {
     expect(await screen.findByText("2 fields are not settings keys: health_probe_urls, rw_enabled")).toBeInTheDocument();
     expect(screen.getByText("Remove them, or export a fresh file from this panel — one unknown key refuses the whole import.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import settings" })).toBeDisabled();
+    expect(api$.putSettings).not.toHaveBeenCalled();
+  });
+
+  it("refuses a file whose only key is the routing-owned one, because nothing would be imported (fix round 1)", async () => {
+    // routing_default_action is dropped from every import (routing owns it), so a file that carries only
+    // that key must not read as "1 fields, all known settings keys" with Import quietly enabled — it would
+    // send an empty patch and still claim "settings applied from file".
+    const { api$ } = await openPanel();
+    const file = new File([JSON.stringify({ routing_default_action: "direct" })], "routing-only.json", { type: "application/json" });
+
+    await userEvent.upload(within(region("Settings file")).getByLabelText("Choose file…"), file);
+
+    expect(await screen.findByText("no settings in this file")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import settings" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Import settings" }));
     expect(api$.putSettings).not.toHaveBeenCalled();
   });
 
@@ -310,6 +324,9 @@ describe("Panel — danger zone (P5)", () => {
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     expect(dialog).toHaveTextContent("turns subscription auto-switch and tunnelled subscription fetch back on");
     expect(dialog).toHaveTextContent("turns gateway DNS over DoH off");
+    // Fix round 1, owner decision 8: the confirm also names the two System-sibling keys the pinned list omitted.
+    expect(dialog).toHaveTextContent("turns the idle timeout off");
+    expect(dialog).toHaveTextContent("turns daily auto-backup off");
     expect(dialog).toHaveTextContent("Nodes, subscriptions, anti-DPI profiles and routing rules are kept.");
     expect(dialog).not.toHaveTextContent("This will also start xray");
     await answer("Reset settings");

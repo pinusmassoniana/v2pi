@@ -104,6 +104,15 @@ export function collectorOkLabel(diagnostics: Diagnostics | undefined): string |
   return `${diagnostics.stats_fail_count} consecutive failures since the last success`;
 }
 
+/**
+ * What the result line says while the form holds invalid values: "N field(s) invalid · fix them to save".
+ * Hoisted (fix round 1) so the phone layout's footer — which copies this expression verbatim — pluralises the
+ * same way instead of duplicating a "1 fields invalid" bug.
+ */
+export function statsInvalidMessage(errorCount: number): string {
+  return `${errorCount} field${errorCount === 1 ? "" : "s"} invalid · fix them to save`;
+}
+
 export const STATS_NOTE =
   "The panel reads xray's StatsService on this port to draw the Home graph. Turning collection off stops the graph " +
   "and the data-used counters; the durable totals already recorded are kept.";

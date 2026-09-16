@@ -7,7 +7,8 @@ import {
 } from "./settingsFile";
 import {
   PORT_RANGE_MESSAGE, PORT_RESERVED_MESSAGE, RESERVED_PORTS, SAMPLE_MAX_MESSAGE, SAMPLE_MIN_MESSAGE, collectorOkLabel,
-  collectorWarning, settingsToStatsForm, statsFormSchema, statsPatch, statsPatchReapplies, statsSavedMessage,
+  collectorWarning, settingsToStatsForm, statsFormSchema, statsInvalidMessage, statsPatch, statsPatchReapplies,
+  statsSavedMessage,
 } from "./statsForm";
 
 const BASE = settingsToStatsForm(SETTINGS);
@@ -76,6 +77,14 @@ describe("statsPatch", () => {
     // Review fix round 1: traffic_sample_ms is not in _SETTINGS_CONFIG_KEYS (routes.py:1417), so put_settings
     // never runs _reapply_or_502 for it — a node being active does not make an interval-only save a live apply.
     expect(statsSavedMessage({ traffic_sample_ms: 2000 }, true)).toBe("saved — applies on next Connect");
+  });
+});
+
+describe("statsInvalidMessage", () => {
+  it("pluralises the field count, unlike the fix-round-1-reported '1 fields invalid'", () => {
+    expect(statsInvalidMessage(1)).toBe("1 field invalid · fix them to save");
+    expect(statsInvalidMessage(2)).toBe("2 fields invalid · fix them to save");
+    expect(statsInvalidMessage(0)).toBe("0 fields invalid · fix them to save");
   });
 });
 
@@ -177,6 +186,16 @@ describe("importChecks", () => {
     expect(routing.patch).toEqual({ stats_enabled: true });
   });
 
+  it("refuses a file whose only key is the routing-owned one, same as an empty file (fix round 1)", () => {
+    // routing_default_action is dropped before anything is sent, so a file that carries only that key
+    // would otherwise pass every check with a non-null (but empty) patch — an import that silently sends
+    // nothing while claiming success, exactly the case settingsFile.ts's own "importing nothing" rule
+    // (above importChecks) already refuses for a fully empty file.
+    const result = importChecks(JSON.stringify({ routing_default_action: "direct" }));
+    expect(result.checks[1]).toEqual({ ok: false, label: "no settings in this file" });
+    expect(result.patch).toBeNull();
+  });
+
   it("an oversized file gets a sentence instead of a 413 raised before the session is read", () => {
     expect(MAX_SETTINGS_BYTES).toBe(1024 * 1024);
     expect(settingsFileTooLarge(MAX_SETTINGS_BYTES)).toBeNull();
@@ -201,6 +220,11 @@ describe("the reset", () => {
     const text = resetConfirm(false);
     expect(text).toContain("turns subscription auto-switch and tunnelled subscription fetch back on");
     expect(text).toContain("turns gateway DNS over DoH off");
+    // Fix round 1, owner decision 8: the two System-sibling keys the pinned list omitted (session_timeout_min,
+    // auto_backup_enabled — routes.py _SETTINGS_RESET_KEYS' last two), named last, in the route's own order.
+    expect(text).toContain("turns the idle timeout off");
+    expect(text).toContain("turns daily auto-backup off");
+    expect(text.indexOf("turns the idle timeout off")).toBeLessThan(text.indexOf("turns daily auto-backup off"));
     expect(text).toContain("rebuilds the live tunnel");
     expect(text).toContain("Nodes, subscriptions, anti-DPI profiles and routing rules are kept.");
     expect(text).not.toContain(STOPPED_XRAY_CLAUSE);
