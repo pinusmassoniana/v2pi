@@ -213,13 +213,35 @@ test("Access: the panel password changes and changes straight back, and this ses
     await expect(page.getByText(/^password changed · other sessions signed out/).first()).toBeVisible();
   }
 
+  // The revert (NEXT -> PASS) runs in `finally`, not after the mid-test assertions in the ordinary control flow:
+  // PASS is the one password `ensureLoggedIn` (e2e/tests/auth-helper.ts) hard-codes for every spec in this run,
+  // and every spec shares this one `webServer` instance. A thrown assertion between the two `change()` calls
+  // must not leave the gateway on NEXT for the rest of the run (fix round 1: the earlier version reverted only
+  // along the no-throw path). If the revert itself throws, it is re-raised with its own message naming the
+  // risk explicitly — the panel password may still be the test one — rather than reading as this test's own
+  // unrelated assertion failing; the mid-test failure (if any) is folded into that message, not dropped.
   await change(PASS, NEXT);
-  // This session adopts the new epoch, so its next read is still a 200 — and every token row is gone.
-  expect((await (await gateway(page)).status()).status()).toBe(200);
-  expect(await (await gateway(page)).get<Token[]>("/tokens")).toEqual([]);
+  let midError: unknown;
+  try {
+    // This session adopts the new epoch, so its next read is still a 200 — and every token row is gone.
+    expect((await (await gateway(page)).status()).status()).toBe(200);
+    expect(await (await gateway(page)).get<Token[]>("/tokens")).toEqual([]);
+  } catch (error) {
+    midError = error;
+  } finally {
+    try {
+      // Mandatory: PASS is shared by every spec through ensureLoggedIn, and they run against this one server.
+      await change(NEXT, PASS);
+    } catch (revertError) {
+      const also = midError instanceof Error ? ` (this test's own assertion had already failed: ${midError.message})` : "";
+      throw new Error(
+        `reverting the panel password to the shared test password failed — the gateway may still be on "${NEXT}"` +
+        `${also}: ${revertError instanceof Error ? revertError.message : String(revertError)}`,
+      );
+    }
+  }
+  if (midError) throw midError;
 
-  // Mandatory: PASS is shared by every spec through ensureLoggedIn, and they run against this one server.
-  await change(NEXT, PASS);
   const back = await page.request.post("/api/login", { data: { username: USER, password: PASS } });
   expect(back.ok(), "the original password must be restored before this test ends").toBe(true);
 });
