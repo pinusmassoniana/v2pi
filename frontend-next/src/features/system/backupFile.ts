@@ -69,13 +69,14 @@ export function fileTooLarge(size: number): { title: string; text: string } | nu
   };
 }
 
+/** The contract's sentence: what a restore replaces, and what it leaves alone. Shared by the desktop confirm and the phone sheet, so the two can never drift apart. */
+export const RESTORE_SENTENCE =
+  "Restore replaces every node, subscription, anti-DPI profile, routing rule and panel setting with the ones in this " +
+  "file, and disconnects the gateway. The Reality private key and the remote-access client list are not restored.";
+
 /** The contract's sentence, then which file it means. Rendered with the line break by the confirm dialog. */
 export function restoreConfirm(filename: string, size: number): string {
-  return (
-    "Restore replaces every node, subscription, anti-DPI profile, routing rule and panel setting with the ones in this " +
-    "file, and disconnects the gateway. The Reality private key and the remote-access client list are not restored. " +
-    `Continue?\n\n${filename} · ${fmtBytes(size)}`
-  );
+  return `${RESTORE_SENTENCE} Continue?\n\n${filename} · ${fmtBytes(size)}`;
 }
 
 export interface RestoredMessage {

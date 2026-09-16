@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, api, isNoAnswer, type RestoreResult, type Settings } from "../../api/client";
 import {
   CONNECTION_BUSY, RESTORE_WRITE, isConnectionBusy, isSettingsBusy, settingsWriteKey, useApiWrite, useConnectionBusy, useSettingsBusy,
@@ -28,8 +28,8 @@ import { cn } from "../../lib/cn";
 import { NO_ANSWER } from "../gateway/networkForm";
 import { EditorSection } from "../tunnel/EditorSection";
 import {
-  BACKUP_CAPS, backupFailedMessage, backupFilename, backupPreChecks, checksPass, condensedBackupChecks, fileTooLarge,
-  restoreConfirm, restoreRefusedMessage, restoredMessage, snapshotNote, type PreCheck,
+  BACKUP_CAPS, RESTORE_SENTENCE, backupFailedMessage, backupFilename, backupPreChecks, checksPass, condensedBackupChecks,
+  fileTooLarge, restoreConfirm, restoreRefusedMessage, restoredMessage, snapshotNote, type PreCheck,
 } from "./backupFile";
 import { FilePicker } from "./FilePicker";
 import { recordLastRestore, useLastRestore } from "./lastRestore";
@@ -45,8 +45,9 @@ const RESTORE_PROGRESS_HINT =
 const BACKUP_NOTE =
   "One JSON file with every node, subscription, anti-DPI profile, routing rule and panel setting. The Reality private " +
   "key and the remote-access client list are deliberately left out — paste the key again after restoring onto a new host.";
-const AUTO_BACKUP_TEXT =
-  "Keep a daily copy on the gateway (data/backups, the newest 7). They stay on the box — download a backup above to take one off it.";
+/** The tail of `AUTO_BACKUP_TEXT`, kept apart so the phone's collapsed-section body can share it word for word. */
+const AUTO_BACKUP_STAYS_NOTE = "They stay on the box — download a backup above to take one off it.";
+const AUTO_BACKUP_TEXT = `Keep a daily copy on the gateway (data/backups, the newest 7). ${AUTO_BACKUP_STAYS_NOTE}`;
 const AUTO_BACKUP_ON_NOTE = "The first copy lands at the next daily run, not now.";
 const FILE_HOLDS_NOTE =
   "It carries subscription URLs (which can embed a token), every node uuid, the Reality public key and short id, and " +
@@ -260,6 +261,19 @@ export function BackupCard({ create }: { create: ReturnType<typeof useCreateBack
   );
 }
 
+/** The progress row for a restore in flight — a pulsing bar named `Restoring` plus an elapsed clock. Shared by the
+ * desktop card and the phone sheet's footer, so the two never drift into two different renderings of the same state. */
+function RestoreProgress({ submittedAt }: { submittedAt: number }) {
+  return (
+    <>
+      <div role="progressbar" aria-label="Restoring" className="h-1 min-w-24 flex-1 overflow-hidden rounded-full bg-glass-2">
+        <span className="block h-full w-1/3 animate-pulse rounded-full bg-brand" />
+      </div>
+      <span className="font-mono text-[11px] text-t2"><Elapsed since={submittedAt} format="clock" /></span>
+    </>
+  );
+}
+
 export function RestoreCard({ restore }: { restore: RestoreState }) {
   const { picked, checks, mutation } = restore;
   const running = mutation.isPending;
@@ -279,12 +293,7 @@ export function RestoreCard({ restore }: { restore: RestoreState }) {
       ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
         {running ? (
-          <>
-            <div role="progressbar" aria-label="Restoring" className="h-1 min-w-24 flex-1 overflow-hidden rounded-full bg-glass-2">
-              <span className="block h-full w-1/3 animate-pulse rounded-full bg-brand" />
-            </div>
-            <span className="font-mono text-[11px] text-t2"><Elapsed since={mutation.submittedAt} format="clock" /></span>
-          </>
+          <RestoreProgress submittedAt={mutation.submittedAt} />
         ) : (
           <p className="min-w-0 flex-1 text-[11px] text-t3">nothing is written until you confirm</p>
         )}
@@ -393,10 +402,30 @@ export function FileHoldsCard() {
   );
 }
 
-/** The restore question on a phone: the file, its checks and the sentence in one place, over its own sticky footer. */
+/**
+ * The restore question on a phone: the file, its checks and the sentence in one place, over its own sticky footer.
+ *
+ * Deviation from the brief (review fix round 1): the brief's Restore button closes the sheet in the same click that
+ * starts `run()` (`onClick={() => { restore.run(); onOpenChange(false); }}`), which makes `{restore.mutation.isPending
+ * ? "Restoring…" : "Restore"}` dead code — the sheet is gone in the render where `isPending` first turns true, and a
+ * 180 s destructive write is left with no visible indicator once the "Daily auto-backup" section is opened, hiding
+ * the accordion's own "Restoring…" label. The sheet now stays mounted and open for as long as the mutation is
+ * pending — its own effect below closes it only once the mutation settles, matching mockup
+ * `16-approved-system-backups.html`'s own caption that "Restoring…" stays in this same sheet. `Cancel` and the
+ * outer Escape/overlay-click path are both blocked while pending too, for the same reason `RestoreCard`'s `Clear`
+ * is disabled while busy: a running write must not be hideable back into invisibility by any of the sheet's own
+ * closing gestures.
+ */
 export function RestoreSheet({ restore, open, onOpenChange }: { restore: RestoreState; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const pending = restore.mutation.isPending;
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !pending) onOpenChange(false);
+    wasPending.current = pending;
+  }, [pending, onOpenChange]);
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={(next) => { if (!next && pending) return; onOpenChange(next); }}>
       <SheetContent title="Replace everything?" initialFocus="overlay">
         <div className="flex flex-col gap-3">
           <Pill tone="bad" className="self-start">Restore</Pill>
@@ -404,24 +433,21 @@ export function RestoreSheet({ restore, open, onOpenChange }: { restore: Restore
           <ul className="flex flex-col gap-1">
             {restore.condensed.map((check) => <CheckRow key={check.label} check={check} />)}
           </ul>
-          <p className="text-[11.5px] leading-relaxed text-t2">
-            Restore replaces every node, subscription, anti-DPI profile, routing rule and panel setting with the ones in
-            this file, and disconnects the gateway. The Reality private key and the remote-access client list are not
-            restored. Continue?
-          </p>
+          <p className="text-[11.5px] leading-relaxed text-t2">{RESTORE_SENTENCE} Continue?</p>
           <p className="text-[11px] leading-relaxed text-t3">
             A copy of what this replaces is saved on the gateway first. It can take up to three minutes, and Connect
             stays blocked everywhere until it answers.
           </p>
-          <div className="glass sticky bottom-0 -mx-1 flex items-center gap-2 bg-solid p-2">
-            <Button className="flex-1" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <div className="glass sticky bottom-0 -mx-1 flex flex-wrap items-center gap-2 bg-solid p-2">
+            {pending ? <RestoreProgress submittedAt={restore.mutation.submittedAt} /> : null}
+            <Button className="flex-1" disabled={restore.busy} onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button
               variant="danger"
               className="flex-1"
               disabled={!restore.picked || !checksPass(restore.checks) || restore.busy}
-              onClick={() => { restore.run(); onOpenChange(false); }}
+              onClick={() => restore.run()}
             >
-              {restore.mutation.isPending ? "Restoring…" : "Restore"}
+              {pending ? "Restoring…" : "Restore"}
             </Button>
           </div>
         </div>
@@ -477,7 +503,7 @@ function BackupsPhone({ create, restore, auto }: { create: ReturnType<typeof use
           aside={<AutoBackupSwitch auto={auto} />}
         >
           <p className="text-[11.5px] leading-relaxed text-t3">
-            They stay on the box — download a backup above to take one off it. {AUTO_BACKUP_ON_NOTE}
+            {AUTO_BACKUP_STAYS_NOTE} {AUTO_BACKUP_ON_NOTE}
           </p>
         </EditorSection>
       </GlassCard>

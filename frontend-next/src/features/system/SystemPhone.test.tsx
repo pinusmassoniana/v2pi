@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settleConfirm } from "../../components/confirm";
-import { BACKUP_DOC, LOG_LINES, mockApi, mockSystem } from "../../test/fixtures";
+import { BACKUP_DOC, LOG_LINES, RESTORE_RESULT, mockApi, mockSystem } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { clearLastRestore } from "./lastRestore";
@@ -63,6 +63,30 @@ describe("Backups on a phone", () => {
     expect(within(last).getByText("PROFILES")).toBeInTheDocument();
     expect(within(last).getByText("disconnected")).toBeInTheDocument();
     expect(within(last).getByRole("link", { name: "Go to Home and connect" })).toBeInTheDocument();
+  });
+
+  it("the sheet stays open and shows it is running until the restore settles", async () => {
+    const api$ = mockSystem(mockApi());
+    renderApp("/system/backups");
+    await screen.findByRole("region", { name: "Backup & restore" });
+    await userEvent.upload(screen.getByLabelText("Choose file…"), backupFile());
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+    const sheet = await screen.findByRole("dialog", { name: "Replace everything?" });
+    let finish: (value: typeof RESTORE_RESULT) => void = () => {};
+    api$.restore.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "Restore" }));
+
+    // Still up, and showing it: the write is in flight, not finished, and the sheet has not gone anywhere.
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Restoring…" })).toBeInTheDocument());
+    expect(within(sheet).getByRole("progressbar", { name: "Restoring" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("dialog", { name: "Replace everything?" })).toBeInTheDocument();
+
+    await act(async () => { finish(RESTORE_RESULT); });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Replace everything?" })).toBeNull());
+    await screen.findByRole("region", { name: "Last restore" });
   });
 
   it("Cancel in the sheet sends nothing", async () => {
