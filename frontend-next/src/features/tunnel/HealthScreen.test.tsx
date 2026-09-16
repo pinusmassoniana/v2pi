@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type Settings, type Status } from "../../api/client";
-import { SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE } from "../../api/invalidation";
+import { NETWORK_WRITE, SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
 import { FAILOVER_STATUS, SETTINGS, STATUS, holdWrite, mockApi } from "../../test/fixtures";
@@ -174,6 +174,17 @@ describe("Health & failover › form (G3, G4)", () => {
     await userEvent.type(within(failover()).getByLabelText("Cooldown"), "60");
     await waitFor(() => expect(saveButton()).toBeEnabled());
     const release = holdWrite(client, SETTINGS_CONNECTION_WRITE);
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    await release();
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+  });
+
+  it("Save waits for an Apply to host too: it holds the same lock on the gateway, for as long as three minutes", async () => {
+    const { client } = await openHealth();
+    await userEvent.clear(within(failover()).getByLabelText("Cooldown"));
+    await userEvent.type(within(failover()).getByLabelText("Cooldown"), "60");
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    const release = holdWrite(client, NETWORK_WRITE);
     await waitFor(() => expect(saveButton()).toBeDisabled());
     await release();
     await waitFor(() => expect(saveButton()).toBeEnabled());

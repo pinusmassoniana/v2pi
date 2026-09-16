@@ -163,15 +163,17 @@ describe("Subscriptions › fetch settings that re-apply the tunnel", () => {
     await act(async () => finish({ ...SETTINGS, tunneled_fetch: false, subs_auto_switch: false }));
   });
 
-  it("while a connection write runs the tunneled fetch waits and the auto-switch does not", async () => {
+  it("both switches wait for a connection write: an Apply to host holds the same lock the settings write needs", async () => {
     const { client } = await openSubscriptions();
     const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    const autoSwitch = screen.getByRole("switch", { name: "Subscription auto-switch" });
     await waitFor(() => expect(tunnel).toBeChecked());
     const release = holdConnectionWrite(client);
     await waitFor(() => expect(tunnel).toBeDisabled());
-    expect(screen.getByRole("switch", { name: "Subscription auto-switch" })).toBeEnabled();
+    expect(autoSwitch).toBeDisabled();
     await release();
     await waitFor(() => expect(tunnel).toBeEnabled());
+    expect(autoSwitch).toBeEnabled();
   });
 
   it("a 502 says nothing was saved, puts the switch back and re-reads what a re-apply can move", async () => {

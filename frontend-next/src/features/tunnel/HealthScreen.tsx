@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, type ReactNode } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import type { Settings } from "../../api/client";
-import { SETTINGS_WRITE, useApiWrite, useSettingsBusy } from "../../api/invalidation";
+import { SETTINGS_WRITE, useApiWrite, useConnectionBusy, useSettingsBusy } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { useUnsavedGuard } from "../../app/guard";
 import { CardHeader } from "../../components/data/CardHeader";
@@ -56,8 +56,12 @@ function HealthForm({ settings }: { settings: Settings }) {
   useUnsavedGuard(isDirty);
   const [master, sweep] = useWatch({ control, name: ["health_enabled", "health_sweep_enabled"] });
   const putSettings = useApiWrite("putSettings");
-  // One settings write at a time across both settings keys, shared with every other settings card and the gateway DNS switch.
-  const saving = useSettingsBusy();
+  // One settings write at a time across both settings keys, shared with every other settings card and the gateway DNS
+  // switch — and PUT /settings takes the gateway's apply lock whatever it writes, which an Apply to host can hold for
+  // three minutes, so a connection write blocks this Save too.
+  const settingsBusy = useSettingsBusy();
+  const connectionBusy = useConnectionBusy();
+  const saving = settingsBusy || connectionBusy;
   const save = useMutation({
     mutationKey: SETTINGS_WRITE,
     mutationFn: (patch: HealthPatch) => putSettings(patch),

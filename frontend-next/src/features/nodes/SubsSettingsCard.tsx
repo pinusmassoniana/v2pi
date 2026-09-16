@@ -38,7 +38,9 @@ interface Flip {
 /**
  * G1, subscription half: two gateway settings, each saved on its own the moment it is flipped. tunneled_fetch re-applies
  * the live tunnel (a connection write, SETTINGS_CONNECTION_WRITE); subs_auto_switch does not (SETTINGS_WRITE). Any
- * settings write disables both switches, so the rollback and re-read below only ever reason about one write.
+ * settings write disables both switches, so the rollback and re-read below only ever reason about one write — and so
+ * does any connection write, because PUT /settings takes the gateway's apply lock whatever it writes, and an Apply to
+ * host can hold that lock for three minutes.
  */
 export function SubsSettingsCard({ className }: { className?: string }) {
   const queryClient = useQueryClient();
@@ -124,7 +126,7 @@ export function SubsSettingsCard({ className }: { className?: string }) {
               <Toggle
                 label={row.label}
                 checked={settings.data?.[row.key] ?? false}
-                disabled={settingsBusy || (row.key === "tunneled_fetch" && connectionBusy)}
+                disabled={settingsBusy || connectionBusy}
                 onCheckedChange={(on) => void flip(row.key, on)}
               />
             </li>
