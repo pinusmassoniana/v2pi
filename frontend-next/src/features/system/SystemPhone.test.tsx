@@ -234,6 +234,28 @@ describe("Access on a phone", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
   });
 
+  it("closing the sheet discards what was typed, exactly as closing the desktop form does", async () => {
+    await openAccess();
+    const create = () => within(region("API tokens")).getByRole("button", { name: "Create token" });
+    await userEvent.click(create());
+    await userEvent.type(within(await screen.findByRole("dialog", { name: "New token" })).getByLabelText("Name"), "half-typed");
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
+    await userEvent.click(create());
+
+    // The desktop form unmounts when it closes, so it starts empty; the sheet's form outlives it and
+    // has to be put back by hand — otherwise it holds the unsaved-edit guard with nothing on screen.
+    expect(within(await screen.findByRole("dialog", { name: "New token" })).getByLabelText("Name")).toHaveValue("");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
+
+    await userEvent.click(within(screen.getByRole("navigation", { name: "System tabs" })).getByRole("link", { name: "Backups" }));
+
+    await screen.findByRole("region", { name: "Backup & restore" });
+    expect(screen.queryByRole("dialog", { name: "Confirm" })).toBeNull();
+  });
+
   it("the secret survives a backdrop tap and an Escape press; only Done clears it", async () => {
     await openAccess();
     await userEvent.click(within(region("API tokens")).getByRole("button", { name: "Create token" }));

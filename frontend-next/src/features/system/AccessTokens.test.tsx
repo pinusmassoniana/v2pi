@@ -131,6 +131,23 @@ describe("Access — tokens (G7)", () => {
     expect(document.body.innerHTML).not.toContain(TOKEN_CREATED.token);
   });
 
+  it("asks before navigation throws away a half-typed token, as every other editor does", async () => {
+    await openAccess();
+    await openForm();
+    await userEvent.type(screen.getByLabelText("Name"), "half-typed");
+
+    await userEvent.click(screen.getByRole("link", { name: "Overview" }));
+
+    expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent("Discard unsaved changes and leave this screen?");
+    await answer("Cancel");
+    expect(screen.getByLabelText("Name")).toHaveValue("half-typed");
+
+    await userEvent.click(screen.getByRole("link", { name: "Overview" }));
+    await answer("Discard");
+
+    expect(await screen.findByRole("region", { name: "Upstream health" })).toBeInTheDocument();
+  });
+
   it("Copy puts the secret on the clipboard without rendering it anywhere else", async () => {
     const written: string[] = [];
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async (text: string) => { written.push(text); } } });

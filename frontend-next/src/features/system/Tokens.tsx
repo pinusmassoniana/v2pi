@@ -175,9 +175,12 @@ export function SecretPanel({ tokens }: { tokens: TokensState }) {
 
 /** The create form's own state, shared by the desktop card and the phone sheet. */
 export function useTokenForm(tokens: TokensState) {
-  const { control, handleSubmit, register, reset, formState: { errors, isValid } } = useForm<TokenFormValues>({
+  const { control, handleSubmit, register, reset, formState: { errors, isValid, isDirty } } = useForm<TokenFormValues>({
     resolver: zodResolver(tokenFormSchema), defaultValues: EMPTY, mode: "onChange",
   });
+  // Spec §3 lists this form among the guarded ones: a typed name and a chosen scope are as easy to
+  // lose to a stray tab as any other edit, and every other editor asks first.
+  useUnsavedGuard(isDirty);
   const expiry = useWatch({ control, name: "expiry" });
   // The gateway's clock, not the browser's: it refuses an expires_at that is not in its own future, and a phone
   // whose clock runs behind would otherwise send a 30-day expiry the gateway reads as already past.
@@ -188,7 +191,7 @@ export function useTokenForm(tokens: TokensState) {
       { onSuccess: () => reset(EMPTY) },
     );
   });
-  return { control, register, errors, isValid, expiry, nowMs, submit };
+  return { control, register, errors, isValid, expiry, nowMs, submit, discard: () => reset(EMPTY) };
 }
 
 export function TokenFormFields({ form }: { form: ReturnType<typeof useTokenForm> }) {
@@ -259,8 +262,12 @@ export function TokenSheet({ tokens, open, onOpenChange }: { tokens: TokensState
   // only clears `formOpen`, `AccessScreen.tsx`), so the sheet refuses those two paths while the secret is on
   // display. Explicit dismissal — Done, or × (`Primitive.Close`, which never raises this event) — still works.
   const keepSecretOnScreen = (event: { preventDefault: () => void }) => { if (tokens.secret) event.preventDefault(); };
+  // The desktop's form unmounts when it closes, which is what drops a half-typed name there. This one
+  // outlives its sheet, so closing puts it back by hand — otherwise it would keep holding the unsaved-edit
+  // guard, and the next tab would ask about edits that are nowhere on screen.
+  const close = (next: boolean) => { if (!next) { tokens.dismissSecret(); form.discard(); } onOpenChange(next); };
   return (
-    <Sheet open={open} onOpenChange={(next) => { if (!next) tokens.dismissSecret(); onOpenChange(next); }}>
+    <Sheet open={open} onOpenChange={close}>
       <SheetContent title="New token" onEscapeKeyDown={keepSecretOnScreen} onPointerDownOutside={keepSecretOnScreen}>
         <div className="flex flex-col gap-2.5">
           {tokens.secret ? <SecretPanel tokens={tokens} /> : <TokenFormFields form={form} />}
