@@ -3,8 +3,8 @@ import type { ConnEvent, Routing, Status, TrafficFrame } from "../../api/client"
 import { NETWORK, NOW_SEC, ROUTING, STATUS, TRAFFIC_FRAME, node } from "../../test/fixtures";
 import {
   FAILOVER_DISMISSED_KEY, bypassState, chartStale, clockTime, eventLevel, failoverBanner, failoverHistory, failoverPill, hasConfigDrift,
-  latencyStats, liveLatency, nodeEndpoint, peakOf, poolSize, readFailoverDismissed, rollbackStillValid,
-  recentEvents, recentValues, routeBadge, routingSummary, sessionTotals, sinceLabel, tunnelLabel, tunnelLeg, whenLabel,
+  latencyStats, liveLatency, nodeEndpoint, nodeHealthSlot, outboundRates, pathLabel, peakOf, poolSize, rateLines, readFailoverDismissed,
+  rollbackStillValid, recentEvents, recentValues, routeBadge, routingSummary, sessionTotals, sinceLabel, tunnelLabel, tunnelLeg, whenLabel,
   writeFailoverDismissed, xrayLabel,
 } from "./derive";
 
@@ -150,6 +150,75 @@ describe("live traffic", () => {
     expect(latencyStats(probe({ real_ok: false }), NOW_MS).sub).toBe("unknown · 5s ago");
     expect(latencyStats(probe({ stale: true, checked_at: null }), NOW_MS).sub).toBe("stale");
     expect(latencyStats(null, NOW_MS)).toEqual({ ms: null, avg: null, fresh: false, sub: "unknown" });
+  });
+});
+
+describe("connection path", () => {
+  const withRates = (proxy: [number, number], direct: [number, number]): TrafficFrame => ({
+    ...TRAFFIC_FRAME,
+    outbounds: { proxy: { down_bps: proxy[0], up_bps: proxy[1] }, direct: { down_bps: direct[0], up_bps: direct[1] } },
+  });
+
+  it("outbound rates: the tunnel's and direct traffic's down and up; a missing outbound is 0; no frame is unknown", () => {
+    expect(outboundRates(TRAFFIC_FRAME)).toEqual({ proxy: { down: 12_400_000, up: 1_800_000 }, direct: { down: 0, up: 0 } });
+    expect(outboundRates({ ...TRAFFIC_FRAME, outbounds: {} })).toEqual({ proxy: { down: 0, up: 0 }, direct: { down: 0, up: 0 } });
+    expect(outboundRates(withRates([3_600_000, 400_000], [4_500_000, 300_000]))!.direct).toEqual({ down: 4_500_000, up: 300_000 });
+    expect(outboundRates(null)).toBeNull();
+  });
+
+  it("rate lines: — without a frame, idle at zero both ways, else one line per direction in its own unit", () => {
+    expect(rateLines(null)).toEqual(["—"]);
+    expect(rateLines({ down: 0, up: 0 })).toEqual(["idle"]);
+    expect(rateLines({ down: 999, up: 0 })).toEqual(["↓ 999 bit/s", "↑ 0 bit/s"]);
+    expect(rateLines({ down: 0, up: 1 })).toEqual(["↓ 0 bit/s", "↑ 1 bit/s"]);
+    expect(rateLines({ down: 12_400_000, up: 1_800_000 })).toEqual(["↓ 12.4 Mbit/s", "↑ 1.8 Mbit/s"]);
+    expect(rateLines({ down: 4_500_000, up: 300_000 })).toEqual(["↓ 4.5 Mbit/s", "↑ 300 kbit/s"]);
+  });
+
+  it("node slot: no active node, xray stopped and no frame come first, in that order", () => {
+    const none = { leg: "off", note: null, tone: "neutral", ms: null };
+    expect(nodeHealthSlot(status({ active_node_id: null, running: false }), null, null)).toEqual({ ...none, state: "none", text: "—" });
+    expect(nodeHealthSlot(undefined, TRAFFIC_FRAME, active)).toEqual({ ...none, state: "none", text: "—" });
+    expect(nodeHealthSlot(status({ running: false }), null, probe({ real_ok: false }))).toEqual({ ...none, state: "stopped", text: "xray stopped" });
+    expect(nodeHealthSlot(STATUS, null, probe({ real_ok: false }))).toEqual({ ...none, state: "no-frame", text: "—" });
+  });
+
+  it("node slot: a failed real check, a slow one above 150 ms, a passing one, and OK without a number", () => {
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ real_ok: false }))).toEqual({ state: "bad", leg: "bad", text: "check failed", note: null, tone: "bad", ms: null });
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ latency_ms: 151 }))).toEqual({ state: "slow", leg: "ok", text: "151 ms", note: "slow", tone: "warn", ms: 151 });
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ latency_ms: 150 }))).toEqual({ state: "ok", leg: "ok", text: "150 ms", note: null, tone: "ok", ms: 150 });
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, active)).toMatchObject({ state: "ok", text: "42 ms", tone: "ok", ms: 42 });
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ latency_ms: null }))).toEqual({ state: "ok", leg: "ok", text: "OK", note: null, tone: "ok", ms: null });
+  });
+
+  it("node slot: anything else is stale health — a stale probe, none about the active node, a check with no answer", () => {
+    const stale = { state: "stale", leg: "off", text: "health stale", note: null, tone: "neutral", ms: null };
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ stale: true, real_ok: false }))).toEqual(stale);
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, null)).toEqual(stale);
+    expect(nodeHealthSlot(STATUS, TRAFFIC_FRAME, probe({ real_ok: null }))).toEqual(stale);
+  });
+
+  it("label: healthy, slow and down read the tunnel, both rates and the kill-switch", () => {
+    const name = "nl-ams-03";
+    expect(pathLabel({ name, slot: nodeHealthSlot(STATUS, TRAFFIC_FRAME, active), rates: outboundRates(TRAFFIC_FRAME), killSwitch: "ARMED", dim: false })).toBe(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel OK, 42 ms, down 12.4 Mbit/s, up 1.8 Mbit/s. Direct by routing rules: idle. Kill-switch ARMED.",
+    );
+    const slowFrame = withRates([3_600_000, 400_000], [4_500_000, 300_000]);
+    expect(pathLabel({ name, slot: nodeHealthSlot(STATUS, slowFrame, probe({ latency_ms: 831 })), rates: outboundRates(slowFrame), killSwitch: "ARMED", dim: false })).toBe(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel slow, 831 ms, down 3.6 Mbit/s, up 400 kbit/s. Direct by routing rules: down 4.5 Mbit/s, up 300 kbit/s. Kill-switch ARMED.",
+    );
+    const idle = withRates([0, 0], [0, 0]);
+    expect(pathLabel({ name, slot: nodeHealthSlot(STATUS, idle, probe({ real_ok: false })), rates: outboundRates(idle), killSwitch: "OPEN", dim: false })).toBe(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel DOWN, real check failed, idle. Direct by routing rules: idle. Kill-switch OPEN.",
+    );
+  });
+
+  it("label: an unused leg is OFF, no frame leaves the rates unknown, and a frozen frame says the stats paused", () => {
+    expect(pathLabel({ name: "No node", slot: nodeHealthSlot(status({ active_node_id: null }), null, null), rates: null, killSwitch: "UNKNOWN", dim: false })).toBe(
+      "Connection path: devices, gateway, No node, internet. Tunnel OFF, rates unknown. Direct by routing rules: rates unknown. Kill-switch UNKNOWN.",
+    );
+    expect(pathLabel({ name: "nl-ams-03", slot: nodeHealthSlot(STATUS, TRAFFIC_FRAME, active), rates: outboundRates(TRAFFIC_FRAME), killSwitch: "ARMED", dim: true }))
+      .toMatch(/Kill-switch ARMED\. Live stats paused\.$/);
   });
 });
 

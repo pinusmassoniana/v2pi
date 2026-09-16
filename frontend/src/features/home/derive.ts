@@ -3,10 +3,10 @@
 import type { ConnEvent, NetworkSegment, Node, Routing, Status, TrafficFrame } from "../../api/client";
 import { LIVE_WINDOW_MAX_SEC } from "../../api/cadence";
 import type { TrafficSample } from "../../api/traffic";
-import type { EventLevel, PathLeg, Tone } from "../../components/data/types";
+import type { EventLevel, NodeSlot, OutboundRates, PathLeg, PathRate, Tone } from "../../components/data/types";
 import { agoLabel } from "../../lib/dashboard";
-import { formatUriHost } from "../../lib/format";
-import { connectedState, type ActiveProbe } from "../../lib/nodeHealth";
+import { fmtRate, formatUriHost } from "../../lib/format";
+import { SLOW_LATENCY_MS, connectedState, type ActiveProbe } from "../../lib/nodeHealth";
 
 // The node-health rules Home shares with Nodes live in src/lib/nodeHealth.ts; Home's screens keep importing them from here.
 export {
@@ -156,6 +156,74 @@ export function tunnelLeg(status: Status | undefined, active: ActiveProbe): Path
 /** The live latency, only when it is fresh and the real check passed. */
 export function liveLatency(active: ActiveProbe): number | null {
   return active && active.stale === false && active.real_ok === true ? active.latency_ms : null;
+}
+
+// ---- connection path -------------------------------------------------------------------------
+
+/** O8: the tunnel's (proxy) and direct traffic's live down and up. A missing outbound is 0; no frame is null. */
+export function outboundRates(frame: TrafficFrame | null): OutboundRates | null {
+  if (!frame) return null;
+  const rate = (name: "proxy" | "direct"): PathRate => ({
+    down: frame.outbounds[name]?.down_bps ?? 0,
+    up: frame.outbounds[name]?.up_bps ?? 0,
+  });
+  return { proxy: rate("proxy"), direct: rate("direct") };
+}
+
+/** O8 rate pill: "—" without a frame, "idle" when nothing moves either way, else one line per direction, each in its own unit. */
+export function rateLines(rate: PathRate | null): string[] {
+  if (rate === null) return ["—"];
+  if (rate.down === 0 && rate.up === 0) return ["idle"];
+  return [`↓ ${fmtRate(rate.down)}`, `↑ ${fmtRate(rate.up)}`];
+}
+
+const SLOT_OFF = { leg: "off", note: null, tone: "neutral", ms: null } as const;
+
+/**
+ * O8 node slot, the first matching row winning: no active node; xray stopped; no live frame (stats off, or none yet); a
+ * failed real check; a passing one slower than SLOW_LATENCY_MS (exactly 150 ms is not slow); a passing one; and
+ * anything else — a stale probe, a probe about another node, a check with no answer — is stale health. `probe` is the
+ * live probe matched to the active node (probeFor).
+ */
+export function nodeHealthSlot(status: Status | undefined, frame: TrafficFrame | null, probe: ActiveProbe): NodeSlot {
+  if (!status || status.active_node_id === null) return { ...SLOT_OFF, state: "none", text: "—" };
+  if (!status.running) return { ...SLOT_OFF, state: "stopped", text: "xray stopped" };
+  if (!frame) return { ...SLOT_OFF, state: "no-frame", text: "—" };
+  const leg = tunnelLeg(status, probe);
+  if (leg === "bad") return { state: "bad", leg, text: "check failed", note: null, tone: "bad", ms: null };
+  if (leg === "off") return { ...SLOT_OFF, state: "stale", text: "health stale" };
+  const ms = liveLatency(probe);
+  if (ms !== null && ms > SLOW_LATENCY_MS) return { state: "slow", leg, text: `${ms} ms`, note: "slow", tone: "warn", ms };
+  return { state: "ok", leg, text: ms === null ? "OK" : `${ms} ms`, note: null, tone: "ok", ms };
+}
+
+function rateWords(rate: PathRate | null): string {
+  if (rate === null) return "rates unknown";
+  return rate.down === 0 && rate.up === 0 ? "idle" : `down ${fmtRate(rate.down)}, up ${fmtRate(rate.up)}`;
+}
+
+export interface PathLabelInput {
+  /** The active node's name without its leading flag. */
+  name: string;
+  slot: NodeSlot;
+  rates: OutboundRates | null;
+  /** killSwitchState's label. */
+  killSwitch: string;
+  /** The live frame stopped updating. */
+  dim: boolean;
+}
+
+/** O8: the connection path's accessible name — the stops, the tunnel with its rates, direct traffic and the kill-switch. */
+export function pathLabel({ name, slot, rates, killSwitch, dim }: PathLabelInput): string {
+  const tunnel = slot.state === "bad" ? "DOWN, real check failed" : slot.state === "slow" ? "slow" : slot.leg === "ok" ? "OK" : "OFF";
+  const parts = [
+    `Connection path: devices, gateway, ${name}, internet.`,
+    `Tunnel ${tunnel}${slot.ms === null ? "" : `, ${slot.ms} ms`}, ${rateWords(rates?.proxy ?? null)}.`,
+    `Direct by routing rules: ${rateWords(rates?.direct ?? null)}.`,
+    `Kill-switch ${killSwitch}.`,
+  ];
+  if (dim) parts.push("Live stats paused.");
+  return parts.join(" ");
 }
 
 export interface LatencyStats { ms: number | null; avg: number | null; fresh: boolean; sub: string }

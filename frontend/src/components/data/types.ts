@@ -27,3 +27,23 @@ export type EventLevel = "ok" | "warn" | "bad" | "info";
 
 /** The connection path's tunnel leg: carrying healthy traffic, failing, or not in use. */
 export type PathLeg = "ok" | "bad" | "off";
+
+/** Live throughput of one outbound, bits per second each way. */
+export interface PathRate { down: number; up: number }
+
+/** The tunnel's (the proxy outbound's) and direct traffic's live rates. */
+export interface OutboundRates { proxy: PathRate; direct: PathRate }
+
+/** What the connection path says about the active node, and how its tunnel legs are drawn. */
+export interface NodeSlot {
+  /** none: no active node · stopped: xray is not running · no-frame: no live stats · bad / slow / ok: the real check · stale: anything else. */
+  state: "none" | "stopped" | "no-frame" | "bad" | "slow" | "ok" | "stale";
+  leg: PathLeg;
+  /** The latency pill's words: "42 ms", "OK", "check failed", "xray stopped", "health stale", "—". */
+  text: string;
+  /** A smaller word after the text ("slow"); null for none. */
+  note: string | null;
+  tone: Tone;
+  /** The fresh latency the pill shows while the check passes; null otherwise. */
+  ms: number | null;
+}
