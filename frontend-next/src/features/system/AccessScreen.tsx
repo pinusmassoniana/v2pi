@@ -11,6 +11,7 @@ import {
 import { keys, queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { useUnsavedGuard } from "../../app/guard";
+import { useNow } from "../../components/data/Ago";
 import { CardHeader } from "../../components/data/CardHeader";
 import { Chip } from "../../components/data/Chip";
 import { confirm } from "../../components/confirm";
@@ -25,6 +26,8 @@ import {
   passwordFormSchema, passwordNote, strength, type PasswordFormValues,
 } from "./passwordForm";
 import { ResultLine } from "./ResultLine";
+import { AuditCard } from "./AuditLog";
+import { ScopesCard, TokenFormCard, TokensCard, useTokens } from "./Tokens";
 
 const EMPTY: PasswordFormValues = { current: "", next: "", confirm: "" };
 const STRENGTH_BARS: Record<string, number> = { weak: 1, ok: 2, good: 3, strong: 4 };
@@ -264,20 +267,30 @@ export function SessionCard({ timeout }: { timeout: ReturnType<typeof useIdleTim
   );
 }
 
-/** System › Access (P4 and G5's idle-timeout half for now). It owns `settings` and `tokens` at the slow cadence. */
+/** System › Access (P4, G5's idle-timeout half, G7, G8). It owns `settings` and `tokens` at the slow cadence. */
 export function Access() {
   const settings = usePolledQuery(queries.settings(), SLOW_POLL_MS);
-  const tokens = usePolledQuery(queries.tokens(), SLOW_POLL_MS);
-  const tokenCount = tokens.data?.length;
+  const list = usePolledQuery(queries.tokens(), SLOW_POLL_MS);
+  const tokenCount = list.data?.length;
   const passwordState = usePasswordChange(tokenCount);
   const timeout = useIdleTimeout(settings.data);
+  const tokens = useTokens();
+  // One clock read for the whole screen's relative dates, through the shared now.
+  const nowSec = Math.floor(useNow(60_000) / 1000);
   return (
-    <div className="grid gap-3 md:grid-cols-[5fr_7fr] md:items-start">
-      <div className="flex flex-col gap-3">
-        <PasswordCard password={passwordState} tokenCount={tokenCount} />
-        <SessionCard timeout={timeout} />
+    <div className="flex flex-col gap-3">
+      <div className="grid gap-3 md:grid-cols-[5fr_7fr] md:items-start">
+        <div className="flex flex-col gap-3">
+          <PasswordCard password={passwordState} tokenCount={tokenCount} />
+          <SessionCard timeout={timeout} />
+        </div>
+        <div className="flex flex-col gap-3">
+          <ScopesCard />
+          {tokens.formOpen || tokens.secret ? <TokenFormCard tokens={tokens} /> : null}
+        </div>
       </div>
-      <div className="flex flex-col gap-3" />
+      <TokensCard list={list} tokens={tokens} nowSec={nowSec} />
+      <AuditCard />
     </div>
   );
 }
