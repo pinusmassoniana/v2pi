@@ -8,9 +8,11 @@ import { ensureLoggedIn } from "./auth-helper";
 // a fresh gateway. A private key, once stored, cannot be cleared through the API, so these pass with or without one.
 
 const PREFIX = "e2e-";
-// Shaped like `xray x25519` output — the byte ramps 0x20–0x3F and 0x00–0x1F the backend's tests use. Not secrets.
-const PUBLIC_KEY = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
-const PRIVATE_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";   // fake test vector, not a real key
+// Shaped like `xray x25519` output — 32 bytes as unpadded base64url — built from the byte ramps 0x20–0x3F and
+// 0x00–0x1F the backend's tests use rather than pasted, so they are fake on sight to a reader and the secret scan alike.
+const byteRamp = (first: number) => Buffer.from(Array.from({ length: 32 }, (_, i) => first + i)).toString("base64url");
+const PUBLIC_KEY = byteRamp(0x20);
+const PRIVATE_KEY = byteRamp(0x00);
 
 interface NetworkRead {
   segment: Record<"iface" | "ip" | "ip6" | "dhcp_start" | "dhcp_end" | "dhcp_lease" | "client_dns" | "client_dns6", string>;

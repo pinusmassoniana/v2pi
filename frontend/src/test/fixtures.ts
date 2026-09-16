@@ -354,11 +354,21 @@ export function networkAfter(patch: NetworkPatch, base: Network = GATEWAY_NETWOR
 }
 
 /**
+ * 32 sequential bytes starting at `first`, as unpadded base64url: 43 characters, the exact shape of an x25519 key or a
+ * token secret, and fake on sight. Built rather than pasted, as backend/tests/test_xray_real.py does, so no fixture
+ * carries a literal a reader or the secret scan could mistake for a real one.
+ */
+function byteRamp(first: number): string {
+  const bytes = Array.from({ length: 32 }, (_, i) => first + i);
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
  * Test vectors shaped like `xray x25519` output — 43 base64url characters of 32 bytes, the byte ramps 0x20–0x3F and
  * 0x00–0x1F the backend's tests use. Fake on inspection; never real keys.
  */
-export const RW_PUBLIC_KEY = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
-export const RW_PRIVATE_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"; // fake test vector, not a real key
+export const RW_PUBLIC_KEY = byteRamp(0x20);
+export const RW_PRIVATE_KEY = byteRamp(0x00);
 
 /** The three devices: iphone-anna and laptop-work active, ipad suspended. */
 export const RW_CLIENTS: RwClient[] = [
@@ -407,10 +417,16 @@ export const TOKENS: ApiToken[] = [
   { id: 3, name: "uptime-probe", scope: "read", prefix: "pgwp_Zc3hRw7", created_at: NOW_SEC - 120 * 86_400, last_used_at: NOW_SEC - 2 * 86_400, expires_at: null },
 ];
 
+/**
+ * The secret `POST /tokens` hands out, shaped as tokens.generate() makes one — `pgwp_` and 32 bytes of base64url — but
+ * the bytes are the ramp 0x40–0x5F, the next one after the remote-access keys, so it is fake on sight.
+ */
+const CREATED_TOKEN = `pgwp_${byteRamp(0x40)}`;
+
 /** `POST /tokens`' reply: the row plus the secret, which exists only in this one response. */
 export const TOKEN_CREATED: ApiTokenCreated = {
-  id: 4, name: "home-assistant", scope: "monitor", prefix: "pgwp_Qd7Kx2m", created_at: NOW_SEC, last_used_at: null, expires_at: NOW_SEC + 30 * 86_400,
-  token: "pgwp_Qd7Kx2mV9tLpR4sW1yZbN6hJ3cFgA8eU5nT0iOwXkYr",   // fake — a test fixture, not a real secret
+  id: 4, name: "home-assistant", scope: "monitor", prefix: CREATED_TOKEN.slice(0, 12), created_at: NOW_SEC, last_used_at: null, expires_at: NOW_SEC + 30 * 86_400,
+  token: CREATED_TOKEN,
 };
 
 /**
