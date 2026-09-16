@@ -6,9 +6,10 @@ from pi_gw_panel.models import Node
 
 
 def test_version_is_integer_chain():
-    # Versioning policy: every segment is an uncapped integer. Robust across tier bumps.
+    # Versioning policy: MAJOR.HIGH.MED.LOW.FIX, one to five uncapped integer segments. A Major
+    # release is a single segment ("2"), and each deeper tier adds one. Robust across tier bumps.
     parts = __version__.split(".")
-    assert len(parts) >= 2
+    assert 1 <= len(parts) <= 5
     assert all(p.isdigit() for p in parts)
 
 
