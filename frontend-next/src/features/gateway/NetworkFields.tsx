@@ -148,10 +148,15 @@ export function LanIpv6Fields({ state, network, disabled, desktop }: { state: Ne
 
 /** W6: the kill-switch toggle, staged into the form. Disarming asks first; arming does not. */
 export function KillSwitchToggle({ state, disabled, applyHint }: { state: NetworkFormState; disabled: boolean; applyHint: boolean }) {
-  const { control, setValue } = state.form;
+  const { control, setValue, trigger } = state.form;
   async function change(on: boolean) {
     if (!on && !(await confirm(DISARM_CONFIRM, { confirmLabel: "Disarm" }))) return;
     setValue("killSwitch", on, { shouldDirty: true });
+    // setValue alone only revalidates the field it touched (react-hook-form, even with a schema
+    // resolver, does not re-check the rest of the form) — so re-check every field here, the same
+    // way register() and Controller.onChange do for the fields wired through them, or a v6 field
+    // holding a bad saved value would clear only on the next edit, never on Apply.
+    await trigger();
   }
   return (
     <Controller

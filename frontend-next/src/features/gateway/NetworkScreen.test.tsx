@@ -217,6 +217,18 @@ describe("Network › kill-switch (W6)", () => {
     expect(within(region("Kill-switch")).getByText("OPEN")).toBeInTheDocument();
     expect(region("Kill-switch")).toHaveTextContent("⚠ clients may leak around the tunnel");
   });
+
+  it("toggling only the kill-switch still revalidates the rest of the form, so a bad saved v6 field shows itself", async () => {
+    await openNetwork({ ...GATEWAY_NETWORK, ipv6_enabled: false, segment: { ...GATEWAY_NETWORK.segment, client_dns6: "not-an-ipv6" } });
+    const options = region("LAN access & IPv6");
+    expect(within(options).queryByLabelText("Client DNS (v6)")).toBeNull();
+
+    await userEvent.click(within(region("Kill-switch")).getByRole("switch", { name: "Fail-closed kill-switch" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Disarm" }));
+
+    expect(await within(options).findByLabelText("Client DNS (v6)")).toHaveValue("not-an-ipv6");
+    expect(within(options).getByText("client_dns6: must be an IPv6 address")).toBeInTheDocument();
+  });
 });
 
 describe("Network › following the gateway", () => {
