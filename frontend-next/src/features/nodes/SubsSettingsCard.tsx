@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, type Settings } from "../../api/client";
+import { ApiError, isNoAnswer, type Settings } from "../../api/client";
 import {
-  CONNECTION_BUSY, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE, invalidate, isConnectionBusy, isSettingsBusy, saveRefusedMessage,
+  CONNECTION_BUSY, SETTINGS_BUSY, SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE, invalidateRefused, isConnectionBusy, isSettingsBusy, saveRefusedMessage,
   useApiWrite, useConnectionBusy, useSettingsBusy,
 } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
@@ -9,8 +9,9 @@ import { cardFallback } from "../../components/data/CardState";
 import { CardHeader } from "../../components/data/CardHeader";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { Toggle } from "../../components/ui/Toggle";
-import { notifyError } from "../../components/ui/Toaster";
+import { notifyError, notifyWarn } from "../../components/ui/Toaster";
 import { confirmTunnelStart } from "../../lib/tunnelStart";
+import { NO_ANSWER } from "../gateway/networkForm";
 
 type SubsSetting = "tunneled_fetch" | "subs_auto_switch";
 
@@ -72,7 +73,12 @@ export function SubsSettingsCard({ className }: { className?: string }) {
       if (error instanceof ApiError && error.status === 502) {
         // The re-apply failed and the settings transaction rolled the change back: nothing was saved.
         notifyError(null, saveRefusedMessage(error));
-        void invalidate(queryClient, "putSettings");
+        void invalidateRefused(queryClient, keys.settings);
+      } else if (isNoAnswer(error)) {
+        // No reply, but the gateway keeps working under its lock: the flip may well have committed. Say so
+        // and re-read, rather than claiming it was not saved.
+        notifyWarn(NO_ANSWER);
+        void invalidateRefused(queryClient, keys.settings);
       } else {
         failed(error);
       }

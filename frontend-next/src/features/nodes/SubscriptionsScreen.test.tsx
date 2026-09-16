@@ -4,7 +4,9 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RefreshAllResult, type RefreshResult, type Settings, type Subscription } from "../../api/client";
 import { CONNECTION_BUSY, isConnectionBusy, isSettingsBusy } from "../../api/invalidation";
+import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
+import { NO_ANSWER } from "../gateway/networkForm";
 import { NOW_SEC, REFRESH_ALL, SETTINGS, STATUS, SUBS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
@@ -173,10 +175,11 @@ describe("Subscriptions › fetch settings that re-apply the tunnel", () => {
   });
 
   it("a 502 says nothing was saved, puts the switch back and re-reads what a re-apply can move", async () => {
-    const { api$ } = await openSubscriptions();
+    const { api$, client } = await openSubscriptions();
     const error = vi.spyOn(toast, "error");
     const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
     await waitFor(() => expect(tunnel).toBeChecked());
+    client.setQueryData(keys.rw, { live: false });   // nothing on this screen reads it, so watch the cache itself
     const reads = { settings: api$.getSettings.mock.calls.length, status: api$.getStatus.mock.calls.length };
     api$.putSettings.mockRejectedValue(new ApiError(502, "xray -test failed: bad outbound"));
     await userEvent.click(tunnel);
@@ -184,6 +187,23 @@ describe("Subscriptions › fetch settings that re-apply the tunnel", () => {
     expect(tunnel).toBeChecked();
     await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(reads.settings));
     expect(api$.getStatus.mock.calls.length).toBeGreaterThan(reads.status);
+    // A failed re-apply can stop xray, which moves the remote-access inbound too.
+    expect(client.getQueryState(keys.rw)?.isInvalidated).toBe(true);
+  });
+
+  it("a write that never answered says the gateway may still have taken it, and re-reads what a re-apply can move", async () => {
+    const { api$, client } = await openSubscriptions();
+    const warning = vi.spyOn(toast, "warning");
+    const tunnel = await screen.findByRole("switch", { name: "Fetch subscriptions through the tunnel" });
+    await waitFor(() => expect(tunnel).toBeChecked());
+    client.setQueryData(keys.rw, { live: false });   // nothing on this screen reads it, so watch the cache itself
+    const reads = { settings: api$.getSettings.mock.calls.length, status: api$.getStatus.mock.calls.length };
+    api$.putSettings.mockRejectedValue(new ApiError(0, "request timed out"));
+    await userEvent.click(tunnel);
+    await waitFor(() => expect(warning).toHaveBeenCalledWith(NO_ANSWER, { duration: 20000 }));
+    await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(reads.settings));
+    expect(api$.getStatus.mock.calls.length).toBeGreaterThan(reads.status);
+    expect(client.getQueryState(keys.rw)?.isInvalidated).toBe(true);
   });
 
   it("with xray stopped and a node still selected it asks before starting the tunnel; Cancel sends nothing", async () => {
