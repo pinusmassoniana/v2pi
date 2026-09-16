@@ -3,9 +3,10 @@ import { api } from "../api/client";
 import { serverNow } from "../api/clock";
 import { trafficStore } from "../api/traffic";
 import {
-  ALL_NODES, ALL_NODE_HEALTH, FAILOVER_STATUS, GATEWAY_NETWORK, NETWORK, NODES, NODE_HEALTH, NOW_SEC, PREVIEW, PREVIEW_NODES, PROFILES, PROFILE_PRESETS,
-  REFRESH_ALL, ROUTING, ROUTING_PRESETS, RU_DIRECT_PRESET, RW, RW_CLIENTS, RW_PENDING, RW_PRIVATE_KEY, RW_PUBLIC_KEY, SETTINGS, STATUS, SUBS,
-  TRAFFIC_FRAME, TUNNEL_PROFILES, TUNNEL_ROUTING, VALID, mockApi, mockGateway, mockNodeGroups, mockTunnel,
+  ALL_NODES, ALL_NODE_HEALTH, AUDIT, BACKUP_DOC, DIAGNOSTICS, FAILOVER_STATUS, GATEWAY_NETWORK, LOG_LINES, NETWORK, NODES, NODE_HEALTH, NOW_SEC, PREVIEW,
+  PREVIEW_NODES, PROFILES, PROFILE_PRESETS, REFRESH_ALL, RESTORE_RESULT, ROUTING, ROUTING_PRESETS, RU_DIRECT_PRESET, RW, RW_CLIENTS, RW_PENDING,
+  RW_PRIVATE_KEY, RW_PUBLIC_KEY, SETTINGS, STATUS, SUBS, TOKENS, TOKEN_CREATED,
+  TRAFFIC_FRAME, TUNNEL_PROFILES, TUNNEL_ROUTING, VALID, mockApi, mockGateway, mockNodeGroups, mockSystem, mockTunnel,
 } from "./fixtures";
 
 describe("gateway fixtures", () => {
@@ -184,6 +185,62 @@ describe("gateway fixtures", () => {
     expect(ROUTING_PRESETS.map((preset) => preset.name)).toEqual(["ru-direct", "block-ads", "cn-direct", "lan-direct"]);
     expect(RU_DIRECT_PRESET.rules.slice(0, TUNNEL_ROUTING.rules.length)).toEqual(TUNNEL_ROUTING.rules);
     expect(RU_DIRECT_PRESET.rules.filter((rule) => rule.id === 0).map((rule) => `${rule.type}:${rule.value}`)).toEqual(["geosite:category-ru"]);
+  });
+
+  it("mockSystem answers every System read and write, and only it does", async () => {
+    const api$ = mockApi();
+    // Without the System mock a screen test would reach the network — that has to be loud, not quiet.
+    expect(api$).not.toHaveProperty("listAudit");
+    const system$ = mockSystem(api$);
+    await expect(api.getBackup()).resolves.toBe(BACKUP_DOC);
+    await expect(api.restore(BACKUP_DOC)).resolves.toBe(RESTORE_RESULT);
+    await expect(api.listTokens()).resolves.toBe(TOKENS);
+    await expect(api.listAudit()).resolves.toBe(AUDIT);
+    await expect(api.getDiagnostics()).resolves.toBe(DIAGNOSTICS);
+    await expect(api.resetSettings()).resolves.toBe(SETTINGS);
+    await expect(api.deleteToken(1)).resolves.toBeUndefined();
+    await expect(api.createToken("home-assistant", "monitor", NOW_SEC + 30 * 86_400)).resolves.toMatchObject({
+      name: "home-assistant", scope: "monitor", expires_at: NOW_SEC + 30 * 86_400, token: TOKEN_CREATED.token,
+    });
+    await expect(api.createToken("forever", "read")).resolves.toMatchObject({ expires_at: null });
+    // Only `app` has content: xray writes neither file, so those two sources answer empty.
+    await expect(api.getLogs("app", 200)).resolves.toEqual({ source: "app", lines: LOG_LINES });
+    for (const source of ["xray-stderr", "xray-error", "xray-access"]) {
+      await expect(api.getLogs(source, 200)).resolves.toEqual({ source, lines: [] });
+    }
+    expect(system$.getLogs.mock.calls.map(([source]) => source)).toEqual(["app", "xray-stderr", "xray-error", "xray-access"]);
+  });
+
+  it("the System fixtures cover every state their screens draw", () => {
+    // tokens: one never used, one used minutes ago, one that never expires; ordered by id, as GET /tokens is
+    expect(TOKENS.map((t) => t.id)).toEqual([1, 2, 3]);
+    expect(TOKENS.filter((t) => t.last_used_at === null)).toHaveLength(1);
+    expect(TOKENS.filter((t) => t.expires_at === null).map((t) => t.name)).toEqual(["uptime-probe"]);
+    expect(new Set(TOKENS.map((t) => t.scope))).toEqual(new Set(["monitor", "read", "readwrite"]));
+    expect(TOKENS.every((t) => t.prefix.startsWith("pgwp_") && t.prefix.length === 12)).toBe(true);
+    // the created token is the only place a secret exists, and it is not one of the listed rows
+    expect(TOKEN_CREATED.token).toMatch(/^pgwp_[A-Za-z0-9_-]{43}$/);
+    expect(TOKENS.some((t) => t.id === TOKEN_CREATED.id)).toBe(false);
+    // audit: newest first, one masked remote-access path, every actor kind, 2xx / 4xx / the 413
+    expect([...AUDIT].sort((a, b) => b.ts - a.ts)).toEqual(AUDIT);
+    expect(AUDIT.filter((row) => row.path.startsWith("/api/rw/clients/"))).toHaveLength(1);
+    expect(new Set(AUDIT.map((row) => row.actor.split(":")[0]))).toEqual(new Set(["user", "token", "anon"]));
+    expect(AUDIT.map((row) => row.status)).toContain(413);
+    expect(AUDIT.every((row) => ["POST", "PUT", "PATCH", "DELETE"].includes(row.method))).toBe(true);
+    expect(AUDIT.every((row) => !row.path.includes("?"))).toBe(true);
+    // logs: two ERROR lines and one WARNING, so the pane's tones are all exercised
+    expect(LOG_LINES.filter((line) => line.includes(" ERROR "))).toHaveLength(2);
+    expect(LOG_LINES.filter((line) => line.includes(" WARNING "))).toHaveLength(1);
+    // a hand-taken backup carries no created_at — only the daily job and the pre-restore snapshot stamp one
+    expect(BACKUP_DOC.schema_version).toBe(2);
+    expect(BACKUP_DOC).not.toHaveProperty("created_at");
+    // a successful restore always leaves the gateway disconnected, and names the snapshot it took
+    expect(RESTORE_RESULT.runtime).toBe("disconnected");
+    expect(RESTORE_RESULT.restored.rw_disabled).toBe("");
+    expect(RESTORE_RESULT.pre_restore_snapshot).toMatch(/^\/app\/data\/backups\/pre-restore-/);
+    // diagnostics: a healthy collector, which is what makes the warning's absence meaningful
+    expect(DIAGNOSTICS.stats_last_ok_at).not.toBeNull();
+    expect(DIAGNOSTICS.stats_fail_count).toBe(0);
   });
 
   it("the Tunnel profiles: one default, one live, one unused; every feature switched on somewhere", () => {

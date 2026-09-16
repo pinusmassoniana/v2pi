@@ -1,9 +1,10 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
-import { vi } from "vitest";
+import { vi, type MockedFunction } from "vitest";
 import type {
-  Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate, PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
-  RefreshAllResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
+  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, Diagnostics, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
+  PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
+  RefreshAllResult, RestoreResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
   TuningProfile,
 } from "../api/client";
 import { api } from "../api/client";
@@ -394,6 +395,76 @@ export const TRAFFIC_FRAME: TrafficFrame = {
   },
 };
 
+// --- System ---
+
+/**
+ * Three API tokens as `GET /tokens` orders them (by id ascending): one that has never been used and
+ * expires inside a month, one used minutes ago that expires later, and one that never expires.
+ */
+export const TOKENS: ApiToken[] = [
+  { id: 1, name: "grafana-monitor", scope: "monitor", prefix: "pgwp_8Kq2Xm4", created_at: NOW_SEC - 60 * 86_400, last_used_at: null, expires_at: NOW_SEC + 30 * 86_400 },
+  { id: 2, name: "ci-deploy", scope: "readwrite", prefix: "pgwp_Vt9pLs1", created_at: NOW_SEC - 30 * 86_400, last_used_at: NOW_SEC - 120, expires_at: NOW_SEC + 90 * 86_400 },
+  { id: 3, name: "uptime-probe", scope: "read", prefix: "pgwp_Zc3hRw7", created_at: NOW_SEC - 120 * 86_400, last_used_at: NOW_SEC - 2 * 86_400, expires_at: null },
+];
+
+/** `POST /tokens`' reply: the row plus the secret, which exists only in this one response. */
+export const TOKEN_CREATED: ApiTokenCreated = {
+  id: 4, name: "home-assistant", scope: "monitor", prefix: "pgwp_Qd7Kx2m", created_at: NOW_SEC, last_used_at: null, expires_at: NOW_SEC + 30 * 86_400,
+  token: "pgwp_Qd7Kx2mV9tLpR4sW1yZbN6hJ3cFgA8eU5nT0iOwXkYr",   // fake — a test fixture, not a real secret
+};
+
+/**
+ * Eight audit rows, newest first, covering every shape the list has to render: a remote-access client
+ * path carrying a live uuid, a token actor, `anon`, and 2xx / 4xx / the middleware's own 413.
+ */
+export const AUDIT: AuditEntry[] = [
+  { ts: NOW_SEC - 30, actor: "user:admin", method: "PATCH", path: "/api/rw/clients/3f2a1c4e-77b0-4d51-9a2e-8c1b6f0d4a75", status: 200 },
+  { ts: NOW_SEC - 120, actor: "token:pgwp_Vt9pLs1", method: "PUT", path: "/api/settings", status: 200 },
+  { ts: NOW_SEC - 300, actor: "user:admin", method: "POST", path: "/api/tokens", status: 201 },
+  { ts: NOW_SEC - 900, actor: "user:admin", method: "DELETE", path: "/api/tokens/4", status: 204 },
+  { ts: NOW_SEC - 1_800, actor: "user:admin", method: "POST", path: "/api/password", status: 403 },
+  { ts: NOW_SEC - 2_400, actor: "anon", method: "POST", path: "/api/login", status: 401 },
+  { ts: NOW_SEC - 3_000, actor: "user:admin", method: "POST", path: "/api/settings/reset", status: 200 },
+  { ts: NOW_SEC - 4_200, actor: "anon", method: "POST", path: "/api/restore", status: 413 },
+];
+
+/** Seven `data/app.log` lines: two ERROR, one WARNING, and four INFO from three loggers. */
+export const LOG_LINES: string[] = [
+  "2023-11-14 22:10:58,003 INFO pi_gw_panel.xray_supervisor.supervisor starting xray (pid 2417)",
+  "2023-11-14 22:11:02,447 INFO pi_gw_panel.controller applied node 12 — xray reloaded in 1.4s",
+  "2023-11-14 22:12:44,118 ERROR pi_gw_panel.xray_supervisor.supervisor refusing to start xray: the config on disk may not be served",
+  "2023-11-14 22:12:47,902 ERROR pi_gw_panel.proc xray (pid 2417) is still running 5s after SIGKILL; it was NOT stopped",
+  "2023-11-14 22:13:05,660 WARNING pi_gw_panel.xray_config.validate rolled back to the last good xray config",
+  "2023-11-14 22:13:09,214 INFO pi_gw_panel.xray_supervisor.supervisor xray running again (pid 2604)",
+  "2023-11-14 22:38:12,417 INFO pi_gw_panel.api.routes stats client reconfigured to 127.0.0.1:10085 — xray StatsService reachable",
+];
+
+/** A healthy gateway's diagnostics: the collector last succeeded two seconds ago and has never failed. */
+export const DIAGNOSTICS: Diagnostics = {
+  app_version: "1.18.64", xray_version: "25.3.6", uptime_sec: 6 * 86_400 + 4 * 3_600 + 12 * 60,
+  db_path: "/app/data/pi_gw_panel.sqlite", db_bytes: 2_100_000,
+  disk_free_bytes: 11_400_000_000, disk_total_bytes: 29_000_000_000,
+  stats_last_ok_at: NOW_SEC - 2, stats_error: "", stats_fail_count: 0,
+};
+
+/** What `GET /backup` hands back: the whole configuration, and no `created_at` — only the daily job stamps one. */
+export const BACKUP_DOC: BackupDoc = {
+  schema_version: 2,
+  nodes: [{ name: "nl-ams-03", address: "nl-ams-03.example.org", port: 443, uuid: "uuid-1" }],
+  subscriptions: [{ name: "work", url: "https://example.org/sub" }],
+  profiles: [{ name: "fragment-tls" }],
+  routing: { rules: [{ type: "geoip", value: "ru", action: "direct" }], default_action: "proxy" },
+  settings: { stats_enabled: "1", traffic_sample_ms: "1000" },
+};
+
+/** `POST /restore`'s reply on success: counts, a gateway that is now disconnected, and the snapshot path. */
+export const RESTORE_RESULT: RestoreResult = {
+  ok: true,
+  restored: { nodes: 24, subscriptions: 3, profiles: 6, routing_rules: 11, rw_disabled: "" },
+  runtime: "disconnected",
+  pre_restore_snapshot: "/app/data/backups/pre-restore-1700000000-9c4e1f2a7b6d4e8fa0c35d71e2b48f60.json",
+};
+
 /**
  * Enough of the backend for every screen built so far to render real content; tests override single
  * methods as needed. Each call also starts the test on the gateway clock with an empty live-traffic
@@ -513,6 +584,43 @@ export function mockTunnel(api$: MockApi): MockApi {
 export function mockGateway(api$: MockApi): MockApi {
   api$.getNetwork.mockResolvedValue(GATEWAY_NETWORK);
   return api$;
+}
+
+/**
+ * Answer every System read and write: the backup document and its restore, the token list and its two writes, the
+ * audit log, the log tail, diagnostics and the settings reset. Kept out of `mockApi` because no screen outside System
+ * reads any of them, and a test that forgets this mock should fail loudly rather than quietly polling a real fetch.
+ */
+export function mockSystem(api$: MockApi): MockApi & SystemMocks {
+  const extra: SystemMocks = {
+    getBackup: vi.spyOn(api, "getBackup").mockResolvedValue(BACKUP_DOC),
+    restore: vi.spyOn(api, "restore").mockResolvedValue(RESTORE_RESULT),
+    listTokens: vi.spyOn(api, "listTokens").mockResolvedValue(TOKENS),
+    createToken: vi.spyOn(api, "createToken").mockImplementation(async (name: string, scope: ApiTokenScope, expiresAt?: number) => ({
+      ...TOKEN_CREATED, name, scope, expires_at: expiresAt ?? null,
+    })),
+    deleteToken: vi.spyOn(api, "deleteToken").mockResolvedValue(undefined),
+    listAudit: vi.spyOn(api, "listAudit").mockResolvedValue(AUDIT),
+    getLogs: vi.spyOn(api, "getLogs").mockImplementation(async (source: string) => ({
+      // Only `app` has content: xray is built with no error path and "access": "none".
+      source, lines: source === "app" ? LOG_LINES : [],
+    })),
+    getDiagnostics: vi.spyOn(api, "getDiagnostics").mockResolvedValue(DIAGNOSTICS),
+    resetSettings: vi.spyOn(api, "resetSettings").mockResolvedValue(SETTINGS),
+  };
+  return Object.assign(api$, extra);
+}
+
+interface SystemMocks {
+  getBackup: MockedFunction<typeof api.getBackup>;
+  restore: MockedFunction<typeof api.restore>;
+  listTokens: MockedFunction<typeof api.listTokens>;
+  createToken: MockedFunction<typeof api.createToken>;
+  deleteToken: MockedFunction<typeof api.deleteToken>;
+  listAudit: MockedFunction<typeof api.listAudit>;
+  getLogs: MockedFunction<typeof api.getLogs>;
+  getDiagnostics: MockedFunction<typeof api.getDiagnostics>;
+  resetSettings: MockedFunction<typeof api.resetSettings>;
 }
 
 /** Start a write under `mutationKey` that runs until the returned function is called, as one started elsewhere would. */
