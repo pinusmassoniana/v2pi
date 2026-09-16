@@ -2,7 +2,8 @@ import { act, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SECTIONS } from "../app/nav";
 import { closePalette } from "../app/shell/palette";
-import { TRAFFIC_FRAME, mockApi } from "./fixtures";
+import { settleConfirm } from "../components/confirm";
+import { TRAFFIC_FRAME, mockApi, mockGateway } from "./fixtures";
 import { renderApp } from "./renderApp";
 
 // React's version of the freeze fixed in the Svelte panel in v1.17.26: an effect that writes state
@@ -20,6 +21,8 @@ const LOADED: Readonly<Record<string, [region: string, text: string]>> = {
   "/tunnel/routing": ["Defaults", "used by the catch-all row"],
   "/tunnel/anti-dpi": ["Anti-DPI profiles", "fragment-tls"],
   "/tunnel/health": ["Health monitoring", "master switch"],
+  "/gateway/network": ["Router checklist", "eth0.2"],
+  "/gateway/remote-access": ["Clients", "iphone-anna"],
 };
 
 function fillEveryField(root: HTMLElement) {
@@ -31,11 +34,15 @@ function fillEveryField(root: HTMLElement) {
   for (const toggle of root.querySelectorAll<HTMLButtonElement>('button[role="switch"]')) fireEvent.click(toggle);
 }
 
-afterEach(() => act(() => closePalette()));
+afterEach(() => act(() => {
+  closePalette();
+  settleConfirm(false);   // a switch that asks first (disarming the kill-switch) leaves its question open
+}));
 
 describe.each(PATHS)("%s", (path) => {
   it("does not fall into a render loop when every field is used", async () => {
-    const api$ = mockApi();
+    // Gateway's screens get their own network read, so flipped switches and questions stay in mocks.
+    const api$ = path.startsWith("/gateway") ? mockGateway(mockApi()) : mockApi();
     const logged: unknown[][] = [];
     vi.spyOn(console, "error").mockImplementation((...args) => { logged.push(args); });
     renderApp(path);

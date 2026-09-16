@@ -266,7 +266,8 @@ export function recentEvents(events: readonly ConnEvent[], limit = RECENT_EVENTS
   return newestFirst(events).slice(0, limit);
 }
 
-const FAILOVER_KIND = /failover|switch/i;
+// "kill-switch" is the fail-closed guard switched on or off (Gateway › Network's Apply records it), not a node switch.
+const FAILOVER_KIND = /failover|(?<!kill-)switch/i;
 
 /** H5: the last eight failover / switch events, newest first; else one row from last_failover_at; else none. */
 export function failoverHistory(events: readonly ConnEvent[], lastFailoverAt: number | null | undefined, limit = FAILOVER_HISTORY): ConnEvent[] {

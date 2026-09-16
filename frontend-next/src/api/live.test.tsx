@@ -4,12 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "../features/home/screens";   // loaded up front: the route's lazy import must not wait on fake timers
 import "../features/nodes/screens";
 import "../features/tunnel/screens";
+import "../features/gateway/screens";
 import { STATUS_POLL_MS } from "../app/shell/Shell";
-import { NOW_SEC, STATUS, mockApi, mockTunnel } from "../test/fixtures";
+import { NOW_SEC, STATUS, holdWrite, mockApi, mockGateway, mockTunnel } from "../test/fixtures";
 import { renderApp } from "../test/renderApp";
 import { setViewportWidth } from "../test/viewport";
-import { NETWORK_POLL_MS, SLOW_POLL_MS } from "./cadence";
+import { GATEWAY_NETWORK_POLL_MS, NETWORK_POLL_MS, RW_POLL_MS, SLOW_POLL_MS } from "./cadence";
 import { ApiError, api } from "./client";
+import { NETWORK_WRITE } from "./invalidation";
 import { keys, queries } from "./keys";
 import { usePolledQuery } from "./live";
 import { createQueryClient } from "./queryClient";
@@ -223,5 +225,69 @@ describe("Tunnel polls each key at its owner's cadence and no faster", () => {
     expect(during).toEqual({
       status: 60_000 / STATUS_POLL_MS, routing: 0, profiles: 0, settings: 0, nodes: 0, network: 0, routingPresets: 0, profilePresets: 0,
     });
+  });
+});
+
+/** Mount a Gateway `path` on fake timers, wait for `loaded`, then count each read over one minute. */
+async function countGatewayReads(path: string, loaded: () => HTMLElement | null, during?: (api$: ReturnType<typeof mockApi>) => void) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const api$ = mockGateway(mockApi());
+  const view = renderApp(path);
+  for (let i = 0; i < 80 && !loaded(); i++) await act(() => vi.advanceTimersByTimeAsync(25));
+  expect(loaded()).not.toBeNull();
+  const reads = {
+    status: api$.getStatus, network: api$.getNetwork, rw: api$.getRw, settings: api$.getSettings, routing: api$.getRouting,
+    nodes: api$.listNodes, profiles: api$.listProfiles,
+  };
+  const total = (key: keyof typeof reads) => reads[key].mock.calls.length;
+  during?.(api$);
+  const before = Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length]));
+  return {
+    api$, view, total,
+    async count(ms = 60_000) {
+      await act(() => vi.advanceTimersByTimeAsync(ms));
+      return Object.fromEntries(Object.entries(reads).map(([key, spy]) => [key, spy.mock.calls.length - before[key]!]));
+    },
+  };
+}
+
+describe("Gateway polls each key at its owner's cadence and no faster", () => {
+  it("Network: status 3 s (shell), network 5 s, settings read once; remote access, routing, nodes and profiles not at all", async () => {
+    const { count, total } = await countGatewayReads("/gateway/network", () => screen.queryByRole("region", { name: "DHCP leases" }));
+    expect(await count()).toEqual({
+      status: 60_000 / STATUS_POLL_MS, network: 60_000 / GATEWAY_NETWORK_POLL_MS, rw: 0, settings: 0, routing: 0, nodes: 0, profiles: 0,
+    });
+    expect(total("settings")).toBe(1);
+  });
+
+  it("Remote access: status 3 s (shell), remote access 15 s; network and settings not at all", async () => {
+    const { count } = await countGatewayReads("/gateway/remote-access", () => screen.queryByRole("table", { name: "Clients" }));
+    expect(await count()).toEqual({
+      status: 60_000 / STATUS_POLL_MS, network: 0, rw: 60_000 / RW_POLL_MS, settings: 0, routing: 0, nodes: 0, profiles: 0,
+    });
+  });
+
+  it("Remote access re-reads as soon as the status poll shows the tunnel stopped or started, not at its next poll", async () => {
+    const { api$, total } = await countGatewayReads("/gateway/remote-access", () => screen.queryByRole("table", { name: "Clients" }));
+    const reads = total("rw");
+    api$.getStatus.mockResolvedValue({ ...STATUS, running: false, xray_state: "stopped" });
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_MS));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(total("rw")).toBe(reads + 1);
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_MS));
+    expect(total("rw")).toBe(reads + 1);   // the same state again is no change
+  });
+
+  it("the Network poll pauses while an Apply holds the gateway, and resumes after it", async () => {
+    const { view, count } = await countGatewayReads("/gateway/network", () => screen.queryByRole("region", { name: "DHCP leases" }));
+    let release: () => Promise<void> = async () => {};
+    act(() => { release = holdWrite(view.client, NETWORK_WRITE); });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const held = await count();
+    expect(held.network).toBe(0);
+    expect(held.status).toBe(60_000 / STATUS_POLL_MS);
+    await release();
+    const after = await count(60_000);
+    expect(after.network).toBe(60_000 / GATEWAY_NETWORK_POLL_MS);
   });
 });

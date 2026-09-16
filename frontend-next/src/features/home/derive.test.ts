@@ -255,6 +255,16 @@ describe("events", () => {
     expect(failoverHistory(NETWORK.events, null).map((e) => e.ts)).toEqual([NOW_SEC - 600, NOW_SEC - 50_000]);
   });
 
+  it("failover history leaves out the kill-switch being armed or disarmed — that switches no node", () => {
+    const events: ConnEvent[] = [
+      { ts: NOW_SEC - 30, kind: "kill-switch", detail: "disabled" },
+      { ts: NOW_SEC - 20, kind: "Kill-Switch", detail: "enabled" },
+      { ts: NOW_SEC - 10, kind: "switch", detail: "manual switch" },
+    ];
+    expect(failoverHistory(events, null).map((e) => e.detail)).toEqual(["manual switch"]);
+    expect(failoverHistory(events.slice(0, 2), null)).toEqual([]);
+  });
+
   it("failover history falls back to last_failover_at when no event matches, and is empty without either", () => {
     const plain: ConnEvent[] = [{ ts: NOW_SEC - 5, kind: "apply", detail: "applied" }];
     expect(failoverHistory(plain, NOW_SEC - 700)).toEqual([{ ts: NOW_SEC - 700, kind: "failover", detail: "Auto-failover — the gateway switched node" }]);
