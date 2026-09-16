@@ -37,7 +37,7 @@ export function Overview() {
       <KpiGrid className="md:col-span-2 xl:col-span-7" />
       <OverviewThroughput className="md:col-span-2 xl:col-span-8" />
       <UpstreamHealthCard status={status.data} statusError={status.isError} nodes={nodes} health={health} className="md:col-span-2 xl:col-span-4" />
-      <ConnectionCard status={status.data} network={network} nodes={nodes.data} className="xl:col-span-6" />
+      <ConnectionCard status={status.data} statusError={status.isError} network={network} nodes={nodes.data} className="xl:col-span-6" />
       <EventsCard network={network} className="xl:col-span-6" />
       <RoutingCard routing={routing} activeLabel={activeLabel} className="xl:col-span-6" />
       <NetworkCard network={network} className="xl:col-span-6" />

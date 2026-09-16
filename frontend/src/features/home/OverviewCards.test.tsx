@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ApiError, type Routing, type Status, type TrafficFrame } from "../../api/client";
 import { createQueryClient } from "../../api/queryClient";
 import { closePalette } from "../../app/shell/palette";
-import { NETWORK, NODE_HEALTH, STATUS, TRAFFIC_FRAME, mockApi } from "../../test/fixtures";
+import { NETWORK, NODES, NODE_HEALTH, STATUS, TRAFFIC_FRAME, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 
 afterEach(() => act(() => closePalette()));
@@ -171,27 +171,77 @@ describe("Overview › connection path, events and summaries", () => {
     expect(within(status).getByRole("img", { name: "— ONLINE" })).toBeInTheDocument();
     expect(within(status).getByText("nl-ams-03")).toBeInTheDocument();   // no flag from the other node's egress
     const path = region("Connection path");
-    expect(path).toHaveTextContent("Node · egress—");
+    expect(within(path.querySelector("[data-live]") as HTMLElement).getByText("health stale")).toBeInTheDocument();
+    expect(path.querySelector("[data-live]")).toHaveTextContent("egress—");
     expect(path).not.toHaveTextContent("185.107.56.21");
+    expect(path.querySelector("[data-node]")).not.toHaveTextContent("🇩🇪");
     expect(path.querySelector("path[data-leg]")).toHaveAttribute("data-leg", "off");
     const active = within(within(region("Upstream health")).getByRole("list", { name: "Active node" })).getByRole("listitem");
     expect(active).toHaveTextContent("health stale");
     expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale");
   });
 
-  it("O8: the path from the network read and the live frame; the bypass turns amber with any direct traffic", async () => {
+  it("O8: the path from the network read, the status poll and the live frame; direct traffic stays neutral", async () => {
     const { api$ } = await openOverview();
     api$.emitTraffic(TRAFFIC_FRAME);
     const card = region("Connection path");
-    expect(within(card).getByRole("img")).toHaveAccessibleName("Connection path: devices, gateway, nl-ams-03, internet. Tunnel leg OK; bypass idle.");
-    expect(card).toHaveTextContent("Devices · 12 clientspool 50");
-    expect(card).toHaveTextContent("Gateway10.0.2.1 · eth0.2");
-    expect(card).toHaveTextContent("Node · 42 ms · egress185.107.56.212a0b:4d07::21");
-    expect(card).toHaveTextContent("Internet · uplinkv4 ✓ · v6 ✓");
-    expect(within(card).getByText("ARMED")).toBeInTheDocument();
-    api$.emitTraffic({ ...TRAFFIC_FRAME, outbounds: { ...TRAFFIC_FRAME.outbounds, direct: { up_bps: 0, down_bps: 800 } } });
-    expect(card.querySelector("path[data-bypass]")).toHaveAttribute("data-bypass", "leaking");
-    expect(screen.queryByRole("status", { name: "Traffic bypassing the tunnel" })).toBeNull();   // the alert waits for 50 kbit/s
+    expect(within(card).getByRole("img")).toHaveAccessibleName(
+      "Connection path: devices, gateway, nl-ams-03, internet. Tunnel OK, 42 ms, down 12.4 Mbit/s, up 1.8 Mbit/s. Direct by routing rules: idle. Kill-switch ARMED.",
+    );
+    await waitFor(() => expect([...card.querySelector("[data-stats]")!.children].map((column) => column.textContent)).toEqual([
+      "Devices12clientspool 50",
+      "Gateway10.0.2.1eth0.2kill-switch ARMED",
+      "nl-ams-0342 msconnected 1megress185.107.56.212a0b:4d07::21",
+      "Internetuplink v4 ✓up v6 ✓up",
+    ]));
+    expect(within(card).getByText("live")).toHaveAttribute("data-tone", "ok");
+    expect(card.querySelector('svg[data-layout="wide"] [data-pill="tunnel"]')).toHaveTextContent("↓ 12.4 Mbit/s↑ 1.8 Mbit/s");
+
+    api$.emitTraffic({ ...TRAFFIC_FRAME, outbounds: { ...TRAFFIC_FRAME.outbounds, direct: { up_bps: 300_000, down_bps: 4_500_000 } } });
+    const direct = card.querySelector('svg[data-layout="wide"] path[data-direct]')!;
+    expect(direct).toHaveAttribute("data-direct", "flowing");
+    expect(direct.getAttribute("style")).toBe("stroke: var(--t3);");
+    expect(card.querySelector('svg[data-layout="wide"] [data-pill="direct"]')).toHaveTextContent("↓ 4.5 Mbit/s ↑ 300 kbit/s");
+    expect(within(card).getByRole("img")).toHaveAccessibleName(/ Direct by routing rules: down 4\.5 Mbit\/s, up 300 kbit\/s\. /);
+  });
+
+  it("O8: a node named with its own flag keeps its name plain, and its marker draws one flag — the egress one once a probe reports it", async () => {
+    const api$ = mockApi();
+    api$.listNodes.mockResolvedValue(NODES.map((n) => (n.id === 1 ? { ...n, name: "🇪🇪 Эстония" } : n)));
+    renderApp("/");
+    const card = await screen.findByRole("region", { name: "Connection path" });
+    await waitFor(() => expect(within(card).getByRole("img")).toHaveAccessibleName(/^Connection path: devices, gateway, Эстония, internet\./));
+    const markers = () => [...card.querySelectorAll("svg[data-layout] [data-node]")].map((marker) => marker.textContent);
+    expect(markers()).toEqual(["🇪🇪", "🇪🇪"]);   // no probe yet: the flag the name started with
+
+    api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, egress_cc: "EE" } });
+    expect(markers()).toEqual(["🇪🇪", "🇪🇪"]);
+    expect(within(card.querySelector("[data-live]") as HTMLElement).getByText("Эстония")).toHaveAttribute("title", "Эстония");
+    expect(card.querySelector("[data-stats]")).not.toHaveTextContent("🇪🇪");
+    for (const drawing of card.querySelectorAll("svg[data-layout]")) expect(drawing.textContent!.match(/🇪🇪/gu)).toHaveLength(1);
+
+    api$.emitTraffic(TRAFFIC_FRAME);   // the egress is in the Netherlands: its flag wins
+    expect(markers()).toEqual(["🇳🇱", "🇳🇱"]);
+    expect(card).not.toHaveTextContent("🇪🇪");
+  });
+
+  it("O8: connected time follows the Nodes rule — none while xray is stopped or the status poll fails", async () => {
+    const { api$, client } = await openOverview();
+    api$.emitTraffic(TRAFFIC_FRAME);
+    const node = () => region("Connection path").querySelector("[data-live]")!;
+    await waitFor(() => expect(node()).toHaveTextContent("connected 1m"));
+
+    api$.getStatus.mockResolvedValue({ ...STATUS, running: false, xray_state: "stopped" });
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(node()).toHaveTextContent("xray stoppedconnected —"));
+    expect(region("Connection path").querySelector("path[data-leg]")).toHaveAttribute("data-leg", "off");
+
+    api$.getStatus.mockResolvedValue(STATUS);
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(node()).toHaveTextContent("connected 1m"));
+    api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
+    await act(() => client.refetchQueries({ queryKey: ["status"] }));
+    await waitFor(() => expect(node()).toHaveTextContent("42 msconnected —"));
   });
 
   it("O11: the last six events, newest first, with levels and a link to the logs", async () => {

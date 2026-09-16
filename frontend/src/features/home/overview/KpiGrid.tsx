@@ -1,9 +1,9 @@
 import { useTraffic } from "../../../api/traffic";
-import { Chip } from "../../../components/data/Chip";
 import { Kpi } from "../../../components/data/Kpi";
 import { cn } from "../../../lib/cn";
 import { fmtBytes, fmtRate, splitUnit } from "../../../lib/format";
 import { recentValues, sessionTotals, type SessionTotals } from "../derive";
+import { LiveChip } from "./LiveChip";
 
 const SPARK_WINDOW_MS = 5 * 60_000;
 const SOURCE: Record<SessionTotals["source"], string> = {
@@ -25,9 +25,7 @@ export function KpiGrid({ className }: { className?: string }) {
   const totalUp = totals ? splitUnit(fmtBytes(totals.up)) : NONE;
   const trend = (key: "up" | "down") => (traffic.disabled ? undefined : recentValues(traffic.samples, SPARK_WINDOW_MS, key));
   const stale = !traffic.disabled && !traffic.fresh;
-  let live = <Chip tone="ok">live</Chip>;
-  if (traffic.disabled) live = <Chip tone="neutral">stats off</Chip>;
-  else if (stale) live = <Chip tone="neutral">connecting…</Chip>;
+  const live = <LiveChip disabled={traffic.disabled} fresh={traffic.fresh} />;
 
   return (
     <div className={cn("grid grid-cols-2 gap-3", className)}>

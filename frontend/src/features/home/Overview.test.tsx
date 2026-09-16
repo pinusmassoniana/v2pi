@@ -379,16 +379,22 @@ describe("Overview › KPIs", () => {
     expect(within(sessionDown).getByText("live")).toHaveAttribute("data-tone", "ok");
     for (const kpi of kpis) expect(kpi).not.toHaveAttribute("data-dim");
     const orb = within(screen.getByRole("region", { name: "Status" })).getByRole("img", { name: "42 ms · ONLINE" });
-    const live = screen.getByRole("region", { name: "Connection path" }).querySelector("[data-live]")!;
+    const path = screen.getByRole("region", { name: "Connection path" });
+    const live = path.querySelector("[data-live]")!;
     expect(orb).not.toHaveAttribute("data-dim");
     expect(live).not.toHaveAttribute("data-dim");
+    expect(within(path).getByText("live")).toHaveAttribute("data-tone", "ok");
+    expect(path.querySelectorAll("[data-flow]")).toHaveLength(2);
 
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(within(sessionDown).getByText("connecting…")).toBeInTheDocument();
     for (const kpi of kpis) expect(kpi).toHaveAttribute("data-dim", "true");
     expect(orb).toHaveAttribute("data-dim", "true");
     expect(live).toHaveAttribute("data-dim", "true");
-    expect(live).toHaveTextContent("Node · 42 ms · egress");   // still shown, just not as live
+    expect(live).toHaveTextContent("42 ms");   // still shown, just not as live
+    expect(within(path).getByText("connecting…")).toHaveAttribute("data-tone", "neutral");
+    expect(path.querySelectorAll("[data-flow]")).toHaveLength(0);   // a frozen frame's rate is not a live rate
+    expect(within(path).getByRole("img")).toHaveAccessibleName(/ Live stats paused\.$/);
 
     api$.emitTraffic(TRAFFIC_FRAME);
     expect(within(sessionDown).getByText("live")).toBeInTheDocument();
@@ -414,7 +420,10 @@ describe("Overview › KPIs", () => {
     for (const name of ["↓ Download", "↑ Upload", "↓ Session total", "↑ Session total"]) {
       expect(screen.getByRole("region", { name })).toHaveTextContent("—");
     }
-    expect(screen.getByText("stats off")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "↓ Session total" })).getByText("stats off")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "↓ Download" }).querySelector("svg")).toBeNull();
+    const path = screen.getByRole("region", { name: "Connection path" });
+    expect(within(path).getByText("stats off")).toHaveAttribute("data-tone", "neutral");
+    expect(within(path).getByRole("img")).toHaveAccessibleName(/ Tunnel OFF, rates unknown\. Direct by routing rules: rates unknown\. /);
   });
 });
