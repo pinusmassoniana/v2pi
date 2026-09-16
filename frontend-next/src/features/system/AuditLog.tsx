@@ -14,7 +14,9 @@ import {
 } from "./audit";
 
 const STATUS_TONE: Record<string, string> = { neutral: "text-t2", warn: "text-warn", bad: "text-bad" };
-const ACTOR_TONE: Record<string, string> = { user: "text-[#b9a6ff]", token: "text-t2", anon: "text-t3" };
+// The brand violet is already a token (--g2 = rgb(124,92,255), the mockup's accent), and it already carries this
+// exact "not a plain neutral" meaning elsewhere (RoutingCard's "proxy", EventFeed's "info") — never a new literal.
+const ACTOR_TONE: Record<string, string> = { user: "text-g2", token: "text-t2", anon: "text-t3" };
 const AUDIT_413_NOTE = "the 413 was refused by the body limit before the session was even checked, and still recorded";
 
 /** One path, masked while it carries a live remote-access credential. The full value enters the DOM only on Reveal. */
@@ -97,13 +99,19 @@ export function AuditCard({ phone = false }: { phone?: boolean }) {
         }
       />
       {phone ? <p className="mb-2 text-[11px] leading-relaxed text-t3">{AUDIT_DESCRIPTION} Newest first.</p> : null}
+      {/*
+       * Mounted empty on every render, before Show is ever pressed — exactly as ResultLine mounts its own
+       * role="status" empty before an editor's first result. A live region a screen reader first sees already
+       * holding text is a region it never announces; one it sees empty, then watches gain text, it does.
+       */}
+      <p role="status" className={shown && audit.isPending ? "text-[11.5px] text-t3" : "sr-only"}>
+        {shown && audit.isPending ? AUDIT_LOADING : ""}
+      </p>
       {!shown ? (
         <p className="text-[11.5px] leading-relaxed text-t3">{AUDIT_NOT_LOADED}</p>
       ) : audit.isError ? (
         <ErrorState message={audit.error.message} onRetry={() => void audit.refetch()} />
-      ) : audit.isPending ? (
-        <p role="status" className="text-[11.5px] text-t3">{AUDIT_LOADING}</p>
-      ) : rows.length === 0 ? (
+      ) : audit.isPending ? null : rows.length === 0 ? (
         <p className="text-[11.5px] text-t3">{AUDIT_EMPTY}</p>
       ) : (
         <ul aria-label="Audit entries" className={cn(phone && "flex flex-col gap-1.5")}>

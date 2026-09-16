@@ -181,14 +181,26 @@ describe("Access — tokens (G7)", () => {
     await release();
   });
 
-  it("shows an empty state and its own retry", async () => {
+  it("shows an empty state", async () => {
     const api$ = mockSystem(mockApi());
     api$.listTokens.mockResolvedValue([]);
     renderApp("/system/access");
     expect(await screen.findByText("No tokens yet.")).toBeInTheDocument();
+  });
 
+  it("a list that failed to load is an error with Retry, and Retry re-reads it", async () => {
+    const api$ = mockSystem(mockApi());
     api$.listTokens.mockRejectedValue(new ApiError(500, "tokens unreadable"));
-    act(() => settleConfirm(false));
+    renderApp("/system/access");
+
+    const alert = await screen.findByRole("alert", {}, { timeout: 3000 });
+    expect(alert).toHaveTextContent("API tokens did not load");
+
+    api$.listTokens.mockResolvedValue(TOKENS);
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await screen.findByText("ci-deploy");
+    expect(api$.listTokens.mock.calls.length).toBeGreaterThan(1);
   });
 });
 
