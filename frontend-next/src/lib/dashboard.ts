@@ -1,4 +1,4 @@
-// Pure, unit-tested helpers for the Dashboard (kept out of the .svelte file so they're testable).
+// Pure, unit-tested helpers for Home › Overview, kept out of the components so they are testable.
 import type { Subscription } from "../api/client";
 
 export interface SubWarn { name: string; text: string; level: "warn" | "bad"; }

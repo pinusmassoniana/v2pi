@@ -1,6 +1,6 @@
 # Contributing to v2pi
 
-v2pi is a FastAPI + Svelte control panel for a Raspberry Pi VPN gateway. Contributions are welcome.
+v2pi is a FastAPI + React control panel for a Raspberry Pi VPN gateway. Contributions are welcome.
 
 ## Development
 
@@ -12,7 +12,7 @@ uv lock --check
 uv run --locked pytest -q
 ```
 
-**Frontend** (Node 20.19+, 22.13+, or 24+):
+**Frontend** (Node 22.13+ or 24+):
 
 ```bash
 cd frontend
@@ -41,7 +41,7 @@ backend, so stop any process already using its configured port first.
   `npm run build` all pass. Run `uv audit --locked` and `npm audit --audit-level=high` when lock files
   change. CI blocks every vulnerability reported by `uv audit`, and npm findings at high or critical
   severity.
-- Match the existing style: hand-rolled and dependency-light — please discuss before adding a new runtime dependency.
+- Match the existing style, and please discuss before adding a new runtime dependency.
 
 Container/release changes additionally require `docker compose config` with a digest-valued
 `V2PI_IMAGE`, a Docker build, and `scripts/container-smoke.sh image@sha256:digest`. Portable CI can

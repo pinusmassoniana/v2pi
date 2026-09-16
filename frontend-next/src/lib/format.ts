@@ -1,5 +1,4 @@
-// Shared number formatters for the Dashboard / TrafficGraph (kept out of the .svelte files so
-// they're not duplicated — audit E3).
+// Shared number formatters for Home and the traffic chart (one copy, not one per component — audit E3).
 
 /** Bits-per-second → "1.2 Mbit/s" / "340 kbit/s" / "12 bit/s". */
 export function fmtRate(bps: number): string {
