@@ -1,6 +1,7 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
 import { BACKUP_DOC, LOG_LINES, RESTORE_RESULT, mockApi, mockSystem } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
@@ -233,6 +234,30 @@ describe("Access on a phone", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
   });
 
+  it("the secret survives a backdrop tap and an Escape press; only Done clears it", async () => {
+    await openAccess();
+    await userEvent.click(within(region("API tokens")).getByRole("button", { name: "Create token" }));
+    const sheet = await screen.findByRole("dialog", { name: "New token" });
+    await userEvent.type(within(sheet).getByLabelText("Name"), "home-assistant");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Create token" }));
+    await within(sheet).findByRole("group", { name: "New token home-assistant" });
+
+    // Escape: incidental on a 390 px screen. The desktop cannot lose the secret this way either.
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "New token" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("group", { name: "New token home-assistant" })).toBeInTheDocument();
+
+    // A backdrop tap: Radix defers an outside pointerdown to the click that follows it.
+    fireEvent.pointerDown(document.body, { button: 0 });
+    fireEvent.click(document.body);
+    expect(screen.getByRole("dialog", { name: "New token" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("group", { name: "New token home-assistant" })).toBeInTheDocument();
+
+    // Done still works: an explicit dismissal is not what either guard refuses.
+    await userEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New token" })).toBeNull());
+  });
+
   it("the password question says this browser survives it", async () => {
     await openAccess();
     expect(within(region("Session")).getByText("saved on change")).toBeInTheDocument();
@@ -304,5 +329,57 @@ describe("Panel on a phone", () => {
     expect(within(zone).getAllByRole("listitem")).toHaveLength(9);
     await userEvent.click(within(zone).getByRole("button", { name: "Reset settings" }));
     expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent("turns gateway DNS over DoH off");
+  });
+
+  it("a save's outcome stays visible once the footer disappears, because it never lived inside it", async () => {
+    const { api$ } = await openPanel();
+    const interval = () => screen.getByLabelText("Sample interval") as HTMLInputElement;
+    await waitFor(() => expect(interval()).toHaveValue(1000));
+    const stats = screen.getByRole("button", { name: /Traffic stats/ }).closest("fieldset")!;
+
+    await userEvent.clear(interval());
+    await userEvent.click(interval());
+    await userEvent.paste("2000");
+    await userEvent.click(await screen.findByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull());
+    // The footer (Discard/Save) is gone now that the form is clean again — the outcome line is not.
+    expect(within(stats).getByRole("status")).toHaveTextContent("✓ saved");
+    expect(api$.putSettings).toHaveBeenCalledWith({ traffic_sample_ms: 2000 });
+  });
+
+  it("a 502 rollback also leaves its outcome visible, not just toasted", async () => {
+    const api$ = mockSystem(mockApi());
+    api$.putSettings.mockRejectedValueOnce(new ApiError(502, "xray -test rejected the rebuilt config"));
+    renderApp("/system/panel");
+    await screen.findByRole("region", { name: "System" });
+    const interval = () => screen.getByLabelText("Sample interval") as HTMLInputElement;
+    await waitFor(() => expect(interval()).toHaveValue(1000));
+    const stats = screen.getByRole("button", { name: /Traffic stats/ }).closest("fieldset")!;
+
+    await userEvent.clear(interval());
+    await userEvent.click(interval());
+    await userEvent.paste("2000");
+    await userEvent.click(await screen.findByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull());
+    expect(within(stats).getByRole("status")).toHaveTextContent("✕ not saved");
+  });
+
+  it("a section holding an invalid field cannot be hidden by opening another one", async () => {
+    await openPanel();
+    const interval = () => screen.getByLabelText("Sample interval") as HTMLInputElement;
+    await waitFor(() => expect(interval()).toHaveValue(1000));
+    const stats = screen.getByRole("button", { name: /Traffic stats/ }).closest("fieldset")!;
+
+    await userEvent.clear(interval());
+    await userEvent.click(interval());
+    await userEvent.paste("100");
+    await waitFor(() => expect(within(stats).getByRole("status")).toHaveTextContent("1 field invalid · fix them to save"));
+
+    await userEvent.click(screen.getByRole("button", { name: /Settings file/ }));
+
+    expect(screen.getByRole("button", { name: /Traffic stats/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Settings file/ })).toHaveAttribute("aria-expanded", "true");
   });
 });

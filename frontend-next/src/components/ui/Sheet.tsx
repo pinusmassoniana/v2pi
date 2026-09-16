@@ -12,11 +12,14 @@ export const Sheet = Dialog;
  * useOverlayFocus: the first field on open, and on close whatever held focus the moment this mounted (typically
  * the row or card link that opened it, which the list underneath keeps mounted for exactly this).
  */
-export function SheetContent({ title, initialFocus, className, children }: {
+export function SheetContent({ title, initialFocus, className, children, onEscapeKeyDown, onPointerDownOutside }: {
   title: string;
   initialFocus?: InitialFocus;
   className?: string;
   children: ReactNode;
+  /** An extra guard beyond the escape-stacking fix below — e.g. refuse to close while a one-time secret is on display. */
+  onEscapeKeyDown?: (event: KeyboardEvent) => void;
+  onPointerDownOutside?: (event: Event) => void;
 }) {
   const escape = useEscapeWithin();
   const focus = useOverlayFocus(initialFocus);
@@ -25,6 +28,8 @@ export function SheetContent({ title, initialFocus, className, children }: {
       <Primitive.Content
         {...escape}
         {...focus}
+        onEscapeKeyDown={(event) => { escape.onEscapeKeyDown(event); onEscapeKeyDown?.(event); }}
+        onPointerDownOutside={onPointerDownOutside}
         aria-describedby={undefined}
         className={cn(
           "glass fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto rounded-b-none p-5 " +

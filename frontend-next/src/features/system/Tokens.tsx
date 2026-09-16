@@ -241,9 +241,13 @@ export function TokenFormCard({ tokens }: { tokens: TokensState }) {
 /** The phone's create sheet: the same form, and after a create the secret in its place — with one sticky button. */
 export function TokenSheet({ tokens, open, onOpenChange }: { tokens: TokensState; open: boolean; onOpenChange: (open: boolean) => void }) {
   const form = useTokenForm(tokens);
+  // A backdrop tap or Escape is incidental on a 390 px screen; the desktop cannot lose the secret this way (its ×
+  // only clears `formOpen`, `AccessScreen.tsx`), so the sheet refuses those two paths while the secret is on
+  // display. Explicit dismissal — Done, or × (`Primitive.Close`, which never raises this event) — still works.
+  const keepSecretOnScreen = (event: { preventDefault: () => void }) => { if (tokens.secret) event.preventDefault(); };
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next) tokens.dismissSecret(); onOpenChange(next); }}>
-      <SheetContent title="New token">
+      <SheetContent title="New token" onEscapeKeyDown={keepSecretOnScreen} onPointerDownOutside={keepSecretOnScreen}>
         <div className="flex flex-col gap-2.5">
           {tokens.secret ? <SecretPanel tokens={tokens} /> : <TokenFormFields form={form} />}
           {tokens.secret ? <p className="text-[11px] text-t3">{FINISH_COPYING}</p> : <p className="text-[11px] text-t3">{CREATE_FOOTER}</p>}
@@ -292,28 +296,6 @@ export function TokenCard({ token, tokens, nowSec }: { token: ApiToken; tokens: 
   );
 }
 
-export function TokensPhoneCard({ list, tokens, nowSec }: { list: UseQueryResult<ApiToken[]>; tokens: TokensState; nowSec: number }) {
-  const fallback = cardFallback([list], "API tokens did not load");
-  const rows = list.data ?? [];
-  return (
-    <GlassCard aria-label="API tokens">
-      <CardHeader
-        title="API tokens"
-        detail={list.data ? `${rows.length} issued` : undefined}
-        aside={<Button size="sm" disabled={tokens.busy} onClick={tokens.openForm}>Create token</Button>}
-      />
-      {fallback ?? (rows.length === 0 ? (
-        <EmptyState title="No tokens yet." />
-      ) : (
-        <ul aria-label="Tokens" className="flex flex-col gap-2">
-          {rows.map((token) => <TokenCard key={token.id} token={token} tokens={tokens} nowSec={nowSec} />)}
-        </ul>
-      ))}
-      <p className="mt-3 text-[11px] leading-relaxed text-t3">{TOKENS_FOOTER_1}</p>
-    </GlassCard>
-  );
-}
-
 function TokenRow({ token, tokens, nowSec }: { token: ApiToken; tokens: TokensState; nowSec: number }) {
   const badge = expiryBadge(token.expires_at, nowSec);
   return (
@@ -338,7 +320,7 @@ function TokenRow({ token, tokens, nowSec }: { token: ApiToken; tokens: TokensSt
 
 const COLUMNS = ["Name", "Scope", "Prefix", "Created", "Last used", "Expires"];
 
-export function TokensCard({ list, tokens, nowSec }: { list: UseQueryResult<ApiToken[]>; tokens: TokensState; nowSec: number }) {
+export function TokensCard({ list, tokens, nowSec, phone = false }: { list: UseQueryResult<ApiToken[]>; tokens: TokensState; nowSec: number; phone?: boolean }) {
   const fallback = cardFallback([list], "API tokens did not load");
   const rows = list.data ?? [];
   return (
@@ -350,6 +332,10 @@ export function TokensCard({ list, tokens, nowSec }: { list: UseQueryResult<ApiT
       />
       {fallback ?? (rows.length === 0 ? (
         <EmptyState title="No tokens yet." />
+      ) : phone ? (
+        <ul aria-label="Tokens" className="flex flex-col gap-2">
+          {rows.map((token) => <TokenCard key={token.id} token={token} tokens={tokens} nowSec={nowSec} />)}
+        </ul>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[42rem] border-collapse text-left">
@@ -369,7 +355,7 @@ export function TokensCard({ list, tokens, nowSec }: { list: UseQueryResult<ApiT
         </div>
       ))}
       <p className="mt-3 text-[11px] leading-relaxed text-t3">{TOKENS_FOOTER_1}</p>
-      <p className="mt-1 text-[11px] text-t3">{TOKENS_FOOTER_2}</p>
+      {phone ? null : <p className="mt-1 text-[11px] text-t3">{TOKENS_FOOTER_2}</p>}
     </GlassCard>
   );
 }

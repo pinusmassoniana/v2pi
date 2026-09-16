@@ -404,7 +404,10 @@ function PanelPhone({ stats, file, danger, settings }: {
   const [open, setOpen] = useState<"stats" | "file" | "danger" | null>("stats");
   const section = (id: "stats" | "file" | "danger") => ({
     collapsible: true as const,
-    open: open === id,
+    // A hidden section can still hold an invalid value — never let the field the footer is complaining about be
+    // the one thing the accordion just hid (features/tunnel/ProfileEditor.tsx's `openSections(issueSections(...))`
+    // is the same rule): the stats section stays open on top of whatever else the operator opened.
+    open: open === id || (id === "stats" && stats.errorCount > 0),
     onToggle: () => setOpen((current) => (current === id ? null : id)),
   });
   return (
@@ -421,6 +424,15 @@ function PanelPhone({ stats, file, danger, settings }: {
             <>
               <TrafficStatsFields stats={stats} />
               <CollectorHealth stats={stats} />
+              {/*
+               * Mounted here, not inside the `stats.dirty`-gated footer below: on success and on a 502 rollback,
+               * `useStatsForm` resets the form in the same commit that fills `result`, which clears `isDirty` and
+               * would otherwise unmount this line before the operator ever saw it (global constraint 44 — a live
+               * region is mounted before its text arrives, not created and destroyed together with it).
+               */}
+              <ResultLine
+                result={stats.errorCount ? { ok: false, text: statsInvalidMessage(stats.errorCount) } : stats.result}
+              />
             </>
           )}
         </EditorSection>
@@ -433,9 +445,6 @@ function PanelPhone({ stats, file, danger, settings }: {
       </GlassCard>
       {stats.dirty ? (
         <div className="glass sticky bottom-24 z-20 flex flex-col gap-2 bg-solid p-2.5">
-          <ResultLine
-            result={stats.errorCount ? { ok: false, text: statsInvalidMessage(stats.errorCount) } : stats.result}
-          />
           <p className="text-[11px] text-t3">{STATS_FOOTER}</p>
           <div className="flex gap-2">
             <Button className="flex-1" disabled={stats.busy} onClick={stats.discard}>Discard</Button>

@@ -28,7 +28,7 @@ import {
 } from "./passwordForm";
 import { ResultLine } from "./ResultLine";
 import { AuditCard } from "./AuditLog";
-import { ScopesCard, TokenFormCard, TokenSheet, TokensCard, TokensPhoneCard, useTokens } from "./Tokens";
+import { ScopesCard, TokenFormCard, TokenSheet, TokensCard, useTokens } from "./Tokens";
 
 const EMPTY: PasswordFormValues = { current: "", next: "", confirm: "" };
 /** The handler adopts the new epoch, so the session that made the change survives — say so before it runs. */
@@ -282,7 +282,7 @@ function AccessPhone({ password, timeout, tokens, list, tokenCount, nowSec }: {
     <div className="flex flex-col gap-3">
       <PasswordCard password={password} tokenCount={tokenCount} />
       <SessionCard timeout={timeout} phone />
-      <TokensPhoneCard list={list} tokens={tokens} nowSec={nowSec} />
+      <TokensCard list={list} tokens={tokens} nowSec={nowSec} phone />
       <AuditCard phone />
       <TokenSheet tokens={tokens} open={tokens.formOpen || tokens.secret !== null} onOpenChange={(open) => { if (!open) tokens.closeForm(); }} />
     </div>
