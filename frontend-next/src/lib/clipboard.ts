@@ -1,9 +1,16 @@
-/** Copy through a selection and `execCommand("copy")`: the one way left where the page has no Clipboard API (plain HTTP). */
+/**
+ * Copy through a selection and `execCommand("copy")`: the one way left where the page has no Clipboard API (plain
+ * HTTP) — which is how the panel is served, so on a phone this is the only path there is.
+ *
+ * The field is left editable (never `readOnly`, `contenteditable` set) and is focused and selected by range rather
+ * than by `select()`: iOS Safari copies nothing from a `readOnly` textarea, and nothing from a selection it was not
+ * given explicitly. It sits off-screen, is removed again, and focus goes back where the click left it.
+ */
 function copyBySelection(text: string): boolean {
   if (typeof document.execCommand !== "function") return false;
   const field = document.createElement("textarea");
   field.value = text;
-  field.readOnly = true;
+  field.setAttribute("contenteditable", "true");
   field.setAttribute("aria-hidden", "true");
   field.style.position = "fixed";
   field.style.top = "0";
@@ -11,7 +18,8 @@ function copyBySelection(text: string): boolean {
   const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   document.body.appendChild(field);
   try {
-    field.select();
+    field.focus();
+    field.setSelectionRange(0, text.length);
     return document.execCommand("copy");
   } catch {
     return false;

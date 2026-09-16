@@ -54,8 +54,11 @@ describe("copyDeferred", () => {
   it("over plain HTTP, with no Clipboard API at all, it copies through a selection and leaves nothing in the page", async () => {
     const selected: string[] = [];
     const execCommand = vi.fn((command: string) => {
-      const field = document.activeElement instanceof HTMLTextAreaElement ? document.activeElement : document.querySelector("textarea");
-      selected.push(`${command}:${field?.value}:${field?.readOnly}`);
+      const field = document.querySelector("textarea");
+      selected.push(
+        `${command}:${field?.value}:${field?.readOnly}:${field?.getAttribute("contenteditable")}`
+        + `:${field?.selectionStart}-${field?.selectionEnd}:focused=${document.activeElement === field}`,
+      );
       return true;
     });
     setExecCommand(execCommand);
@@ -63,7 +66,8 @@ describe("copyDeferred", () => {
     document.body.appendChild(opener);
     opener.focus();
     await copyText(LINK);
-    expect(selected).toEqual([`copy:${LINK}:true`]);
+    // The field iOS Safari actually copies from: focused, not readOnly, contenteditable, and selected by range.
+    expect(selected).toEqual([`copy:${LINK}:false:true:0-${LINK.length}:focused=true`]);
     expect(document.querySelector("textarea")).toBeNull();
     expect(document.activeElement).toBe(opener);
     opener.remove();
