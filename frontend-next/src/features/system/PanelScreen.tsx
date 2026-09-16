@@ -263,7 +263,15 @@ export function useSettingsFile(settings: Settings | undefined) {
   async function pick(file: File | null) {
     if (!file) return void setPicked(null);
     if (settingsFileTooLarge(file.size)) return void setPicked({ file, text: "" });
-    setPicked({ file, text: await file.text() });
+    try {
+      setPicked({ file, text: await file.text() });
+    } catch {
+      // As on the restore picker (`BackupsScreen.tsx`): an evicted or moved file (NotReadableError,
+      // common on an iCloud-synced tree) must not become an unhandled rejection that leaves the
+      // PREVIOUS file and its checks on screen with no sentence at all.
+      setPicked(null);
+      notifyError(null, "could not read that file");
+    }
   }
 
   async function importFile() {

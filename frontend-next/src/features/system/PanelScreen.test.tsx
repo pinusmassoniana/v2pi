@@ -238,6 +238,25 @@ describe("Panel — settings file (G6)", () => {
     expect(api$.putSettings).not.toHaveBeenCalled();
   });
 
+  it("a file the browser cannot read says so, instead of failing silently, and leaves no stale selection", async () => {
+    const { api$ } = await openPanel();
+    const picker = () => within(region("Settings file")).getByLabelText(/^(Choose file…|Change…)$/);
+    await userEvent.upload(picker(), new File([JSON.stringify({ health_interval: 1800 })], "good.json", { type: "application/json" }));
+    await screen.findByText("1 fields, all known settings keys");
+
+    const unreadable = new File([JSON.stringify({ health_interval: 900 })], "evicted.json", { type: "application/json" });
+    vi.spyOn(unreadable, "text").mockRejectedValueOnce(new DOMException("could not read", "NotReadableError"));
+    await userEvent.upload(picker(), unreadable);
+
+    await screen.findByText("could not read that file");
+    // the file that could not be read is not shown as picked, and neither is the one it replaced
+    expect(screen.queryByText("evicted.json")).toBeNull();
+    expect(screen.queryByText("good.json")).toBeNull();
+    expect(screen.queryByText("1 fields, all known settings keys")).toBeNull();
+    expect(screen.getByRole("button", { name: "Import settings" })).toBeDisabled();
+    expect(api$.putSettings).not.toHaveBeenCalled();
+  });
+
   it("refuses a file whose only key is the routing-owned one, because nothing would be imported (fix round 1)", async () => {
     // routing_default_action is dropped from every import (routing owns it), so a file that carries only
     // that key must not read as "1 fields, all known settings keys" with Import quietly enabled — it would
