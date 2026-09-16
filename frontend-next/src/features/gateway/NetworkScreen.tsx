@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useWatch } from "react-hook-form";
 import type { Network as NetworkRead } from "../../api/client";
 import { GATEWAY_NETWORK_POLL_MS } from "../../api/cadence";
@@ -5,16 +6,18 @@ import { NETWORK_WRITE, useConnectionBusy, useWriting } from "../../api/invalida
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { CardHeader } from "../../components/data/CardHeader";
-import { staleNotice } from "../../components/data/CardState";
+import { cardFallback, staleNotice } from "../../components/data/CardState";
 import { Chip } from "../../components/data/Chip";
 import { Elapsed } from "../../components/data/Elapsed";
 import { Button } from "../../components/ui/Button";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { ErrorState, Skeleton } from "../../components/ui/States";
-import { GatewayDnsBody, useGatewayDns } from "./GatewayDnsCard";
-import { ChecklistCard, KillSwitchState, LeasesCard, NetworkAlerts } from "./NetworkCards";
+import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
+import { EditorSection } from "../tunnel/EditorSection";
+import { ClientDnsHint, GatewayDnsBody, GatewayDnsSwitch, useGatewayDns } from "./GatewayDnsCard";
+import { Checklist, ChecklistCard, KillSwitchState, LeasesCard, LeasesList, NetworkAlerts } from "./NetworkCards";
 import { KillSwitchToggle, LanIpv6Fields, SegmentFields } from "./NetworkFields";
-import { poolIssue } from "./networkForm";
+import { poolIssue, type NetworkField } from "./networkForm";
 import { useNetworkApply, type NetworkApply } from "./useNetworkApply";
 import { useNetworkForm, type NetworkFormState } from "./useNetworkForm";
 
@@ -68,20 +71,38 @@ export function ApplyStatus({ state, apply }: { state: NetworkFormState; apply: 
   );
 }
 
-/** The editor over one network read: the segment, LAN / IPv6 and kill-switch cards, leases and the router checklist. */
+interface EditorParts {
+  network: NetworkRead;
+  state: NetworkFormState;
+  apply: NetworkApply;
+  canApply: boolean;
+  dns: ReturnType<typeof useGatewayDns>;
+  locked: boolean;
+}
+
+/** The editor over one network read: its form, Apply and the gateway DNS switch, laid out for a desktop or a phone. */
 function NetworkEditor({ network, writing }: { network: NetworkRead; writing: boolean }) {
+  const desktop = useMediaQuery(DESKTOP_QUERY);
   const state = useNetworkForm(network);
-  const { dirty, gatewayChanged, discard, form } = state;
-  const killSwitch = useWatch({ control: form.control, name: "killSwitch" });
   const apply = useNetworkApply(network, state);
   const canApply = useCanApply(state, apply);
   const dns = useGatewayDns();
   // While an Apply runs, what it sends cannot be edited.
-  const locked = writing || apply.applying;
-
+  const parts: EditorParts = { network, state, apply, canApply, dns, locked: writing || apply.applying };
   return (
     <>
-      <p role="status" className={gatewayChanged ? "glass border-warn/40 p-3 text-sm text-warn" : "sr-only"}>{gatewayChanged ? GATEWAY_CHANGED : null}</p>
+      <p role="status" className={state.gatewayChanged ? "glass border-warn/40 p-3 text-sm text-warn" : "sr-only"}>{state.gatewayChanged ? GATEWAY_CHANGED : null}</p>
+      {desktop ? <NetworkDesktop {...parts} /> : <NetworkPhone {...parts} />}
+    </>
+  );
+}
+
+/** Desktop: the segment and LAN / IPv6 cards on the left, kill-switch, gateway DNS and leases on the right, then the checklist. */
+function NetworkDesktop({ network, state, apply, canApply, dns, locked }: EditorParts) {
+  const { dirty, discard, form } = state;
+  const killSwitch = useWatch({ control: form.control, name: "killSwitch" });
+  return (
+    <>
       <div className="grid items-start gap-3 md:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
         <div className="flex min-w-0 flex-col gap-3">
           <GlassCard aria-label="Gateway Segment" className="flex flex-col gap-3">
@@ -114,6 +135,81 @@ function NetworkEditor({ network, writing }: { network: NetworkRead; writing: bo
       </div>
       <ChecklistCard network={network} />
     </>
+  );
+}
+
+type PhoneSection = "segment" | "ipv6" | "dns" | "checklist";
+
+const FIELD_SECTION: Partial<Record<NetworkField, PhoneSection>> = {
+  iface: "segment", ip: "segment", dhcpStart: "segment", dhcpEnd: "segment", clientDns: "segment", lease: "segment",
+  ip6Mode: "ipv6", ip6Static: "ipv6", clientDns6: "ipv6", lanAccess: "ipv6", ipv6: "ipv6",
+};
+
+/**
+ * Phone: the kill-switch and the leases first, then collapsible sections with their summaries, and a sticky footer
+ * with Discard and Apply while something is edited. A section holding an error — or the segment while its pool is
+ * invalid — stays open, so the reason Apply is unavailable is always on screen.
+ */
+function NetworkPhone({ network, state, apply, canApply, dns, locked }: EditorParts) {
+  const { dirty, discard, form } = state;
+  const { control, formState: { errors } } = form;
+  const [killSwitch, ip, dhcpStart, dhcpEnd, lanAccess, ipv6, ip6Mode] = useWatch({ control, name: ["killSwitch", "ip", "dhcpStart", "dhcpEnd", "lanAccess", "ipv6", "ip6Mode"] });
+  const [toggled, setToggled] = useState<Record<PhoneSection, boolean>>({ segment: false, ipv6: false, dns: false, checklist: false });
+  const failing = new Set((Object.keys(errors) as NetworkField[]).map((field) => FIELD_SECTION[field]));
+  if (poolIssue({ ip, dhcpStart, dhcpEnd })) failing.add("segment");
+  const section = (name: PhoneSection) => {
+    const open = toggled[name] || failing.has(name);
+    return { collapsible: true, open, onToggle: () => setToggled((current) => ({ ...current, [name]: !open })) };
+  };
+  const mode = ip6Mode === "static" ? "static /64" : ip6Mode === "auto" ? "auto" : "ULA";
+  const steps = network.recommendations.length;
+  return (
+    <div className="flex flex-col gap-3 [&_input]:scroll-mb-44">
+      <GlassCard aria-label="Kill-switch" className="flex flex-col gap-3">
+        <CardHeader title="Kill-switch" className="mb-0" />
+        <KillSwitchState network={network} stagedOff={!killSwitch} />
+        <KillSwitchToggle state={state} disabled={locked} applyHint={false} />
+      </GlassCard>
+      <section aria-label="DHCP leases" className="flex flex-col gap-2">
+        <CardHeader title="DHCP leases" detail={`${network.status.dhcp_clients} active`} aside={<Chip tone="ok">live</Chip>} className="mb-0 px-1" />
+        <LeasesList network={network} cards />
+      </section>
+      <GlassCard className="flex flex-col px-4 py-1">
+        <EditorSection title="Gateway Segment" note="nftables tproxy + policy routing" aside={<UnsavedChip dirty={dirty} />} {...section("segment")}>
+          <SegmentFields state={state} disabled={locked} />
+        </EditorSection>
+        <EditorSection
+          title="LAN access & IPv6"
+          note="staged — saved by Apply to host"
+          summary={`LAN ${lanAccess ? "on" : "off"} · IPv6 ${ipv6 ? `on · ${mode}` : "off"}`}
+          {...section("ipv6")}
+        >
+          <LanIpv6Fields state={state} network={network} disabled={locked} desktop={false} />
+        </EditorSection>
+        <EditorSection
+          title="Gateway DNS"
+          note="applies live when a node is connected"
+          summary={dns.settings.data ? (dns.settings.data.dns_intercept ? "on" : "off") : undefined}
+          aside={<GatewayDnsSwitch dns={dns} />}
+          {...section("dns")}
+        >
+          {cardFallback([dns.settings], "Gateway DNS did not load", "h-12") ?? <ClientDnsHint network={network} desktop={false} />}
+        </EditorSection>
+        <EditorSection title="Router checklist" note="the one box v2pi never touches" summary={`${steps} step${steps === 1 ? "" : "s"}`} {...section("checklist")}>
+          <p className="text-[11px] text-t3">from the saved plan · changes after Apply</p>
+          <Checklist network={network} collapsible />
+        </EditorSection>
+      </GlassCard>
+      <div className={dirty ? "glass sticky bottom-24 z-20 flex flex-wrap items-center gap-2 bg-solid p-2.5" : "contents"}>
+        <ApplyStatus state={state} apply={apply} />
+        {dirty ? (
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" disabled={locked} onClick={discard}>Discard</Button>
+            <ApplyButton apply={apply} enabled={canApply} />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
