@@ -213,16 +213,17 @@ test("Access: the panel password changes and changes straight back, and this ses
     await expect(page.getByText(/^password changed · other sessions signed out/).first()).toBeVisible();
   }
 
-  // The revert (NEXT -> PASS) runs in `finally`, not after the mid-test assertions in the ordinary control flow:
-  // PASS is the one password `ensureLoggedIn` (e2e/tests/auth-helper.ts) hard-codes for every spec in this run,
-  // and every spec shares this one `webServer` instance. A thrown assertion between the two `change()` calls
-  // must not leave the gateway on NEXT for the rest of the run (fix round 1: the earlier version reverted only
-  // along the no-throw path). If the revert itself throws, it is re-raised with its own message naming the
-  // risk explicitly — the panel password may still be the test one — rather than reading as this test's own
-  // unrelated assertion failing; the mid-test failure (if any) is folded into that message, not dropped.
-  await change(PASS, NEXT);
+  // The whole round trip — PASS -> NEXT and the two mid-test reads that prove it really changed — runs inside
+  // one try, whose finally always attempts the revert. Fix round 1 wrapped only the mid-test reads; that left
+  // `change(PASS, NEXT)` itself outside the safety net, so an exception thrown after ITS OWN write had already
+  // landed (the toast assertion at the end of change() timing out, for example — flagged in re-review 1) still
+  // skipped the revert. The try must start before the first change, not after it, or a path that leaves the
+  // password changed can fall outside the net. PASS is the one password `ensureLoggedIn`
+  // (e2e/tests/auth-helper.ts) hard-codes for every spec sharing this one `webServer` instance, so any path
+  // that leaves the gateway on NEXT would cascade-fail the rest of the run.
   let midError: unknown;
   try {
+    await change(PASS, NEXT);
     // This session adopts the new epoch, so its next read is still a 200 — and every token row is gone.
     expect((await (await gateway(page)).status()).status()).toBe(200);
     expect(await (await gateway(page)).get<Token[]>("/tokens")).toEqual([]);
@@ -233,9 +234,14 @@ test("Access: the panel password changes and changes straight back, and this ses
       // Mandatory: PASS is shared by every spec through ensureLoggedIn, and they run against this one server.
       await change(NEXT, PASS);
     } catch (revertError) {
-      const also = midError instanceof Error ? ` (this test's own assertion had already failed: ${midError.message})` : "";
+      // Deliberately not claiming a specific state (e.g. "still on NEXT"): the revert's own write may have
+      // landed even though this assertion did not confirm it (a flaked toast, for example, same as above), so
+      // the only honest thing to say is that the outcome is unverified — never assert a state that was not
+      // actually checked (re-review 1's Minor).
+      const also = midError instanceof Error ? ` (the round trip's own assertion had already failed: ${midError.message})` : "";
       throw new Error(
-        `reverting the panel password to the shared test password failed — the gateway may still be on "${NEXT}"` +
+        `reverting the panel password to the shared test password did not confirm success — its outcome is ` +
+        `unverified, so the gateway's password state is unknown (it may be "${PASS}" or "${NEXT}")` +
         `${also}: ${revertError instanceof Error ? revertError.message : String(revertError)}`,
       );
     }
