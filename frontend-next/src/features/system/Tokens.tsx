@@ -52,15 +52,23 @@ export function useTokens() {
 
   // While it is on screen the guard is held whether or not anything was typed, and it goes on unmount.
   useUnsavedGuard(secret !== null);
-  useEffect(() => () => setSecret(null), []);
 
   const create = useMutation({
     mutationKey: TOKEN_WRITE,
-    mutationFn: ({ name, scope, at }: { name: string; scope: ApiToken["scope"]; at: number | undefined }) => createToken(name, scope, at),
-    onSuccess: (created) => {
+    mutationFn: async ({ name, scope, at }: { name: string; scope: ApiToken["scope"]; at: number | undefined }) => {
+      const created = await createToken(name, scope, at);
+      // The secret leaves the request HERE, into component state, and never becomes this mutation's
+      // RESULT: TanStack keeps a settled mutation's `state.data` in the MutationCache until its gcTime
+      // expires (5 minutes by default, and `reset()` only detaches the observer and schedules that
+      // collection), so a result carrying the token would outlive both Done and this screen. Same
+      // reasoning as the two passwords, which travel through a ref rather than as variables
+      // (`AccessScreen.tsx`); there it was the variables, here it is the answer.
       setSecret(created);
-      notifyOk(tokenCreatedMessage(created.name));
+      const row: Partial<ApiTokenCreated> = { ...created };
+      delete row.token;   // a rest pattern would bind `token` and never use it, which the lint refuses
+      return row as ApiToken;
     },
+    onSuccess: (created) => notifyOk(tokenCreatedMessage(created.name)),
     onError: (error) => {
       if (isNoAnswer(error)) {
         notifyWarn(NO_ANSWER);
@@ -90,6 +98,12 @@ export function useTokens() {
     },
   });
 
+  // Done and unmount clear the row the create answered with as well as the secret, so nothing this
+  // screen created is left settled in the MutationCache. `reset` is bound once per observer, so this
+  // effect still runs exactly once.
+  const { reset: resetCreate } = create;
+  useEffect(() => () => { setSecret(null); resetCreate(); }, [resetCreate]);
+
   async function askRevoke(token: ApiToken) {
     if (!(await confirm(revokeConfirm(token), { confirmLabel: "Revoke" }))) return;
     if (isTokenBusy(queryClient)) return void notifyError(null, TOKEN_BUSY);
@@ -105,7 +119,7 @@ export function useTokens() {
   return {
     secret, formOpen, create, revoke, askRevoke, openForm,
     closeForm: () => setFormOpen(false),
-    dismissSecret: () => { setSecret(null); setFormOpen(false); },
+    dismissSecret: () => { setSecret(null); setFormOpen(false); resetCreate(); },
     busy: tokenBusy || connectionBusy,
   };
 }

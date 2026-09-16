@@ -86,8 +86,19 @@ describe("Access — tokens (G7)", () => {
     expect(api$.createToken).toHaveBeenLastCalledWith("forever", "readwrite", undefined);
   });
 
-  it("shows the secret once: never in the cache, navigation blocked, a second create refused, gone on Done", async () => {
-    const { api$, client } = await openAccess();
+  it("shows the secret once: never in either cache, navigation blocked, a second create refused, gone on Done", async () => {
+    const { api$, client, unmount } = await openAccess();
+    // Both caches, asserted while a settled mutation is actually there so neither can pass vacuously:
+    // TanStack keeps a settled mutation's state.data in the MutationCache until its gcTime expires
+    // (5 minutes by default), which outlives both Done and this screen.
+    const cached = () => {
+      const mutations = client.getMutationCache().getAll();
+      expect(mutations.length).toBeGreaterThan(0);
+      return JSON.stringify([
+        client.getQueryCache().getAll().map((query) => query.state.data),
+        mutations.map((mutation) => mutation.state.data),
+      ]);
+    };
     await openForm();
     await userEvent.type(screen.getByLabelText("Name"), "home-assistant");
     await userEvent.click(within(region("New API token")).getByRole("button", { name: "Create token" }));
@@ -96,8 +107,8 @@ describe("Access — tokens (G7)", () => {
     expect(within(panel).getByText(TOKEN_CREATED.token)).toBeInTheDocument();
     expect(within(panel).getByText("Copy it now, it is shown only once. The gateway keeps only its hash — if you lose it, revoke this token and issue another.")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Leaving this screen loses the secret." })).toBeInTheDocument();
-    // not in the cache, not in a toast, not in an attribute
-    expect(JSON.stringify(client.getQueryCache().getAll().map((query) => query.state.data))).not.toContain(TOKEN_CREATED.token);
+    // not in either cache, not in a toast, not in an attribute
+    expect(cached()).not.toContain(TOKEN_CREATED.token);
     expect(document.body.innerHTML.split(TOKEN_CREATED.token).length - 1).toBe(1);
     expect(panel.querySelector(`[title*="${TOKEN_CREATED.token}"], [data-token]`)).toBeNull();
 
@@ -112,6 +123,12 @@ describe("Access — tokens (G7)", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.queryByText(TOKEN_CREATED.token)).toBeNull());
+    expect(cached()).not.toContain(TOKEN_CREATED.token);
+
+    // and it is still unreachable once the screen itself is gone
+    unmount();
+    expect(cached()).not.toContain(TOKEN_CREATED.token);
+    expect(document.body.innerHTML).not.toContain(TOKEN_CREATED.token);
   });
 
   it("Copy puts the secret on the clipboard without rendering it anywhere else", async () => {
