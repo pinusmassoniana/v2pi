@@ -128,6 +128,19 @@ describe("Backups — restore (P2)", () => {
     expect(api$.restore).not.toHaveBeenCalled();
   });
 
+  it("a file the browser cannot read says so, instead of failing silently, and leaves no stale selection", async () => {
+    const { api$ } = await openBackups();
+    const unreadable = backupFile("evicted.json");
+    vi.spyOn(unreadable, "text").mockRejectedValueOnce(new DOMException("could not read", "NotReadableError"));
+
+    await userEvent.upload(within(region("Restore from file")).getByLabelText("Choose file…"), unreadable);
+
+    await screen.findByText("could not read that file");
+    expect(screen.queryByText(unreadable.name)).toBeNull();
+    expect(restoreButton()).toBeDisabled();
+    expect(api$.restore).not.toHaveBeenCalled();
+  });
+
   it("asks with the file's name and size, then replaces everything and says what came back", async () => {
     const { api$ } = await openBackups();
     await pick(backupFile("v2pi-backup-2026-09-14.json", BACKUP_DOC, 214_000));

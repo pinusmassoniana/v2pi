@@ -8,6 +8,7 @@ import {
 import { keys, queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { SLOW_POLL_MS } from "../../api/cadence";
+import { useNow } from "../../components/data/Ago";
 import { AlertBanner } from "../../components/data/AlertBanner";
 import { CardHeader } from "../../components/data/CardHeader";
 import { cardFallback } from "../../components/data/CardState";
@@ -63,16 +64,20 @@ export function CheckRow({ check }: { check: PreCheck }) {
   );
 }
 
-/** P1: a read with effects, guarded by a local flag — never a mutation key, because it changes nothing. */
+/**
+ * P1: a read with effects, guarded by a local flag — never a mutation key, because it changes nothing. `filename`
+ * defaults to a fresh `backupFilename(new Date())` for a caller with no render-time clock of its own, but the
+ * desktop card passes the same value it renders as the "named …" label, through `useNow`, so the two can never
+ * disagree across a midnight rollover.
+ */
 export function useCreateBackup() {
   const [preparing, setPreparing] = useState(false);
-  async function create() {
+  async function create(filename: string = backupFilename(new Date())) {
     if (preparing) return;
     setPreparing(true);
     try {
       // Fetched on click, stringified, handed to the browser and dropped: no useQuery, no cache, no kept reference.
       const doc = await api.getBackup();
-      const filename = backupFilename(new Date());
       downloadText(filename, JSON.stringify(doc, null, 2), "application/json");
       notifyOk(`backup downloaded · ${filename}`);
     } catch (error) {
@@ -129,7 +134,14 @@ export function useRestore() {
       setPicked({ file, text: "" });
       return;
     }
-    setPicked({ file, text: await file.text() });
+    try {
+      setPicked({ file, text: await file.text() });
+    } catch {
+      // An evicted or moved file (NotReadableError, common on an iCloud-synced tree) must not vanish silently
+      // in the screen's most destructive flow: say so, and leave no stale file behind for a wrong Restore to fire on.
+      setPicked(null);
+      notifyError(null, "could not read that file");
+    }
   }
 
   const checks = picked ? backupPreChecks(picked.text, picked.file.size) : [];
@@ -197,16 +209,20 @@ export function useAutoBackup() {
 
 export function BackupCard({ create }: { create: ReturnType<typeof useCreateBackup> }) {
   const connectionBusy = useConnectionBusy();
+  // One clock read, through useNow rather than a bare `new Date()` in render, so the name shown here and the
+  // name the click handler downloads under are always the same value — never two reads that can straddle midnight.
+  const now = useNow();
+  const filename = backupFilename(new Date(now));
   return (
     <GlassCard aria-label="Backup & restore">
       <CardHeader title="Backup & restore" aside={<Chip plain>one JSON file</Chip>} />
       <p className="text-xs leading-relaxed text-t2">{BACKUP_NOTE}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button variant="primary" disabled={create.preparing || connectionBusy} onClick={() => void create.create()}>
+        <Button variant="primary" disabled={create.preparing || connectionBusy} onClick={() => void create.create(filename)}>
           {create.preparing ? "Preparing…" : "Create backup"}
         </Button>
         <p className="min-w-0 text-[11px] text-t3">
-          named <span className="font-mono text-t2">{backupFilename(new Date())}</span> · {CREATE_HELPER}
+          named <span className="font-mono text-t2">{filename}</span> · {CREATE_HELPER}
         </p>
       </div>
     </GlassCard>
