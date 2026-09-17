@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, Info, Lock, Plus, Trash2 } from "lucide-react";
 import { memo, useId } from "react";
+import type { Reservation } from "../../api/client";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
@@ -8,7 +9,8 @@ import { cn } from "../../lib/cn";
 import { ACTION_TEXT, ActionPill, TypeChip } from "./RuleParts";
 import {
   DATASET_LABELS, GEO_TOKENS, GEO_TOKENS_RU, MAX_RULES, MAX_RULE_FIELD, NO_RULES, RULE_ACTIONS, RULE_DATASETS, RULE_TYPES,
-  RULES_FOOTNOTE, SLOW_CATEGORIES, SLOW_CATEGORY_NOTE, VALUE_PLACEHOLDERS, ruleTokens, validateRuleRow,
+  DEVICE_ORDER_NOTE, RULES_FOOTNOTE, SLOW_CATEGORIES, SLOW_CATEGORY_NOTE, VALUE_PLACEHOLDERS, ruleTokens,
+  validateRuleRow,
   type RuleAction, type RulePatch, type RuleRow, type RuleType,
 } from "./rules";
 
@@ -35,6 +37,15 @@ export function GeoTokenList({ id }: { id: string }) {
 }
 
 export const isGeo = (type: RuleType) => type === "geoip" || type === "geosite";
+
+/** A4: the pinned devices a `device` rule can name, offered as suggestions on the value field. */
+export function DeviceTokenList({ id, devices }: { id: string; devices: readonly Reservation[] }) {
+  return (
+    <datalist id={id}>
+      {devices.map((device) => <option key={device.ip} value={device.ip}>{device.name || device.ip}</option>)}
+    </datalist>
+  );
+}
 
 /** A3: the warning for a category that costs about a second on every save and every restart. */
 export function slowCategoryNote(row: Pick<RuleRow, "type" | "value" | "dataset">): string | null {
@@ -84,7 +95,7 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
           value={row.value}
           placeholder={VALUE_PLACEHOLDERS[row.type]}
           maxLength={MAX_RULE_FIELD}
-          list={isGeo(row.type) ? (row.dataset === "ru" ? `${geoListId}-ru` : geoListId) : undefined}
+          list={isGeo(row.type) ? (row.dataset === "ru" ? `${geoListId}-ru` : geoListId) : row.type === "device" ? `${geoListId}-dev` : undefined}
           autoComplete="off"
           spellCheck={false}
           aria-invalid={problem && row.value.trim() ? true : undefined}
@@ -94,6 +105,7 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
         />
         {problem ? <p id={errorId} className={cn("mt-1 text-[11px]", row.value.trim() ? "text-bad" : "text-t3")}>{problem}</p> : null}
         {slowCategoryNote(row) ? <p className="mt-1 text-[11px] text-warn">{slowCategoryNote(row)}</p> : null}
+        {row.type === "device" ? <p className="mt-1 text-[11px] text-t3">{DEVICE_ORDER_NOTE}</p> : null}
       </td>
       <td className={cn("px-1.5 py-2", !row.enabled && "opacity-60")}>
         <Select
@@ -152,14 +164,17 @@ export interface RulesTableProps extends RuleCallbacks {
   rows: readonly RuleRow[];
   defaultAction: RuleAction;
   onAdd: () => void;
+  /** A4: the pinned devices, for the value suggestions on a `device` rule. */
+  devices?: readonly Reservation[];
 }
 
 /** R1–R2 on a desktop: the rules between the two fixed rows, each editable in place, then Add rule and the footnote. */
-export function RulesTable({ rows, defaultAction, onAdd, onUpdate, onMove, onRemove }: RulesTableProps) {
+export function RulesTable({ rows, defaultAction, onAdd, onUpdate, onMove, onRemove, devices = [] }: RulesTableProps) {
   const geoListId = useId();
   return (
     <div>
       <GeoTokenList id={geoListId} />
+      <DeviceTokenList id={`${geoListId}-dev`} devices={devices} />
       <div className="overflow-x-auto">
         <table aria-label="Routing rules" className="w-full min-w-[720px] text-left text-sm">
           <colgroup>

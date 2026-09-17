@@ -525,12 +525,46 @@ def _migration_17(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE routing_rules ADD COLUMN dataset TEXT NOT NULL DEFAULT ''")
 
 
+def _migration_18(conn: sqlite3.Connection) -> None:
+    # A4: DHCP reservations — the segment's pinned devices. `mac` and `ip` are both unique: two
+    # rows claiming either would render two dhcp-host lines dnsmasq resolves by its own rules
+    # rather than by what the operator meant.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dhcp_reservations (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            mac        TEXT NOT NULL UNIQUE,
+            ip         TEXT NOT NULL UNIQUE,
+            name       TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
+def _migration_19(conn: sqlite3.Connection) -> None:
+    # B1: per-device traffic, one row per (device, minute) — the same shape and retention as the
+    # gateway-wide `traffic_minutes`. Keyed by IP, which is exactly what the reservation pins.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS device_minutes (
+            ip         TEXT NOT NULL,
+            ts_min     INTEGER NOT NULL,
+            up_bytes   INTEGER NOT NULL DEFAULT 0,
+            down_bytes INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (ip, ts_min)
+        )
+        """
+    )
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
                (9, _migration_9), (10, _migration_10), (11, _migration_11),
                (12, _migration_12), (13, _migration_13), (14, _migration_14),
-               (15, _migration_15), (16, _migration_16), (17, _migration_17)]
+               (15, _migration_15), (16, _migration_16), (17, _migration_17),
+               (18, _migration_18), (19, _migration_19)]
 
 
 def _assert_supported_schema(conn: sqlite3.Connection) -> int:

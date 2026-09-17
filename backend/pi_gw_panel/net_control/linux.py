@@ -117,6 +117,29 @@ class LinuxBackend:
             script += v6
         return script
 
+    def read_counters(self) -> dict[str, tuple[int, int]]:
+        """B1: every named counter in the panel's table → (packets, bytes).
+
+        Read-only and failure-tolerant: the sampler runs every minute on a box whose table may
+        not exist yet (tunnel never started), and a missing table is "nothing to count", not an
+        error worth waking anyone for.
+        """
+        try:
+            result = self._run(["nft", "-j", "list", "counters", "table", "ip", NFT_TABLE])
+        except Exception:
+            return {}
+        raw = getattr(result, "stdout", "") or ""
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            return {}
+        out: dict[str, tuple[int, int]] = {}
+        for item in doc.get("nftables", []):
+            counter = item.get("counter") if isinstance(item, dict) else None
+            if isinstance(counter, dict) and isinstance(counter.get("name"), str):
+                out[counter["name"]] = (int(counter.get("packets", 0)), int(counter.get("bytes", 0)))
+        return out
+
     def apply_tproxy(self, plan: NetPlan) -> NetResult:
         # report the full ruleset actually loaded (v4 + v6), not just the v4 table, so audit
         # logs / UI match what's live (matters when debugging a v6 leak).

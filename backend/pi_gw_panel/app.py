@@ -157,6 +157,9 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     backup_scheduler = BackupScheduler(app_state)
     from pi_gw_panel.updates import UpdateScheduler
     update_scheduler = UpdateScheduler(app_state)
+    # B1: one nft counter reading a minute, for the pinned devices only.
+    from pi_gw_panel.devices import DeviceSampler
+    device_sampler = DeviceSampler(app_state)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -250,7 +253,7 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
                 if res is not None and not res.ok:
                     logging.getLogger("pi_gw_panel").warning("boot reapply failed: %s", res.error)
                 for component in (scheduler, monitor, liveness, backup_scheduler,
-                                  update_scheduler, app_state.recorder):
+                                  update_scheduler, device_sampler, app_state.recorder):
                     if component is None:
                         continue
                     owned.append(component)

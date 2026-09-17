@@ -347,6 +347,37 @@ class SettingsIn(NonNullPatch):
     update_check_enabled: bool | None = None
 
 
+# --- A4: DHCP reservations (pinned devices) ---
+class ReservationIn(StrictIn):
+    mac: str = Field(max_length=64)
+    ip: str = Field(max_length=64)
+    name: str = Field(default="", max_length=32)
+
+
+class ReservationPatch(StrictIn):
+    name: str = Field(max_length=32)
+
+
+class ReservationOut(BaseModel):
+    id: int
+    mac: str
+    ip: str
+    name: str
+    created_at: int
+    # B1: bytes this device moved in the window the list was asked for (0 without samples).
+    up_bytes: int = 0
+    down_bytes: int = 0
+    # Whether the segment's lease file currently shows it — a pinned device that is switched off
+    # is still pinned, and the UI says which it is.
+    online: bool = False
+
+
+class ReservationsOut(BaseModel):
+    reservations: list[ReservationOut]
+    window_sec: int
+    max_reservations: int
+
+
 # --- A3: geo data files ---
 class GeoFileOut(BaseModel):
     dataset: str
@@ -498,7 +529,7 @@ class DefaultProfileIn(StrictIn):
 
 # --- Wave 2: routing ---
 class RoutingRuleIn(StrictIn):
-    type: Literal["geoip", "geosite", "domain", "ip", "port"]
+    type: Literal["geoip", "geosite", "domain", "ip", "port", "device"]
     value: str = Field(max_length=_MAX_FIELD)
     action: Literal["direct", "proxy", "block"]
     enabled: bool = True

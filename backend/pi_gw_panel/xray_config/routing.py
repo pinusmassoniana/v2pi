@@ -28,7 +28,9 @@ PRESETS: dict[str, dict] = {
 # (~1.3 s for ru-blocked-all against ~70 ms for ru-blocked, measured on the pinned xray).
 SLOW_CATEGORIES = {("ru", "ru-blocked-all"), ("ru", "refilter")}
 
-_TYPES = {"geoip", "geosite", "domain", "ip", "port"}
+# `device` matches the SOURCE address — one pinned client — so it is an override: it decides
+# where that device's traffic goes regardless of what the destination rules below would say.
+_TYPES = {"geoip", "geosite", "domain", "ip", "port", "device"}
 _ACTIONS = {"direct", "proxy", "block"}
 
 
@@ -91,6 +93,16 @@ def validate_rule(r: RoutingRule) -> str | None:
     vals = _split(r.value)
     if not vals:
         return "empty value"
+    if r.type == "device":
+        for v in vals:
+            try:
+                address = ipaddress.ip_address(v)
+            except ValueError:
+                return f"{v!r} is not an IPv4 address"
+            if address.version != 4:
+                # A client's IPv6 address is a SLAAC/privacy address that changes by itself, so a
+                # v6 source rule would match until the device rotated it and then quietly stop.
+                return "a device rule matches the client's IPv4 address only"
     if r.type == "port":
         for v in vals:
             if not re.fullmatch(r"\d{1,5}(-\d{1,5})?", v):
@@ -137,7 +149,9 @@ def _rule_to_field(r: RoutingRule) -> dict:
     `geoip`/`geosite` get their xray prefixes; `domain`/`ip` are literals (multi-value →
     a list); `port` stays a string ("443" / "1000-2000" / "80,443")."""
     field = {"type": "field", "outboundTag": r.action}
-    if r.type in ("geoip", "ip"):
+    if r.type == "device":
+        field["source"] = _split(r.value)
+    elif r.type in ("geoip", "ip"):
         field["ip"] = _values_field(r)
     elif r.type in ("geosite", "domain"):
         field["domain"] = _values_field(r)

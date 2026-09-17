@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { SLOW_POLL_MS } from "../../api/cadence";
 import { useConnectionBusy } from "../../api/invalidation";
@@ -37,6 +38,8 @@ function RulesSkeleton() {
  */
 export function Routing() {
   const routing = usePolledQuery(queries.routing(), SLOW_POLL_MS);
+  // A4: read once — the pinned devices a `device` rule can name. Gateway › Network owns changes.
+  const devices = useQuery(queries.reservations());
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const editor = useRoutingEditor(routing.data);
   const actions = useRoutingActions(editor);
@@ -105,7 +108,7 @@ export function Routing() {
           <fieldset disabled={rulesLocked} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
             {desktop ? (
               <GlassCard aria-label="Rules" className="overflow-hidden p-0">
-                <RulesTable rows={current.rows} defaultAction={current.defaultAction} onAdd={onAdd} onUpdate={onUpdate} onMove={onMove} onRemove={onRemove} />
+                <RulesTable rows={current.rows} defaultAction={current.defaultAction} onAdd={onAdd} onUpdate={onUpdate} onMove={onMove} onRemove={onRemove} devices={devices.data?.reservations ?? []} />
               </GlassCard>
             ) : (
               <section aria-label="Rules">

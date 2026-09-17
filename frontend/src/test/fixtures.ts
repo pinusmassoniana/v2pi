@@ -3,6 +3,7 @@ import { act } from "@testing-library/react";
 import { vi, type MockedFunction } from "vitest";
 import type {
   ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
+  Reservation, Reservations,
   PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
   RefreshAllResult, RestoreResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
   TuningProfile,
@@ -459,6 +460,23 @@ export const LOG_LINES: string[] = [
 ];
 
 /**
+ * A4/B1: two pinned devices on the gateway network fixture — the TV, which is the day's busiest
+ * and currently leased, and a console that is switched off. The other five leases are unpinned.
+ */
+export const RESERVATIONS: Reservations = {
+  window_sec: 86_400,
+  max_reservations: 64,
+  reservations: [
+    { id: 1, mac: "aa:bb:cc:00:01:23", ip: "192.168.50.123", name: "appletv", created_at: NOW_SEC - 86_400,
+      up_bytes: 240_000_000, down_bytes: 4_100_000_000, online: true },
+    { id: 2, mac: "aa:bb:cc:00:01:77", ip: "192.168.50.177", name: "", created_at: NOW_SEC - 3_600,
+      up_bytes: 0, down_bytes: 0, online: false },
+  ],
+};
+
+const reservationsAfter = (rows: Reservation[]): Reservations => ({ ...RESERVATIONS, reservations: rows });
+
+/**
  * The geo data as a gateway that has installed the RU lists holds it: the stock files are the
  * image's (old), the RU ones were updated today and can still be reverted.
  */
@@ -575,6 +593,15 @@ export function mockApi() {
     })),
     applyProfileActive: vi.spyOn(api, "applyProfileActive").mockResolvedValue({ ok: true, node_id: 1 }),
     putNetwork: vi.spyOn(api, "putNetwork").mockImplementation(async (patch: NetworkPatch) => networkAfter(patch)),
+    listReservations: vi.spyOn(api, "listReservations").mockResolvedValue(RESERVATIONS),
+    addReservation: vi.spyOn(api, "addReservation").mockImplementation(async (mac: string, ip: string, name: string) =>
+      reservationsAfter([...RESERVATIONS.reservations, {
+        id: 3, mac, ip, name, created_at: NOW_SEC, up_bytes: 0, down_bytes: 0, online: true,
+      }])),
+    renameReservation: vi.spyOn(api, "renameReservation").mockImplementation(async (id: number, name: string) =>
+      reservationsAfter(RESERVATIONS.reservations.map((row) => (row.id === id ? { ...row, name } : row)))),
+    deleteReservation: vi.spyOn(api, "deleteReservation").mockImplementation(async (id: number) =>
+      reservationsAfter(RESERVATIONS.reservations.filter((row) => row.id !== id))),
     getRw: vi.spyOn(api, "getRw").mockResolvedValue(RW),
     putRw: vi.spyOn(api, "putRw").mockImplementation(async (body: RwIn) => ({
       ...RW, enabled: body.enabled, port: body.port, dest: body.dest, server_names: body.server_names, short_ids: body.short_ids,

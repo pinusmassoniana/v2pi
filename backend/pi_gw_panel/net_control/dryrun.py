@@ -8,6 +8,10 @@ class DryRunBackend:
     def __init__(self):
         self.applied: list[str] = []
 
+    def read_counters(self) -> dict[str, tuple[int, int]]:
+        """No kernel here, so nothing has counted anything."""
+        return {}
+
     def apply_tproxy(self, plan: NetPlan) -> NetResult:
         # Record the combined nft + dnsmasq render as one entry — changing the
         # segment/DHCP config re-renders both (the real write+reload is the

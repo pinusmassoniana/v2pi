@@ -62,6 +62,10 @@ class NetPlan:
     # transitional plan, applies it before it raises anything, and narrows back to this field
     # empty once the old link is gone.
     extra_ifaces: tuple[str, ...] = ()
+    # A4/B1: the segment's pinned devices, as (mac, ip, name). They render one `dhcp-host` line
+    # each, and — B1 — one counter pair each in the nft ruleset. Empty is the steady state for a
+    # gateway that has pinned nothing, and renders byte-for-byte what it rendered before.
+    reservations: tuple[tuple[str, str, str], ...] = ()
 
     @classmethod
     def from_settings(cls, s: Settings) -> "NetPlan":
@@ -90,7 +94,17 @@ class NetPlan:
             ipv6_enabled=(store.get_setting("ipv6_enabled") or "0") == "1",
             lan_access=(store.get_setting("lan_access_enabled") or ("1" if s.lan_access else "0")) == "1",
             mgmt_iface=s.mgmt_iface, mgmt_ip=s.mgmt_ip,
+            reservations=tuple((r.mac, r.ip, r.name) for r in _reservations(store)),
         )
+
+
+def _reservations(store):
+    """Never let a reservation read break the plan every other caller needs: a gateway with an
+    unreadable table still has a segment to serve."""
+    try:
+        return store.list_reservations()
+    except Exception:
+        return []
 
 
 @dataclass

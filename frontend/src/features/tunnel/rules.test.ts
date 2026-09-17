@@ -342,6 +342,7 @@ describe("constants", () => {
     expect(VALUE_PLACEHOLDERS).toEqual({
       geoip: "ru | private | cn (comma-sep ok)", geosite: "category-ads-all", domain: "example.com, domain:ya.ru",
       ip: "1.2.3.0/24, 10.0.0.0/8", port: "443 | 1000-2000 | 80,443",
+      device: "192.168.50.123 (a pinned device)",
     });
     expect(keyOf(saved(), "ru")).toBe("s22");
   });
@@ -396,5 +397,27 @@ describe("A3 · geo datasets", () => {
     expect(datasetInstalled(geo, "ru")).toBe(false);          // half installed is not installed
     expect(datasetInstalled(undefined, "ru")).toBe(false);
     expect(missingDatasetConfirm("ru")).toContain("RU lists");
+  });
+});
+
+describe("A4 · device rules", () => {
+  it("a device rule takes an IPv4 address and refuses anything that rotates", () => {
+    expect(validateRuleRow({ type: "device", value: "192.168.50.123", action: "direct" })).toBeNull();
+    expect(validateRuleRow({ type: "device", value: "fd00::5", action: "direct" }))
+      .toContain("matches the client's IPv4 only");
+    expect(validateRuleRow({ type: "device", value: "192.168.50.0/24", action: "direct" })).not.toBeNull();
+  });
+
+  it("the tester leaves device rules out — they decide by who is asking, not where to", () => {
+    const state: StagedRouting = {
+      defaultAction: "proxy", domainStrategy: "IPIfNonMatch",
+      rows: [
+        { key: "d", id: null, type: "device", value: "192.168.50.123", action: "direct", enabled: true, label: "tv", dataset: "" },
+        { key: "n", id: null, type: "domain", value: "netflix.com", action: "block", enabled: true, label: "", dataset: "" },
+      ],
+    };
+    // The domain rule still answers, and the device rule neither matches nor blocks the answer.
+    expect(testDestination("netflix.com", state)?.action).toBe("block");
+    expect(testDestination("example.org", state)?.action).toBe("proxy");
   });
 });

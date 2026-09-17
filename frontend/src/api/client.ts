@@ -131,6 +131,16 @@ export interface Routing { rules: RoutingRule[]; default_action: string; domain_
 export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; domain_strategy?: string; }
 export interface PresetInfo { name: string; title: string; dataset: string; default_action: string | null; }
 
+// --- A4/B1: pinned devices (DHCP reservations) and what each moved ---
+export interface Reservation {
+  id: number; mac: string; ip: string; name: string; created_at: number;
+  /** Bytes in the window the list reports (`window_sec`); 0 until the sampler has seen traffic. */
+  up_bytes: number; down_bytes: number;
+  /** Whether the segment's lease file shows it right now — pinned but switched off is normal. */
+  online: boolean;
+}
+export interface Reservations { reservations: Reservation[]; window_sec: number; max_reservations: number; }
+
 // --- A3: the geo data files the gateway routes by ---
 export interface GeoFile {
   dataset: string; file: string; source: string;
@@ -427,6 +437,12 @@ export const api = {
   // A reset writes every re-apply key back to its default, so it always re-applies.
   resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
+
+  listReservations(): Promise<Reservations> { return req("/net/reservations"); },
+  /** Pins one device's address: re-renders dnsmasq (which restarts) and the nft ruleset. */
+  addReservation(mac: string, ip: string, name: string): Promise<Reservations> { return mutate("POST", "/net/reservations", { mac, ip, name }); },
+  renameReservation(id: number, name: string): Promise<Reservations> { return mutate("PATCH", `/net/reservations/${id}`, { name }); },
+  deleteReservation(id: number): Promise<Reservations> { return mutate("DELETE", `/net/reservations/${id}`); },
 
   getGeo(): Promise<Geo> { return req("/geo"); },
   /** Replaces one dataset and reloads xray: a short drop for everyone behind the gateway. */

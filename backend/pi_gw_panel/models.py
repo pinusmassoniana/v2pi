@@ -111,7 +111,7 @@ class TuningProfile:
 class RoutingRule:
     id: int | None
     position: int
-    type: str   # geoip | geosite | domain | ip | port
+    type: str   # geoip | geosite | domain | ip | port | device
     value: str
     action: str  # direct | proxy | block
     enabled: bool = True
@@ -120,6 +120,17 @@ class RoutingRule:
     # names (geoip:ru); "ru" is runetfreedom's, addressed as ext:geosite_ru.dat:ru-blocked.
     # Ignored for domain/ip/port rules, which carry literals.
     dataset: str = ""
+
+
+@dataclass
+class Reservation:
+    """A4: a device whose IP the segment's DHCP always hands back, so it can be named — and
+    routed and counted — by something stabler than "whatever it got this time"."""
+    id: int | None
+    mac: str          # lowercase aa:bb:cc:dd:ee:ff
+    ip: str           # inside the segment /24, never the gateway's own address
+    name: str         # hostname charset; dnsmasq hands it out and the UI shows it
+    created_at: int = 0
 
 
 @dataclass

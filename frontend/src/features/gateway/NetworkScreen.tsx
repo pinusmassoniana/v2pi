@@ -15,6 +15,7 @@ import { ErrorState, Skeleton } from "../../components/ui/States";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { EditorSection } from "../tunnel/EditorSection";
 import { ClientDnsHint, GatewayDnsBody, GatewayDnsSwitch, useGatewayDns } from "./GatewayDnsCard";
+import { DevicesCard, useDevices, type DevicesState } from "./DevicesCard";
 import { Checklist, ChecklistCard, KillSwitchState, LeasesCard, LeasesList, NetworkAlerts } from "./NetworkCards";
 import { KillSwitchToggle, LanIpv6Fields, SegmentFields } from "./NetworkFields";
 import { poolIssue, type NetworkField } from "./networkForm";
@@ -77,6 +78,7 @@ interface EditorParts {
   apply: NetworkApply;
   canApply: boolean;
   dns: ReturnType<typeof useGatewayDns>;
+  devices: DevicesState;
   locked: boolean;
 }
 
@@ -87,8 +89,9 @@ function NetworkEditor({ network, writing }: { network: NetworkRead; writing: bo
   const apply = useNetworkApply(network, state);
   const canApply = useCanApply(state, apply);
   const dns = useGatewayDns();
+  const devices = useDevices();
   // While an Apply runs, what it sends cannot be edited.
-  const parts: EditorParts = { network, state, apply, canApply, dns, locked: writing || apply.applying };
+  const parts: EditorParts = { network, state, apply, canApply, dns, devices, locked: writing || apply.applying };
   return (
     <>
       <p role="status" className={state.gatewayChanged ? "glass border-warn/40 p-3 text-sm text-warn" : "sr-only"}>{state.gatewayChanged ? GATEWAY_CHANGED : null}</p>
@@ -98,7 +101,7 @@ function NetworkEditor({ network, writing }: { network: NetworkRead; writing: bo
 }
 
 /** Desktop: the segment and LAN / IPv6 cards on the left, kill-switch, gateway DNS and leases on the right, then the checklist. */
-function NetworkDesktop({ network, state, apply, canApply, dns, locked }: EditorParts) {
+function NetworkDesktop({ network, state, apply, canApply, dns, devices, locked }: EditorParts) {
   const { dirty, discard, form } = state;
   const killSwitch = useWatch({ control: form.control, name: "killSwitch" });
   return (
@@ -130,6 +133,7 @@ function NetworkDesktop({ network, state, apply, canApply, dns, locked }: Editor
             <CardHeader title="Gateway DNS" aside={<Chip>applies live when a node is connected</Chip>} className="mb-0" />
             <GatewayDnsBody dns={dns} network={network} />
           </GlassCard>
+          <DevicesCard network={network} devices={devices} />
           <LeasesCard network={network} />
         </div>
       </div>
@@ -150,7 +154,7 @@ const FIELD_SECTION: Partial<Record<NetworkField, PhoneSection>> = {
  * with Discard and Apply while something is edited. A section holding an error — or the segment while its pool is
  * invalid — stays open, so the reason Apply is unavailable is always on screen.
  */
-function NetworkPhone({ network, state, apply, canApply, dns, locked }: EditorParts) {
+function NetworkPhone({ network, state, apply, canApply, dns, devices, locked }: EditorParts) {
   const { dirty, discard, form } = state;
   const { control, formState: { errors } } = form;
   const [killSwitch, ip, dhcpStart, dhcpEnd, lanAccess, ipv6, ip6Mode] = useWatch({ control, name: ["killSwitch", "ip", "dhcpStart", "dhcpEnd", "lanAccess", "ipv6", "ip6Mode"] });
@@ -170,6 +174,7 @@ function NetworkPhone({ network, state, apply, canApply, dns, locked }: EditorPa
         <KillSwitchState network={network} stagedOff={!killSwitch} />
         <KillSwitchToggle state={state} disabled={locked} applyHint={false} />
       </GlassCard>
+      <DevicesCard network={network} devices={devices} />
       <section aria-label="DHCP leases" className="flex flex-col gap-2">
         <CardHeader title="DHCP leases" detail={`${network.status.dhcp_clients} active`} aside={<Chip tone="ok">live</Chip>} className="mb-0 px-1" />
         <LeasesList network={network} cards />

@@ -6,6 +6,9 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     init_schema(conn)
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    def refresh_tables():
+        return {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert {"tuning_profiles", "routing_rules", "node_health"} <= tables
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
     assert "tuning_profile_id" in cols
@@ -37,7 +40,10 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "last_skipped" in scols   # migration 16 — what the last refresh dropped, per protocol
     rcols = {r["name"] for r in conn.execute("PRAGMA table_info(routing_rules)").fetchall()}
     assert "dataset" in rcols        # migration 17 — which geo dataset a geoip/geosite rule reads
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 17
+    tables = refresh_tables()
+    assert "dhcp_reservations" in tables   # migration 18 — pinned devices
+    assert "device_minutes" in tables       # migration 19 — per-device traffic
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

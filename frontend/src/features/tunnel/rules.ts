@@ -4,7 +4,9 @@ import type { Geo, Routing, RoutingIn, RoutingRuleIn } from "../../api/client";
 import { ipv4Number, ipv4Span, isIPv6Network } from "../../lib/ip";
 import { parseDestination } from "../../lib/routing";
 
-export const RULE_TYPES = ["geoip", "geosite", "domain", "ip", "port"] as const;
+// `device` matches the SOURCE — one pinned client — so it overrides every destination rule
+// below it, whatever they say.
+export const RULE_TYPES = ["geoip", "geosite", "domain", "ip", "port", "device"] as const;
 export type RuleType = (typeof RULE_TYPES)[number];
 export const RULE_ACTIONS = ["direct", "proxy", "block"] as const;
 export type RuleAction = (typeof RULE_ACTIONS)[number];
@@ -15,6 +17,9 @@ export type RuleDataset = (typeof RULE_DATASETS)[number];
 export const DATASET_LABELS: Readonly<Record<RuleDataset, string>> = { "": "stock", ru: "RU lists" };
 /** Categories large enough to add about a second to every apply and every xray start. */
 export const SLOW_CATEGORIES: ReadonlySet<string> = new Set(["ru-blocked-all", "refilter"]);
+/** A device rule decides by WHO is asking, so its position is the whole of its meaning. */
+export const DEVICE_ORDER_NOTE =
+  "matches this device whatever the destination — the rules above it are still tried first";
 export const SLOW_CATEGORY_NOTE =
   "this category is big: it adds about a second to every save and every tunnel restart";
 export type DomainStrategy = (typeof DOMAIN_STRATEGIES)[number];
@@ -34,6 +39,7 @@ export const VALUE_PLACEHOLDERS: Readonly<Record<RuleType, string>> = {
   domain: "example.com, domain:ya.ru",
   ip: "1.2.3.0/24, 10.0.0.0/8",
   port: "443 | 1000-2000 | 80,443",
+  device: "192.168.50.123 (a pinned device)",
 };
 
 export const RULES_FOOTNOTE = "DNS / QUIC / stats rules are injected automatically when those features are enabled.";
@@ -280,6 +286,15 @@ export function validateRuleRow(row: Pick<RuleRow, "type" | "value" | "action">)
       if (ipv4Span(token) === null && !isIPv6Network(token)) return `bad ip/cidr "${token}"`;
     }
   }
+  if (row.type === "device") {
+    for (const token of tokens) {
+      // A client's IPv6 address is SLAAC/privacy — it rotates by itself, so a rule on one would
+      // match until the device changed it and then quietly stop. The gateway refuses it too.
+      if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(token) || ipv4Span(token) === null) {
+        return `"${token}" is not an IPv4 address — a device rule matches the client's IPv4 only`;
+      }
+    }
+  }
   if (row.action !== "direct") {
     if (row.type === "ip") {
       const privateToken = tokens.find((token) => isPrivateIPv4(token));
@@ -413,6 +428,8 @@ export function testDestination(input: string, state: StagedRouting): TesterResu
       });
     } else if (row.type === "port") {
       hit = port !== null && tokens.some((token) => portMatches(token, port));
+    } else if (row.type === "device") {
+      continue;             // a source rule: it decides by who is asking, not by the destination
     } else {
       skippedGeo = true;
       continue;

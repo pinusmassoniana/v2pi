@@ -48,6 +48,10 @@ export const INVALIDATES = {
   checkUpdates: [keys.diagnostics],
   // A geo swap reloads xray, so the connection state and the routing screen both re-read.
   updateGeo: [keys.geo, keys.status, keys.routing],
+  // Pinning re-renders dnsmasq and the ruleset, so the network card's lease view changes too.
+  addReservation: [keys.reservations, keys.network],
+  renameReservation: [keys.reservations],
+  deleteReservation: [keys.reservations, keys.network],
   revertGeo: [keys.geo, keys.status, keys.routing],
   resetSettings: [keys.settings, keys.status, keys.network],
   createToken: [keys.tokens], deleteToken: [keys.tokens],

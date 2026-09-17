@@ -21,6 +21,7 @@ from pi_gw_panel.api.schemas import (
     ProfileValidateOut, ProfilePresetInfo,
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     GeoOut, GeoFileOut, GeoUpdateIn, GeoUpdateOut,
+    ReservationIn, ReservationPatch, ReservationOut, ReservationsOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
@@ -31,13 +32,15 @@ from pi_gw_panel.auth.auth import (
     SESSION_AUTHED, SESSION_CSRF, SESSION_EPOCH, SESSION_LASTSEEN, new_csrf_token)
 from pi_gw_panel.auth import service as auth_service
 from pi_gw_panel.auth import tokens
-from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
+from pi_gw_panel.models import (Node, NodeHealth, Reservation, RoutingRule, Subscription,
+                                TuningProfile)
 from pi_gw_panel.controller import (
     ApplyResult, apply_node, apply_net, reapply_active_node, build_node_config, apply_lock,
     stop_net, sync_net, restore_backup,
     RW_PENDING_KEY, rw_clear_reconcile_pending, rw_reconcile_is_pending)
 from pi_gw_panel.net_control import netcheck, events as conn_events
 from pi_gw_panel.net_control.plan import NetPlan, net24
+from pi_gw_panel.net_control.render import render_dnsmasq, reservation_issue
 from pi_gw_panel import rw_inbound as rw_mod
 from pi_gw_panel.stats.history import bounded_interval_ms
 from pi_gw_panel.health import probe, geo
@@ -1553,6 +1556,130 @@ def geo_revert(body: GeoUpdateIn, request: Request,
     with apply_lock:
         result = geo_data.revert(state, body.dataset)
     return GeoUpdateOut(**result, geo=_geo_out(state))
+
+
+# A4: the pinned devices. A reservation is one dnsmasq line and (B1) one counter pair, so the
+# cap is about keeping the rendered config and ruleset small, not about the table.
+MAX_RESERVATIONS = 64
+# The window the device list reports usage over, and the one the Devices card shows.
+_USAGE_WINDOW_SEC = 24 * 3600
+
+
+def _reservations_out(state, window_sec: int = _USAGE_WINDOW_SEC) -> ReservationsOut:
+    store = state.store
+    since_min = int(time.time() // 60) - window_sec // 60
+    usage = {row["ip"]: row for row in store.device_usage(since_min)}
+    plan = NetPlan.from_store(store, state.settings)
+    leased = {lease["ip"] for lease in netcheck.dhcp_leases(plan.dnsmasq_leases)}
+    rows = []
+    for r in store.list_reservations():
+        seen = usage.get(r.ip, {})
+        rows.append(ReservationOut(
+            id=r.id or 0, mac=r.mac, ip=r.ip, name=r.name, created_at=r.created_at,
+            up_bytes=int(seen.get("up_bytes") or 0), down_bytes=int(seen.get("down_bytes") or 0),
+            online=r.ip in leased))
+    return ReservationsOut(reservations=rows, window_sec=window_sec,
+                           max_reservations=MAX_RESERVATIONS)
+
+
+def _apply_reservations(state) -> None:
+    """Make the host match the reservation table: dnsmasq re-rendered (it restarts only when the
+    text changed) and the nft ruleset re-rendered for the counters. Raises on failure, so the
+    caller's transaction rolls the row back and the gateway keeps the configuration it had."""
+    plan = NetPlan.from_store(state.store, state.settings)
+    dnsmasq = getattr(state, "dnsmasq", None)
+    # The same gate `host_provision` uses: dnsmasq is ours to (re)start only on a real Linux
+    # backend with segment management on. Anywhere else — dev, CI, a gateway whose DHCP an
+    # operator runs themselves — the row is stored and rendered, and the host is left alone.
+    from pi_gw_panel.net_control.provision import _is_linux_backend
+    if (dnsmasq is not None and _is_linux_backend(state.net)
+            and (state.store.get_setting("manage_dnsmasq") or "1") == "1"):
+        dnsmasq.apply(render_dnsmasq(plan))
+    result = sync_net(state)
+    if not result.ok:
+        raise RuntimeError(result.error or "network apply failed")
+
+
+@router.get("/net/reservations", response_model=ReservationsOut)
+def list_reservations(request: Request, _: None = Depends(require_auth)) -> ReservationsOut:
+    """A4/B1: the pinned devices, with what each moved in the last 24 h and whether it is leased."""
+    return _reservations_out(get_state(request))
+
+
+@router.post("/net/reservations", response_model=ReservationsOut, status_code=201)
+def add_reservation(body: ReservationIn, request: Request,
+                    _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> ReservationsOut:
+    """Pin one device's address. The value checks are ours alone: `dnsmasq --test` accepts a
+    malformed MAC (it reads it as a client id), so a bad one would render a line that silently
+    pins nothing."""
+    state = get_state(request)
+    mac = (body.mac or "").strip().lower()
+    ip = (body.ip or "").strip()
+    name = (body.name or "").strip()
+    with apply_lock:
+        plan = NetPlan.from_store(state.store, state.settings)
+        problem = reservation_issue(mac, ip, name, plan)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
+        existing = state.store.list_reservations()
+        if len(existing) >= MAX_RESERVATIONS:
+            raise HTTPException(status_code=422,
+                                detail=f"at most {MAX_RESERVATIONS} devices can be pinned")
+        if any(r.mac == mac for r in existing):
+            raise HTTPException(status_code=409, detail=f"{mac} is already pinned")
+        if any(r.ip == ip for r in existing):
+            raise HTTPException(status_code=409, detail=f"{ip} is already taken by another device")
+        try:
+            with state.store.transaction():
+                state.store.add_reservation(
+                    Reservation(id=None, mac=mac, ip=ip, name=name, created_at=int(time.time())))
+                _apply_reservations(state)
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"the device was not pinned: {exc}") from exc
+    return _reservations_out(state)
+
+
+@router.patch("/net/reservations/{res_id}", response_model=ReservationsOut)
+def rename_reservation(res_id: int, body: ReservationPatch, request: Request,
+                       _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> ReservationsOut:
+    state = get_state(request)
+    name = (body.name or "").strip()
+    with apply_lock:
+        current = next((r for r in state.store.list_reservations() if r.id == res_id), None)
+        if current is None:
+            raise HTTPException(status_code=404, detail="no such reservation")
+        plan = NetPlan.from_store(state.store, state.settings)
+        problem = reservation_issue(current.mac, current.ip, name, plan)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
+        try:
+            with state.store.transaction():
+                state.store.rename_reservation(res_id, name)
+                _apply_reservations(state)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"the device was not renamed: {exc}") from exc
+    return _reservations_out(state)
+
+
+@router.delete("/net/reservations/{res_id}", response_model=ReservationsOut)
+def delete_reservation(res_id: int, request: Request,
+                       _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> ReservationsOut:
+    """Unpin a device. Any routing rule naming its address is left alone on purpose — it still
+    matches whatever holds that address, and silently rewriting the operator's ruleset from a
+    delete elsewhere is worse than a rule they can see and remove."""
+    state = get_state(request)
+    with apply_lock:
+        if not any(r.id == res_id for r in state.store.list_reservations()):
+            raise HTTPException(status_code=404, detail="no such reservation")
+        try:
+            with state.store.transaction():
+                state.store.delete_reservation(res_id)
+                _apply_reservations(state)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"the device was not unpinned: {exc}") from exc
+    return _reservations_out(state)
 
 
 @router.post("/updates/check", response_model=DiagnosticsOut)

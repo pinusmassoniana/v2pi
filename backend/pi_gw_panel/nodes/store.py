@@ -3,7 +3,8 @@ import logging
 import sqlite3
 import threading
 import time
-from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule, NodeHealth
+from pi_gw_panel.models import (Node, NodeHealth, Reservation, RoutingRule, Subscription,
+                                TuningProfile)
 
 
 logger = logging.getLogger(__name__)
@@ -535,6 +536,61 @@ class NodeStore:
                     "dataset) VALUES(?, ?, ?, ?, ?, ?, ?)",
                     (i, r.type, r.value, r.action, int(getattr(r, "enabled", True)),
                      getattr(r, "label", ""), getattr(r, "dataset", "")))
+
+    # --- DHCP reservations (A4) ---
+    def list_reservations(self) -> list[Reservation]:
+        rows = self._conn.execute(
+            "SELECT * FROM dhcp_reservations ORDER BY ip").fetchall()
+        return [Reservation(id=r["id"], mac=r["mac"], ip=r["ip"], name=r["name"],
+                            created_at=r["created_at"]) for r in rows]
+
+    def add_reservation(self, r: Reservation) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO dhcp_reservations(mac, ip, name, created_at) VALUES(?, ?, ?, ?)",
+            (r.mac, r.ip, r.name, r.created_at))
+        self._conn.commit()
+        return cur.lastrowid
+
+    def rename_reservation(self, res_id: int, name: str) -> None:
+        self._conn.execute("UPDATE dhcp_reservations SET name=? WHERE id=?", (name, res_id))
+        self._conn.commit()
+
+    def delete_reservation(self, res_id: int) -> None:
+        self._conn.execute("DELETE FROM dhcp_reservations WHERE id=?", (res_id,))
+        self._conn.commit()
+
+    # --- per-device traffic (B1) ---
+    _DEVICE_RETENTION_MIN = 90 * 24 * 60      # the same window traffic_minutes keeps
+
+    def add_device_minute(self, ip: str, ts_min: int, up_bytes: int, down_bytes: int) -> None:
+        """Add this minute's bytes for one device. Additive on conflict, and pruned against the
+        NEWEST stored sample rather than this one, so a clock step into the future cannot wipe
+        the history in a single call (the same guard `add_traffic_minute` carries)."""
+        with self._conn:
+            newest = self._conn.execute(
+                "SELECT MAX(ts_min) AS m FROM device_minutes").fetchone()["m"]
+            self._conn.execute(
+                "INSERT INTO device_minutes(ip, ts_min, up_bytes, down_bytes) VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(ip, ts_min) DO UPDATE SET up_bytes = up_bytes + excluded.up_bytes, "
+                "down_bytes = down_bytes + excluded.down_bytes",
+                (ip, ts_min, int(up_bytes), int(down_bytes)))
+            anchor = ts_min if newest is None else min(int(ts_min), int(newest))
+            self._conn.execute("DELETE FROM device_minutes WHERE ts_min < ?",
+                               (anchor - self._DEVICE_RETENTION_MIN,))
+
+    def device_usage(self, since_min: int) -> list[dict]:
+        """Totals per device since `since_min` (unix//60), busiest first."""
+        rows = self._conn.execute(
+            "SELECT ip, SUM(up_bytes) AS up_bytes, SUM(down_bytes) AS down_bytes "
+            "FROM device_minutes WHERE ts_min >= ? GROUP BY ip "
+            "ORDER BY (SUM(up_bytes) + SUM(down_bytes)) DESC", (since_min,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def device_minutes(self, ip: str, since_min: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT ts_min, up_bytes, down_bytes FROM device_minutes "
+            "WHERE ip = ? AND ts_min >= ? ORDER BY ts_min", (ip, since_min)).fetchall()
+        return [dict(r) for r in rows]
 
     # --- node health ---
     def upsert_health(self, h: NodeHealth) -> None:

@@ -1,7 +1,10 @@
 import ipaddress
+import logging
 import re
 
 from pi_gw_panel.net_control.plan import NetPlan, net24
+
+logger = logging.getLogger(__name__)
 
 # What an interface name may look like before it is interpolated into a rule. The same shape the
 # API boundary enforces on `segment_iface` (`config._NET_IFACE_RE`), applied here to the EXTRA
@@ -65,6 +68,53 @@ def _local6(plan: NetPlan) -> str:
     return "{ " + ", ".join(nets) + " }"
 
 
+_PRIVATE_SET = "127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16"
+
+
+def counter_names(ip: str) -> tuple[str, str]:
+    """B1: the nft counter pair for one pinned device, derived from its address so the names are
+    stable across renders (a counter keyed by row id would move when a row is deleted)."""
+    key = ip.replace(".", "_")
+    return f"dev_up_{key}", f"dev_down_{key}"
+
+
+def _accounting(plan: NetPlan) -> tuple[str, str]:
+    """B1, for the pinned devices only (owner decision): the counter declarations and the two
+    chains that feed them.
+
+    They are chains of their OWN, at the same hooks as the enforcement rules but carrying no
+    verdict, for two reasons. The tproxy chain stays byte-for-byte what it was — accounting must
+    not be able to change where a packet goes — and counting keeps working while the tunnel is
+    stopped, which is exactly when an operator wonders what is still talking.
+
+    Private destinations (upload) and private sources (download) are excluded, so what a device
+    does with the LAN is not reported as internet traffic.
+
+    With no usable reservations both are empty and the ruleset is the old one, byte for byte.
+    """
+    usable = applied_reservations(plan)
+    if not usable:
+        return "", ""
+    declarations, uploads, downloads = [], [], []
+    for _mac, ip, _name in usable:
+        up, down = counter_names(ip)
+        declarations.append(f"    counter {up} {{ }}\n    counter {down} {{ }}\n")
+        uploads.append(f"        ip saddr {ip} counter name {up}\n")
+        downloads.append(f"        ip daddr {ip} counter name {down}\n")
+    chains = (
+        "    chain acct_up {\n"
+        "        type filter hook prerouting priority mangle; policy accept;\n"
+        f"        ip daddr {{ {_PRIVATE_SET} }} return\n"
+        + "".join(uploads) +
+        "    }\n"
+        "    chain acct_down {\n"
+        "        type filter hook postrouting priority mangle; policy accept;\n"
+        f"        ip saddr {{ {_PRIVATE_SET} }} return\n"
+        + "".join(downloads) +
+        "    }\n")
+    return "".join(declarations), chains
+
+
 def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
     # Mark client TCP/UDP *arriving on the segment iface* with fwmark and tproxy to the
     # xray dokodemo port. The iifname scope keeps it to segment clients only — host-
@@ -93,6 +143,7 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
     # Every rule below is scoped by `_iif`, which is the configured segment interface alone except
     # while the segment is being MOVED between interfaces, when it names both — see `_iif`.
     iif = _iif(plan)
+    counters, accounting = _accounting(plan)
     forward = ""
     if plan.kill_switch:
         forward = f"""\
@@ -127,9 +178,11 @@ def render_nft(plan: NetPlan, tunnel_up: bool = True) -> str:
         ip saddr {seg_net} ip daddr {lan} oifname "{plan.mgmt_iface}" masquerade
     }}
 """
+    # The download counters ride along even while the tunnel is stopped: a device talking to the
+    # LAN or to a direct destination is still traffic the operator asked to see.
     return f"""\
 table ip pi_gw_panel {{
-{prerouting}{forward}{postrouting}}}
+{counters}{prerouting}{forward}{postrouting}{accounting}}}
 """
 
 
@@ -195,6 +248,58 @@ def _no_line_break(plan: NetPlan) -> None:
             raise ValueError(f"{field} must not contain a line break")
 
 
+# A4: what a reservation may carry into the dnsmasq config. `dnsmasq --test` accepts nonsense in
+# the MAC position (it reads it as a client id), so these are the only check there is.
+_MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,30}[A-Za-z0-9])?$")
+
+
+def reservation_value_issue(mac: str, ip: str, name: str) -> str | None:
+    """Shape alone: what a reservation must look like whatever segment it lands in. A restored
+    document is checked against this, because the box it is restored onto may serve a different
+    segment than the one the backup was taken from."""
+    if not _MAC_RE.match((mac or "").strip().lower()):
+        return "MAC must look like aa:bb:cc:dd:ee:ff"
+    if name and not _HOSTNAME_RE.match(name):
+        return "name may use letters, digits and hyphens only (up to 32 characters)"
+    try:
+        address = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return f"{ip!r} is not an IPv4 address"
+    if address.version != 4:
+        return "a reservation is IPv4 only"
+    return None
+
+
+def reservation_issue(mac: str, ip: str, name: str, plan: NetPlan) -> str | None:
+    """Why this reservation cannot be applied to THIS segment, or None. Shared by the API (which
+    refuses) and the renderer (which skips, so one unusable row cannot take the segment down)."""
+    shape = reservation_value_issue(mac, ip, name)
+    if shape:
+        return shape
+    address = ipaddress.ip_address(ip.strip())
+    segment = net24(plan.segment_ip)
+    if not segment or address not in ipaddress.ip_network(segment):
+        return f"{ip} is outside the segment {segment or '(unset)'}"
+    if plan.segment_ip and str(address) == plan.segment_ip.strip():
+        return "that is the gateway's own address"
+    return None
+
+
+def applied_reservations(plan: NetPlan) -> list[tuple[str, str, str]]:
+    """The reservations this plan can actually render. A row that does not fit the current
+    segment — a restore from a gateway that served another one — is left out and logged rather
+    than raising: the segment's DHCP and ruleset are worth more than that row."""
+    out = []
+    for mac, ip, name in plan.reservations:
+        problem = reservation_issue(mac, ip, name, plan)
+        if problem:
+            logger.warning("skipping reservation %s %s: %s", mac, ip, problem)
+            continue
+        out.append((mac, ip, name))
+    return out
+
+
 def render_dnsmasq(plan: NetPlan) -> str:
     _no_line_break(plan)
     # dnsmasq is the segment's DHCP (v4) + RA (v6) server — the panel's own supervised child
@@ -211,6 +316,8 @@ dhcp-range={plan.dhcp_start},{plan.dhcp_end},{plan.dhcp_lease}
 dhcp-option=3,{plan.segment_ip}
 dhcp-option=6,{plan.client_dns}
 """
+    for mac, ip, name in applied_reservations(plan):
+        base += f"dhcp-host={mac},{ip}" + (f",{name}\n" if name else "\n")
     if plan.ipv6_enabled:
         base += f"""\
 enable-ra

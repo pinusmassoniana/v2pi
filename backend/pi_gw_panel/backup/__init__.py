@@ -21,6 +21,7 @@ from pi_gw_panel.config import (NET_CROSS_FIELD_KEYS, SETTINGS_DEFAULTS, Setting
                                 check_change_safe, validate_net_settings,
                                 validate_setting_values)
 from pi_gw_panel.models import Node, RoutingRule, Subscription, TuningProfile
+from pi_gw_panel.net_control.render import reservation_value_issue
 from pi_gw_panel.nodes.store import _NODE_COLS, _node_values, _PROFILE_COLS, _profile_values
 
 BACKUP_SCHEMA = 2
@@ -28,6 +29,7 @@ MAX_NODES = 5000
 MAX_SUBSCRIPTIONS = 256
 MAX_PROFILES = 256
 MAX_RULES = 256
+MAX_RESERVATIONS = 64
 # Pre-restore snapshots are a safety net taken on every restore, not a bounded daily job, so
 # without a retention cap a burst of restores can grow this directory without limit.
 _PRE_RESTORE_RETAIN = 10
@@ -204,7 +206,7 @@ class BackupNode(_Strict):
 
 
 class BackupRule(_Strict):
-    type: Literal["geoip", "geosite", "domain", "ip", "port"]
+    type: Literal["geoip", "geosite", "domain", "ip", "port", "device"]
     value: str = Field(min_length=1, max_length=512)
     action: Literal["direct", "proxy", "block"]
     enabled: bool = True
@@ -213,6 +215,22 @@ class BackupRule(_Strict):
     # `ext:geosite_ru.dat:ru-blocked` into `geosite:ru-blocked` — a rule that still validates and
     # routes something completely different. Absent in documents written before v2.1.
     dataset: Literal["", "ru"] = ""
+
+
+class BackupReservation(_Strict):
+    """A4: a pinned device. Carried so a restore onto a fresh box brings the segment's addresses
+    back — without them, every `device` routing rule in the same document names an address
+    nothing hands out any more."""
+    mac: str = Field(min_length=1, max_length=64)
+    ip: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=32)
+
+    @model_validator(mode="after")
+    def well_shaped(self):
+        problem = reservation_value_issue(self.mac, self.ip, self.name)
+        if problem:
+            raise ValueError(f"reservation {self.mac}: {problem}")
+        return self
 
 
 class BackupRouting(_Strict):
@@ -228,6 +246,7 @@ class BackupDocument(_Strict):
         default_factory=list, max_length=MAX_SUBSCRIPTIONS)
     profiles: list[BackupProfile] = Field(min_length=1, max_length=MAX_PROFILES)
     routing: BackupRouting
+    reservations: list[BackupReservation] = Field(default_factory=list, max_length=MAX_RESERVATIONS)
     settings: dict[str, str | int | bool] = Field(default_factory=dict, max_length=64)
 
     @model_validator(mode="before")
@@ -428,6 +447,9 @@ def export_state(store) -> dict:
              "default_profile_id": sub.default_profile_id}
             for sub in store.list_subscriptions()]
         profiles = [_profile_dict(profile) for profile in store.list_profiles()]
+        reservations = [
+            {"mac": res.mac, "ip": res.ip, "name": res.name}
+            for res in store.list_reservations()]
         rules = [
             {"type": rule.type, "value": rule.value, "action": rule.action,
              "enabled": rule.enabled, "label": rule.label, "dataset": rule.dataset}
@@ -439,6 +461,7 @@ def export_state(store) -> dict:
         "schema_version": BACKUP_SCHEMA,
         "nodes": nodes,
         "subscriptions": subscriptions,
+        "reservations": reservations,
         "profiles": profiles,
         "routing": {"rules": rules, "default_action": default_action},
         "settings": settings,
@@ -636,6 +659,7 @@ def import_state(store, doc: dict | BackupDocument, live: Settings | None = None
         conn.execute("DELETE FROM nodes")
         conn.execute("DELETE FROM subscriptions")
         conn.execute("DELETE FROM routing_rules")
+        conn.execute("DELETE FROM dhcp_reservations")
         conn.execute("DELETE FROM tuning_profiles")
         # Replace the entire allowlisted settings snapshot. Omitted keys intentionally fall back
         # to current code defaults; unrelated auth/transient keys remain untouched.
@@ -666,6 +690,10 @@ def import_state(store, doc: dict | BackupDocument, live: Settings | None = None
                 "VALUES (?,?,?,?,?,?)",
                 (rule.position, rule.type, rule.value, rule.action,
                  int(rule.enabled), rule.label))
+        for res in validated.reservations:
+            conn.execute(
+                "INSERT INTO dhcp_reservations (mac,ip,name,created_at) VALUES (?,?,?,?)",
+                (res.mac.strip().lower(), res.ip.strip(), res.name, int(time.time())))
         conn.execute(
             "INSERT INTO settings(key,value) VALUES('routing_default_action',?)",
             (validated.routing.default_action,))

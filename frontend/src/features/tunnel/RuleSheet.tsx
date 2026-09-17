@@ -7,7 +7,8 @@ import { cn } from "../../lib/cn";
 import { ACTION_CHECKED } from "./RuleParts";
 import { isGeo, type RuleCallbacks } from "./RulesTable";
 import {
-  DATASET_LABELS, GEO_TOKENS, GEO_TOKENS_RU, MAX_RULE_FIELD, RULE_ACTIONS, RULE_DATASETS, RULE_TYPES, VALUE_PLACEHOLDERS,
+  DATASET_LABELS, DEVICE_ORDER_NOTE, GEO_TOKENS, GEO_TOKENS_RU, MAX_RULE_FIELD, RULE_ACTIONS, RULE_DATASETS,
+  RULE_TYPES, VALUE_PLACEHOLDERS,
   ruleTokens, validateRuleRow, type RuleAction, type RuleDataset, type RuleRow, type RuleType,
 } from "./rules";
 
@@ -71,6 +72,7 @@ export function RuleSheet({ row, index, count, disabled = false, onUpdate, onMov
               onChange={(event) => onUpdate(row.key, { value: event.target.value })}
               className="font-mono text-xs"
             />
+            {row.type === "device" ? <p className="-mt-1.5 text-[11px] text-t3">{DEVICE_ORDER_NOTE}</p> : null}
             {isGeo(row.type) ? (
               <div role="group" aria-label="Geo suggestions" className="-mt-1.5 flex flex-wrap gap-1.5">
                 {(row.dataset === "ru" ? GEO_TOKENS_RU : GEO_TOKENS).map((token) => {
