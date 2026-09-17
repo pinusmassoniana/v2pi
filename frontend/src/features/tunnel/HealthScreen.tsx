@@ -19,6 +19,7 @@ import {
   type HealthFormValues,
 } from "./healthForm";
 import { HealthStateStrip } from "./HealthStateStrip";
+import { IncidentsCard } from "./IncidentsCard";
 
 type HealthPatch = ReturnType<typeof healthFormToPatch>;
 
@@ -167,6 +168,7 @@ export function Health() {
   return (
     <div className="flex flex-col gap-3">
       <HealthStateStrip />
+      <IncidentsCard />
       {settings.data ? (
         <HealthForm settings={settings.data} />
       ) : settings.isError ? (

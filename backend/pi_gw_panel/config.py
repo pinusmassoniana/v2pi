@@ -223,6 +223,11 @@ SETTINGS_DEFAULTS = {
     # It only reports — nothing here can install anything — and it goes through the tunnel
     # whenever one is up, like a subscription fetch.
     "update_check_enabled": "1",
+    # A7: an optional monthly cap on tunnelled traffic (GB; 0 = none) and the day of the month it
+    # resets on, for metered VPS plans. The panel colours the figure and says so — with no
+    # outbound notification channel it cannot do more, and it never throttles or disconnects.
+    "traffic_cap_gb": "0",
+    "traffic_cap_reset_day": "1",
     # IPv6 tunnel (off by default): carry segment client v6 through xray (static prefix; RA is
     # host-managed). segment_ip6 is the segment's static /64, informational + recommendation.
     "ipv6_enabled": "0",
@@ -417,6 +422,10 @@ SETTINGS_INT_BOUNDS: dict[str, tuple[int, int | None]] = {
     "session_timeout_min": (0, None),
     "traffic_sample_ms": (500, 60_000),
     "stats_api_port": (1, 65535),
+    # A7: 0 = no cap. The ceiling is generous rather than meaningful — it only stops a typo
+    # becoming a number the UI has to render.
+    "traffic_cap_gb": (0, 1_000_000),
+    "traffic_cap_reset_day": (1, 28),          # every month has a 28th
 }
 # Settings that feed straight into the built xray config: an out-of-set value produces a config
 # xray rejects on the next apply (a self-inflicted outage).

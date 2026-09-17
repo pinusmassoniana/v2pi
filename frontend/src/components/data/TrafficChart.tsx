@@ -11,6 +11,8 @@ export const TRAFFIC_WINDOWS = [
   { label: "1h", sec: 3_600 },
   { label: "24h", sec: 86_400 },
   { label: "7d", sec: 604_800 },
+  { label: "30d", sec: 2_592_000 },
+  { label: "90d", sec: 7_776_000 },
 ] as const;
 
 export type TrafficWindowSec = (typeof TRAFFIC_WINDOWS)[number]["sec"];

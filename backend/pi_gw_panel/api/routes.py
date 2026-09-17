@@ -23,7 +23,7 @@ from pi_gw_panel.api.schemas import (
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     GeoOut, GeoFileOut, GeoUpdateIn, GeoUpdateOut,
     ReservationIn, ReservationPatch, ReservationOut, ReservationsOut,
-    RouteTestIn, RouteTestOut,
+    RouteTestIn, RouteTestOut, EventsOut, IncidentOut, TrafficUsageOut, TrafficDayOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
@@ -217,7 +217,9 @@ def _settings_out(state) -> SettingsOut:
         dns_intercept=val("dns_intercept") == "1",
         session_timeout_min=num("session_timeout_min"),
         auto_backup_enabled=val("auto_backup_enabled") == "1",
-        update_check_enabled=val("update_check_enabled") == "1")
+        update_check_enabled=val("update_check_enabled") == "1",
+        traffic_cap_gb=num("traffic_cap_gb"),
+        traffic_cap_reset_day=num("traffic_cap_reset_day"))
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
@@ -484,13 +486,12 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
                         or SETTINGS_DEFAULTS["failover_enabled"]) == "1"
     tunnel_online = bool(st["running"] and health["active_health_fresh"]
                          and active_row is not None and active_row.last_real_ok is True)
-    failovers_24h = sum(
-        event.get("kind") == "failover"
-        and isinstance(event.get("ts"), (int, float))
-        and now - 86400 <= event["ts"] <= now
-        for event in conn_events.recent(state.store)
-        if isinstance(event, dict)
-    )
+    # A9: counted in the table rather than over the last 40 events, so a busy day cannot push
+    # yesterday's failovers out of the count.
+    try:
+        failovers_24h = state.store.count_events("failover", int(now) - 86400)
+    except Exception:
+        failovers_24h = 0
     # `running: true` says a process exists, not that it is serving the config on disk. The
     # comparison lives in netcheck so /api/ready decides on the same answer this reports, and it
     # costs one os.stat per poll: the digest of the file is memoized on (inode, mtime_ns, size),
@@ -521,6 +522,84 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
                      failovers_24h=failovers_24h)
 
 
+@router.get("/events", response_model=EventsOut)
+def list_events(request: Request, window_sec: int = 7 * 86400, kind: str = "", limit: int = 200,
+                _: None = Depends(require_auth)) -> EventsOut:
+    """A9: the event history and the downtime it adds up to.
+
+    The events themselves are what happened; the incidents are the question people actually
+    ask — "how often did the tunnel drop this week, and for how long?" — which nothing could
+    answer while the log was a 40-entry ring.
+    """
+    state = get_state(request)
+    window_sec = min(max(60, window_sec), 30 * 86400)
+    now = int(time.time())
+    since = now - window_sec
+    rows = state.store.list_events(since=since, kind=kind.strip(), limit=min(max(1, limit), 1000))
+    # Incidents are read over the WHOLE window, unfiltered: a `kind` filter is about the list.
+    spans = conn_events.incidents(state.store.list_events(since=since, limit=1000), now)
+    return EventsOut(
+        events=[ConnEventOut(**row) for row in rows],
+        incidents=[IncidentOut(**span) for span in spans],
+        window_sec=window_sec,
+        downtime_sec=conn_events.downtime(spans, since),
+        server_now=now)
+
+
+def _month_start_min(now: int, offset: int, reset_day: int, months_back: int = 0) -> int:
+    """The unix-minute the cap period containing `now` began, `months_back` periods earlier.
+
+    The period runs from `reset_day` of one month to `reset_day` of the next, on the gateway's
+    own clock — that is what a provider's monthly allowance means, and what the card says.
+    """
+    local = datetime.fromtimestamp(now + offset, tz=timezone.utc)
+    year, month = local.year, local.month
+    if local.day < reset_day:
+        months_back += 1
+    month -= months_back
+    while month <= 0:
+        month += 12
+        year -= 1
+    start = datetime(year, month, min(reset_day, 28), tzinfo=timezone.utc)
+    return int((start.timestamp() - offset) // 60)
+
+
+@router.get("/traffic/usage", response_model=TrafficUsageOut)
+def traffic_usage(request: Request, _: None = Depends(require_auth)) -> TrafficUsageOut:
+    """A7: per-day totals for the retained history, plus the figures people actually read.
+
+    Aggregated in SQL: 90 days is ~129k minute rows, and the old chart endpoint would have had
+    to ship every one of them for the browser to add up.
+    """
+    state = get_state(request)
+    store = state.store
+    now = int(time.time())
+    offset = -int(time.timezone if time.localtime(now).tm_isdst == 0 else time.altzone)
+    day_min = 24 * 60
+    today_start = ((now + offset) // 86400) * 86400 - offset
+    days = store.traffic_days(since_min=(now // 60) - 90 * day_min, tz_offset_sec=offset)
+    cap_gb = safe_int(store.get_setting("traffic_cap_gb") or "0", 0, "traffic_cap_gb")
+    reset_day = safe_int(store.get_setting("traffic_cap_reset_day") or "1", 1, "traffic_cap_reset_day")
+    reset_day = min(max(reset_day, 1), 28)
+
+    def total(since_min: int, until_min: int | None = None) -> int:
+        row = store.traffic_total(since_min, until_min)
+        return row["up_bytes"] + row["down_bytes"]
+
+    month_start = _month_start_min(now, offset, reset_day)
+    return TrafficUsageOut(
+        days=[TrafficDayOut(**row) for row in days],
+        today=total(today_start // 60),
+        week=total((now // 60) - 7 * day_min),
+        month=total(month_start),
+        last_month=total(_month_start_min(now, offset, reset_day, months_back=1), month_start),
+        cap_bytes=cap_gb * 1_000_000_000,
+        cap_reset_day=reset_day,
+        tz_offset_sec=offset,
+        server_now=now,
+        retention_days=90)
+
+
 @router.get("/traffic/history", response_model=TrafficHistoryOut)
 def traffic_history(request: Request, window_sec: int = 3600, max_points: int = 600,
                     _: None = Depends(require_auth)) -> TrafficHistoryOut:
@@ -532,7 +611,7 @@ def traffic_history(request: Request, window_sec: int = 3600, max_points: int = 
     state = get_state(request)
     # clamp both ways: a huge window_sec would pull the entire per-minute history into memory, a
     # huge max_points sizes the downsample loop — cap them so one GET can't amplify into a DoS.
-    window_sec = min(max(1, window_sec), 30 * 86400)     # <= 30 days
+    window_sec = min(max(1, window_sec), 90 * 86400)     # <= 90 days, the retention window
     max_points = min(max(1, max_points), 5000)
     interval = bounded_interval_ms(
         state.store.get_setting("traffic_sample_ms") or SETTINGS_DEFAULTS["traffic_sample_ms"])

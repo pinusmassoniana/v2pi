@@ -558,13 +558,44 @@ def _migration_19(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_20(conn: sqlite3.Connection) -> None:
+    # A9: connection events as a table instead of a 40-entry ring in the settings k/v. The ring
+    # answered "why did my egress change?" for the last few minutes and nothing older; an
+    # incident history needs a month. The existing ring is carried over, then dropped.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conn_events (
+            id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts     INTEGER NOT NULL,
+            kind   TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS conn_events_ts ON conn_events(ts)")
+    row = conn.execute("SELECT value FROM settings WHERE key='conn_events'").fetchone()
+    if row:
+        import json as _json
+        try:
+            carried = _json.loads(row["value"]) or []
+        except (ValueError, TypeError):
+            carried = []
+        for event in carried if isinstance(carried, list) else []:
+            if isinstance(event, dict) and isinstance(event.get("kind"), str):
+                conn.execute(
+                    "INSERT INTO conn_events(ts, kind, detail) VALUES(?, ?, ?)",
+                    (int(event.get("ts") or 0), event["kind"][:64], str(event.get("detail") or "")[:512]))
+        conn.execute("DELETE FROM settings WHERE key='conn_events'")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
                (9, _migration_9), (10, _migration_10), (11, _migration_11),
                (12, _migration_12), (13, _migration_13), (14, _migration_14),
                (15, _migration_15), (16, _migration_16), (17, _migration_17),
-               (18, _migration_18), (19, _migration_19)]
+               (18, _migration_18), (19, _migration_19),
+               (20, _migration_20)]
 
 
 def _assert_supported_schema(conn: sqlite3.Connection) -> int:

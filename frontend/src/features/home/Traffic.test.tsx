@@ -151,7 +151,7 @@ describe("Traffic › charts", () => {
   it("H2: the throughput chart with the same windows; 7d reads recorded history", async () => {
     const { api$ } = await openTraffic();
     const card = region("Throughput");
-    expect(within(within(card).getByRole("group", { name: "Chart window" })).getAllByRole("button").map((b) => b.textContent)).toEqual(["1m", "10m", "1h", "24h", "7d"]);
+    expect(within(within(card).getByRole("group", { name: "Chart window" })).getAllByRole("button").map((b) => b.textContent)).toEqual(["1m", "10m", "1h", "24h", "7d", "30d", "90d"]);
     await userEvent.click(within(card).getByRole("button", { name: "7d" }));
     await waitFor(() => expect(api$.getTrafficHistory.mock.calls.some(([sec]) => sec === 604_800)).toBe(true));
     expect(region("Peak download · 7d")).toBeInTheDocument();

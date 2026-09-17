@@ -48,3 +48,10 @@ export function splitUnit(text: string): { value: string; unit: string } {
   const at = text.lastIndexOf(" ");
   return at < 0 ? { value: text, unit: "" } : { value: text.slice(0, at), unit: text.slice(at + 1) };
 }
+
+/** "18.4 GB", "100 GB", "512 MB": decimal units, at most one decimal. */
+export function compactBytes(bytes: number): string {
+  const units: [number, string][] = [[1e12, "TB"], [1e9, "GB"], [1e6, "MB"], [1e3, "KB"]];
+  for (const [size, unit] of units) if (bytes >= size) return `${Number((bytes / size).toFixed(1))} ${unit}`;
+  return `${Math.max(0, Math.round(bytes))} B`;
+}

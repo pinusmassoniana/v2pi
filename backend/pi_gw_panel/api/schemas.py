@@ -324,6 +324,8 @@ class SettingsOut(BaseModel):
     session_timeout_min: int
     auto_backup_enabled: bool
     update_check_enabled: bool
+    traffic_cap_gb: int
+    traffic_cap_reset_day: int
 
 
 class SettingsIn(NonNullPatch):
@@ -345,6 +347,8 @@ class SettingsIn(NonNullPatch):
     session_timeout_min: int | None = None
     auto_backup_enabled: bool | None = None
     update_check_enabled: bool | None = None
+    traffic_cap_gb: int | None = None
+    traffic_cap_reset_day: int | None = None
 
 
 # --- A5: where would this destination go? ---
@@ -671,6 +675,24 @@ class ConnEventOut(BaseModel):
     detail: str = ""
 
 
+# --- A9: the event history and the downtime it adds up to ---
+class IncidentOut(BaseModel):
+    started: int
+    ended: int
+    seconds: int
+    kind: str
+    detail: str = ""
+    ongoing: bool = False
+
+
+class EventsOut(BaseModel):
+    events: list[ConnEventOut]
+    incidents: list[IncidentOut]
+    window_sec: int
+    downtime_sec: int
+    server_now: int
+
+
 class NetworkOut(BaseModel):
     segment: NetworkSegmentOut
     kill_switch_enabled: bool
@@ -705,6 +727,29 @@ class NetworkIn(NonNullPatch):
 class TrafficHistoryOut(BaseModel):
     samples: list[list[int]]
     interval_ms: int
+
+
+# --- A7: what the gateway has actually moved ---
+class TrafficDayOut(BaseModel):
+    """`day` is the gateway's local day as a unix-day number; the UI renders the date from it."""
+    day: int
+    up_bytes: int
+    down_bytes: int
+
+
+class TrafficUsageOut(BaseModel):
+    days: list[TrafficDayOut]
+    today: int
+    week: int
+    month: int
+    last_month: int
+    # The month's cap, when one is set, and the day of the month it resets on.
+    cap_bytes: int = 0
+    cap_reset_day: int = 1
+    # The gateway's UTC offset in seconds, so the UI can label days without guessing.
+    tz_offset_sec: int = 0
+    server_now: int = 0
+    retention_days: int = 90
 
 
 class ReadinessChecksOut(BaseModel):

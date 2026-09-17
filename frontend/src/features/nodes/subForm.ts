@@ -2,12 +2,18 @@
 // query parameters, quota and refresh messages. Pure and unit-tested.
 import { z } from "zod";
 import type { RefreshAllResult, RefreshResult, SkippedEntries, Subscription, SubscriptionIn } from "../../api/client";
+import { compactBytes } from "../../lib/format";
 import { NO_PROFILE, profileFromValue, profileValue } from "../../lib/profiles";
 
 /** backend _MAX_FIELD / _MAX_URL */
 export const MAX_NAME = 512;
 export const MAX_URL = 2048;
 export const MINUTES_MESSAGE = "minutes must be a whole number, 0 or more";
+
+// Re-exported: subscriptions, devices and usage all word bytes the same way, and the helper
+// itself lives in lib/format so a card cannot pull this module (and zod with it) into the
+// shell chunk just to format a number.
+export { compactBytes };
 
 export interface KeyValue { key: string; value: string }
 
@@ -95,13 +101,6 @@ export function formToSubIn(values: SubFormValues, edit: boolean): SubscriptionI
   };
   if (!edit) return base;
   return { ...base, enabled: values.enabled, default_profile_id: profileFromValue(values.default_profile_id) };
-}
-
-/** "18.4 GB", "100 GB", "512 MB": decimal units, at most one decimal. */
-export function compactBytes(bytes: number): string {
-  const units: [number, string][] = [[1e12, "TB"], [1e9, "GB"], [1e6, "MB"], [1e3, "KB"]];
-  for (const [size, unit] of units) if (bytes >= size) return `${Number((bytes / size).toFixed(1))} ${unit}`;
-  return `${Math.max(0, Math.round(bytes))} B`;
 }
 
 /** U1: used (up + down) of total, only when the provider reports a total; 0–1, capped. */

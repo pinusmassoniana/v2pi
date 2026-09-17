@@ -121,7 +121,7 @@ describe("exportSettings", () => {
     const exported = exportSettings(SETTINGS);
     expect(exported).not.toHaveProperty(EXPORT_EXCLUDED);
     expect(Object.keys(exported).sort()).toEqual(SETTINGS_KEYS.filter((key) => key !== EXPORT_EXCLUDED).sort());
-    expect(Object.keys(exported)).toHaveLength(17);
+    expect(Object.keys(exported)).toHaveLength(19);
     for (const key of Object.keys(exported)) expect(exported[key as keyof typeof exported]).toBe(SETTINGS[key as keyof typeof SETTINGS]);
     expect(JSON.parse(exportedText(SETTINGS))).toEqual(exported);
   });
@@ -133,7 +133,7 @@ describe("importChecks", () => {
   it("passes a file this panel exported, and names which keys would rebuild the tunnel", () => {
     const result = importChecks(good);
     expect(result.checks.map((check) => check.ok)).toEqual([true, true, true, true]);
-    expect(result.checks[1]!.label).toBe("17 fields, all known settings keys");
+    expect(result.checks[1]!.label).toBe("19 fields, all known settings keys");
     expect(result.checks[3]!.label).toBe("4 of them rebuild the live tunnel: tunneled_fetch, dns_intercept, stats_enabled, stats_api_port");
     expect(result.patch).not.toBeNull();
     expect(result.patch).not.toHaveProperty(EXPORT_EXCLUDED);

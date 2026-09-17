@@ -3,7 +3,7 @@ import { act } from "@testing-library/react";
 import { vi, type MockedFunction } from "vitest";
 import type {
   ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
-  Reservation, Reservations,
+  Events, Reservation, Reservations, TrafficUsage,
   PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
   RefreshAllResult, RestoreResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
   TuningProfile,
@@ -165,6 +165,7 @@ export const SETTINGS: Settings = {
   failover_enabled: true, failover_cooldown: 300,
   stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000,
   dns_intercept: false, session_timeout_min: 60, auto_backup_enabled: true, update_check_enabled: true,
+  traffic_cap_gb: 0, traffic_cap_reset_day: 1,
 };
 
 /** What previewSub answers for "work": the request it would send. */
@@ -460,6 +461,45 @@ export const LOG_LINES: string[] = [
 ];
 
 /**
+ * A7: a gateway a week into its month, 18.4 GB of a 100 GB allowance, with a fortnight of days
+ * behind it (the newest is today, the busiest is three days back).
+ */
+export const TRAFFIC_USAGE: TrafficUsage = {
+  today: 2_100_000_000,
+  week: 11_800_000_000,
+  month: 18_400_000_000,
+  last_month: 64_000_000_000,
+  cap_bytes: 100_000_000_000,
+  cap_reset_day: 1,
+  tz_offset_sec: 3 * 3_600,
+  server_now: NOW_SEC,
+  retention_days: 90,
+  days: Array.from({ length: 14 }, (_, index) => ({
+    day: Math.floor((NOW_SEC + 3 * 3_600) / 86_400) - 13 + index,
+    up_bytes: 100_000_000 + index * 10_000_000,
+    down_bytes: (index === 10 ? 4_000_000_000 : 900_000_000) + index * 20_000_000,
+  })),
+};
+
+/** A9: a week with two drops — one four minutes long, one still open. */
+export const EVENTS: Events = {
+  window_sec: 604_800,
+  downtime_sec: 600 + 240,      // the two incidents below, as the gateway adds them up
+  server_now: NOW_SEC,
+  events: [
+    { ts: NOW_SEC - 90_000, kind: "disconnect", detail: "node disconnected" },
+    { ts: NOW_SEC - 89_760, kind: "connect", detail: "connected to de-fra-01" },
+    { ts: NOW_SEC - 600, kind: "all-nodes-down", detail: "active node failing and no alive node to fail over to" },
+  ],
+  incidents: [
+    { started: NOW_SEC - 600, ended: NOW_SEC, seconds: 600, kind: "all-nodes-down",
+      detail: "active node failing and no alive node to fail over to", ongoing: true },
+    { started: NOW_SEC - 90_000, ended: NOW_SEC - 89_760, seconds: 240, kind: "disconnect",
+      detail: "node disconnected", ongoing: false },
+  ],
+};
+
+/**
  * A4/B1: two pinned devices on the gateway network fixture — the TV, which is the day's busiest
  * and currently leased, and a console that is switched off. The other five leases are unpinned.
  */
@@ -598,6 +638,8 @@ export function mockApi() {
     applyProfileActive: vi.spyOn(api, "applyProfileActive").mockResolvedValue({ ok: true, node_id: 1 }),
     putNetwork: vi.spyOn(api, "putNetwork").mockImplementation(async (patch: NetworkPatch) => networkAfter(patch)),
     listReservations: vi.spyOn(api, "listReservations").mockResolvedValue(RESERVATIONS),
+    getTrafficUsage: vi.spyOn(api, "getTrafficUsage").mockResolvedValue(TRAFFIC_USAGE),
+    listEvents: vi.spyOn(api, "listEvents").mockResolvedValue(EVENTS),
     addReservation: vi.spyOn(api, "addReservation").mockImplementation(async (mac: string, ip: string, name: string) =>
       reservationsAfter([...RESERVATIONS.reservations, {
         id: 3, mac, ip, name, created_at: NOW_SEC, up_bytes: 0, down_bytes: 0, online: true,

@@ -57,12 +57,14 @@ describe("traffic geometry", () => {
 });
 
 describe("TrafficChart", () => {
-  it("offers the five windows, marks the selected one and reports a switch", async () => {
+  it("offers the seven windows, marks the selected one and reports a switch", async () => {
     const onWindowChange = vi.fn();
     render(<TrafficChart samples={series(10)} windowSec={600} onWindowChange={onWindowChange} peak={null} stale={false} />);
     const group = screen.getByRole("group", { name: "Chart window" });
     expect(within(group).getAllByRole("button").map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([
       ["1m", "false"], ["10m", "true"], ["1h", "false"], ["24h", "false"], ["7d", "false"],
+      // A7: the recorded history is kept for 90 days, so it can be looked at for 90 days.
+      ["30d", "false"], ["90d", "false"],
     ]);
     await userEvent.click(within(group).getByRole("button", { name: "24h" }));
     expect(onWindowChange).toHaveBeenCalledWith(86_400);

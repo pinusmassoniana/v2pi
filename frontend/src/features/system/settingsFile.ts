@@ -15,7 +15,7 @@ export const SETTINGS_KEYS = [
   "tunneled_fetch", "subs_auto_switch", "routing_default_action", "health_enabled", "health_sweep_enabled",
   "health_interval", "health_active_interval", "health_hysteresis", "health_probe_url", "failover_enabled",
   "failover_cooldown", "stats_enabled", "stats_api_port", "traffic_sample_ms", "dns_intercept",
-  "session_timeout_min", "auto_backup_enabled", "update_check_enabled",
+  "session_timeout_min", "auto_backup_enabled", "update_check_enabled", "traffic_cap_gb", "traffic_cap_reset_day",
 ] as const satisfies readonly (keyof Settings)[];
 
 /**
@@ -45,6 +45,8 @@ const BOOLEAN_KEYS = new Set<string>([
 
 /** The int floors the gateway enforces (config.py SETTINGS_INT_BOUNDS), with its own messages. */
 const INT_BOUNDS: Record<string, [low: number, high: number | null]> = {
+  traffic_cap_gb: [0, 1_000_000],
+  traffic_cap_reset_day: [1, 28],
   health_interval: [60, null], health_active_interval: [10, null], health_hysteresis: [1, null],
   failover_cooldown: [0, null], session_timeout_min: [0, null], traffic_sample_ms: [500, 60_000], stats_api_port: [1, 65535],
 };

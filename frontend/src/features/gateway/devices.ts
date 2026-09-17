@@ -1,7 +1,7 @@
 // A4/B1 Devices: which leases are still unpinned, what a pinned device's name and traffic read as,
 // and the words the card uses. Pure and unit-tested; no rendering here.
 import type { DhcpClient, Reservation } from "../../api/client";
-import { compactBytes } from "../nodes/subForm";
+import { compactBytes } from "../../lib/format";
 import { sortLeases } from "./leases";
 
 /** backend ReservationIn.name / MAX_RESERVATIONS */

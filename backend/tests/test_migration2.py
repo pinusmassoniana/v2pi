@@ -43,7 +43,8 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     tables = refresh_tables()
     assert "dhcp_reservations" in tables   # migration 18 — pinned devices
     assert "device_minutes" in tables       # migration 19 — per-device traffic
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert "conn_events" in tables          # migration 20 — events, off the settings ring
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

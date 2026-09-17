@@ -65,6 +65,9 @@ export interface Settings {
   dns_intercept: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
   /** B2: the daily release check. Off means the gateway never calls GitHub on its own. */
   update_check_enabled: boolean;
+  /** A7: monthly cap in GB (0 = none) and the day of the month the period restarts. */
+  traffic_cap_gb: number;
+  traffic_cap_reset_day: number;
 }
 /**
  * The settings PUT /settings re-applies the live tunnel for (routes.py _SETTINGS_CONFIG_KEYS), inside the same
@@ -130,6 +133,24 @@ export interface RoutingRuleIn { type: string; value: string; action: string; en
 export interface Routing { rules: RoutingRule[]; default_action: string; domain_strategy: string; }
 export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; domain_strategy?: string; }
 export interface PresetInfo { name: string; title: string; dataset: string; default_action: string | null; }
+
+// --- A9: the event history and the downtime it adds up to ---
+export interface Incident {
+  started: number; ended: number; seconds: number; kind: string; detail: string; ongoing: boolean;
+}
+export interface Events {
+  events: ConnEvent[]; incidents: Incident[]; window_sec: number; downtime_sec: number; server_now: number;
+}
+
+// --- A7: what the gateway has actually moved ---
+export interface TrafficDay { day: number; up_bytes: number; down_bytes: number; }
+export interface TrafficUsage {
+  days: TrafficDay[];
+  today: number; week: number; month: number; last_month: number;
+  /** 0 when no monthly cap is set; the period runs reset-day to reset-day on the gateway's clock. */
+  cap_bytes: number; cap_reset_day: number;
+  tz_offset_sec: number; server_now: number; retention_days: number;
+}
 
 // --- A5: where would this destination go, according to the RUNNING xray? ---
 export interface RouteTest {
@@ -456,6 +477,9 @@ export const api = {
   addReservation(mac: string, ip: string, name: string): Promise<Reservations> { return mutate("POST", "/net/reservations", { mac, ip, name }); },
   renameReservation(id: number, name: string): Promise<Reservations> { return mutate("PATCH", `/net/reservations/${id}`, { name }); },
   deleteReservation(id: number): Promise<Reservations> { return mutate("DELETE", `/net/reservations/${id}`); },
+
+  listEvents(windowSec: number, kind = ""): Promise<Events> { return req(`/events?window_sec=${windowSec}${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`); },
+  getTrafficUsage(): Promise<TrafficUsage> { return req("/traffic/usage"); },
 
   getGeo(): Promise<Geo> { return req("/geo"); },
   /** Replaces one dataset and reloads xray: a short drop for everyone behind the gateway. */

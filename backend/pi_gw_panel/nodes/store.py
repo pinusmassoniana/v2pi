@@ -408,6 +408,29 @@ class NodeStore:
             self._conn.execute("DELETE FROM traffic_minutes WHERE ts_min < ?",
                                (anchor - self._TRAFFIC_RETENTION_MIN,))
 
+    def traffic_days(self, since_min: int, tz_offset_sec: int = 0) -> list[dict]:
+        """A7: per-DAY totals, aggregated in SQL. 90 days is ~129k minute rows — pulling them
+        into Python to add up would be the slowest thing this panel does.
+
+        Days are cut on the gateway's own clock (`tz_offset_sec`), because the operator reads
+        "today" as the gateway's today; the card says which.
+        """
+        rows = self._conn.execute(
+            "SELECT ((ts_min * 60 + ?) / 86400) AS day, SUM(up_bytes) AS up_bytes, "
+            "SUM(down_bytes) AS down_bytes FROM traffic_minutes WHERE ts_min >= ? "
+            "GROUP BY day ORDER BY day", (int(tz_offset_sec), int(since_min))).fetchall()
+        return [{"day": int(r["day"]), "up_bytes": int(r["up_bytes"] or 0),
+                 "down_bytes": int(r["down_bytes"] or 0)} for r in rows]
+
+    def traffic_total(self, since_min: int, until_min: int | None = None) -> dict:
+        sql = "SELECT SUM(up_bytes) AS up_bytes, SUM(down_bytes) AS down_bytes FROM traffic_minutes WHERE ts_min >= ?"
+        params: list = [int(since_min)]
+        if until_min is not None:
+            sql += " AND ts_min < ?"
+            params.append(int(until_min))
+        row = self._conn.execute(sql, params).fetchone()
+        return {"up_bytes": int(row["up_bytes"] or 0), "down_bytes": int(row["down_bytes"] or 0)}
+
     def traffic_minutes(self, since_min: int) -> list[dict]:
         """Per-minute samples (ascending) since `since_min` (unix//60)."""
         rows = self._conn.execute(
@@ -558,6 +581,47 @@ class NodeStore:
     def delete_reservation(self, res_id: int) -> None:
         self._conn.execute("DELETE FROM dhcp_reservations WHERE id=?", (res_id,))
         self._conn.commit()
+
+    # --- connection events (A9) ---
+    _EVENT_RETENTION_SEC = 30 * 86400
+    _EVENT_CAP = 5000
+
+    def add_event(self, ts: int, kind: str, detail: str) -> None:
+        """Append one event and prune. Two bounds, not one: 30 days answers "how often did this
+        happen", and the row cap keeps a loop that reports every tick from filling the disk
+        between prunes."""
+        with self._conn:
+            # BEFORE the insert: read it after and a far-future event is its own anchor, which
+            # is exactly the clock step this guard exists to survive.
+            newest = self._conn.execute("SELECT MAX(ts) AS m FROM conn_events").fetchone()["m"]
+            self._conn.execute("INSERT INTO conn_events(ts, kind, detail) VALUES(?, ?, ?)",
+                               (int(ts), kind[:64], (detail or "")[:512]))
+            # Anchored to the newest stored event, like the traffic tables: one far-future
+            # timestamp (a clock step) must not delete the whole history.
+            anchor = int(ts) if newest is None else min(int(ts), int(newest))
+            self._conn.execute("DELETE FROM conn_events WHERE ts < ?",
+                               (anchor - self._EVENT_RETENTION_SEC,))
+            self._conn.execute(
+                "DELETE FROM conn_events WHERE id <= "
+                "(SELECT MAX(id) FROM conn_events) - ?", (self._EVENT_CAP,))
+
+    def list_events(self, *, since: int = 0, kind: str = "", limit: int = 200) -> list[dict]:
+        """Newest LAST, the order the panel has always shown them in."""
+        sql = "SELECT ts, kind, detail FROM conn_events WHERE ts >= ?"
+        params: list = [int(since)]
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), self._EVENT_CAP)))
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def count_events(self, kind: str, since: int) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM conn_events WHERE kind = ? AND ts >= ?",
+            (kind, int(since))).fetchone()
+        return int(row["n"] if row else 0)
 
     # --- per-device traffic (B1) ---
     _DEVICE_RETENTION_MIN = 90 * 24 * 60      # the same window traffic_minutes keeps

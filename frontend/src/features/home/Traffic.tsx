@@ -20,6 +20,7 @@ import {
   tunnelLabel, whenLabel,
 } from "./derive";
 import { ThroughputCard } from "./ThroughputCard";
+import { UsageCard } from "./UsageCard";
 import { useRefreshOnSwitch } from "./useRefreshOnSwitch";
 import { useTrafficSeries } from "./useTrafficSeries";
 
@@ -200,6 +201,7 @@ export function Traffic() {
         <UptimeKpi status={status.data} statusError={status.isError} />
       </TrafficTop>
 
+      <UsageCard className="md:col-span-2 xl:col-span-12" />
       <LatencyBarsCard activeNodeId={activeId} nodes={nodes} health={health} />
       <ActiveLatencyCard activeNodeId={activeId} active={activeNode(nodes.data, activeId)} />
 
