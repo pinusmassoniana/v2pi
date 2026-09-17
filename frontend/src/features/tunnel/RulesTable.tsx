@@ -7,7 +7,8 @@ import { Toggle } from "../../components/ui/Toggle";
 import { cn } from "../../lib/cn";
 import { ACTION_TEXT, ActionPill, TypeChip } from "./RuleParts";
 import {
-  GEO_TOKENS, MAX_RULES, MAX_RULE_FIELD, NO_RULES, RULE_ACTIONS, RULE_TYPES, RULES_FOOTNOTE, VALUE_PLACEHOLDERS, validateRuleRow,
+  DATASET_LABELS, GEO_TOKENS, GEO_TOKENS_RU, MAX_RULES, MAX_RULE_FIELD, NO_RULES, RULE_ACTIONS, RULE_DATASETS, RULE_TYPES,
+  RULES_FOOTNOTE, SLOW_CATEGORIES, SLOW_CATEGORY_NOTE, VALUE_PLACEHOLDERS, ruleTokens, validateRuleRow,
   type RuleAction, type RulePatch, type RuleRow, type RuleType,
 } from "./rules";
 
@@ -18,16 +19,30 @@ export interface RuleCallbacks {
   onRemove: (key: string) => void;
 }
 
-/** The geo suggestions, once per list that offers them. */
+/** The geo suggestions, once per list that offers them — one datalist per dataset, since the
+ *  stock files and the RU ones carry completely different category names. */
 export function GeoTokenList({ id }: { id: string }) {
   return (
-    <datalist id={id}>
-      {GEO_TOKENS.map((token) => <option key={token} value={token} />)}
-    </datalist>
+    <>
+      <datalist id={id}>
+        {GEO_TOKENS.map((token) => <option key={token} value={token} />)}
+      </datalist>
+      <datalist id={`${id}-ru`}>
+        {GEO_TOKENS_RU.map((token) => <option key={token} value={token} />)}
+      </datalist>
+    </>
   );
 }
 
 export const isGeo = (type: RuleType) => type === "geoip" || type === "geosite";
+
+/** A3: the warning for a category that costs about a second on every save and every restart. */
+export function slowCategoryNote(row: Pick<RuleRow, "type" | "value" | "dataset">): string | null {
+  if (!isGeo(row.type) || row.dataset !== "ru") return null;
+  return ruleTokens(row.value).some((token) => SLOW_CATEGORIES.has(token.toLowerCase()))
+    ? SLOW_CATEGORY_NOTE
+    : null;
+}
 
 interface RowProps extends RuleCallbacks {
   row: RuleRow;
@@ -52,6 +67,16 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
         <Select aria-label={`Rule ${n} type`} value={row.type} onChange={(event) => onUpdate(row.key, { type: event.target.value as RuleType })} className="h-9 w-full">
           {RULE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
         </Select>
+        {isGeo(row.type) ? (
+          <Select
+            aria-label={`Rule ${n} geo data`}
+            value={row.dataset}
+            onChange={(event) => onUpdate(row.key, { dataset: event.target.value as RuleRow["dataset"] })}
+            className="mt-1 h-8 w-full text-[11px]"
+          >
+            {RULE_DATASETS.map((dataset) => <option key={dataset || "stock"} value={dataset}>{DATASET_LABELS[dataset]}</option>)}
+          </Select>
+        ) : null}
       </td>
       <td className={cn("px-1.5 py-2", !row.enabled && "opacity-60")}>
         <Input
@@ -59,7 +84,7 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
           value={row.value}
           placeholder={VALUE_PLACEHOLDERS[row.type]}
           maxLength={MAX_RULE_FIELD}
-          list={isGeo(row.type) ? geoListId : undefined}
+          list={isGeo(row.type) ? (row.dataset === "ru" ? `${geoListId}-ru` : geoListId) : undefined}
           autoComplete="off"
           spellCheck={false}
           aria-invalid={problem && row.value.trim() ? true : undefined}
@@ -68,6 +93,7 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
           className={cn("h-9 font-mono text-xs", problem && row.value.trim() && "border-bad/60")}
         />
         {problem ? <p id={errorId} className={cn("mt-1 text-[11px]", row.value.trim() ? "text-bad" : "text-t3")}>{problem}</p> : null}
+        {slowCategoryNote(row) ? <p className="mt-1 text-[11px] text-warn">{slowCategoryNote(row)}</p> : null}
       </td>
       <td className={cn("px-1.5 py-2", !row.enabled && "opacity-60")}>
         <Select

@@ -1,6 +1,6 @@
 // Tunnel › Routing rules: the staged ruleset, what counts as a change, what Save sends, the inline row checks, JSON
 // import and the destination tester. Pure and unit-tested; no rendering here.
-import type { Routing, RoutingIn, RoutingRuleIn } from "../../api/client";
+import type { Geo, Routing, RoutingIn, RoutingRuleIn } from "../../api/client";
 import { ipv4Number, ipv4Span, isIPv6Network } from "../../lib/ip";
 import { parseDestination } from "../../lib/routing";
 
@@ -9,6 +9,14 @@ export type RuleType = (typeof RULE_TYPES)[number];
 export const RULE_ACTIONS = ["direct", "proxy", "block"] as const;
 export type RuleAction = (typeof RULE_ACTIONS)[number];
 export const DOMAIN_STRATEGIES = ["IPIfNonMatch", "AsIs", "IPOnDemand"] as const;
+/** A3: which geo data a geoip/geosite rule reads. "" is the stock files, "ru" runetfreedom's. */
+export const RULE_DATASETS = ["", "ru"] as const;
+export type RuleDataset = (typeof RULE_DATASETS)[number];
+export const DATASET_LABELS: Readonly<Record<RuleDataset, string>> = { "": "stock", ru: "RU lists" };
+/** Categories large enough to add about a second to every apply and every xray start. */
+export const SLOW_CATEGORIES: ReadonlySet<string> = new Set(["ru-blocked-all", "refilter"]);
+export const SLOW_CATEGORY_NOTE =
+  "this category is big: it adds about a second to every save and every tunnel restart";
 export type DomainStrategy = (typeof DOMAIN_STRATEGIES)[number];
 
 /** backend _MAX_RULES and _MAX_FIELD (value and label). */
@@ -17,6 +25,8 @@ export const MAX_RULE_FIELD = 512;
 
 /** Geo suggestions for geoip / geosite values (a client list; the gateway's geo files decide what exists). */
 export const GEO_TOKENS = ["ru", "cn", "private", "category-ru", "category-ads-all", "geolocation-!cn", "google", "telegram"] as const;
+/** What the RU dataset carries, verified against the published files — the stock names are not in it. */
+export const GEO_TOKENS_RU = ["ru-blocked", "ru-blocked-all", "refilter", "youtube", "discord", "telegram"] as const;
 
 export const VALUE_PLACEHOLDERS: Readonly<Record<RuleType, string>> = {
   geoip: "ru | private | cn (comma-sep ok)",
@@ -44,6 +54,8 @@ export interface RuleRow {
   action: RuleAction;
   enabled: boolean;
   label: string;
+  /** Only meaningful for geoip/geosite; the other types carry literals. */
+  dataset: RuleDataset;
 }
 
 /** The ruleset as the editor holds it. */
@@ -77,6 +89,7 @@ export function stagedFromRouting(routing: Routing): StagedRouting {
         action: rule.action as RuleAction,
         enabled: rule.enabled,
         label: rule.label,
+        dataset: (rule.dataset || "") as RuleDataset,
       };
     }),
     defaultAction: routing.default_action as RuleAction,
@@ -93,7 +106,8 @@ export function resetRouting(): StagedRouting {
 }
 
 function sameRule(a: RuleRow, b: RuleRow): boolean {
-  return a.type === b.type && a.value === b.value && a.action === b.action && a.enabled === b.enabled && a.label === b.label;
+  return a.type === b.type && a.value === b.value && a.action === b.action && a.enabled === b.enabled
+    && a.label === b.label && a.dataset === b.dataset;
 }
 
 /** Whether `current` differs from `base` in anything the editor holds: rows (with their order and ids), default, strategy. */
@@ -128,7 +142,7 @@ export function changeCount(base: StagedRouting, current: StagedRouting): number
     const before = base.rows.find((row) => row.id === id)!;
     const after = keptById.get(id)!;
     const changed = before.type !== after.type || before.value.trim() !== after.value.trim() || before.action !== after.action
-      || before.enabled !== after.enabled || before.label !== after.label;
+      || before.enabled !== after.enabled || before.label !== after.label || before.dataset !== after.dataset;
     if (changed || baseOrder[index] !== id) count += 1;
   }
   if (base.defaultAction !== current.defaultAction) count += 1;
@@ -152,23 +166,44 @@ export function toRoutingIn(state: StagedRouting): { body: RoutingIn; dropped: n
   for (const row of state.rows) {
     const value = row.value.trim();
     if (!value) continue;
-    const identity = JSON.stringify([row.type, value, row.action]);
+    // The dataset is part of the identity: `ru-blocked` in the stock data and in the RU data are
+    // two different rules that happen to share a name.
+    const identity = JSON.stringify([row.type, value, row.action, datasetOf(row)]);
     if (seen.has(identity)) {
       dropped += 1;
       continue;
     }
     seen.add(identity);
-    rules.push({ type: row.type, value, action: row.action, enabled: row.enabled, label: row.label });
+    rules.push({ type: row.type, value, action: row.action, enabled: row.enabled, label: row.label, dataset: datasetOf(row) });
   }
   return { body: { rules, default_action: state.defaultAction, domain_strategy: state.domainStrategy }, dropped };
 }
 
-/** R2 Add: a proxied domain rule with no value yet, at the end. */
-export function addRule(state: StagedRouting, key: string): StagedRouting {
-  return { ...state, rows: [...state.rows, { key, id: null, type: "domain", value: "", action: "proxy", enabled: true, label: "" }] };
+/** Whether a dataset's files are all installed on the gateway (the stock ones always are). */
+export function datasetInstalled(geo: Geo | undefined, dataset: string): boolean {
+  if (!dataset) return true;
+  const files = (geo?.files ?? []).filter((file) => file.dataset === dataset);
+  return files.length > 0 && files.every((file) => file.present);
 }
 
-export type RulePatch = Partial<Pick<RuleRow, "type" | "value" | "action" | "enabled" | "label">>;
+/** Said before staging a preset whose data the gateway does not have: the rules would save and
+ *  then refuse to apply, which is a worse way to find out. */
+export function missingDatasetConfirm(dataset: string): string {
+  return `This preset needs the ${DATASET_LABELS[dataset as RuleDataset] ?? dataset} geo data, which is not installed. `
+    + "Install it on System › Panel › Geo data first, or stage the rules now and save them after.";
+}
+
+/** A geo rule's dataset; anything else carries literals, so its dataset is always the empty one. */
+export function datasetOf(row: Pick<RuleRow, "type" | "dataset">): RuleDataset {
+  return row.type === "geoip" || row.type === "geosite" ? row.dataset : "";
+}
+
+/** R2 Add: a proxied domain rule with no value yet, at the end. */
+export function addRule(state: StagedRouting, key: string): StagedRouting {
+  return { ...state, rows: [...state.rows, { key, id: null, type: "domain", value: "", action: "proxy", enabled: true, label: "", dataset: "" }] };
+}
+
+export type RulePatch = Partial<Pick<RuleRow, "type" | "value" | "action" | "enabled" | "label" | "dataset">>;
 
 export function updateRule(state: StagedRouting, key: string, patch: RulePatch): StagedRouting {
   return { ...state, rows: state.rows.map((row) => (row.key === key ? { ...row, ...patch } : row)) };
@@ -282,12 +317,14 @@ export function importJson(text: string, current: StagedRouting): ImportResult {
   for (const item of list) {
     const rule = item !== null && typeof item === "object" ? (item as Record<string, unknown>) : null;
     if (!rule || !isOneOf(RULE_TYPES, rule.type) || !isOneOf(RULE_ACTIONS, rule.action) || typeof rule.value !== "string"
-      || (rule.enabled !== undefined && typeof rule.enabled !== "boolean") || (rule.label !== undefined && typeof rule.label !== "string")) {
+      || (rule.enabled !== undefined && typeof rule.enabled !== "boolean") || (rule.label !== undefined && typeof rule.label !== "string")
+      || (rule.dataset !== undefined && !isOneOf(RULE_DATASETS, rule.dataset))) {
       return { ok: false, error: BAD_SHAPE };
     }
     rows.push({
       key: newRowKey(), id: null, type: rule.type, value: rule.value, action: rule.action,
       enabled: (rule.enabled as boolean | undefined) ?? true, label: (rule.label as string | undefined) ?? "",
+      dataset: (rule.dataset as RuleDataset | undefined) ?? "",
     });
   }
   const defaultAction = object?.default_action;

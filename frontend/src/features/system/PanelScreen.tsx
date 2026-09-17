@@ -32,6 +32,7 @@ import { NO_ANSWER } from "../gateway/networkForm";
 import { EditorSection } from "../tunnel/EditorSection";
 import { CheckRow } from "./BackupsScreen";
 import { FilePicker } from "./FilePicker";
+import { GeoCard } from "./GeoCard";
 import { ResultLine } from "./ResultLine";
 import { UPDATE_HINT, updateCheckLine, updateOutcome } from "./updates";
 import {
@@ -494,6 +495,7 @@ function PanelPhone({ stats, file, danger, settings }: {
   return (
     <div className="flex flex-col gap-3">
       <SystemCard phone settings={settings.data} />
+      <GeoCard />
       <GlassCard>
         <EditorSection
           title="Traffic stats"
@@ -555,6 +557,7 @@ export function Panel() {
       </div>
       <div className="flex flex-col gap-3">
         <SystemCard settings={settings.data} />
+        <GeoCard />
         <DangerZoneCard danger={danger} />
       </div>
     </div>

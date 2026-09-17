@@ -113,7 +113,7 @@ def test_http_get_repins_every_redirect_and_preserves_host(monkeypatch):
         resolved.append((host, port))
         return {"one.example": "1.2.3.4", "two.example": "1.2.3.5"}[host]
 
-    def request(parts, pinned_ip, headers, proxy, deadline):
+    def request(parts, pinned_ip, headers, proxy, deadline, max_bytes=None):
         calls.append((parts.hostname, pinned_ip, headers.get("Host")))
         if parts.hostname == "one.example":
             return 302, {"Location": "https://two.example/final"}, b""

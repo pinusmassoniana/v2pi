@@ -1,6 +1,7 @@
 import errno
 import hashlib
 import json
+import re
 import logging
 import os
 import subprocess
@@ -77,6 +78,28 @@ def validate_config(cfg: dict, xray_bin: str) -> tuple[bool, str]:
         return proc.returncode == 0, scrub_output((proc.stdout + proc.stderr).strip(), cfg)
     finally:
         os.unlink(tmp)
+
+
+# xray's own words when a routing rule names a category the installed data does not carry:
+#   "failed to load external sites: no-such-code from geosite_ru.dat > code not found in
+#    geosite_ru.dat: NO-SUCH-CODE"
+# It is the likeliest failure of the whole geo feature, and raw it tells an operator nothing
+# about what to do, so it gets translated where every caller passes.
+_MISSING_CODE = re.compile(r"code not found in ([\w.\-]+):\s*([\w.\-]+)")
+
+
+def explain_xray_error(text: str) -> str:
+    """Return a sentence an operator can act on, or the last meaningful line unchanged."""
+    match = _MISSING_CODE.search(text or "")
+    if match:
+        file, code = match.group(1), match.group(2).lower()
+        return (f"the category {code!r} is not in {file}. Update that geo data on "
+                f"System \u203a Panel, or pick a category the installed data carries.")
+    for line in reversed((text or "").strip().splitlines()):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("A unified platform"):
+            return stripped[:400]
+    return (text or "").strip()[:400]
 
 
 def config_digest(cfg: dict) -> str:

@@ -519,7 +519,8 @@ class NodeStore:
                 id=r["id"], position=r["position"], type=r["type"], value=r["value"],
                 action=r["action"],
                 enabled=bool(r["enabled"]) if "enabled" in keys else True,
-                label=r["label"] if "label" in keys else ""))
+                label=r["label"] if "label" in keys else "",
+                dataset=r["dataset"] if "dataset" in keys else ""))
         return out
 
     def replace_routing(self, rules: list[RoutingRule]) -> None:
@@ -530,10 +531,10 @@ class NodeStore:
             self._conn.execute("DELETE FROM routing_rules")
             for i, r in enumerate(rules):
                 self._conn.execute(
-                    "INSERT INTO routing_rules(position, type, value, action, enabled, label) "
-                    "VALUES(?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO routing_rules(position, type, value, action, enabled, label, "
+                    "dataset) VALUES(?, ?, ?, ?, ?, ?, ?)",
                     (i, r.type, r.value, r.action, int(getattr(r, "enabled", True)),
-                     getattr(r, "label", "")))
+                     getattr(r, "label", ""), getattr(r, "dataset", "")))
 
     # --- node health ---
     def upsert_health(self, h: NodeHealth) -> None:

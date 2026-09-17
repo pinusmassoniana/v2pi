@@ -97,7 +97,7 @@ describe("Routing › Save (R6)", () => {
     await stageLabel(table, "yandex");
     await userEvent.click(within(banner()!).getByRole("button", { name: "Apply staged" }));
     await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
-    expect(api$.putRouting.mock.calls[0]![0].rules[2]).toEqual({ type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "yandex" });
+    expect(api$.putRouting.mock.calls[0]![0].rules[2]).toEqual({ type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "yandex", dataset: "" });
   });
 
   it("a block default asks first; Cancel sends nothing", async () => {
@@ -141,7 +141,7 @@ describe("Routing › Save (R6)", () => {
     // Save again with the same edits — the rule was fixed, or just retried — and this time it goes through.
     await userEvent.click(toolbarButton("Save"));
     await waitFor(() => expect(api$.putRouting).toHaveBeenCalledTimes(2));
-    expect(api$.putRouting.mock.calls[1]![0].rules[2]).toEqual({ type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "yandex" });
+    expect(api$.putRouting.mock.calls[1]![0].rules[2]).toEqual({ type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "yandex", dataset: "" });
     await waitFor(() => expect(banner()).toBeNull());
   });
 
@@ -186,6 +186,7 @@ describe("Routing › presets (R4)", () => {
     expect(items.map((item) => item.textContent)).toEqual([
       "ru-directRU-direct — keep Russian traffic off the tunnel", "block-adsBlock ads & trackers",
       "cn-directCN-direct — Chinese traffic off the tunnel", "lan-directLAN-direct — private ranges direct (explicit)",
+      "ru-blocked-onlyOnly blocked-in-RU through the tunnel (needs the RU geo data)",
     ]);
     await userEvent.click(items[0]!);
     await waitFor(() => expect(api$.routingPreset).toHaveBeenCalledWith("ru-direct"));

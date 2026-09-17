@@ -347,6 +347,36 @@ class SettingsIn(NonNullPatch):
     update_check_enabled: bool | None = None
 
 
+# --- A3: geo data files ---
+class GeoFileOut(BaseModel):
+    dataset: str
+    file: str
+    source: str
+    present: bool
+    bytes: int
+    updated_at: int | None = None
+    has_previous: bool = False
+
+
+class GeoOut(BaseModel):
+    files: list[GeoFileOut]
+    asset_dir: str
+    disk_free_bytes: int = 0
+
+
+class GeoUpdateIn(StrictIn):
+    dataset: Literal["stock", "ru"]
+
+
+class GeoUpdateOut(BaseModel):
+    ok: bool
+    dataset: str
+    files: list[str] = Field(default_factory=list)
+    reloaded: bool = False
+    error: str = ""
+    geo: GeoOut
+
+
 class DiagnosticsOut(BaseModel):
     app_version: str
     xray_version: str
@@ -473,6 +503,9 @@ class RoutingRuleIn(StrictIn):
     action: Literal["direct", "proxy", "block"]
     enabled: bool = True
     label: str = Field(default="", max_length=_MAX_FIELD)
+    # A3: which geo data a geoip/geosite rule reads. "" is the stock files (geoip:ru), "ru" the
+    # runetfreedom ones (ext:geosite_ru.dat:ru-blocked). Refused on the other rule types.
+    dataset: Literal["", "ru"] = ""
 
 
 class RoutingRuleOut(BaseModel):
@@ -483,6 +516,7 @@ class RoutingRuleOut(BaseModel):
     action: str
     enabled: bool = True
     label: str = ""
+    dataset: str = ""
 
 
 class RoutingIn(StrictIn):
@@ -505,6 +539,10 @@ class RoutingValidateOut(BaseModel):
 class PresetInfo(BaseModel):
     name: str
     title: str
+    # A3: the geo dataset the preset's rules need installed ("" = the stock files, always there),
+    # and the default action it stages, when it changes it.
+    dataset: str = ""
+    default_action: str | None = None
 
 
 # --- Wave 2: per-node health snapshot ---

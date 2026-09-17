@@ -119,6 +119,7 @@ describe("Routing on a phone", () => {
     expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
       "ru-directRU-direct — keep Russian traffic off the tunnel", "block-adsBlock ads & trackers",
       "cn-directCN-direct — Chinese traffic off the tunnel", "lan-directLAN-direct — private ranges direct (explicit)",
+      "ru-blocked-onlyOnly blocked-in-RU through the tunnel (needs the RU geo data)",
       "Export JSON", "Import JSON", "Reset",
     ]);
     await userEvent.click(within(menu).getByRole("menuitem", { name: "Reset" }));
@@ -152,7 +153,7 @@ describe("Routing on a phone", () => {
 
   it("a locked rule sheet keeps its fields and rule actions off, and Done still closes it", async () => {
     const onClose = vi.fn();
-    const row: RuleRow = { key: "r1", id: 1, type: "domain", value: "example.org", action: "proxy", enabled: true, label: "" };
+    const row: RuleRow = { key: "r1", id: 1, type: "domain", value: "example.org", action: "proxy", enabled: true, label: "", dataset: "" };
     render(<RuleSheet row={row} index={0} count={2} disabled onUpdate={vi.fn()} onMove={vi.fn()} onRemove={vi.fn()} onClose={onClose} />);
     const sheet = await screen.findByRole("dialog", { name: "Rule 1 of 2" });
     expect(within(sheet).getByRole("radio", { name: "domain" })).toBeDisabled();

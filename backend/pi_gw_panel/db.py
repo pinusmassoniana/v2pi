@@ -517,12 +517,20 @@ def _migration_16(conn: sqlite3.Connection) -> None:
             "ALTER TABLE subscriptions ADD COLUMN last_skipped TEXT NOT NULL DEFAULT '{}'")
 
 
+def _migration_17(conn: sqlite3.Connection) -> None:
+    # A3: which geo dataset a geoip/geosite rule reads ("" = the stock files, "ru" = the
+    # runetfreedom ones addressed with xray's ext: syntax). Existing rules keep the stock data.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(routing_rules)").fetchall()}
+    if "dataset" not in cols:
+        conn.execute("ALTER TABLE routing_rules ADD COLUMN dataset TEXT NOT NULL DEFAULT ''")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
                (9, _migration_9), (10, _migration_10), (11, _migration_11),
                (12, _migration_12), (13, _migration_13), (14, _migration_14),
-               (15, _migration_15), (16, _migration_16)]
+               (15, _migration_15), (16, _migration_16), (17, _migration_17)]
 
 
 def _assert_supported_schema(conn: sqlite3.Connection) -> int:

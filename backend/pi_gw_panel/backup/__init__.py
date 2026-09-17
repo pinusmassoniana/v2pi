@@ -209,6 +209,10 @@ class BackupRule(_Strict):
     action: Literal["direct", "proxy", "block"]
     enabled: bool = True
     label: str = Field(default="", max_length=512)
+    # A3: the geo dataset the rule reads. Carried because a restore that dropped it would turn
+    # `ext:geosite_ru.dat:ru-blocked` into `geosite:ru-blocked` — a rule that still validates and
+    # routes something completely different. Absent in documents written before v2.1.
+    dataset: Literal["", "ru"] = ""
 
 
 class BackupRouting(_Strict):
@@ -426,7 +430,7 @@ def export_state(store) -> dict:
         profiles = [_profile_dict(profile) for profile in store.list_profiles()]
         rules = [
             {"type": rule.type, "value": rule.value, "action": rule.action,
-             "enabled": rule.enabled, "label": rule.label}
+             "enabled": rule.enabled, "label": rule.label, "dataset": rule.dataset}
             for rule in store.get_routing()]
         default_action = store.get_setting("routing_default_action") or "proxy"
     # `_ExportedState`, not a bare dict: this document records the state that already exists, and

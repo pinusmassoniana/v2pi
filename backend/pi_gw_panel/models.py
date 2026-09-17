@@ -116,6 +116,10 @@ class RoutingRule:
     action: str  # direct | proxy | block
     enabled: bool = True
     label: str = ""
+    # A3: which geo dataset a geoip/geosite rule reads. "" is the stock files under xray's own
+    # names (geoip:ru); "ru" is runetfreedom's, addressed as ext:geosite_ru.dat:ru-blocked.
+    # Ignored for domain/ip/port rules, which carry literals.
+    dataset: str = ""
 
 
 @dataclass

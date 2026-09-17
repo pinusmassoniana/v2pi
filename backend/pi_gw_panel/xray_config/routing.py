@@ -1,5 +1,6 @@
 import ipaddress
 import re
+from pi_gw_panel.geo_data import DATASETS, EXT_FILES
 from pi_gw_panel.models import RoutingRule
 
 # Built-in presets — name → (title, [(type, value, action), …]). Imported on demand and
@@ -13,7 +14,19 @@ PRESETS: dict[str, dict] = {
                   "rules": [("geoip", "cn", "direct"), ("geosite", "cn", "direct")]},
     "lan-direct": {"title": "LAN-direct — private ranges direct (explicit)",
                    "rules": [("ip", "192.168.0.0/16", "direct"), ("ip", "10.0.0.0/8", "direct")]},
+    # A3: the inverse of ru-direct, and the one most people actually want — everything goes
+    # direct, and only what is blocked in Russia takes the tunnel. It needs the `ru` dataset
+    # installed (System › Panel › Geo data); the import warns when it is not.
+    "ru-blocked-only": {"title": "Only blocked-in-RU through the tunnel (needs the RU geo data)",
+                        "default_action": "direct",
+                        "dataset": "ru",
+                        "rules": [("geosite", "ru-blocked", "proxy"),
+                                  ("geoip", "ru-blocked", "proxy")]},
 }
+
+# Categories big enough that loading them measurably slows every apply and every xray start
+# (~1.3 s for ru-blocked-all against ~70 ms for ru-blocked, measured on the pinned xray).
+SLOW_CATEGORIES = {("ru", "ru-blocked-all"), ("ru", "refilter")}
 
 _TYPES = {"geoip", "geosite", "domain", "ip", "port"}
 _ACTIONS = {"direct", "proxy", "block"}
@@ -23,7 +36,9 @@ def preset_rules(name: str) -> list[RoutingRule] | None:
     spec = PRESETS.get(name)
     if spec is None:
         return None
-    return [RoutingRule(id=None, position=i, type=t, value=v, action=a)
+    dataset = spec.get("dataset", "")
+    return [RoutingRule(id=None, position=i, type=t, value=v, action=a,
+                        dataset=dataset if t in ("geoip", "geosite") else "")
             for i, (t, v, a) in enumerate(spec["rules"])]
 
 
@@ -65,6 +80,12 @@ def validate_rule(r: RoutingRule) -> str | None:
     """Return an error message if the rule is invalid, else None."""
     if r.type not in _TYPES:
         return f"unknown type {r.type!r}"
+    dataset = getattr(r, "dataset", "") or ""
+    if dataset:
+        if dataset not in DATASETS or dataset == "stock":
+            return f"unknown geo dataset {dataset!r}"
+        if r.type not in ("geoip", "geosite"):
+            return f"a {r.type} rule carries literals, so it has no geo dataset"
     if r.action not in _ACTIONS:
         return f"unknown action {r.action!r}"
     vals = _split(r.value)
@@ -99,10 +120,15 @@ def validate_routing(rules: list[RoutingRule], default_action: str) -> tuple[boo
 
 def _values_field(r: RoutingRule) -> list[str]:
     vals = _split(r.value)
-    if r.type == "geoip":
-        return ["geoip:" + v for v in vals]
-    if r.type == "geosite":
-        return ["geosite:" + v for v in vals]
+    dataset = getattr(r, "dataset", "") or ""
+    if r.type in ("geoip", "geosite"):
+        if dataset:
+            # xray reads a non-default data file only through `ext:<file>:<code>`, resolved in
+            # the asset dir (geo_data.install_env). Verified against the pinned xray for both
+            # the domain and the ip side.
+            file = EXT_FILES[dataset][r.type]
+            return [f"ext:{file}:{v}" for v in vals]
+        return [f"{r.type}:{v}" for v in vals]
     return vals   # ip / domain literals
 
 

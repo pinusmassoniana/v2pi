@@ -281,8 +281,8 @@ describe("summaries", () => {
     const routing: Routing = {
       default_action: "direct", domain_strategy: "AsIs",
       rules: [
-        { id: 2, position: 2, type: "", value: "10.0.0.1", action: "BLOCK", enabled: true, label: "" },
-        { id: 1, position: 1, type: "port", value: "443", action: "proxy", enabled: true, label: "" },
+        { id: 2, position: 2, type: "", value: "10.0.0.1", action: "BLOCK", enabled: true, label: "", dataset: "" },
+        { id: 1, position: 1, type: "port", value: "443", action: "proxy", enabled: true, label: "", dataset: "" },
       ],
     };
     const summary = routingSummary(routing, "nl-ams-03");

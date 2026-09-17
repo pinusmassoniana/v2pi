@@ -46,6 +46,9 @@ export const INVALIDATES = {
   putRw: RW, addRwClient: RW, setRwClientEnabled: RW, deleteRwClient: RW,
   putSettings: [keys.settings, keys.status, keys.network],
   checkUpdates: [keys.diagnostics],
+  // A geo swap reloads xray, so the connection state and the routing screen both re-read.
+  updateGeo: [keys.geo, keys.status, keys.routing],
+  revertGeo: [keys.geo, keys.status, keys.routing],
   resetSettings: [keys.settings, keys.status, keys.network],
   createToken: [keys.tokens], deleteToken: [keys.tokens],
   // The rotation deletes every API token row (auth/service.py change_password): require_auth

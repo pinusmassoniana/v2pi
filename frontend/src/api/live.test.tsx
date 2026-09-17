@@ -374,7 +374,7 @@ describe("System polls each key at its owner's cadence and no faster", () => {
 const READ_OF = {
   status: "getStatus", nodes: "listNodes", nodeHealth: "listNodeHealth", subs: "listSubs", profiles: "listProfiles",
   profilePresets: "listProfilePresets", routing: "getRouting", routingPresets: "listRoutingPresets", network: "getNetwork",
-  rw: "getRw", settings: "getSettings", tokens: "listTokens", diagnostics: "getDiagnostics", audit: "listAudit",
+  rw: "getRw", settings: "getSettings", tokens: "listTokens", diagnostics: "getDiagnostics", geo: "getGeo", audit: "listAudit",
   logs: "getLogs", trafficHistory: "getTrafficHistory",
 } as const satisfies Record<keyof typeof keys, keyof ReturnType<typeof mockSystem>>;
 
@@ -393,20 +393,20 @@ const REMOTE = MINUTE / RW_POLL_MS;
  * owner, and no route polls a key another section owns.
  */
 const POLLING: Record<string, Record<KeyRoot, number>> = {
-  "/": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: SLOW, routingPresets: 0, network: HOME_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/traffic": { status: SHELL, nodes: 0, nodeHealth: SLOW, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: HOME_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/nodes": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/nodes/subscriptions": { status: SHELL, nodes: 0, nodeHealth: 0, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/nodes/1": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/tunnel/routing": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: SLOW, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/tunnel/anti-dpi": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: SLOW, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/tunnel/health": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/gateway/network": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: GATEWAY_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/gateway/remote-access": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: REMOTE, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/system/backups": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/system/access": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: SLOW, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/system/logs": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, audit: 0, logs: 0, trafficHistory: 0 },
-  "/system/panel": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: 0, diagnostics: SLOW, audit: 0, logs: 0, trafficHistory: 0 },
+  "/": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: SLOW, routingPresets: 0, network: HOME_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/traffic": { status: SHELL, nodes: 0, nodeHealth: SLOW, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: HOME_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/nodes": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/nodes/subscriptions": { status: SHELL, nodes: 0, nodeHealth: 0, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/nodes/1": { status: SHELL, nodes: SLOW, nodeHealth: SLOW, subs: SLOW, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/tunnel/routing": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: SLOW, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/tunnel/anti-dpi": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: SLOW, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/tunnel/health": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/gateway/network": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: GATEWAY_NETWORK, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/gateway/remote-access": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: REMOTE, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/backups": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/access": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: SLOW, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/logs": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: 0, tokens: 0, diagnostics: 0, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
+  "/system/panel": { status: SHELL, nodes: 0, nodeHealth: 0, subs: 0, profiles: 0, profilePresets: 0, routing: 0, routingPresets: 0, network: 0, rw: 0, settings: SLOW, tokens: 0, diagnostics: SLOW, geo: 0, audit: 0, logs: 0, trafficHistory: 0 },
 };
 
 /** The keys a route reads exactly once, on mount, and never again. Every other 0 in its row is never read at all. */
@@ -416,7 +416,7 @@ const READ_ONCE: Record<string, readonly KeyRoot[]> = {
   "/nodes": ["trafficHistory"],
   "/nodes/subscriptions": ["settings"],
   "/nodes/1": ["profiles", "trafficHistory"],
-  "/tunnel/routing": ["routingPresets"],
+  "/tunnel/routing": ["routingPresets", "geo"],
   "/tunnel/anti-dpi": ["profilePresets"],
   "/tunnel/health": ["settings"],
   "/gateway/network": ["settings"],
@@ -424,7 +424,7 @@ const READ_ONCE: Record<string, readonly KeyRoot[]> = {
   "/system/backups": ["nodes", "subs", "profiles", "routing"],
   "/system/access": [],
   "/system/logs": [],
-  "/system/panel": [],
+  "/system/panel": ["geo"],
 };
 
 /** What shows a route has loaded; node detail is mounted at phone width, where it is a page of its own. */

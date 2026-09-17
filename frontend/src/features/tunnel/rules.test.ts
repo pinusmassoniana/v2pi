@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RU_DIRECT_PRESET, TUNNEL_ROUTING } from "../../test/fixtures";
 import {
-  GEO_TOKENS, PRIVATE_IPV4_RANGES, VALUE_PLACEHOLDERS, addRule, applyPreset, changeCount, changesLabel, exportJson, importJson, isIPv6Network,
-  isPrivateIPv4, isStaged, moveRule, removeRule, resetRouting, stagedFromRouting, testDestination, toRoutingIn, updateRule, validateRuleRow,
-  type StagedRouting,
+  addRule, applyPreset, changeCount, changesLabel, datasetInstalled, datasetOf, exportJson, GEO_TOKENS, importJson, isIPv6Network, isPrivateIPv4, isStaged, missingDatasetConfirm, moveRule, PRIVATE_IPV4_RANGES, removeRule, resetRouting, stagedFromRouting, testDestination, toRoutingIn, updateRule, validateRuleRow, VALUE_PLACEHOLDERS, type StagedRouting,
 } from "./rules";
 
 const saved = () => stagedFromRouting(TUNNEL_ROUTING);
@@ -14,7 +12,7 @@ describe("staged state", () => {
     const state = saved();
     expect(state.defaultAction).toBe("proxy");
     expect(state.domainStrategy).toBe("IPIfNonMatch");
-    expect(state.rows[1]).toEqual({ key: "s22", id: 22, type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel" });
+    expect(state.rows[1]).toEqual({ key: "s22", id: 22, type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel", dataset: "" });
     expect(saved()).toEqual(state);
     expect(isStaged(state, saved())).toBe(false);
   });
@@ -40,7 +38,7 @@ describe("staged state", () => {
   it("add appends a proxied domain rule with no value; update, remove and move act on one row by key", () => {
     const base = saved();
     const added = addRule(base, "n-new");
-    expect(added.rows.at(-1)).toEqual({ key: "n-new", id: null, type: "domain", value: "", action: "proxy", enabled: true, label: "" });
+    expect(added.rows.at(-1)).toEqual({ key: "n-new", id: null, type: "domain", value: "", action: "proxy", enabled: true, label: "", dataset: "" });
     expect(removeRule(base, "s21").rows.map((row) => row.id)).toEqual([22, 23, 24, 25, 26]);
     expect(moveRule(base, "s21", 1).rows.map((row) => row.id)).toEqual([22, 21, 23, 24, 25, 26]);
     expect(moveRule(base, "s21", -1)).toBe(base);
@@ -125,8 +123,8 @@ describe("toRoutingIn (what Save and Validate send)", () => {
     expect(body.default_action).toBe("proxy");
     expect(body.domain_strategy).toBe("IPIfNonMatch");
     expect(body.rules).toHaveLength(6);
-    expect(body.rules[1]).toEqual({ type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel" });
-    expect(body.rules[5]).toEqual({ type: "domain", value: "netflix.com", action: "proxy", enabled: false, label: "" });
+    expect(body.rules[1]).toEqual({ type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel", dataset: "" });
+    expect(body.rules[5]).toEqual({ type: "domain", value: "netflix.com", action: "proxy", enabled: false, label: "", dataset: "" });
   });
 
   it("drops rows repeating an earlier type, trimmed value and action, keeping the first, and counts them", () => {
@@ -346,5 +344,57 @@ describe("constants", () => {
       ip: "1.2.3.0/24, 10.0.0.0/8", port: "443 | 1000-2000 | 80,443",
     });
     expect(keyOf(saved(), "ru")).toBe("s22");
+  });
+});
+
+describe("A3 · geo datasets", () => {
+  it("a geo rule carries its dataset through staging, change counting and Save", () => {
+    const base = stagedFromRouting({
+      default_action: "direct", domain_strategy: "IPIfNonMatch",
+      rules: [{ id: 1, position: 0, type: "geosite", value: "ru-blocked", action: "proxy", enabled: true, label: "", dataset: "ru" }],
+    });
+    expect(base.rows[0]!.dataset).toBe("ru");
+
+    const moved = updateRule(base, "s1", { dataset: "" });
+    expect(isStaged(base, moved)).toBe(true);                 // the source alone is a change
+    expect(changeCount(base, moved)).toBe(1);
+    expect(toRoutingIn(base).body.rules[0]!.dataset).toBe("ru");
+  });
+
+  it("the same category from two sources is two rules, not a duplicate", () => {
+    const state: StagedRouting = {
+      defaultAction: "direct", domainStrategy: "IPIfNonMatch",
+      rows: [
+        { key: "a", id: null, type: "geosite", value: "ru-blocked", action: "proxy", enabled: true, label: "", dataset: "ru" },
+        { key: "b", id: null, type: "geosite", value: "ru-blocked", action: "proxy", enabled: true, label: "", dataset: "" },
+        { key: "c", id: null, type: "geosite", value: "ru-blocked", action: "proxy", enabled: true, label: "", dataset: "ru" },
+      ],
+    };
+    const { body, dropped } = toRoutingIn(state);
+    expect(body.rules).toHaveLength(2);                        // a and b kept, c is the duplicate
+    expect(dropped).toBe(1);
+  });
+
+  it("a literal rule never carries a dataset, whatever the row says", () => {
+    expect(datasetOf({ type: "domain", dataset: "ru" })).toBe("");
+    expect(datasetOf({ type: "geoip", dataset: "ru" })).toBe("ru");
+  });
+
+  it("an imported ruleset may name a dataset, and an unknown one refuses the file", () => {
+    const ok = importJson('[{"type":"geosite","value":"ru-blocked","action":"proxy","dataset":"ru"}]', resetRouting());
+    expect(ok.ok && ok.state.rows[0]!.dataset).toBe("ru");
+    const bad = importJson('[{"type":"geosite","value":"x","action":"proxy","dataset":"elbonia"}]', resetRouting());
+    expect(bad.ok).toBe(false);
+  });
+
+  it("a preset's data has to be installed, and the stock lists always are", () => {
+    const geo = { asset_dir: "/d", disk_free_bytes: 1, files: [
+      { dataset: "ru", file: "geoip_ru.dat", source: "s", present: true, bytes: 1, updated_at: null, has_previous: false },
+      { dataset: "ru", file: "geosite_ru.dat", source: "s", present: false, bytes: 0, updated_at: null, has_previous: false },
+    ] };
+    expect(datasetInstalled(geo, "")).toBe(true);
+    expect(datasetInstalled(geo, "ru")).toBe(false);          // half installed is not installed
+    expect(datasetInstalled(undefined, "ru")).toBe(false);
+    expect(missingDatasetConfirm("ru")).toContain("RU lists");
   });
 });

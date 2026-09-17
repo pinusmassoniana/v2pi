@@ -20,6 +20,7 @@ from pi_gw_panel.api.schemas import (
     ProfileIn, ProfileUpdate, ProfileOut, DefaultProfileIn,
     ProfileValidateOut, ProfilePresetInfo,
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
+    GeoOut, GeoFileOut, GeoUpdateIn, GeoUpdateOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
@@ -45,12 +46,14 @@ from pi_gw_panel.health.snapshot import health_status
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel import updates
+from pi_gw_panel import geo_data
 from pi_gw_panel.xray_config.routing import PRESETS, preset_rules, validate_routing
 from pi_gw_panel.xray_config.tuning import resolve_profile, validate_profile, PROFILE_PRESETS
 from pi_gw_panel.xray_config.builder import (build_config, rw_inbound_block, rw_grants,
                                              rw_lan_outbound, rw_lan_rule, RW_TAG,
                                              DIRECT_LAN_TAG)
-from pi_gw_panel.xray_config.validate import ConfigManager, config_digest, validate_config
+from pi_gw_panel.xray_config.validate import (ConfigManager, config_digest,
+                                              explain_xray_error, validate_config)
 from pi_gw_panel.config import (NET_CROSS_FIELD_KEYS, SETTINGS_DEFAULTS, check_change_safe,
                                 safe_int, validate_net_settings, validate_setting_values)
 from pi_gw_panel.subs.inject import build_request, default_injection, host_tokens
@@ -145,14 +148,14 @@ def _reapply_or_502(state) -> None:
 def _rule_out(r) -> RoutingRuleOut:
     return RoutingRuleOut(id=r.id or 0, position=r.position, type=r.type, value=r.value,
                           action=r.action, enabled=getattr(r, "enabled", True),
-                          label=getattr(r, "label", ""))
+                          label=getattr(r, "label", ""), dataset=getattr(r, "dataset", ""))
 
 
-def _routing_out(state, rules=None) -> RoutingOut:
+def _routing_out(state, rules=None, default_action: str | None = None) -> RoutingOut:
     rules = state.store.get_routing() if rules is None else rules
     return RoutingOut(
         rules=[_rule_out(r) for r in rules],
-        default_action=state.store.get_setting("routing_default_action") or "proxy",
+        default_action=default_action or state.store.get_setting("routing_default_action") or "proxy",
         domain_strategy=state.store.get_setting("routing_domain_strategy") or "IPIfNonMatch")
 
 
@@ -974,12 +977,13 @@ def _clean_rules(rules) -> list[RoutingRule]:
         v = (r.value or "").strip()
         if not v:
             continue
-        key = (r.type, v, r.action)
+        key = (r.type, v, r.action, getattr(r, "dataset", "") or "")
         if key in seen:
             continue
         seen.add(key)
         clean.append(RoutingRule(id=None, position=len(clean), type=r.type, value=r.value,
-                                 action=r.action, enabled=r.enabled, label=r.label))
+                                 action=r.action, enabled=r.enabled, label=r.label,
+                                 dataset=getattr(r, "dataset", "") or ""))
     return clean
 
 
@@ -1005,7 +1009,8 @@ def put_routing(body: RoutingIn, request: Request,
 
 @router.get("/routing/presets", response_model=list[PresetInfo])
 def routing_presets(request: Request, _: None = Depends(require_auth)) -> list[PresetInfo]:
-    return [PresetInfo(name=k, title=v["title"]) for k, v in PRESETS.items()]
+    return [PresetInfo(name=k, title=v["title"], dataset=v.get("dataset", ""),
+                       default_action=v.get("default_action")) for k, v in PRESETS.items()]
 
 
 @router.post("/routing/validate", response_model=RoutingValidateOut)
@@ -1026,7 +1031,7 @@ def routing_validate(body: RoutingIn, request: Request,
                                domain_strategy=body.domain_strategy)
             ok2, out = validate_config(cfg, state.xray_bin or state.settings.xray_bin)
             if not ok2:
-                return RoutingValidateOut(ok=False, error=out)
+                return RoutingValidateOut(ok=False, error=explain_xray_error(out))
     return RoutingValidateOut(ok=True)
 
 
@@ -1040,11 +1045,15 @@ def routing_preset(name: str, request: Request,
     if preset is None:
         raise HTTPException(status_code=404, detail=f"unknown preset {name!r}")
     existing = state.store.get_routing()
-    have = {(r.type, r.value, r.action) for r in existing}
-    merged = list(existing) + [r for r in preset if (r.type, r.value, r.action) not in have]
+    have = {(r.type, r.value, r.action, getattr(r, "dataset", "")) for r in existing}
+    merged = list(existing) + [
+        r for r in preset if (r.type, r.value, r.action, r.dataset) not in have]
     for i, r in enumerate(merged):
         r.position = i
-    return _routing_out(state, merged)
+    # A preset that inverts the policy (ru-blocked-only: everything direct, blocked through the
+    # tunnel) has to stage its default action too, or the staged rules would read as the opposite
+    # of what the preset is called.
+    return _routing_out(state, merged, PRESETS[name].get("default_action"))
 
 
 # --- node health (per-node snapshot; distinct from the open /api/health liveness) ---
@@ -1512,6 +1521,40 @@ def diagnostics(request: Request, _: None = Depends(require_auth)) -> Diagnostic
 
 
 # --- network (editable Pi net config + kill-switch + live status + router guidance) ---
+def _geo_out(state) -> GeoOut:
+    return GeoOut(files=[GeoFileOut(**row) for row in geo_data.status(state.settings)],
+                  asset_dir=geo_data.geo_dir(state.settings),
+                  disk_free_bytes=shutil.disk_usage(state.settings.data_dir).free)
+
+
+@router.get("/geo", response_model=GeoOut)
+def geo_status(request: Request, _: None = Depends(require_auth)) -> GeoOut:
+    """A3: the routing data files this gateway actually loads — what is installed, how old it is,
+    and whether the previous copy is still there to go back to."""
+    return _geo_out(get_state(request))
+
+
+@router.post("/geo/update", response_model=GeoUpdateOut)
+def geo_update(body: GeoUpdateIn, request: Request,
+               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> GeoUpdateOut:
+    """Replace one dataset from its upstream. Manual by design: the swap only takes effect when
+    xray reloads, and that is a short drop for everyone behind the gateway."""
+    state = get_state(request)
+    with apply_lock:           # a reload is an apply; it may not race a Connect or a rule save
+        result = geo_data.update(state, body.dataset)
+    return GeoUpdateOut(**result, geo=_geo_out(state))
+
+
+@router.post("/geo/revert", response_model=GeoUpdateOut)
+def geo_revert(body: GeoUpdateIn, request: Request,
+               _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> GeoUpdateOut:
+    """Put the previous copy of a dataset back — the undo for data that loads but routes worse."""
+    state = get_state(request)
+    with apply_lock:
+        result = geo_data.revert(state, body.dataset)
+    return GeoUpdateOut(**result, geo=_geo_out(state))
+
+
 @router.post("/updates/check", response_model=DiagnosticsOut)
 def check_updates(request: Request,
                   _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> DiagnosticsOut:

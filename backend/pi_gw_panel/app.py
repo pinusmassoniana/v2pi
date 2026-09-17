@@ -142,6 +142,10 @@ def _traffic_frame(state) -> dict:
 def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
     if not settings.loopback_bind and not settings.tls_enabled:
         raise ValueError("non-loopback management bind requires TLS certificate and key")
+    # A3: point every xray this process spawns (supervisor, `-test`, probes) at <data_dir>/geo,
+    # seeded from the image's files on first boot. Done before anything can spawn one.
+    from pi_gw_panel import geo_data
+    geo_data.install_env(settings)
     app_state = state if state is not None else build_state(settings)
     scheduler = SubScheduler(app_state)
     # Slow (30-min) all-node TCP/HTTPS sweep for the health table + latency trends.

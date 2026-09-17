@@ -125,11 +125,19 @@ export type ProfileUpdate = Partial<ProfileIn>;
 export interface ProfilePreset { name: string; title: string; fields: Record<string, any>; }
 
 // --- Wave 2: routing ---
-export interface RoutingRule { id: number; position: number; type: string; value: string; action: string; enabled: boolean; label: string; }
-export interface RoutingRuleIn { type: string; value: string; action: string; enabled?: boolean; label?: string; }
+export interface RoutingRule { id: number; position: number; type: string; value: string; action: string; enabled: boolean; label: string; dataset: string; }
+export interface RoutingRuleIn { type: string; value: string; action: string; enabled?: boolean; label?: string; dataset?: string; }
 export interface Routing { rules: RoutingRule[]; default_action: string; domain_strategy: string; }
 export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; domain_strategy?: string; }
-export interface PresetInfo { name: string; title: string; }
+export interface PresetInfo { name: string; title: string; dataset: string; default_action: string | null; }
+
+// --- A3: the geo data files the gateway routes by ---
+export interface GeoFile {
+  dataset: string; file: string; source: string;
+  present: boolean; bytes: number; updated_at: number | null; has_previous: boolean;
+}
+export interface Geo { files: GeoFile[]; asset_dir: string; disk_free_bytes: number; }
+export interface GeoUpdate { ok: boolean; dataset: string; files: string[]; reloaded: boolean; error: string; geo: Geo; }
 
 // --- Wave 2: per-node health ---
 export interface NodeHealth {
@@ -419,6 +427,11 @@ export const api = {
   // A reset writes every re-apply key back to its default, so it always re-applies.
   resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
+
+  getGeo(): Promise<Geo> { return req("/geo"); },
+  /** Replaces one dataset and reloads xray: a short drop for everyone behind the gateway. */
+  updateGeo(dataset: string): Promise<GeoUpdate> { return mutate("POST", "/geo/update", { dataset }, REAPPLY_TIMEOUT_MS); },
+  revertGeo(dataset: string): Promise<GeoUpdate> { return mutate("POST", "/geo/revert", { dataset }, REAPPLY_TIMEOUT_MS); },
   /** B2: run the release check now. It reports; nothing here installs anything. */
   checkUpdates(): Promise<Diagnostics> { return mutate("POST", "/updates/check"); },
 

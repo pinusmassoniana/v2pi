@@ -2,7 +2,7 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi, type MockedFunction } from "vitest";
 import type {
-  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, Diagnostics, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
+  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
   PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
   RefreshAllResult, RestoreResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
   TuningProfile,
@@ -198,12 +198,12 @@ export const ROUTING: Routing = {
   default_action: "proxy",
   domain_strategy: "IPIfNonMatch",
   rules: [
-    { id: 11, position: 1, type: "domain", value: "netflix.com", action: "proxy", enabled: true, label: "" },
-    { id: 12, position: 2, type: "geoip", value: "ru", action: "direct", enabled: true, label: "" },
-    { id: 13, position: 3, type: "geosite", value: "category-ads-all", action: "block", enabled: true, label: "" },
-    { id: 14, position: 4, type: "domain", value: "example.test", action: "direct", enabled: false, label: "" },
-    { id: 15, position: 5, type: "domain", value: "gosuslugi.ru", action: "direct", enabled: true, label: "" },
-    { id: 16, position: 6, type: "ip", value: "10.0.0.0/8", action: "direct", enabled: true, label: "" },
+    { id: 11, position: 1, type: "domain", value: "netflix.com", action: "proxy", enabled: true, label: "", dataset: "" },
+    { id: 12, position: 2, type: "geoip", value: "ru", action: "direct", enabled: true, label: "", dataset: "" },
+    { id: 13, position: 3, type: "geosite", value: "category-ads-all", action: "block", enabled: true, label: "", dataset: "" },
+    { id: 14, position: 4, type: "domain", value: "example.test", action: "direct", enabled: false, label: "", dataset: "" },
+    { id: 15, position: 5, type: "domain", value: "gosuslugi.ru", action: "direct", enabled: true, label: "", dataset: "" },
+    { id: 16, position: 6, type: "ip", value: "10.0.0.0/8", action: "direct", enabled: true, label: "", dataset: "" },
   ],
 };
 
@@ -215,21 +215,22 @@ export const TUNNEL_ROUTING: Routing = {
   default_action: "proxy",
   domain_strategy: "IPIfNonMatch",
   rules: [
-    { id: 21, position: 0, type: "geosite", value: "category-ads-all", action: "block", enabled: true, label: "ads" },
-    { id: 22, position: 1, type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel" },
-    { id: 23, position: 2, type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "" },
-    { id: 24, position: 3, type: "ip", value: "45.83.0.0/16", action: "proxy", enabled: true, label: "office" },
-    { id: 25, position: 4, type: "port", value: "25", action: "block", enabled: true, label: "no SMTP" },
-    { id: 26, position: 5, type: "domain", value: "netflix.com", action: "proxy", enabled: false, label: "" },
+    { id: 21, position: 0, type: "geosite", value: "category-ads-all", action: "block", enabled: true, label: "ads", dataset: "" },
+    { id: 22, position: 1, type: "geoip", value: "ru", action: "direct", enabled: true, label: "RU off tunnel", dataset: "" },
+    { id: 23, position: 2, type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "", dataset: "" },
+    { id: 24, position: 3, type: "ip", value: "45.83.0.0/16", action: "proxy", enabled: true, label: "office", dataset: "" },
+    { id: 25, position: 4, type: "port", value: "25", action: "block", enabled: true, label: "no SMTP", dataset: "" },
+    { id: 26, position: 5, type: "domain", value: "netflix.com", action: "proxy", enabled: false, label: "", dataset: "" },
   ],
 };
 
 /** GET /routing/presets, as the backend lists them. */
 export const ROUTING_PRESETS: PresetInfo[] = [
-  { name: "ru-direct", title: "RU-direct — keep Russian traffic off the tunnel" },
-  { name: "block-ads", title: "Block ads & trackers" },
-  { name: "cn-direct", title: "CN-direct — Chinese traffic off the tunnel" },
-  { name: "lan-direct", title: "LAN-direct — private ranges direct (explicit)" },
+  { name: "ru-direct", title: "RU-direct — keep Russian traffic off the tunnel", dataset: "", default_action: null },
+  { name: "block-ads", title: "Block ads & trackers", dataset: "", default_action: null },
+  { name: "cn-direct", title: "CN-direct — Chinese traffic off the tunnel", dataset: "", default_action: null },
+  { name: "lan-direct", title: "LAN-direct — private ranges direct (explicit)", dataset: "", default_action: null },
+  { name: "ru-blocked-only", title: "Only blocked-in-RU through the tunnel (needs the RU geo data)", dataset: "ru", default_action: "direct" },
 ];
 
 /**
@@ -240,7 +241,7 @@ export const RU_DIRECT_PRESET: Routing = {
   ...TUNNEL_ROUTING,
   rules: [
     ...TUNNEL_ROUTING.rules,
-    { id: 0, position: 6, type: "geosite", value: "category-ru", action: "direct", enabled: true, label: "" },
+    { id: 0, position: 6, type: "geosite", value: "category-ru", action: "direct", enabled: true, label: "", dataset: "" },
   ],
 };
 
@@ -457,6 +458,21 @@ export const LOG_LINES: string[] = [
   "2023-11-14 22:38:12,417 INFO pi_gw_panel.api.routes stats client reconfigured to 127.0.0.1:10085 — xray StatsService reachable",
 ];
 
+/**
+ * The geo data as a gateway that has installed the RU lists holds it: the stock files are the
+ * image's (old), the RU ones were updated today and can still be reverted.
+ */
+export const GEO: Geo = {
+  asset_dir: "/app/data/geo",
+  disk_free_bytes: 11_400_000_000,
+  files: [
+    { dataset: "stock", file: "geoip.dat", source: "v2fly/geoip/geoip.dat", present: true, bytes: 19_768_301, updated_at: NOW_SEC - 90 * 86_400, has_previous: false },
+    { dataset: "stock", file: "geosite.dat", source: "v2fly/domain-list-community/dlc.dat", present: true, bytes: 10_491_954, updated_at: NOW_SEC - 90 * 86_400, has_previous: false },
+    { dataset: "ru", file: "geoip_ru.dat", source: "runetfreedom/russia-v2ray-rules-dat/geoip.dat", present: true, bytes: 18_355_076, updated_at: NOW_SEC - 3_600, has_previous: true },
+    { dataset: "ru", file: "geosite_ru.dat", source: "runetfreedom/russia-v2ray-rules-dat/geosite.dat", present: true, bytes: 73_703_302, updated_at: NOW_SEC - 3_600, has_previous: true },
+  ],
+};
+
 /** A healthy gateway's diagnostics: the collector last succeeded two seconds ago and has never failed. */
 export const DIAGNOSTICS: Diagnostics = {
   app_version: "1.18.64", xray_version: "25.3.6", uptime_sec: 6 * 86_400 + 4 * 3_600 + 12 * 60,
@@ -543,7 +559,7 @@ export function mockApi() {
     routingPreset: vi.spyOn(api, "routingPreset").mockResolvedValue(RU_DIRECT_PRESET),
     validateRouting: vi.spyOn(api, "validateRouting").mockResolvedValue(VALID),
     putRouting: vi.spyOn(api, "putRouting").mockImplementation(async (body: RoutingIn) => ({
-      rules: body.rules.map((rule, index) => ({ id: 100 + index, position: index, enabled: true, label: "", ...rule })),
+      rules: body.rules.map((rule, index) => ({ id: 100 + index, position: index, enabled: true, label: "", dataset: "", ...rule })),
       default_action: body.default_action,
       domain_strategy: body.domain_strategy ?? "IPIfNonMatch",
     })),
@@ -630,6 +646,14 @@ export function mockSystem(api$: MockApi): MockApi & SystemMocks {
     deleteToken: vi.spyOn(api, "deleteToken").mockResolvedValue(undefined),
     listAudit: vi.spyOn(api, "listAudit").mockResolvedValue(AUDIT),
     checkUpdates: vi.spyOn(api, "checkUpdates").mockResolvedValue(DIAGNOSTICS),
+    getGeo: vi.spyOn(api, "getGeo").mockResolvedValue(GEO),
+    updateGeo: vi.spyOn(api, "updateGeo").mockImplementation(async (dataset: string) => ({
+      ok: true, dataset, files: GEO.files.filter((f) => f.dataset === dataset).map((f) => f.file),
+      reloaded: true, error: "", geo: GEO,
+    })),
+    revertGeo: vi.spyOn(api, "revertGeo").mockImplementation(async (dataset: string) => ({
+      ok: true, dataset, files: [], reloaded: true, error: "", geo: GEO,
+    })),
     getLogs: vi.spyOn(api, "getLogs").mockImplementation(async (source: string) => ({
       // Only `app` has content, for two different reasons: xray-error/xray-access are empty because
       // nothing ever writes those files (xray is built with no error path and "access": "none"), while
@@ -653,6 +677,9 @@ interface SystemMocks {
   listAudit: MockedFunction<typeof api.listAudit>;
   getLogs: MockedFunction<typeof api.getLogs>;
   getDiagnostics: MockedFunction<typeof api.getDiagnostics>;
+  getGeo: MockedFunction<typeof api.getGeo>;
+  updateGeo: MockedFunction<typeof api.updateGeo>;
+  revertGeo: MockedFunction<typeof api.revertGeo>;
   checkUpdates: MockedFunction<typeof api.checkUpdates>;
   resetSettings: MockedFunction<typeof api.resetSettings>;
 }

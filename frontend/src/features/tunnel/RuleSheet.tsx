@@ -7,7 +7,8 @@ import { cn } from "../../lib/cn";
 import { ACTION_CHECKED } from "./RuleParts";
 import { isGeo, type RuleCallbacks } from "./RulesTable";
 import {
-  GEO_TOKENS, MAX_RULE_FIELD, RULE_ACTIONS, RULE_TYPES, VALUE_PLACEHOLDERS, ruleTokens, validateRuleRow, type RuleAction, type RuleRow, type RuleType,
+  DATASET_LABELS, GEO_TOKENS, GEO_TOKENS_RU, MAX_RULE_FIELD, RULE_ACTIONS, RULE_DATASETS, RULE_TYPES, VALUE_PLACEHOLDERS,
+  ruleTokens, validateRuleRow, type RuleAction, type RuleDataset, type RuleRow, type RuleType,
 } from "./rules";
 
 const ACTION_OPTIONS = RULE_ACTIONS.map((action) => ({ value: action, className: ACTION_CHECKED[action] }));
@@ -49,6 +50,15 @@ export function RuleSheet({ row, index, count, disabled = false, onUpdate, onMov
               value={row.type}
               onValueChange={(type) => onUpdate(row.key, { type: type as RuleType })}
             />
+            {isGeo(row.type) ? (
+              <SegmentedField
+                legend="Geo data"
+                name={`rule-${row.key}-dataset`}
+                options={RULE_DATASETS.map((dataset) => ({ value: dataset, label: DATASET_LABELS[dataset] }))}
+                value={row.dataset}
+                onValueChange={(dataset) => onUpdate(row.key, { dataset: dataset as RuleDataset })}
+              />
+            ) : null}
             <TextField
               label="Value"
               hint={row.value.trim() ? undefined : "required"}
@@ -63,7 +73,7 @@ export function RuleSheet({ row, index, count, disabled = false, onUpdate, onMov
             />
             {isGeo(row.type) ? (
               <div role="group" aria-label="Geo suggestions" className="-mt-1.5 flex flex-wrap gap-1.5">
-                {GEO_TOKENS.map((token) => {
+                {(row.dataset === "ru" ? GEO_TOKENS_RU : GEO_TOKENS).map((token) => {
                   const on = tokens.includes(token);
                   return (
                     <button

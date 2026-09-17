@@ -140,7 +140,7 @@ def test_injected_headers_are_dropped_on_a_cross_origin_redirect(monkeypatch):
     def resolve(host, port, deadline):
         return {"one.example": "1.2.3.4", "two.example": "1.2.3.5"}[host]
 
-    def request(parts, pinned_ip, headers, proxy, deadline):
+    def request(parts, pinned_ip, headers, proxy, deadline, max_bytes=None):
         seen.append((parts.hostname, dict(headers)))
         if parts.hostname == "one.example":
             return 302, [("Location", "https://two.example/final")], b""
@@ -161,7 +161,7 @@ def test_injected_headers_are_dropped_on_a_cross_origin_redirect(monkeypatch):
 def test_injected_headers_survive_a_same_origin_redirect(monkeypatch):
     seen = []
 
-    def request(parts, pinned_ip, headers, proxy, deadline):
+    def request(parts, pinned_ip, headers, proxy, deadline, max_bytes=None):
         seen.append(dict(headers))
         if len(seen) == 1:
             return 302, [("Location", "https://one.example/final")], b""
@@ -182,7 +182,7 @@ def test_injected_headers_survive_a_same_origin_redirect(monkeypatch):
 def test_credential_travel_rules(monkeypatch, start, location, travels):
     seen = []
 
-    def request(parts, pinned_ip, headers, proxy, deadline):
+    def request(parts, pinned_ip, headers, proxy, deadline, max_bytes=None):
         seen.append(dict(headers))
         if len(seen) == 1:
             return 302, [("Location", location)], b""
@@ -229,7 +229,7 @@ def test_hostile_charset_does_not_escape_http_get(monkeypatch, charset):
 def test_every_set_cookie_is_kept_across_a_redirect(monkeypatch):
     seen = []
 
-    def request(parts, pinned_ip, headers, proxy, deadline):
+    def request(parts, pinned_ip, headers, proxy, deadline, max_bytes=None):
         seen.append(dict(headers))
         if len(seen) == 1:
             return 302, [("Set-Cookie", "a=1; Path=/"), ("Set-Cookie", "b=2; Path=/"),

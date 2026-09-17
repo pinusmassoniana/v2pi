@@ -216,7 +216,7 @@ def _proxy_connect(sock: socket.socket, pinned_ip: str, port: int, deadline: flo
 
 
 def _request_once(parts, pinned_ip: str, headers: dict, proxy: str | None,
-                  deadline: float) -> tuple[int, list[tuple[str, str]], bytes]:
+                  deadline: float, max_bytes: int = MAX_BYTES) -> tuple[int, list[tuple[str, str]], bytes]:
     """One pinned GET. Host and TLS SNI remain the original provider hostname."""
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").encode("idna").decode("ascii")
@@ -264,17 +264,17 @@ def _request_once(parts, pinned_ip: str, headers: dict, proxy: str | None,
                 declared_length = int(content_length)
             except ValueError:
                 declared_length = None
-            if declared_length is not None and declared_length > MAX_BYTES:
-                raise ValueError(f"subscription body exceeds the {MAX_BYTES // 1024} KiB cap")
+            if declared_length is not None and declared_length > max_bytes:
+                raise ValueError(f"subscription body exceeds the {max_bytes // 1024} KiB cap")
         body = bytearray()
         while True:
             _remaining(deadline)
-            chunk = response.read(min(64 * 1024, MAX_BYTES + 1 - len(body)))
+            chunk = response.read(min(64 * 1024, max_bytes + 1 - len(body)))
             if not chunk:
                 break
             body.extend(chunk)
-            if len(body) > MAX_BYTES:
-                raise ValueError(f"subscription body exceeds the {MAX_BYTES // 1024} KiB cap")
+            if len(body) > max_bytes:
+                raise ValueError(f"subscription body exceeds the {max_bytes // 1024} KiB cap")
         guard.check()
         # http.client returns b"" on a premature close instead of raising, so a feed cut short
         # mid-body would parse as a valid *prefix* — and reconcile would then delete every node
@@ -334,8 +334,8 @@ def _credentials_travel(origin: tuple, hop: tuple) -> bool:
     return (scheme, port, hop_scheme, hop_port) == ("http", 80, "https", 443)
 
 
-def _http_get(url: str, headers: dict, proxy: str | None,
-              timeout: float) -> tuple[str, list[tuple[str, str]]]:
+def _http_get(url: str, headers: dict, proxy: str | None, timeout: float,
+              max_bytes: int = MAX_BYTES, raw_body: bool = False) -> tuple[str | bytes, list[tuple[str, str]]]:
     """GET with one resolve/connect/read deadline and DNS pinning repeated on redirects."""
     deadline = time.monotonic() + timeout
     current = url
@@ -362,7 +362,7 @@ def _http_get(url: str, headers: dict, proxy: str | None,
         if jar:
             request_headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in jar.items())
         status, response_headers, raw = _request_once(
-            parts, pinned_ip, request_headers, proxy, deadline)
+            parts, pinned_ip, request_headers, proxy, deadline, max_bytes)
         for set_cookie in _header_all(response_headers, "set-cookie"):
             parsed_cookie = http.cookies.SimpleCookie()
             parsed_cookie.load(set_cookie)
@@ -378,6 +378,11 @@ def _http_get(url: str, headers: dict, proxy: str | None,
             continue
         if status < 200 or status >= 300:
             raise ValueError(f"subscription endpoint returned HTTP {status}")
+        if raw_body:
+            # A geo .dat is not text: decoding it with errors="replace" would silently rewrite
+            # every byte that is not valid UTF-8, and the checksum would be the only thing that
+            # ever noticed.
+            return bytes(raw), response_headers
         try:
             body = raw.decode(_charset(response_headers), "replace")
         except (LookupError, ValueError):   # ValueError covers UnicodeError from odd codecs
@@ -387,14 +392,15 @@ def _http_get(url: str, headers: dict, proxy: str | None,
 
 
 def fetch_url(url: str, *, headers: dict | None = None, proxy: str | None = None,
-              timeout: float = 20.0) -> tuple[str, list[tuple[str, str]]]:
+              timeout: float = 20.0, max_bytes: int = MAX_BYTES,
+              raw_body: bool = False) -> tuple[str | bytes, list[tuple[str, str]]]:
     """GET one URL with this module's hardened client (public-IP pinning, one deadline across
     redirects, proxy CONNECT), for callers that are not subscription feeds — the update check.
     No injection, no host tokens, no cookies of ours: just the request."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme.lower() not in ALLOWED_SCHEMES:
         raise ValueError(f"unsupported URL scheme '{parts.scheme or '(none)'}': only http/https allowed")
-    return _http_get(url, headers or {}, proxy, timeout)
+    return _http_get(url, headers or {}, proxy, timeout, max_bytes, raw_body)
 
 
 def fetch(url: str, injection: dict, tokens: dict, *,

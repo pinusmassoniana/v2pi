@@ -113,7 +113,7 @@ describe("gateway fixtures", () => {
     await expect(api.routingPreset("ru-direct")).resolves.toBe(RU_DIRECT_PRESET);
     await expect(api.validateRouting({ rules: [], default_action: "proxy" })).resolves.toBe(VALID);
     await expect(api.putRouting({ rules: [{ type: "domain", value: "a.example", action: "proxy" }], default_action: "block" })).resolves.toEqual({
-      rules: [{ id: 100, position: 0, type: "domain", value: "a.example", action: "proxy", enabled: true, label: "" }],
+      rules: [{ id: 100, position: 0, type: "domain", value: "a.example", action: "proxy", enabled: true, label: "", dataset: "" }],
       default_action: "block", domain_strategy: "IPIfNonMatch",
     });
     await expect(api.listProfilePresets()).resolves.toBe(PROFILE_PRESETS);
@@ -182,7 +182,9 @@ describe("gateway fixtures", () => {
     expect(new Set(TUNNEL_ROUTING.rules.map((rule) => rule.type))).toEqual(new Set(["geoip", "geosite", "domain", "ip", "port"]));
     expect(TUNNEL_ROUTING.rules.filter((rule) => !rule.enabled).map((rule) => rule.value)).toEqual(["netflix.com"]);
     expect(TUNNEL_ROUTING.rules.filter((rule) => rule.label).length).toBeGreaterThan(1);
-    expect(ROUTING_PRESETS.map((preset) => preset.name)).toEqual(["ru-direct", "block-ads", "cn-direct", "lan-direct"]);
+    expect(ROUTING_PRESETS.map((preset) => preset.name)).toEqual(["ru-direct", "block-ads", "cn-direct", "lan-direct", "ru-blocked-only"]);
+    // A3: the one preset that needs data the gateway may not have, and inverts the default.
+    expect(ROUTING_PRESETS.at(-1)).toMatchObject({ dataset: "ru", default_action: "direct" });
     expect(RU_DIRECT_PRESET.rules.slice(0, TUNNEL_ROUTING.rules.length)).toEqual(TUNNEL_ROUTING.rules);
     expect(RU_DIRECT_PRESET.rules.filter((rule) => rule.id === 0).map((rule) => `${rule.type}:${rule.value}`)).toEqual(["geosite:category-ru"]);
   });

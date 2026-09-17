@@ -8,7 +8,7 @@ import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { copyText } from "../../lib/clipboard";
 import { checkResult, runKey, type CheckResult } from "../../lib/staleResult";
 import {
-  BLOCK_DEFAULT_CONFIRM, DISCARD_STAGED_CONFIRM, RESET_CONFIRM, applyPreset, exportJson, resetRouting, toRoutingIn, type StagedRouting,
+  applyPreset, BLOCK_DEFAULT_CONFIRM, datasetInstalled, DISCARD_STAGED_CONFIRM, exportJson, missingDatasetConfirm, RESET_CONFIRM, resetRouting, toRoutingIn, type StagedRouting,
 } from "./rules";
 import type { RoutingEditor } from "./useRoutingEditor";
 
@@ -50,6 +50,9 @@ export interface RoutingActions {
 export function useRoutingActions(editor: RoutingEditor): RoutingActions {
   const queryClient = useQueryClient();
   const presets = useQuery(queries.routingPresets());   // read once; nothing polls presets
+  // A3: which geo datasets are actually installed, so a preset that needs the RU lists can say so
+  // before it stages rules that would fail to apply. Read once; the Panel screen owns updates.
+  const geo = useQuery(queries.geo());
   const putRouting = useApiWrite("putRouting");
   const [check, setCheck] = useState<CheckResult | null>(null);
   const [validating, setValidating] = useState(false);
@@ -116,6 +119,9 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
   }
 
   async function stagePreset(name: string) {
+    const preset = presets.data?.find((item) => item.name === name);
+    const missing = preset?.dataset ? !datasetInstalled(geo.data, preset.dataset) : false;
+    if (missing && !(await confirm(missingDatasetConfirm(preset!.dataset), { confirmLabel: "Stage anyway" }))) return;
     if (staged && !(await confirm(DISCARD_STAGED_CONFIRM, { confirmLabel: "Discard" }))) return;
     setPresetBusy(true);
     try {
