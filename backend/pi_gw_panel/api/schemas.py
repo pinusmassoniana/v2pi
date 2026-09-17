@@ -752,6 +752,17 @@ class TrafficUsageOut(BaseModel):
     retention_days: int = 90
 
 
+# --- A8: the backup documents the gateway already holds ---
+class BackupFileOut(BaseModel):
+    """One file in `data_dir/backups`. `kind` is "auto" (the daily job) or "pre-restore" (the copy
+    a restore took of what it was about to replace); `created_at` comes from the name, which is
+    what both writers stamp it with."""
+    name: str
+    bytes: int
+    created_at: int
+    kind: Literal["auto", "pre-restore"]
+
+
 class ReadinessChecksOut(BaseModel):
     provisioning: bool
     segment_addresses: bool

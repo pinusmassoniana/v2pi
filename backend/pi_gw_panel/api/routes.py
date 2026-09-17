@@ -26,7 +26,7 @@ from pi_gw_panel.api.schemas import (
     RouteTestIn, RouteTestOut, EventsOut, IncidentOut, TrafficUsageOut, TrafficDayOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
-    TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
+    TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut, BackupFileOut,
     RwOut, RwIn, RwClientIn, RwClientPatch, RwClientOut, RwLinkOut, RwConfigOut, RwShortIdOut,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
@@ -1337,6 +1337,20 @@ def get_logs(request: Request, source: str = "xray-error", lines: int = 200,
 
 
 # --- backup / restore ---
+def _run_restore(state, doc: dict) -> dict:
+    """The shared half of `POST /restore` and its undo: both go through the same controller call,
+    so the lockout guard, the network cross-check and the pre-restore snapshot apply to an undo
+    exactly as they do to a restore. An undo that locks the owner out is not an undo."""
+    try:
+        result = restore_backup(state, doc)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid backup: {exc}")
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=result.error)
+    return {"ok": True, "restored": result.summary, "runtime": "disconnected",
+            "pre_restore_snapshot": result.snapshot}
+
+
 @router.get("/backup")
 def get_backup(request: Request, _: None = Depends(require_auth)) -> dict:
     doc = backup_mod.export_state(get_state(request).store)
@@ -1358,16 +1372,47 @@ def post_restore(body: dict, request: Request,
     # a schema_version marker. Rejects a mis-picked settings-export / truncated file up front.
     if not isinstance(body, dict) or "schema_version" not in body:
         raise HTTPException(status_code=400, detail="not a valid backup file")
+    # The snapshot of what this restore replaced comes back named, or the operator has no way to
+    # know an undo exists.
+    return _run_restore(get_state(request), body)
+
+
+@router.get("/backups", response_model=list[BackupFileOut])
+def list_backups(request: Request, _: None = Depends(require_auth)) -> list[BackupFileOut]:
+    """A8: what is already on the box — the daily copies and the pre-restore snapshots."""
+    return [BackupFileOut(**row) for row in backup_mod.list_documents(get_state(request).settings)]
+
+
+@router.get("/backups/{name}")
+def get_stored_backup(name: str, request: Request, _: None = Depends(require_auth)) -> dict:
+    """Hand one stored document back so it can be taken off the box. `name` is resolved through
+    the backup module's own name pattern, so nothing a caller composes reaches the filesystem."""
     try:
-        result = restore_backup(get_state(request), body)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"invalid backup: {exc}")
-    if not result.ok:
-        raise HTTPException(status_code=502, detail=result.error)
-    # The snapshot of what this restore replaced — name it, or the operator has no way to know
-    # an undo exists.
-    return {"ok": True, "restored": result.summary, "runtime": "disconnected",
-            "pre_restore_snapshot": result.snapshot}
+        return backup_mod.read_document(get_state(request).settings, name)
+    except (KeyError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="no such backup")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"could not read that backup: {exc}") from exc
+
+
+@router.post("/restore/undo")
+def post_restore_undo(request: Request,
+                      _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> dict:
+    """Put back what the last restore replaced, from the snapshot that restore took of it."""
+    state = get_state(request)
+    newest = next((row for row in backup_mod.list_documents(state.settings)
+                   if row["kind"] == "pre-restore"), None)
+    if newest is None:
+        raise HTTPException(status_code=404, detail="no pre-restore snapshot to undo")
+    try:
+        doc = backup_mod.read_document(state.settings, newest["name"])
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"could not read that snapshot: {exc}") from exc
+    # The undo takes a snapshot of its own on the way through, so undoing an undo is possible —
+    # and the one being restored from stays on disk, because the pruner keeps the newest 10.
+    return {**_run_restore(state, doc), "undone_from": newest["name"],
+            "snapshot_taken_at": newest["created_at"]}
 
 
 # --- subscriptions ---

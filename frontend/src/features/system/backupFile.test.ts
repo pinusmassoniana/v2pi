@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, type RestoreResult } from "../../api/client";
-import { RESTORE_RESULT } from "../../test/fixtures";
+import { ApiError, type BackupFile, type RestoreResult } from "../../api/client";
+import { BACKUP_FILES, RESTORE_RESULT } from "../../test/fixtures";
 import {
-  MAX_RESTORE_BYTES, backupFilename, backupPreChecks, checksPass, condensedBackupChecks, fileTooLarge, restoreConfirm,
-  restoreRefusedMessage, restoredMessage, snapshotNote,
+  MAX_RESTORE_BYTES, backupFilename, backupPreChecks, backupWhen, checksPass, condensedBackupChecks, fileTooLarge,
+  newestPreRestore, restoreConfirm, restoreRefusedMessage, restoredMessage, snapshotNote, undoConfirm,
 } from "./backupFile";
 
 const DOC = JSON.stringify({ schema_version: 2, profiles: [{ name: "p" }], routing: { rules: [], default_action: "proxy" } });
@@ -148,5 +148,30 @@ describe("restoreRefusedMessage", () => {
     const recovered = restoreRefusedMessage(new ApiError(502, "host provisioning failed: nft missing; recovery: the previous configuration was put back and the guard reinstalled"));
     expect(recovered.sticky).toBe(true);
     expect(recovered.message.startsWith("not restored — the gateway could not apply it: ")).toBe(true);
+  });
+});
+
+
+describe("the copies the gateway holds (A8)", () => {
+  const snapshot = (createdAt: number): BackupFile =>
+    ({ name: `pre-restore-${createdAt}-${"a".repeat(32)}.json`, bytes: 1, created_at: createdAt, kind: "pre-restore" });
+
+  it("reads the stamp in the name on the viewer's clock", () => {
+    expect(backupWhen(1_700_000_000)).toBe(new Date(1_700_000_000_000).toLocaleString([], {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+  });
+
+  it("finds the snapshot an undo would use — the first pre-restore, because the list is newest first", () => {
+    expect(newestPreRestore(BACKUP_FILES)).toBe(BACKUP_FILES[0]);
+    expect(newestPreRestore([snapshot(2), snapshot(1)])!.created_at).toBe(2);
+    expect(newestPreRestore(BACKUP_FILES.filter((file) => file.kind === "auto"))).toBeNull();
+    expect(newestPreRestore([])).toBeNull();
+  });
+
+  it("names what the undo puts back, and says it replaces everything again", () => {
+    const question = undoConfirm(snapshot(1_700_000_000));
+    expect(question).toContain(backupWhen(1_700_000_000));
+    expect(question).toContain("replaces everything again");
+    expect(question).toContain("A copy of what it replaces is saved first");
   });
 });

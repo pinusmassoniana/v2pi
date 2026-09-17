@@ -1,6 +1,6 @@
 // System › Backups: what the browser can decide about a picked file before anything is sent, and what the screen says
 // after a restore answered. Pure and unit-tested; nothing here fetches, caches or keeps a document.
-import type { ApiError, RestoreResult } from "../../api/client";
+import type { ApiError, BackupFile, RestoreResult } from "../../api/client";
 import { fmtBytes } from "../../lib/format";
 
 /** `/api/restore`'s body limit (app.py RESTORE_BODY_LIMIT). The middleware refuses above it before auth, and still audits. */
@@ -143,4 +143,34 @@ export function restoreRefusedMessage(error: ApiError): RestoreRefusal {
     };
   }
   return { message: `not restored — ${refusalDetail(error.message)}`, sticky: false };
+}
+
+
+// --- A8: the documents the gateway already holds ---
+
+/** What each kind of stored document is, in words: the daily job's copy, or a restore's safety copy. */
+export const KIND_LABEL = { auto: "daily copy", "pre-restore": "taken before a restore" } as const;
+
+export const STORED_NOTE =
+  "The gateway keeps the newest 7 daily copies and the newest 10 pre-restore snapshots. They live on the box — "
+  + "download one to have a copy that survives it.";
+
+export const NO_STORED =
+  "Nothing yet. A copy lands here when the daily job runs or when a restore saves what it is replacing.";
+
+/** The stamp in a document's name, as a line a person reads. */
+export function backupWhen(createdAt: number): string {
+  return new Date(createdAt * 1000).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/** The snapshot an undo would restore: the newest pre-restore copy, or none. The list is newest first. */
+export function newestPreRestore(files: readonly BackupFile[]): BackupFile | null {
+  return files.find((file) => file.kind === "pre-restore") ?? null;
+}
+
+/** The question before an undo — it names what is being put back, because it replaces everything again. */
+export function undoConfirm(file: BackupFile): string {
+  return `Put the configuration back to the copy saved ${backupWhen(file.created_at)}, before the last restore? `
+    + "This replaces everything again and leaves the gateway disconnected. A copy of what it replaces is saved first.";
 }

@@ -19,6 +19,7 @@ export const keys = {
   geo: ["geo"] as const,
   events: ["events"] as const,
   trafficUsage: ["trafficUsage"] as const,
+  backups: ["backups"] as const,
   reservations: ["reservations"] as const,
   audit: ["audit"] as const,
   logs: (source: string, lines: number) => ["logs", source, lines] as const,
@@ -55,6 +56,7 @@ export const queries = {
   geo: () => queryOptions({ queryKey: keys.geo, queryFn: () => api.getGeo() }),
   events: (windowSec: number, kind = "") => queryOptions({ queryKey: [...keys.events, windowSec, kind], queryFn: () => api.listEvents(windowSec, kind) }),
   trafficUsage: () => queryOptions({ queryKey: keys.trafficUsage, queryFn: () => api.getTrafficUsage() }),
+  backups: () => queryOptions({ queryKey: keys.backups, queryFn: () => api.listBackups() }),
   reservations: () => queryOptions({ queryKey: keys.reservations, queryFn: () => api.listReservations() }),
   audit: () => queryOptions({ queryKey: keys.audit, queryFn: () => api.listAudit() }),
   logs: (source: string, lines: number) =>

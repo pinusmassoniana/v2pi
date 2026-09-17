@@ -62,6 +62,8 @@ export const INVALIDATES = {
   // have to go. The list is on the same screen as the form — it must be re-read.
   changePassword: [keys.tokens],
   restore: "all",
+  // The undo is a restore of the pre-restore snapshot, and replaces the configuration the same way.
+  undoRestore: "all",
 } satisfies Record<string, readonly QueryKey[] | "all">;
 
 export type MutationName = keyof typeof INVALIDATES;

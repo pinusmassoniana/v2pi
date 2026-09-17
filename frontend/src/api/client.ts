@@ -297,6 +297,16 @@ export interface RestoreResult {
   pre_restore_snapshot: string;
 }
 
+/**
+ * A8, GET /backups: one document the gateway already holds. `auto` is the daily job's copy,
+ * `pre-restore` the copy a restore took of what it was about to replace. `created_at` is the
+ * stamp in the filename — both writers put it there.
+ */
+export interface BackupFile { name: string; bytes: number; created_at: number; kind: "auto" | "pre-restore"; }
+
+/** POST /restore/undo: an ordinary restore result, plus which snapshot it was taken from. */
+export interface UndoResult extends RestoreResult { undone_from: string; snapshot_taken_at: number; }
+
 function formatApiDetail(detail: unknown, fallback: string): string {
   if (typeof detail === "string" && detail) return detail;
   if (Array.isArray(detail)) {
@@ -531,6 +541,12 @@ export const api = {
   listAudit(limit = 100): Promise<AuditEntry[]> { return req(`/audit?limit=${limit}`); },
 
   getBackup(): Promise<BackupDoc> { return req("/backup"); },
+  listBackups(): Promise<BackupFile[]> { return req("/backups"); },
+  // The name comes from listBackups and is resolved against the backup module's own pattern on
+  // the gateway; nothing composed here reaches its filesystem.
+  getStoredBackup(name: string): Promise<BackupDoc> { return req(`/backups/${encodeURIComponent(name)}`); },
+  // The same destructive path as restore — it IS a restore, of the snapshot the last one took.
+  undoRestore(): Promise<UndoResult> { return mutate("POST", "/restore/undo", undefined, NETWORK_APPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   // The handler validates, snapshots, stops xray, installs the fail-closed guard and runs a full
   // host_provision under apply_lock — the longest write in the app, so it gets the host-apply timeout.
   restore(doc: BackupDoc): Promise<RestoreResult> { return mutate("POST", "/restore", doc, NETWORK_APPLY_TIMEOUT_MS).then(announceCapabilityChange); },

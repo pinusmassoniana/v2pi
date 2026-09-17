@@ -1,7 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, api, isNoAnswer, type RestoreResult, type Settings } from "../../api/client";
+import { ApiError, api, isNoAnswer, type BackupFile, type RestoreResult, type Settings, type UndoResult } from "../../api/client";
 import {
   CONNECTION_BUSY, RESTORE_WRITE, isConnectionBusy, isSettingsBusy, settingsWriteKey, useApiWrite, useConnectionBusy, useSettingsBusy,
 } from "../../api/invalidation";
@@ -23,13 +23,15 @@ import { Toggle } from "../../components/ui/Toggle";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { downloadText } from "../../lib/download";
+import { fmtBytes } from "../../lib/format";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
 import { cn } from "../../lib/cn";
 import { NO_ANSWER } from "../gateway/networkForm";
 import { EditorSection } from "../tunnel/EditorSection";
 import {
-  BACKUP_CAPS, RESTORE_SENTENCE, backupFailedMessage, backupFilename, backupPreChecks, checksPass, condensedBackupChecks,
-  fileTooLarge, restoreConfirm, restoreRefusedMessage, restoredMessage, snapshotNote, type PreCheck,
+  BACKUP_CAPS, KIND_LABEL, NO_STORED, RESTORE_SENTENCE, STORED_NOTE, backupFailedMessage, backupFilename, backupPreChecks,
+  backupWhen, checksPass, condensedBackupChecks, fileTooLarge, newestPreRestore, restoreConfirm, restoreRefusedMessage,
+  restoredMessage, snapshotNote, undoConfirm, type PreCheck,
 } from "./backupFile";
 import { FilePicker } from "./FilePicker";
 import { recordLastRestore, useLastRestore } from "./lastRestore";
@@ -46,7 +48,7 @@ const BACKUP_NOTE =
   "One JSON file with every node, subscription, anti-DPI profile, routing rule and panel setting. The Reality private " +
   "key and the remote-access client list are deliberately left out — paste the key again after restoring onto a new host.";
 /** The tail of `AUTO_BACKUP_TEXT`, kept apart so the phone's collapsed-section body can share it word for word. */
-const AUTO_BACKUP_STAYS_NOTE = "They stay on the box — download a backup above to take one off it.";
+const AUTO_BACKUP_STAYS_NOTE = "They stay on the box \u2014 download one from \u201cOn the gateway\u201d to take a copy off it.";
 const AUTO_BACKUP_TEXT = `Keep a daily copy on the gateway (data/backups, the newest 7). ${AUTO_BACKUP_STAYS_NOTE}`;
 const AUTO_BACKUP_ON_NOTE = "The first copy lands at the next daily run, not now.";
 const FILE_HOLDS_NOTE =
@@ -93,6 +95,23 @@ export function useCreateBackup() {
   return { preparing, create };
 }
 
+/** A restore and its undo fail in exactly the same ways — one handler, so the two can never drift apart. */
+function notifyRestoreError(queryClient: QueryClient, error: Error): void {
+  if (isNoAnswer(error)) {
+    // The gateway keeps working under its lock: this may still have replaced everything.
+    notifyWarn(NO_ANSWER);
+    void queryClient.invalidateQueries();
+    return;
+  }
+  if (!(error instanceof ApiError)) {
+    notifyError(error, "not restored");
+    return;
+  }
+  const refusal = restoreRefusedMessage(error);
+  notifyError(null, refusal.message, { sticky: refusal.sticky });
+}
+
+
 interface PickedFile {
   file: File;
   text: string;
@@ -135,20 +154,7 @@ export function useRestore() {
       if (tone === "warn") notifyWarn(message);
       else notifyOk(message);
     },
-    onError: (error) => {
-      if (isNoAnswer(error)) {
-        // The gateway keeps working under its lock: this may still have replaced everything.
-        notifyWarn(NO_ANSWER);
-        void queryClient.invalidateQueries();
-        return;
-      }
-      if (!(error instanceof ApiError)) {
-        notifyError(error, "not restored");
-        return;
-      }
-      const refusal = restoreRefusedMessage(error);
-      notifyError(null, refusal.message, { sticky: refusal.sticky });
-    },
+    onError: (error) => notifyRestoreError(queryClient, error),
   });
 
   async function pick(file: File | null) {
@@ -376,6 +382,108 @@ export function AutoBackupSwitch({ auto }: { auto: ReturnType<typeof useAutoBack
   );
 }
 
+/**
+ * A8: the copies the gateway already keeps — the daily job's, and the one every restore takes of what it is
+ * about to replace. Both existed before this card; neither was readable from the panel, so the safety net was
+ * invisible and an undo meant finding the file over ssh.
+ */
+export function useStoredBackups() {
+  const queryClient = useQueryClient();
+  const files = useQuery(queries.backups());       // read once: these change only when a backup or a restore runs
+  const [downloading, setDownloading] = useState("");
+  const connectionBusy = useConnectionBusy();
+  const undoRestore = useApiWrite("undoRestore");
+
+  const undo = useMutation<UndoResult, Error, BackupFile>({
+    // The same key a restore writes under: it IS one, so the two block each other everywhere.
+    mutationKey: RESTORE_WRITE,
+    mutationFn: () => undoRestore(),
+    onSuccess: (result, file) => {
+      recordLastRestore({ result, filename: file.name, at: Date.now() });
+      const { message, tone } = restoredMessage(result);
+      if (tone === "warn") notifyWarn(message);
+      else notifyOk(message);
+    },
+    onError: (error) => notifyRestoreError(queryClient, error),
+  });
+
+  async function download(file: BackupFile) {
+    if (downloading) return;
+    setDownloading(file.name);
+    try {
+      // Fetched on click, handed to the browser and dropped — same as Create backup, no cache, no kept reference.
+      downloadText(file.name, JSON.stringify(await api.getStoredBackup(file.name), null, 2), "application/json");
+      notifyOk(`downloaded · ${file.name}`);
+    } catch (error) {
+      notifyError(null, backupFailedMessage(error));
+    } finally {
+      setDownloading("");
+    }
+  }
+
+  async function askUndo(file: BackupFile) {
+    if (undo.isPending || connectionBusy) return;
+    if (!(await confirm(undoConfirm(file), { confirmLabel: "Undo restore" }))) return;
+    if (isConnectionBusy(queryClient)) return void notifyError(null, CONNECTION_BUSY);
+    undo.mutate(file);
+  }
+
+  return { files, download, downloading, askUndo, undo, busy: undo.isPending || connectionBusy };
+}
+
+export type StoredBackupsState = ReturnType<typeof useStoredBackups>;
+
+function StoredRow({ file, stored }: { file: BackupFile; stored: StoredBackupsState }) {
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5 text-[13px]">
+      <span className="w-32 shrink-0 text-t2">{backupWhen(file.created_at)}</span>
+      <span className="min-w-0 flex-1 truncate text-t3">{KIND_LABEL[file.kind]} · {fmtBytes(file.bytes)}</span>
+      <Button
+        className="h-7 px-2 text-[11px]"
+        disabled={stored.downloading !== ""}
+        onClick={() => void stored.download(file)}
+      >
+        {stored.downloading === file.name ? "…" : "Download"}
+      </Button>
+    </li>
+  );
+}
+
+export function StoredBackupsCard({ stored }: { stored: StoredBackupsState }) {
+  const files = stored.files.data ?? [];
+  const newest = newestPreRestore(files);
+  return (
+    <GlassCard aria-label="On the gateway">
+      <CardHeader
+        title="On the gateway"
+        detail={stored.files.data ? `${files.length} kept` : "data/backups"}
+        aside={<Chip plain>data/backups</Chip>}
+      />
+      {cardFallback([stored.files], "the stored copies did not load", "h-20") ?? (
+        files.length === 0 ? (
+          <p className="text-sm text-t3">{NO_STORED}</p>
+        ) : (
+          <ul aria-label="Stored backups" className="flex flex-col divide-y divide-line">
+            {files.slice(0, 10).map((file) => <StoredRow key={file.name} file={file} stored={stored} />)}
+          </ul>
+        )
+      )}
+      {newest ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+          <p className="min-w-0 flex-1 text-[11px] text-t3">
+            The last restore saved what it replaced — it can be put back.
+          </p>
+          <Button variant="danger" disabled={stored.busy} onClick={() => void stored.askUndo(newest)}>
+            {stored.undo.isPending ? "Undoing…" : "Undo last restore"}
+          </Button>
+        </div>
+      ) : null}
+      <p className="mt-2 text-[11px] leading-relaxed text-t3">{STORED_NOTE}</p>
+    </GlassCard>
+  );
+}
+
+
 export function FileHoldsCard() {
   const nodes = useQuery(queries.nodes());
   const subs = useQuery(queries.subs());
@@ -456,7 +564,7 @@ export function RestoreSheet({ restore, open, onOpenChange }: { restore: Restore
   );
 }
 
-function BackupsPhone({ create, restore, auto }: { create: ReturnType<typeof useCreateBackup>; restore: RestoreState; auto: ReturnType<typeof useAutoBackup> }) {
+function BackupsPhone({ create, restore, auto, stored }: { create: ReturnType<typeof useCreateBackup>; restore: RestoreState; auto: ReturnType<typeof useAutoBackup>; stored: StoredBackupsState }) {
   const [open, setOpen] = useState<"restore" | "auto" | null>("restore");
   const [sheet, setSheet] = useState(false);
   return (
@@ -508,6 +616,7 @@ function BackupsPhone({ create, restore, auto }: { create: ReturnType<typeof use
         </EditorSection>
       </GlassCard>
       <LastRestoreCard phone />
+      <StoredBackupsCard stored={stored} />
       <RestoreSheet restore={restore} open={sheet} onOpenChange={setSheet} />
     </div>
   );
@@ -519,7 +628,8 @@ export function Backups() {
   const create = useCreateBackup();
   const restore = useRestore();
   const auto = useAutoBackup();
-  if (!desktop) return <BackupsPhone create={create} restore={restore} auto={auto} />;
+  const stored = useStoredBackups();
+  if (!desktop) return <BackupsPhone create={create} restore={restore} auto={auto} stored={stored} />;
   return (
     <div className="grid gap-3 md:grid-cols-[7fr_5fr] md:items-start">
       <div className="flex flex-col gap-3">
@@ -529,6 +639,7 @@ export function Backups() {
       </div>
       <div className="flex flex-col gap-3">
         <AutoBackupCard auto={auto} />
+        <StoredBackupsCard stored={stored} />
         <FileHoldsCard />
       </div>
     </div>

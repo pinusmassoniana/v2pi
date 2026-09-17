@@ -8,6 +8,7 @@ never accepted from a backup.
 import ipaddress
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -479,6 +480,63 @@ def backups_dir(settings) -> str:
     except OSError:
         pass
     return path
+
+
+# The only two names this package ever writes: `backup-<ts>.json` (scheduler.py) and
+# `pre-restore-<ts>-<uuid4 hex>.json` (_reserve_snapshot_path). A name that does not match is not
+# ours, and the download route resolves a name through this or not at all — it is the whole of the
+# path-traversal surface that serving these files back adds.
+_DOCUMENT_RE = re.compile(r"^(?:backup-(?P<auto>\d{1,12})|pre-restore-(?P<pre>\d{1,12})-[0-9a-f]{32})\.json$")
+
+
+def document_kind(name: str) -> tuple[str, int] | None:
+    """`("auto" | "pre-restore", created_at)` for a name this package wrote, else None."""
+    found = _DOCUMENT_RE.match(name)
+    if found is None:
+        return None
+    auto = found.group("auto")
+    return ("auto", int(auto)) if auto is not None else ("pre-restore", int(found.group("pre")))
+
+
+def list_documents(settings) -> list[dict]:
+    """Every backup document held on the box, newest first.
+
+    Zero-byte entries are left out: `_reserve_snapshot_path` claims a name before the content is
+    written, so an interrupted snapshot can be sitting there — offering it for download or undo
+    would hand back a file that restore refuses.
+    """
+    directory = backups_dir(settings)
+    rows = []
+    for name in sorted(os.listdir(directory)):
+        parsed = document_kind(name)
+        if parsed is None:
+            continue
+        try:
+            stat = os.stat(os.path.join(directory, name))
+        except OSError:                          # pruned between listdir and stat
+            continue
+        if stat.st_size <= 0:
+            continue
+        rows.append({"name": name, "bytes": stat.st_size, "created_at": parsed[1],
+                     "kind": parsed[0], "_mtime": stat.st_mtime})
+    # The stamp in the name is only second-precision, and two restores inside one second are
+    # exactly what `_reserve_snapshot_path`'s uuid exists for — so mtime, not the name, decides
+    # which of two same-second snapshots is the newer. An undo reading the wrong one of a pair
+    # would silently put back the state before last, not the one just replaced.
+    rows.sort(key=lambda row: (-row["created_at"], -row["_mtime"], row["name"]))
+    return [{key: value for key, value in row.items() if key != "_mtime"} for row in rows]
+
+
+def read_document(settings, name: str) -> dict:
+    """One stored document by name. `KeyError` for a name this package did not write — the path is
+    composed from the directory and a name that matched `_DOCUMENT_RE`, never from caller input."""
+    if document_kind(name) is None:
+        raise KeyError(name)
+    with open(os.path.join(backups_dir(settings), name), encoding="utf-8") as handle:
+        doc = json.load(handle)
+    if not isinstance(doc, dict):
+        raise ValueError("not a backup document")
+    return doc
 
 
 def write_document(doc: dict, path: str) -> str:

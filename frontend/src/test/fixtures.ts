@@ -2,11 +2,11 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi, type MockedFunction } from "vitest";
 import type {
-  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
+  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, BackupFile, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
   Events, Reservation, Reservations, TrafficUsage,
   PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
   RefreshAllResult, RestoreResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
-  TuningProfile,
+  TuningProfile, UndoResult,
 } from "../api/client";
 import { api } from "../api/client";
 import { recordServerNow } from "../api/clock";
@@ -566,6 +566,19 @@ export const RESTORE_RESULT: RestoreResult = {
   pre_restore_snapshot: "/app/data/backups/pre-restore-1700000000-9c4e1f2a7b6d4e8fa0c35d71e2b48f60.json",
 };
 
+/** A8: what the gateway keeps in data/backups — a pre-restore snapshot and two daily copies, newest first. */
+export const BACKUP_FILES: BackupFile[] = [
+  { name: "pre-restore-1700003600-9c4e1f2a7b6d4e8fa0c35d71e2b48f60.json", bytes: 41_213, created_at: 1_700_003_600, kind: "pre-restore" },
+  { name: "backup-1700000000.json", bytes: 40_980, created_at: 1_700_000_000, kind: "auto" },
+  { name: "backup-1699913600.json", bytes: 40_100, created_at: 1_699_913_600, kind: "auto" },
+];
+
+export const UNDO_RESULT: UndoResult = {
+  ...RESTORE_RESULT,
+  undone_from: BACKUP_FILES[0]!.name,
+  snapshot_taken_at: BACKUP_FILES[0]!.created_at,
+};
+
 /**
  * Enough of the backend for every screen built so far to render real content; tests override single
  * methods as needed. Each call also starts the test on the gateway clock with an empty live-traffic
@@ -711,6 +724,9 @@ export function mockSystem(api$: MockApi): MockApi & SystemMocks {
   const extra: SystemMocks = {
     getBackup: vi.spyOn(api, "getBackup").mockResolvedValue(BACKUP_DOC),
     restore: vi.spyOn(api, "restore").mockResolvedValue(RESTORE_RESULT),
+    listBackups: vi.spyOn(api, "listBackups").mockResolvedValue(BACKUP_FILES),
+    getStoredBackup: vi.spyOn(api, "getStoredBackup").mockResolvedValue(BACKUP_DOC),
+    undoRestore: vi.spyOn(api, "undoRestore").mockResolvedValue(UNDO_RESULT),
     changePassword: vi.spyOn(api, "changePassword").mockResolvedValue({ ok: true }),
     listTokens: vi.spyOn(api, "listTokens").mockResolvedValue(TOKENS),
     createToken: vi.spyOn(api, "createToken").mockImplementation(async (name: string, scope: ApiTokenScope, expiresAt?: number) => ({
@@ -744,6 +760,9 @@ interface SystemMocks {
   changePassword: MockedFunction<typeof api.changePassword>;
   getBackup: MockedFunction<typeof api.getBackup>;
   restore: MockedFunction<typeof api.restore>;
+  listBackups: MockedFunction<typeof api.listBackups>;
+  getStoredBackup: MockedFunction<typeof api.getStoredBackup>;
+  undoRestore: MockedFunction<typeof api.undoRestore>;
   listTokens: MockedFunction<typeof api.listTokens>;
   createToken: MockedFunction<typeof api.createToken>;
   deleteToken: MockedFunction<typeof api.deleteToken>;

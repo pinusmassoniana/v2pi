@@ -5,7 +5,7 @@ import { ApiError, type Settings } from "../../api/client";
 import { SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE } from "../../api/invalidation";
 import { keys } from "../../api/keys";
 import { settleConfirm } from "../../components/confirm";
-import { BACKUP_DOC, RESTORE_RESULT, SETTINGS, holdConnectionWrite, holdWrite, mockApi, mockSystem } from "../../test/fixtures";
+import { BACKUP_DOC, BACKUP_FILES, RESTORE_RESULT, SETTINGS, holdConnectionWrite, holdWrite, mockApi, mockSystem } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { clearLastRestore } from "./lastRestore";
 
@@ -356,5 +356,92 @@ describe("Backups — the settings read", () => {
       const query = client.getQueryCache().find({ queryKey: key });
       expect(query?.observers.every((observer) => observer.options.refetchInterval === undefined)).toBe(true);
     }
+  });
+});
+
+
+describe("Backups — what the gateway already holds (A8)", () => {
+  const stored = () => region("On the gateway");
+
+  it("lists the copies newest first, saying which is which and how big", async () => {
+    await openBackups();
+    const rows = within(await screen.findByRole("list", { name: "Stored backups" })).getAllByRole("listitem");
+
+    expect(rows).toHaveLength(BACKUP_FILES.length);
+    expect(rows[0]).toHaveTextContent("taken before a restore");
+    expect(rows[0]).toHaveTextContent("41 KB");
+    expect(rows[1]).toHaveTextContent("daily copy");
+    expect(stored()).toHaveTextContent("3 kept");
+  });
+
+  it("downloads one under its own name, fetching it only when asked", async () => {
+    const { api$ } = await openBackups();
+    const downloads = captureDownloads();
+    await screen.findByRole("list", { name: "Stored backups" });
+    expect(api$.getStoredBackup).not.toHaveBeenCalled();
+
+    await userEvent.click(within(stored()).getAllByRole("button", { name: "Download" })[1]!);
+
+    await waitFor(() => expect(downloads.names).toEqual(["backup-1700000000.json"]));
+    expect(api$.getStoredBackup).toHaveBeenCalledWith("backup-1700000000.json");
+  });
+
+  it("asks before the undo, names what it puts back, and only then writes", async () => {
+    const { api$ } = await openBackups();
+    await screen.findByRole("list", { name: "Stored backups" });
+
+    await userEvent.click(within(stored()).getByRole("button", { name: "Undo last restore" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm" });
+    expect(dialog).toHaveTextContent("before the last restore");
+    expect(dialog).toHaveTextContent("leaves the gateway disconnected");
+    expect(api$.undoRestore).not.toHaveBeenCalled();
+
+    await answer("Undo restore");
+
+    await waitFor(() => expect(api$.undoRestore).toHaveBeenCalledTimes(1));
+    // It lands in the same place a restore does, because it is one.
+    expect(await screen.findByRole("region", { name: "Last restore" })).toHaveTextContent(BACKUP_FILES[0]!.name);
+  });
+
+  it("cancelling the undo writes nothing", async () => {
+    const { api$ } = await openBackups();
+    await screen.findByRole("list", { name: "Stored backups" });
+
+    await userEvent.click(within(stored()).getByRole("button", { name: "Undo last restore" }));
+    await answer("Cancel");
+
+    expect(api$.undoRestore).not.toHaveBeenCalled();
+  });
+
+  it("with no snapshot there is nothing to undo, and an empty box says so", async () => {
+    const api$ = mockSystem(mockApi());
+    api$.listBackups.mockResolvedValue([]);
+    renderApp("/system/backups");
+
+    await screen.findByRole("region", { name: "On the gateway" });
+    expect(await within(stored()).findByText(/Nothing yet/)).toBeInTheDocument();
+    expect(within(stored()).queryByRole("button", { name: "Undo last restore" })).toBeNull();
+  });
+
+  it("the undo waits for a connection write started elsewhere", async () => {
+    const { client } = await openBackups();
+    await screen.findByRole("list", { name: "Stored backups" });
+    const release = holdConnectionWrite(client);
+
+    await waitFor(() => expect(within(stored()).getByRole("button", { name: "Undo last restore" })).toBeDisabled());
+
+    await release();
+    await waitFor(() => expect(within(stored()).getByRole("button", { name: "Undo last restore" })).toBeEnabled());
+  });
+
+  it("a refused undo is worded like a refused restore", async () => {
+    const { api$ } = await openBackups();
+    api$.undoRestore.mockRejectedValue(new ApiError(400, "invalid backup: : Value error, nothing to restore"));
+    await screen.findByRole("list", { name: "Stored backups" });
+
+    await userEvent.click(within(stored()).getByRole("button", { name: "Undo last restore" }));
+    await answer("Undo restore");
+
+    expect(await screen.findByText("not restored — nothing to restore")).toBeInTheDocument();
   });
 });
