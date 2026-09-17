@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NOW_SEC, REFRESH_ALL, SUBS } from "../../test/fixtures";
-import {
-  DEFAULT_HEADERS, blankSubForm, buildInjection, compactBytes, deleteSubMessage, formToSubIn, injectionToRows, intervalText, minutesToSeconds,
-  quotaFraction, quotaText, refreshAllMessage, refreshOneMessage, secondsToMinutes, subFormSchema, subToForm, type SubFormValues,
-} from "./subForm";
+import { DEFAULT_HEADERS, blankSubForm, buildInjection, compactBytes, deleteSubMessage, formToSubIn, importedMessage, injectionToRows, intervalText, minutesToSeconds, quotaFraction, quotaText, refreshAllMessage, refreshOneMessage, secondsToMinutes, skippedText, skippedTotal, subFormSchema, subToForm, type SubFormValues } from "./subForm";
 
 const issues = (values: SubFormValues) => {
   const result = subFormSchema.safeParse(values);
@@ -120,5 +117,28 @@ describe("subscription words", () => {
 
   it("delete confirmation word for word", () => {
     expect(deleteSubMessage(SUBS[0]!)).toBe('Delete subscription "work"? Its 6 node(s) are detached to Servers (an active connection is kept).');
+  });
+});
+
+describe("A6 · unsupported entries", () => {
+  it("counts only positive entries and tolerates nothing at all", () => {
+    expect(skippedTotal(undefined)).toBe(0);
+    expect(skippedTotal({})).toBe(0);
+    expect(skippedTotal({ trojan: 3, hysteria2: 2 })).toBe(5);
+    expect(skippedTotal({ trojan: -1, ss: 2 })).toBe(2);
+  });
+
+  it("names the labels biggest-first, and shows an unknown label as it arrived", () => {
+    expect(skippedText({ hysteria2: 1, trojan: 3, invalid: 2 })).toBe("Trojan ×3 · unusable ×2 · Hysteria2 ×1");
+    expect(skippedText({ ss: 1, vmess: 1 })).toBe("Shadowsocks ×1 · VMess ×1");   // tie → alphabetical
+    expect(skippedText({ "brand-new": 2 })).toBe("brand-new ×2");
+    expect(skippedText({})).toBe("");
+  });
+
+  it("the import toast says what was left out, and stays quiet when nothing was", () => {
+    expect(importedMessage({ added: 2, total: 3, format: "clash", skipped: { trojan: 4 } }))
+      .toBe("imported 2/3 node(s) (clash) · 4 unsupported (Trojan ×4)");
+    expect(importedMessage({ added: 3, total: 3, format: "clash", skipped: {} }))
+      .toBe("imported 3/3 node(s) (clash)");
   });
 });

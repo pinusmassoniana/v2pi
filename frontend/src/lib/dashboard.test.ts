@@ -7,7 +7,7 @@ function sub(p: Partial<Subscription>): Subscription {
     id: 1, name: "S", url: "u", injection: {}, interval_sec: 0, enabled: true,
     default_profile_id: null, last_fetched: null, last_status: null, last_path: null,
     last_error: null, up_bytes: null, down_bytes: null, total_bytes: null, expire_at: null,
-    node_count: 0, ...p,
+    node_count: 0, last_skipped: {}, ...p,
   };
 }
 

@@ -116,12 +116,13 @@ function sub(patch: Partial<Subscription> & Pick<Subscription, "id" | "name">): 
   return {
     url: `https://provider.example/${patch.name}`, injection: {}, interval_sec: 86_400, enabled: true,
     default_profile_id: null, last_fetched: iso(NOW_SEC - 10_000), last_status: "ok", last_path: null,
-    last_error: null, up_bytes: null, down_bytes: null, total_bytes: null, expire_at: null, node_count: 3, ...patch,
+    last_error: null, up_bytes: null, down_bytes: null, total_bytes: null, expire_at: null, node_count: 3,
+    last_skipped: {}, ...patch,
   };
 }
 
 /**
- * "work" expires in two days and refreshes hourly through the tunnel; "home" is at 86 % of its allowance and its last
+ * "work" expires in two days, refreshes hourly through the tunnel and carries entries this panel cannot use; "home" is at 86 % of its allowance and its last
  * fetch failed; "old" is paused (never warns), expired, never refreshes on its own and has no nodes left.
  */
 export const SUBS: Subscription[] = [
@@ -129,7 +130,8 @@ export const SUBS: Subscription[] = [
     id: 1, name: "work", url: "https://sub.work-vpn.example/api/v1/client/subscribe?token=9f2c7a1e", interval_sec: 3_600,
     injection: { headers: { "x-device-os": "{device_os}", "user-agent": "v2pi/1.0" }, query: { type: "vless" } },
     expire_at: NOW_SEC + 2 * 86_400, up_bytes: 2e9, down_bytes: 18e9, total_bytes: 100e9,
-    last_status: "ok: +0 ~6 -0", last_path: "tunnel", last_fetched: iso(NOW_SEC - 240), node_count: 6,
+    last_status: "ok: +0 ~6 -0 (5 unsupported)", last_path: "tunnel", last_fetched: iso(NOW_SEC - 240), node_count: 6,
+    last_skipped: { trojan: 3, hysteria2: 1, invalid: 1 },
   }),
   sub({
     id: 2, name: "home", interval_sec: 21_600, default_profile_id: 2, up_bytes: 6e9, down_bytes: 80e9, total_bytes: 100e9,
@@ -161,7 +163,7 @@ export const SETTINGS: Settings = {
   health_hysteresis: 3, health_probe_url: "https://www.gstatic.com/generate_204",
   failover_enabled: true, failover_cooldown: 300,
   stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000,
-  dns_intercept: false, session_timeout_min: 60, auto_backup_enabled: true,
+  dns_intercept: false, session_timeout_min: 60, auto_backup_enabled: true, update_check_enabled: true,
 };
 
 /** What previewSub answers for "work": the request it would send. */
@@ -174,7 +176,7 @@ export const PREVIEW: Preview = {
 
 /** What previewSubNodes answers: a big feed, truncated to its first 200 of 214 nodes (three shown here). */
 export const PREVIEW_NODES: PreviewNodes = {
-  format: "base64/vless", count: 214, returned_count: 200, truncated: true,
+  format: "base64/vless", count: 214, returned_count: 200, truncated: true, skipped: { trojan: 4, hysteria2: 2 },
   nodes: [
     { name: "fra-edge-01", address: "91.203.150.4", port: 443, transport: "vision", network: "tcp", security: "reality" },
     { name: "ams-edge-07", address: "45.83.141.9", port: 443, transport: "xhttp", network: "xhttp", security: "reality" },
@@ -461,6 +463,10 @@ export const DIAGNOSTICS: Diagnostics = {
   db_path: "/app/data/pi_gw_panel.sqlite", db_bytes: 2_100_000,
   disk_free_bytes: 11_400_000_000, disk_total_bytes: 29_000_000_000,
   stats_last_ok_at: NOW_SEC - 2, stats_error: "", stats_fail_count: 0,
+  // Checked an hour ago: the panel is a release behind, xray is current (B2).
+  latest_app_version: "v1.19", latest_xray_version: "v25.3.6",
+  app_update_available: true, xray_update_available: false,
+  update_checked_at: NOW_SEC - 3_600, update_error: "", update_check_enabled: true,
 };
 
 /**
@@ -523,7 +529,7 @@ export function mockApi() {
     addNode: vi.spyOn(api, "addNode").mockImplementation(async (input: NodeIn) => ({ ...node(11, input.name), ...input })),
     updateNode: vi.spyOn(api, "updateNode").mockImplementation(async (id: number, patch: NodeUpdate) => ({ ...(ALL_NODES.find((n) => n.id === id) ?? node(id, `node-${id}`)), ...patch })),
     deleteNode: vi.spyOn(api, "deleteNode").mockResolvedValue({ ok: true }),
-    importNodes: vi.spyOn(api, "importNodes").mockResolvedValue({ added: 2, total: 3, format: "clash" }),
+    importNodes: vi.spyOn(api, "importNodes").mockResolvedValue({ added: 2, total: 3, format: "clash", skipped: {} }),
     detachNodes: vi.spyOn(api, "detachNodes").mockResolvedValue({ ok: true }),
     validateNode: vi.spyOn(api, "validateNode").mockResolvedValue({ ok: true, error: "" }),
     addSub: vi.spyOn(api, "addSub").mockImplementation(async (input: SubscriptionIn) => sub({ id: 4, ...input, node_count: 0 })),
@@ -623,6 +629,7 @@ export function mockSystem(api$: MockApi): MockApi & SystemMocks {
     })),
     deleteToken: vi.spyOn(api, "deleteToken").mockResolvedValue(undefined),
     listAudit: vi.spyOn(api, "listAudit").mockResolvedValue(AUDIT),
+    checkUpdates: vi.spyOn(api, "checkUpdates").mockResolvedValue(DIAGNOSTICS),
     getLogs: vi.spyOn(api, "getLogs").mockImplementation(async (source: string) => ({
       // Only `app` has content, for two different reasons: xray-error/xray-access are empty because
       // nothing ever writes those files (xray is built with no error path and "access": "none"), while
@@ -646,6 +653,7 @@ interface SystemMocks {
   listAudit: MockedFunction<typeof api.listAudit>;
   getLogs: MockedFunction<typeof api.getLogs>;
   getDiagnostics: MockedFunction<typeof api.getDiagnostics>;
+  checkUpdates: MockedFunction<typeof api.checkUpdates>;
   resetSettings: MockedFunction<typeof api.resetSettings>;
 }
 

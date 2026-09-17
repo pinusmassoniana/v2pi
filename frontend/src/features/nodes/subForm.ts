@@ -1,7 +1,7 @@
 // The add / edit subscription form and the words of the Subscriptions screen: limits, the injected headers and
 // query parameters, quota and refresh messages. Pure and unit-tested.
 import { z } from "zod";
-import type { RefreshAllResult, RefreshResult, Subscription, SubscriptionIn } from "../../api/client";
+import type { RefreshAllResult, RefreshResult, SkippedEntries, Subscription, SubscriptionIn } from "../../api/client";
 import { NO_PROFILE, profileFromValue, profileValue } from "../../lib/profiles";
 
 /** backend _MAX_FIELD / _MAX_URL */
@@ -121,6 +121,34 @@ export function quotaText(sub: Pick<Subscription, "up_bytes" | "down_bytes" | "t
 /** U1 auto-update. */
 export function intervalText(intervalSec: number): string {
   return intervalSec > 0 ? `every ${secondsToMinutes(intervalSec)} min` : "off";
+}
+
+/** A6: how the backend's fixed skip labels are written for a person. An unknown key (a newer
+ *  backend than this bundle) is shown as it arrived rather than dropped — the count is the point. */
+const SKIPPED_NAMES: Record<string, string> = {
+  vmess: "VMess", trojan: "Trojan", ss: "Shadowsocks", hysteria2: "Hysteria2", tuic: "TUIC",
+  wireguard: "WireGuard", socks: "SOCKS", http: "HTTP", snell: "Snell", anytls: "AnyTLS",
+  juicity: "Juicity", mieru: "Mieru", invalid: "unusable", other: "other",
+};
+
+export function skippedTotal(skipped: SkippedEntries | null | undefined): number {
+  return Object.values(skipped ?? {}).reduce((sum, count) => sum + (count > 0 ? count : 0), 0);
+}
+
+/** "Trojan ×3 · Hysteria2 ×2 · unusable ×1", biggest first, so the reason reads before the tail. */
+export function skippedText(skipped: SkippedEntries | null | undefined): string {
+  return Object.entries(skipped ?? {})
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, count]) => `${SKIPPED_NAMES[label] ?? label} ×${count}`)
+    .join(" · ");
+}
+
+/** N4 import: "imported 2/3 node(s) (clash) · 4 unsupported (Trojan ×4)". */
+export function importedMessage(result: { added: number; total: number; format: string; skipped?: SkippedEntries }): string {
+  const unsupported = skippedTotal(result.skipped);
+  const tail = unsupported > 0 ? ` · ${unsupported} unsupported (${skippedText(result.skipped)})` : "";
+  return `imported ${result.added}/${result.total} node(s) (${result.format})${tail}`;
 }
 
 export interface Outcome { text: string; error: boolean }

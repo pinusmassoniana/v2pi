@@ -10,6 +10,7 @@ import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { ROLLBACK_TARGET_CHANGED, rollbackStillValid } from "../../features/home/derive";
+import { updateOutcome } from "../../features/system/updates";
 import { SECTIONS, type AppPath } from "../nav";
 import { closePalette, openPalette, usePalette } from "./palette";
 
@@ -37,6 +38,7 @@ export function CommandPalette() {
   const rollback = useApiWrite("rollback");
   const probeTcp = useApiWrite("probeTcp");
   const probeHttp = useApiWrite("probeHttp");
+  const checkUpdates = useApiWrite("checkUpdates");
   // Connect, connect best and roll back run as connection writes: offered only while no other one is running.
   const connectionBusy = useConnectionBusy();
   const connection = useMutation({ mutationKey: CONNECTION_WRITE, mutationFn: (action: () => Promise<string>) => action() });
@@ -176,6 +178,14 @@ export function CommandPalette() {
               </Command.Item>
               <Command.Item value="action http ping all nodes" disabled={pingBusy} onSelect={() => pingAll("http")} className={ITEM}>
                 HTTP ping all nodes
+              </Command.Item>
+              {/* B2: the only other way to run it is System › Panel, which is four keystrokes further away. */}
+              <Command.Item
+                value="action check for updates new release version"
+                onSelect={() => void run(async () => updateOutcome(await checkUpdates()), "the release check failed")}
+                className={ITEM}
+              >
+                Check for updates
               </Command.Item>
             </Command.Group>
           </>

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { api, type NodeHealth, type RefreshResult, type Status } from "../../api/client";
-import { NODE_HEALTH, STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
+import { DIAGNOSTICS, NODE_HEALTH, STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { closePalette, openPalette } from "./palette";
 
@@ -151,6 +151,20 @@ describe("command palette", () => {
     await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
     await release();
+  });
+
+  it("B2: the release check runs from ⌘K and reports what it found", async () => {
+    mockApi();
+    const check = vi.spyOn(api, "checkUpdates").mockResolvedValue({
+      ...DIAGNOSTICS, latest_app_version: "v3", app_update_available: true, xray_update_available: false,
+    });
+    renderApp("/");
+    act(() => openPalette());
+
+    await userEvent.click(await screen.findByText("Check for updates"));
+
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("available: panel v3")).toBeInTheDocument();
   });
 
   it("roll back refuses when the target changed while the dialog was open", async () => {

@@ -1,6 +1,6 @@
 import yaml
 from pi_gw_panel.models import Node
-from pi_gw_panel.subs.parsers import safe_port
+from pi_gw_panel.subs.parsers import note_skip, safe_port
 
 
 # Real clash configs nest a handful of levels (proxies → proxy → opts → headers → value);
@@ -52,14 +52,16 @@ def _opts_path_host(p: dict) -> tuple[str, str]:
     return "", ""
 
 
-def parse(body: str, *, limit: int | None = None) -> list[Node]:
+def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -> list[Node]:
     data = yaml.load(body, Loader=_NoAliasLoader)   # SafeLoader + no-alias amplification guard
     proxies = data.get("proxies", []) if isinstance(data, dict) else []
     nodes = []
     for p in proxies:
         if not isinstance(p, dict):
+            note_skip(skipped, "invalid")
             continue
         if p.get("type") != "vless":
+            note_skip(skipped, p.get("type"))
             continue
         ro = p.get("reality-opts")
         ro = ro if isinstance(ro, dict) else {}
@@ -70,6 +72,7 @@ def parse(body: str, *, limit: int | None = None) -> list[Node]:
         alpn = ",".join(str(a) for a in alpn) if isinstance(alpn, list) else str(alpn or "")
         port_n = safe_port(p.get("port"))
         if port_n is None:
+            note_skip(skipped, "invalid")
             continue
         nodes.append(Node(
             id=None, name=str(p.get("name", p.get("server", ""))),

@@ -161,7 +161,7 @@ describe("Preview and dry-run (U8, U9)", () => {
 
   it("an empty parse and a failed fetch say so", async () => {
     const { api$, sheet } = await openForm("work");
-    api$.previewSubNodes.mockResolvedValueOnce({ format: "unknown", count: 0, returned_count: 0, truncated: false, nodes: [] });
+    api$.previewSubNodes.mockResolvedValueOnce({ format: "unknown", count: 0, returned_count: 0, truncated: false, nodes: [], skipped: {} });
     await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
     expect(await within(sheet).findByText("No nodes parsed — check the URL, token, or format.")).toBeInTheDocument();
     api$.previewSubNodes.mockRejectedValueOnce(new ApiError(502, "fetch failed: timeout"));

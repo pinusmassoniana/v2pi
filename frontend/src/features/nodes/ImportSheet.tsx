@@ -8,6 +8,7 @@ import { closeGuarded } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { notifyOk } from "../../components/ui/Toaster";
+import { importedMessage } from "./subForm";
 
 /** N17: the backend reads at most 512 KiB. */
 export const IMPORT_MAX_BYTES = 512 * 1024;
@@ -33,7 +34,7 @@ export function ImportSheet({ onClose }: { onClose: () => void }) {
   // which runs only while this sheet is still open for its latest import.
   const run = useMutation({
     mutationFn: (input: string) => importWrite(input),
-    onSuccess: (result) => notifyOk(`imported ${result.added}/${result.total} node(s) (${result.format})`),
+    onSuccess: (result) => notifyOk(importedMessage(result)),
   });
   function start() {
     run.mutate(text, {

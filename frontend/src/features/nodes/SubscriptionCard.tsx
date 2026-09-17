@@ -10,7 +10,7 @@ import { Chip } from "../../components/data/Chip";
 import { Button } from "../../components/ui/Button";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
-import { deleteSubMessage, intervalText, quotaFraction, quotaText, refreshOneMessage } from "./subForm";
+import { deleteSubMessage, intervalText, quotaFraction, quotaText, refreshOneMessage, skippedText, skippedTotal } from "./subForm";
 
 export interface SubscriptionCardProps {
   sub: Subscription;
@@ -25,6 +25,7 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
   const deleteWrite = useApiWrite("deleteSub");
   const [urlOpen, setUrlOpen] = useState(false);
   const [errorOpen, setErrorOpen] = useState(false);
+  const [skippedOpen, setSkippedOpen] = useState(false);
 
   const refresh = useMutation({
     mutationKey: SUBS_REFRESH_KEY,
@@ -52,6 +53,9 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
   const refreshing = useIsMutating({ mutationKey: SUBS_REFRESH_KEY }) > 0;
   const fraction = quotaFraction(sub);
   const quota = quotaText(sub);
+  // A6: the feed carried entries this panel cannot use (it speaks VLESS only). Without this the
+  // subscription simply looks smaller than the provider's list, with nothing to explain it.
+  const unsupported = skippedTotal(sub.last_skipped);
 
   return (
     <section
@@ -68,6 +72,25 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
           {sub.node_count} nodes →
         </Link>
       </div>
+
+      {unsupported > 0 ? (
+        <div className="-mt-1">
+          <button
+            type="button"
+            aria-expanded={skippedOpen}
+            aria-label={`Unsupported entries in ${sub.name}`}
+            onClick={() => setSkippedOpen(!skippedOpen)}
+            className="text-[11px] font-semibold text-t2 underline decoration-dotted underline-offset-2 hover:text-t1"
+          >
+            {unsupported} unsupported {unsupported === 1 ? "entry" : "entries"}
+          </button>
+          {skippedOpen ? (
+            <p className="mt-0.5 text-[11px] text-t3">
+              {skippedText(sub.last_skipped)} — this panel connects VLESS servers only, so the feed's other entries were left out.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <button
         type="button"

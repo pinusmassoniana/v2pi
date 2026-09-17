@@ -34,14 +34,19 @@ export interface Subscription {
   last_error: string | null;
   up_bytes: number | null; down_bytes: number | null; total_bytes: number | null; expire_at: number | null;
   node_count: number;
+  /** What the last refresh dropped, per protocol ({ trojan: 3 }). Keys come from a fixed
+   *  backend vocabulary, never straight from the feed. */
+  last_skipped: SkippedEntries;
 }
+/** Panel-supported labels plus "invalid" (unusable entry) and "other" (protocol with no name here). */
+export type SkippedEntries = Record<string, number>;
 export interface SubscriptionIn {
   name: string; url: string; interval_sec?: number; injection?: Record<string, any>;
   enabled?: boolean; default_profile_id?: number | null;
 }
 export interface Preview { method: string; url: string; headers: Record<string, string>; query: Record<string, string>; }
 export interface PreviewNode { name: string; address: string; port: number; transport: string; network: string; security: string; }
-export interface PreviewNodes { format: string; count: number; returned_count: number; truncated: boolean; nodes: PreviewNode[]; }
+export interface PreviewNodes { format: string; count: number; returned_count: number; truncated: boolean; nodes: PreviewNode[]; skipped: SkippedEntries; }
 export interface RefreshResult { id?: number; name?: string; ok?: boolean; status?: string; error?: string | null; }
 export interface RefreshAllResult { attempted: number; succeeded: number; failed: number; results: RefreshResult[] | Record<string, RefreshResult>; }
 export interface Settings {
@@ -58,6 +63,8 @@ export interface Settings {
   failover_enabled: boolean; failover_cooldown: number;
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
   dns_intercept: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
+  /** B2: the daily release check. Off means the gateway never calls GitHub on its own. */
+  update_check_enabled: boolean;
 }
 /**
  * The settings PUT /settings re-applies the live tunnel for (routes.py _SETTINGS_CONFIG_KEYS), inside the same
@@ -72,6 +79,12 @@ export interface Diagnostics {
   // the last error text, and how many reads have failed consecutively since the last success or
   // port change (stats/client.py resets fail_count to 0 on both — it is never a since-boot total).
   stats_last_ok_at: number | null; stats_error: string; stats_fail_count: number;
+  // B2: the newest published releases as of the last check, whether they are newer than what is
+  // running (compared on the gateway, which owns the version scheme), when the check last ran
+  // and why it failed. All empty until a check succeeds; an offline box is not an error.
+  latest_app_version: string; latest_xray_version: string;
+  app_update_available: boolean; xray_update_available: boolean;
+  update_checked_at: number | null; update_error: string; update_check_enabled: boolean;
 }
 
 // --- Wave 3a: live traffic graph ---
@@ -399,13 +412,15 @@ export const api = {
   },
   reorderNodes(ids: number[]) { return mutate("POST", "/nodes/reorder", { ids }); },
   connectBest(subscription_id: number | null): Promise<{ ok: boolean; node_id: number }> { return mutate("POST", "/connect-best", { subscription_id }); },
-  importNodes(text: string): Promise<{ added: number; total: number; format: string }> { return mutate("POST", "/nodes/import", { text }); },
+  importNodes(text: string): Promise<{ added: number; total: number; format: string; skipped: SkippedEntries }> { return mutate("POST", "/nodes/import", { text }); },
 
   getSettings(): Promise<Settings> { return req("/settings"); },
   putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch, reappliesTunnel(patch) ? REAPPLY_TIMEOUT_MS : undefined).then(announceCapabilityChange); },
   // A reset writes every re-apply key back to its default, so it always re-applies.
   resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
+  /** B2: run the release check now. It reports; nothing here installs anything. */
+  checkUpdates(): Promise<Diagnostics> { return mutate("POST", "/updates/check"); },
 
   listProfiles(): Promise<TuningProfile[]> { return req("/profiles"); },
   addProfile(p: ProfileIn): Promise<TuningProfile> { return mutate("POST", "/profiles", p); },

@@ -1,8 +1,13 @@
 import base64
 import binascii
+import re
 import urllib.parse
 from pi_gw_panel.models import Node
-from pi_gw_panel.subs.parsers import safe_port
+from pi_gw_panel.subs.parsers import note_skip, safe_port
+
+# A line that is some OTHER protocol's share link (trojan://…, hysteria2://…), as opposed to
+# free text: the scheme is what gets counted.
+_OTHER_SCHEME = re.compile(r"^([a-z][a-z0-9+.\-]{1,15})://")
 
 
 def _b64decode(text: str) -> str:
@@ -16,7 +21,7 @@ def _b64decode(text: str) -> str:
         return ""
 
 
-def parse(body: str, *, limit: int | None = None) -> list[Node]:
+def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -> list[Node]:
     text = body.strip()
     if "vless://" not in text:
         text = _b64decode(text)
@@ -29,6 +34,14 @@ def parse(body: str, *, limit: int | None = None) -> list[Node]:
                 nodes.append(n)
                 if limit is not None and len(nodes) >= limit:
                     break
+            else:
+                note_skip(skipped, "invalid")
+            continue
+        # Only URI-shaped lines are counted. A mis-sniffed HTML page or a base64 body that
+        # decoded to noise would otherwise report thousands of "other" entries.
+        other = _OTHER_SCHEME.match(line)
+        if other:
+            note_skip(skipped, other.group(1))
     return nodes
 
 

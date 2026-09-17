@@ -1,3 +1,35 @@
+# Aliases a feed may use for the same protocol, so the count reads as one line, not three.
+_SKIP_ALIASES = {
+    "shadowsocks": "ss", "ssr": "ss", "ss2022": "ss",
+    "hysteria": "hysteria2", "hy2": "hysteria2", "hy": "hysteria2",
+    "socks5": "socks", "https": "http",
+}
+# Every other label becomes "other". The keys are echoed back through the API and rendered in
+# the UI, so a feed must not be able to choose them: an entry typed `<script>` is "other".
+SKIP_LABELS = frozenset({
+    "vmess", "trojan", "ss", "hysteria2", "tuic", "wireguard", "socks", "http",
+    "snell", "anytls", "juicity", "mieru",
+    "invalid",   # a supported entry the parser could not use (bad port, missing address)
+    "other",     # a protocol we have no name for
+})
+
+
+def skip_label(raw) -> str:
+    """Map an untrusted entry type / URI scheme onto one of SKIP_LABELS."""
+    key = str(raw or "").strip().lower()[:32]
+    key = _SKIP_ALIASES.get(key, key)
+    return key if key in SKIP_LABELS else "other"
+
+
+def note_skip(skipped: dict | None, raw) -> None:
+    """Count one entry a parser dropped. `skipped` is None for callers that don't ask (the
+    parsers keep working exactly as before), so no call site is forced to care."""
+    if skipped is None:
+        return
+    label = skip_label(raw)
+    skipped[label] = skipped.get(label, 0) + 1
+
+
 def safe_port(value, default: int = 443) -> int | None:
     """Defensive node-port parse shared by the subscription parsers (audit B4): None for
     garbage or out-of-range values, so the caller skips that node instead of crashing the

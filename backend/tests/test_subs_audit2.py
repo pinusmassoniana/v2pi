@@ -485,7 +485,8 @@ def test_in_place_upgrade_of_the_active_node_is_still_applied(monkeypatch, setti
 
 def _refresh_with_feed(monkeypatch, store, settings, sid, parsed):
     monkeypatch.setattr(service, "fetch", lambda *a, **k: ("body", "direct", {}))
-    monkeypatch.setattr(service, "parse_subscription", lambda body, limit=None: parsed)
+    monkeypatch.setattr(service, "parse_subscription",
+                        lambda body, limit=None, skipped=None: parsed)
     return service.refresh(_fake_state(store, settings), store.get_subscription(sid))
 
 

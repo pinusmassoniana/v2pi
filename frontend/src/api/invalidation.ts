@@ -45,6 +45,7 @@ export const INVALIDATES = {
   putNetwork: [keys.network, keys.status, keys.rw],
   putRw: RW, addRwClient: RW, setRwClientEnabled: RW, deleteRwClient: RW,
   putSettings: [keys.settings, keys.status, keys.network],
+  checkUpdates: [keys.diagnostics],
   resetSettings: [keys.settings, keys.status, keys.network],
   createToken: [keys.tokens], deleteToken: [keys.tokens],
   // The rotation deletes every API token row (auth/service.py change_password): require_auth

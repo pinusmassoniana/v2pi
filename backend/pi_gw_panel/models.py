@@ -76,6 +76,9 @@ class Subscription:
     down_bytes: int | None = None
     total_bytes: int | None = None
     expire_at: int | None = None          # epoch seconds; 0/None = no expiry
+    # What the last refresh DROPPED, per protocol ({"trojan": 3, "invalid": 1}): the panel is
+    # VLESS-only, so a mixed feed silently yields fewer nodes than it lists without this.
+    last_skipped: dict = field(default_factory=dict)
 
 
 @dataclass

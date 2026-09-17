@@ -386,6 +386,17 @@ def _http_get(url: str, headers: dict, proxy: str | None,
     raise ValueError("too many subscription redirects")
 
 
+def fetch_url(url: str, *, headers: dict | None = None, proxy: str | None = None,
+              timeout: float = 20.0) -> tuple[str, list[tuple[str, str]]]:
+    """GET one URL with this module's hardened client (public-IP pinning, one deadline across
+    redirects, proxy CONNECT), for callers that are not subscription feeds — the update check.
+    No injection, no host tokens, no cookies of ours: just the request."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        raise ValueError(f"unsupported URL scheme '{parts.scheme or '(none)'}': only http/https allowed")
+    return _http_get(url, headers or {}, proxy, timeout)
+
+
 def fetch(url: str, injection: dict, tokens: dict, *,
           proxy: str | None) -> tuple[str, str, list[tuple[str, str]]]:
     """GET one provider feed, direct or through the local Xray HTTP proxy."""

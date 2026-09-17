@@ -31,10 +31,27 @@ describe("Subscriptions › list (U1)", () => {
     expect(within(work).getByRole("button", { name: "URL of work" })).toHaveAttribute("title", SUBS[0]!.url);
     expect(within(work).getByRole("link", { name: "6 nodes →" })).toHaveAttribute("href", "/nodes?group=1");
     expect(work).toHaveTextContent("every 60 min");
-    expect(work).toHaveTextContent("ok: +0 ~6 -0 (tunnel)");
+    expect(work).toHaveTextContent("ok: +0 ~6 -0 (5 unsupported) (tunnel)");
     expect(work).toHaveTextContent("fetched 4 min ago");
     expect(work).not.toHaveAttribute("data-paused");
     expect(screen.getByText("3 subscriptions")).toBeInTheDocument();
+  });
+
+  it("A6: a feed's unsupported entries are counted on the card and named on a tap", async () => {
+    await openSubscriptions();
+    const work = card("work");
+    const toggle = within(work).getByRole("button", { name: "Unsupported entries in work" });
+    expect(toggle).toHaveTextContent("5 unsupported entries");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(work).not.toHaveTextContent("Trojan ×3");
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(work).toHaveTextContent("Trojan ×3 · Hysteria2 ×1 · unusable ×1");
+    expect(work).toHaveTextContent("this panel connects VLESS servers only");
+
+    // A subscription whose feed is all VLESS says nothing at all — no empty row, no zero.
+    expect(within(card("home")).queryByRole("button", { name: "Unsupported entries in home" })).toBeNull();
   });
 
   it("the URL opens in full on a tap, and a failed refresh shows its ⚠ with the whole error on a tap", async () => {

@@ -504,12 +504,25 @@ def _migration_15(conn: sqlite3.Connection) -> None:
         ("0" if claimed else "1",))
 
 
+def _migration_16(conn: sqlite3.Connection) -> None:
+    # What the last refresh dropped, per protocol — a VLESS-only panel reading a mixed feed
+    # otherwise just yields fewer nodes with no explanation anywhere.
+    if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='subscriptions'"
+    ).fetchone():
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+    if "last_skipped" not in cols:
+        conn.execute(
+            "ALTER TABLE subscriptions ADD COLUMN last_skipped TEXT NOT NULL DEFAULT '{}'")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
                (9, _migration_9), (10, _migration_10), (11, _migration_11),
                (12, _migration_12), (13, _migration_13), (14, _migration_14),
-               (15, _migration_15)]
+               (15, _migration_15), (16, _migration_16)]
 
 
 def _assert_supported_schema(conn: sqlite3.Connection) -> int:

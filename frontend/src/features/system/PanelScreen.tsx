@@ -22,6 +22,7 @@ import { TextField } from "../../components/ui/Field";
 import { GlassCard } from "../../components/ui/GlassCard";
 import { Toggle } from "../../components/ui/Toggle";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
+import { useNow } from "../../components/data/Ago";
 import { downloadText } from "../../lib/download";
 import { fmtBytes, fmtUptimeCoarse } from "../../lib/format";
 import { cn } from "../../lib/cn";
@@ -32,6 +33,7 @@ import { EditorSection } from "../tunnel/EditorSection";
 import { CheckRow } from "./BackupsScreen";
 import { FilePicker } from "./FilePicker";
 import { ResultLine } from "./ResultLine";
+import { UPDATE_HINT, updateCheckLine, updateOutcome } from "./updates";
 import {
   DANGER_ZONE_HINT, EXPORT_INTRO, IMPORTED_MESSAGE, IMPORT_CONFIRM, IMPORT_NOTE, IMPORT_UNKNOWN_HINT, RESET_KEYS,
   SETTINGS_FILENAME, STOPPED_XRAY_CLAUSE, exportedMessage, exportedText, importChecks, resetConfirm, resetMessage,
@@ -47,12 +49,51 @@ const PORT_HELPER = "1–65535 · 52345 and 10808 are taken by the gateway";
 const STATS_FOOTER = "only the changed field is sent — the interval alone does not rebuild the tunnel";
 const DIAGNOSTICS_HINT = "Uptime is the panel process, not the host and not the tunnel.";
 const XRAY_STATES = new Set(["unavailable", "unknown"]);
+/**
+ * B2's two writes: run the check now, and switch the daily one on or off. The button forces a
+ * check whether or not the schedule is on, so it works before the operator has enabled anything.
+ */
+export function useUpdateCheck(settings: Settings | undefined) {
+  const queryClient = useQueryClient();
+  const checkWrite = useApiWrite("checkUpdates");
+  const putSettings = useApiWrite("putSettings");
+  const settingsBusy = useSettingsBusy();
+  const connectionBusy = useConnectionBusy();
+
+  const check = useMutation({
+    mutationFn: () => checkWrite(),
+    onSuccess: (fresh) => notifyOk(updateOutcome(fresh)),
+    onError: (error) => notifyError(error, "the release check failed"),
+  });
+  const flip = useMutation({
+    mutationKey: settingsWriteKey({ update_check_enabled: true }),
+    mutationFn: (on: boolean) => putSettings({ update_check_enabled: on }),
+    onSuccess: (_saved, on) => notifyOk(on ? "daily release check on" : "daily release check off"),
+    onError: (error) => {
+      if (isNoAnswer(error)) notifyWarn(NO_ANSWER);
+      else notifyError(error, "the daily release check was not saved");
+      void queryClient.invalidateQueries({ queryKey: keys.settings });
+    },
+  });
+
+  return {
+    checking: check.isPending,
+    busy: check.isPending || flip.isPending || settingsBusy || connectionBusy,
+    check: () => check.mutate(),
+    flip: (on: boolean) => {
+      if (isSettingsBusy(queryClient) || isConnectionBusy(queryClient)) return;
+      if (settings) flip.mutate(on);
+    },
+  };
+}
 
 /** P3. 30 s and never faster: each GET spawns `xray -version` with a 5 s timeout. */
-export function SystemCard({ phone = false }: { phone?: boolean }) {
+export function SystemCard({ phone = false, settings }: { phone?: boolean; settings?: Settings }) {
   const diagnostics = usePolledQuery(queries.diagnostics(), SLOW_POLL_MS);
   const data = diagnostics.data;
   const isState = data ? XRAY_STATES.has(data.xray_version) : false;
+  const update = useUpdateCheck(settings);
+  const nowSec = Math.floor(useNow() / 1000);
   return (
     <GlassCard aria-label="System">
       <CardHeader
@@ -65,14 +106,46 @@ export function SystemCard({ phone = false }: { phone?: boolean }) {
         <>
           <KeyValueRows
             rows={[
-              { key: "APP VERSION", value: data!.app_version },
-              { key: "XRAY-CORE", value: <span className={cn("font-mono", isState && "text-t3")}>{data!.xray_version}</span>, sub: isState ? "the panel could not run `xray -version`" : undefined },
+              {
+                key: "APP VERSION",
+                value: (
+                  <span className="inline-flex items-center gap-1.5">
+                    {data!.app_version}
+                    {data!.app_update_available ? <Chip tone="warn">{data!.latest_app_version} available</Chip> : null}
+                  </span>
+                ),
+              },
+              {
+                key: "XRAY-CORE",
+                value: (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className={cn("font-mono", isState && "text-t3")}>{data!.xray_version}</span>
+                    {data!.xray_update_available ? <Chip tone="warn">{data!.latest_xray_version} available</Chip> : null}
+                  </span>
+                ),
+                sub: isState ? "the panel could not run `xray -version`" : undefined,
+              },
               { key: "PANEL UPTIME", value: fmtUptimeCoarse(data!.uptime_sec) },
               { key: "DATABASE", value: fmtBytes(data!.db_bytes) },
               { key: "DISK FREE", value: fmtBytes(data!.disk_free_bytes) },
               { key: "DISK TOTAL", value: fmtBytes(data!.disk_total_bytes) },
             ]}
           />
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5">
+            <Button size="sm" disabled={update.busy} onClick={() => update.check()}>
+              {update.checking ? "Checking…" : "Check for updates"}
+            </Button>
+            <Toggle
+              checked={settings?.update_check_enabled ?? data!.update_check_enabled}
+              disabled={!settings || update.busy}
+              onCheckedChange={(on) => update.flip(on)}
+              label="Daily check"
+            />
+          </div>
+          <p className="mt-1.5 text-[11px] text-t3">{updateCheckLine(data!, nowSec)}</p>
+          {data!.app_update_available || data!.xray_update_available ? (
+            <p className="mt-1 text-[11px] text-t2">{UPDATE_HINT}</p>
+          ) : null}
           <p className="mt-3 text-[11px] text-t3">{DIAGNOSTICS_HINT}</p>
           <p className="mt-1 truncate font-mono text-[11px] text-t3">{data!.db_path}</p>
         </>
@@ -420,7 +493,7 @@ function PanelPhone({ stats, file, danger, settings }: {
   });
   return (
     <div className="flex flex-col gap-3">
-      <SystemCard phone />
+      <SystemCard phone settings={settings.data} />
       <GlassCard>
         <EditorSection
           title="Traffic stats"
@@ -481,7 +554,7 @@ export function Panel() {
         <SettingsFileCard file={file} settings={settings.data} />
       </div>
       <div className="flex flex-col gap-3">
-        <SystemCard />
+        <SystemCard settings={settings.data} />
         <DangerZoneCard danger={danger} />
       </div>
     </div>

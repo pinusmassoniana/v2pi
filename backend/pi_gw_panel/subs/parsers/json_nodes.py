@@ -1,13 +1,13 @@
 import json
 from pi_gw_panel.models import Node
-from pi_gw_panel.subs.parsers import safe_port
+from pi_gw_panel.subs.parsers import note_skip, safe_port
 
 
-def parse(body: str, *, limit: int | None = None) -> list[Node]:
-    return parse_obj(json.loads(body), limit=limit)
+def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -> list[Node]:
+    return parse_obj(json.loads(body), limit=limit, skipped=skipped)
 
 
-def parse_obj(data, *, limit: int | None = None) -> list[Node]:
+def parse_obj(data, *, limit: int | None = None, skipped: dict | None = None) -> list[Node]:
     """Build nodes from an already-decoded JSON object — lets the dispatcher hand over the
     object it parsed to sniff the format, avoiding a second json.loads on a 5MB body (P3)."""
     items = data if isinstance(data, list) else data.get("nodes", []) if isinstance(data, dict) else []
@@ -16,16 +16,19 @@ def parse_obj(data, *, limit: int | None = None) -> list[Node]:
         # P2: skip non-dict / malformed entries so one bad item can't abort the whole feed
         # (matches the base64/clash parsers), instead of a KeyError/AttributeError propagating.
         if not isinstance(it, dict):
+            note_skip(skipped, "invalid")
             continue
         try:
             addr = it.get("address")
             if not addr:
+                note_skip(skipped, "invalid")
                 continue
             net = str(it.get("network", ""))
             transport = it.get("transport") or ("xhttp" if net in ("xhttp", "splithttp") else "vision")
             pbk = str(it.get("public_key", ""))
             port_n = safe_port(it.get("port"))
             if port_n is None:
+                note_skip(skipped, "invalid")
                 continue
             nodes.append(Node(
                 id=None, name=str(it.get("name", addr)),
@@ -43,5 +46,6 @@ def parse_obj(data, *, limit: int | None = None) -> list[Node]:
             if limit is not None and len(nodes) >= limit:
                 break
         except (KeyError, TypeError, ValueError):
+            note_skip(skipped, "invalid")
             continue
     return nodes

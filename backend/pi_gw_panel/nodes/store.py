@@ -167,6 +167,7 @@ def _row_to_sub(row: sqlite3.Row) -> Subscription:
         last_path=row["last_path"], last_error=row["last_error"],
         up_bytes=row["up_bytes"], down_bytes=row["down_bytes"],
         total_bytes=row["total_bytes"], expire_at=row["expire_at"],
+        last_skipped=_safe_json(row, "last_skipped", dict, dict),
     )
 
 
@@ -450,9 +451,10 @@ class NodeStore:
             "UPDATE subscriptions SET "
             "last_fetched=CASE WHEN ? THEN ? ELSE last_fetched END, "
             "last_status=?, last_path=?, last_error=?, up_bytes=?, down_bytes=?, "
-            "total_bytes=?, expire_at=? WHERE id=?",
+            "total_bytes=?, expire_at=?, last_skipped=? WHERE id=?",
             (int(success), sub.last_fetched, sub.last_status, sub.last_path, sub.last_error,
-             sub.up_bytes, sub.down_bytes, sub.total_bytes, sub.expire_at, sub.id))
+             sub.up_bytes, sub.down_bytes, sub.total_bytes, sub.expire_at,
+             json.dumps(sub.last_skipped or {}, separators=(",", ":")), sub.id))
         self._conn.commit()
 
     def delete_subscription(self, sub_id: int) -> None:

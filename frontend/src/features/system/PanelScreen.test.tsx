@@ -58,6 +58,45 @@ describe("Panel — diagnostics (P3)", () => {
     expect(within(card).getByText(DIAGNOSTICS.db_path)).toHaveClass("font-mono");
   });
 
+  it("B2: a newer release is named next to the running one, with the deploy left to the operator", async () => {
+    await openPanel();
+    const card = await screen.findByRole("region", { name: "System" });
+    await within(card).findByText(DIAGNOSTICS.app_version);
+
+    expect(within(card).getByText("v1.19 available")).toBeInTheDocument();       // panel is behind
+    expect(within(card).queryByText("v25.3.6 available")).toBeNull();            // xray is current
+    expect(card).toHaveTextContent("checked 1h ago · daily · through the tunnel when one is up");
+    expect(card).toHaveTextContent("Deploying is still yours");
+  });
+
+  it("B2: the check runs on demand and says what it found; a failed check says why", async () => {
+    const { api$ } = await openPanel();
+    const card = await screen.findByRole("region", { name: "System" });
+    api$.checkUpdates.mockResolvedValueOnce({
+      ...DIAGNOSTICS, latest_app_version: "v2.5", app_update_available: true,
+      latest_xray_version: "v26.4", xray_update_available: true,
+    });
+
+    await userEvent.click(within(card).getByRole("button", { name: "Check for updates" }));
+    expect(await screen.findByText("available: panel v2.5 · xray v26.4")).toBeInTheDocument();
+
+    api$.getDiagnostics.mockResolvedValue({
+      ...DIAGNOSTICS, app_update_available: false, update_error: "v2pi: OSError", update_checked_at: null,
+    });
+    await userEvent.click(within(card).getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(card).toHaveTextContent("never checked · failed: v2pi: OSError"));
+  });
+
+  it("B2: the daily check is a switch, and turning it off is one settings write", async () => {
+    const { api$ } = await openPanel();
+    const card = await screen.findByRole("region", { name: "System" });
+
+    await userEvent.click(within(card).getByRole("switch", { name: "Daily check" }));
+
+    await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ update_check_enabled: false }));
+    expect(await screen.findByText("daily release check off")).toBeInTheDocument();
+  });
+
   it("“unavailable” is a state, not a version, and Refresh re-reads once", async () => {
     const { api$ } = await openPanel();
     api$.getDiagnostics.mockResolvedValue({ ...DIAGNOSTICS, xray_version: "unavailable" });

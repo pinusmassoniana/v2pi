@@ -66,7 +66,10 @@ def refresh(state, sub: Subscription) -> dict:
                 machine_id(), app_secret=getattr(state.settings, "session_secret", ""),
                 subscription_id=current.id)
             body, path, headers = fetch(fetched_url, fetched_injection, tokens, proxy=proxy)
-            parsed = parse_subscription(body, limit=MAX_NODES + 1)
+            # Counted while parsing: what the feed carried that this panel cannot use. When
+            # the feed is long enough to be capped below, the counts cover only what was read.
+            dropped: dict = {}
+            parsed = parse_subscription(body, limit=MAX_NODES + 1, skipped=dropped)
             if not parsed:
                 raise ValueError("zero valid nodes in subscription response")
             capped = len(parsed) > MAX_NODES
@@ -104,6 +107,10 @@ def refresh(state, sub: Subscription) -> dict:
             skipped = counts.get("skipped_deletes", 0)
             if skipped:
                 note += f" ({skipped} stale pending confirmation)"
+            unusable = sum(dropped.values())
+            if unusable:
+                note += f" ({unusable} unsupported)"
+            current.last_skipped = dropped
             current.last_status = (
                 f"ok: +{counts['added']} ~{counts['updated']} -{counts['removed']}{note}")
             current.last_path = path
@@ -111,7 +118,7 @@ def refresh(state, sub: Subscription) -> dict:
             current.last_fetched = _now_iso()
             success = True
             result = {**counts, "ok": True, "status": current.last_status, "error": None,
-                      "path": path, "capped": capped}
+                      "path": path, "capped": capped, "skipped": dropped}
         except Exception as exc:
             current.last_path = path
             current.last_status = f"error: {_short(exc)}"

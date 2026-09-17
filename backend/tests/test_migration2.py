@@ -33,7 +33,9 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "traffic_minutes" in tables  # migration 13 — durable per-minute traffic history
     mcols = {r["name"] for r in conn.execute("PRAGMA table_info(traffic_minutes)").fetchall()}
     assert {"ts_min", "up_bytes", "down_bytes"} <= mcols
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 15
+    scols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+    assert "last_skipped" in scols   # migration 16 — what the last refresh dropped, per protocol
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 16
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

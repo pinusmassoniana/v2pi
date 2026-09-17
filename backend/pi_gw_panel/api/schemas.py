@@ -214,6 +214,9 @@ class SubscriptionOut(BaseModel):
     total_bytes: int | None = None
     expire_at: int | None = None
     node_count: int
+    # A6: per-protocol count of what the last refresh dropped, e.g. {"trojan": 3}. Keys come
+    # from a fixed vocabulary (subs/parsers.SKIP_LABELS), never straight from the feed.
+    last_skipped: dict[str, int] = Field(default_factory=dict)
 
 
 class SubscriptionRefreshOut(BaseModel):
@@ -260,6 +263,7 @@ class PreviewNodesOut(BaseModel):
     returned_count: int = 0
     truncated: bool = False
     nodes: list[PreviewNodeOut]
+    skipped: dict[str, int] = Field(default_factory=dict)
 
 
 # N4: import nodes from pasted subscription text (base64 / clash / json) as manual servers.
@@ -271,6 +275,7 @@ class ImportNodesOut(BaseModel):
     added: int
     total: int
     format: str
+    skipped: dict[str, int] = Field(default_factory=dict)
 
 
 # N8: reorder manual nodes (Servers tab) — position = list index.
@@ -318,6 +323,7 @@ class SettingsOut(BaseModel):
     dns_intercept: bool
     session_timeout_min: int
     auto_backup_enabled: bool
+    update_check_enabled: bool
 
 
 class SettingsIn(NonNullPatch):
@@ -338,11 +344,23 @@ class SettingsIn(NonNullPatch):
     dns_intercept: bool | None = None
     session_timeout_min: int | None = None
     auto_backup_enabled: bool | None = None
+    update_check_enabled: bool | None = None
 
 
 class DiagnosticsOut(BaseModel):
     app_version: str
     xray_version: str
+    # B2: the newest published releases as of the last check, and when that was. Empty strings
+    # until a check succeeds; `update_error` names what failed (an offline box is normal).
+    latest_app_version: str = ""
+    latest_xray_version: str = ""
+    # Compared on the gateway, where both the running versions and the version scheme live, so
+    # the panel and the bundle can never disagree about what "newer" means.
+    app_update_available: bool = False
+    xray_update_available: bool = False
+    update_checked_at: int | None = None
+    update_error: str = ""
+    update_check_enabled: bool = True
     uptime_sec: int
     db_path: str
     db_bytes: int

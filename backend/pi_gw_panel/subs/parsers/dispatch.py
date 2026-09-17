@@ -18,8 +18,12 @@ def detect(body: str) -> str:
     return "base64/vless"
 
 
-def parse_subscription(body: str, *, limit: int | None = None) -> list[Node]:
-    """Sniff the subscription format and delegate. Order: JSON, clash-yaml, base64/vless."""
+def parse_subscription(body: str, *, limit: int | None = None,
+                       skipped: dict | None = None) -> list[Node]:
+    """Sniff the subscription format and delegate. Order: JSON, clash-yaml, base64/vless.
+
+    `skipped`, when given, is filled with a count per dropped entry ({"trojan": 3}) so a caller
+    can say why a feed yielded fewer nodes than it lists."""
     text = body.strip()
     # P3: parse JSON once here and hand the object straight to the parser, instead of
     # detect()'s json.loads followed by a second json.loads inside json_nodes.parse (both on
@@ -30,7 +34,7 @@ def parse_subscription(body: str, *, limit: int | None = None) -> list[Node]:
         except ValueError:
             data = None
         if data is not None:
-            return json_nodes.parse_obj(data, limit=limit)
+            return json_nodes.parse_obj(data, limit=limit, skipped=skipped)
     if "proxies:" in text:
-        return clash_yaml.parse(text, limit=limit)
-    return base64_vless.parse(text, limit=limit)
+        return clash_yaml.parse(text, limit=limit, skipped=skipped)
+    return base64_vless.parse(text, limit=limit, skipped=skipped)

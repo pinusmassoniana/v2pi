@@ -44,6 +44,7 @@ from pi_gw_panel.health.selection import best_node
 from pi_gw_panel.health.snapshot import health_status
 from pi_gw_panel import backup as backup_mod
 from pi_gw_panel import logs as logs_mod
+from pi_gw_panel import updates
 from pi_gw_panel.xray_config.routing import PRESETS, preset_rules, validate_routing
 from pi_gw_panel.xray_config.tuning import resolve_profile, validate_profile, PROFILE_PRESETS
 from pi_gw_panel.xray_config.builder import (build_config, rw_inbound_block, rw_grants,
@@ -59,6 +60,10 @@ from pi_gw_panel.subs.parsers import clamp_node_fields
 from pi_gw_panel.subs.parsers.dispatch import parse_subscription, detect
 
 logger = logging.getLogger(__name__)
+
+# One release check at a time: the button is a network call, and two in flight would only
+# race to write the same three settings.
+_UPDATE_CHECK_LOCK = threading.Lock()
 
 router = APIRouter(prefix="/api")
 
@@ -160,7 +165,7 @@ def _sub_out(state, sub: Subscription, node_count: int | None = None) -> Subscri
         default_profile_id=sub.default_profile_id, last_fetched=sub.last_fetched,
         last_status=sub.last_status, last_path=sub.last_path, last_error=sub.last_error,
         up_bytes=sub.up_bytes, down_bytes=sub.down_bytes, total_bytes=sub.total_bytes,
-        expire_at=sub.expire_at, node_count=node_count)
+        expire_at=sub.expire_at, node_count=node_count, last_skipped=sub.last_skipped)
 
 
 def _pick_best_node(store, subscription_id):
@@ -203,7 +208,8 @@ def _settings_out(state) -> SettingsOut:
         traffic_sample_ms=num("traffic_sample_ms"),
         dns_intercept=val("dns_intercept") == "1",
         session_timeout_min=num("session_timeout_min"),
-        auto_backup_enabled=val("auto_backup_enabled") == "1")
+        auto_backup_enabled=val("auto_backup_enabled") == "1",
+        update_check_enabled=val("update_check_enabled") == "1")
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
@@ -1293,7 +1299,8 @@ def preview_sub_nodes(body: PreviewIn, request: Request,
         raise HTTPException(status_code=502, detail=f"fetch failed: {exc}")
     try:
         fmt = detect(text)
-        nodes = parse_subscription(text, limit=service.MAX_NODES + 1)
+        dropped: dict = {}
+        nodes = parse_subscription(text, limit=service.MAX_NODES + 1, skipped=dropped)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
     return PreviewNodesOut(
@@ -1302,7 +1309,8 @@ def preview_sub_nodes(body: PreviewIn, request: Request,
         truncated=min(len(nodes), service.MAX_NODES) > 200,
         nodes=[PreviewNodeOut(name=n.name, address=n.address, port=n.port,
                               transport=n.transport, network=n.network, security=n.security)
-               for n in nodes[:200]])
+               for n in nodes[:200]],
+        skipped=dropped)
 
 
 @router.post("/subs/refresh-all", response_model=RefreshAllOut)
@@ -1362,7 +1370,8 @@ def import_nodes(body: ImportNodesIn, request: Request,
     state = get_state(request)
     try:
         fmt = detect(body.text)
-        parsed = parse_subscription(body.text, limit=service.MAX_NODES + 1)
+        dropped = {}
+        parsed = parse_subscription(body.text, limit=service.MAX_NODES + 1, skipped=dropped)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
     added = 0
@@ -1388,7 +1397,7 @@ def import_nodes(body: ImportNodesIn, request: Request,
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
             status_code=409, detail=f"import rejected, nothing was added: {exc}") from exc
-    return ImportNodesOut(added=added, total=len(parsed), format=fmt)
+    return ImportNodesOut(added=added, total=len(parsed), format=fmt, skipped=dropped)
 
 
 @router.post("/connect-best")
@@ -1484,7 +1493,17 @@ def diagnostics(request: Request, _: None = Depends(require_auth)) -> Diagnostic
     db_bytes = os.path.getsize(db) if os.path.exists(db) else 0
     du = shutil.disk_usage(state.settings.data_dir)
     stats_status = state.stats_client.status() if state.stats_client is not None else {}
+    checked = safe_int(state.store.get_setting(updates.CHECKED_KEY) or "", 0, updates.CHECKED_KEY)
+    latest_app = state.store.get_setting(updates.PANEL_KEY) or ""
+    latest_xray = state.store.get_setting(updates.XRAY_KEY) or ""
     return DiagnosticsOut(app_version=__version__, xray_version=xray_v,
+                          latest_app_version=latest_app, latest_xray_version=latest_xray,
+                          app_update_available=updates.is_newer(latest_app, __version__),
+                          xray_update_available=updates.is_newer(latest_xray, xray_v),
+                          update_checked_at=checked or None,
+                          update_error=state.store.get_setting(updates.ERROR_KEY) or "",
+                          update_check_enabled=(state.store.get_setting(updates.ENABLED_KEY)
+                                                or "1") == "1",
                           uptime_sec=int(time.time() - _START_TIME), db_path=db, db_bytes=db_bytes,
                           disk_free_bytes=du.free, disk_total_bytes=du.total,
                           stats_last_ok_at=stats_status.get("last_ok_at"),
@@ -1493,6 +1512,17 @@ def diagnostics(request: Request, _: None = Depends(require_auth)) -> Diagnostic
 
 
 # --- network (editable Pi net config + kill-switch + live status + router guidance) ---
+@router.post("/updates/check", response_model=DiagnosticsOut)
+def check_updates(request: Request,
+                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> DiagnosticsOut:
+    """B2: run the release check now and answer with the refreshed diagnostics. `force` so the
+    button works whether or not the daily check is switched on. Nothing is installed here."""
+    state = get_state(request)
+    with _UPDATE_CHECK_LOCK:
+        updates.check_now(state, force=True)
+    return diagnostics(request)
+
+
 @router.get("/network", response_model=NetworkOut)
 def get_network(request: Request, _: None = Depends(require_auth)) -> NetworkOut:
     return _network_out(get_state(request))

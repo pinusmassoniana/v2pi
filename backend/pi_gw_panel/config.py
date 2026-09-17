@@ -219,6 +219,10 @@ SETTINGS_DEFAULTS = {
     # session idle timeout in minutes (0 = none) and daily auto-backup to data_dir/backups
     "session_timeout_min": "0",
     "auto_backup_enabled": "0",
+    # daily "is a newer panel / xray published?" check against the GitHub releases API (B2).
+    # It only reports — nothing here can install anything — and it goes through the tunnel
+    # whenever one is up, like a subscription fetch.
+    "update_check_enabled": "1",
     # IPv6 tunnel (off by default): carry segment client v6 through xray (static prefix; RA is
     # host-managed). segment_ip6 is the segment's static /64, informational + recommendation.
     "ipv6_enabled": "0",
