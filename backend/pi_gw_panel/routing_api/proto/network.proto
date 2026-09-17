@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+// The one enum xray's RoutingContext references (xray-core common/net/network.proto).
+// Only the values the panel sends are reconstructed; the numbers are the wire contract and are
+// verified against the pinned xray (26.3.27) by the milestone's live TestRoute check.
+package xray.common.net;
+option go_package = "github.com/xtls/xray-core/common/net";
+
+enum Network {
+  Unknown = 0;
+  RawTCP = 1;
+  TCP = 2;
+  UDP = 3;
+  UNIX = 4;
+}

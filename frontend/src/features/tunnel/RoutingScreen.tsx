@@ -5,6 +5,7 @@ import { useConnectionBusy } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
 import { useUnsavedGuard } from "../../app/guard";
+import { notifyOk } from "../../components/ui/Toaster";
 import { staleNotice } from "../../components/data/CardState";
 import { CheckLine } from "../../components/data/CheckLine";
 import { Button } from "../../components/ui/Button";
@@ -58,6 +59,16 @@ export function Routing() {
     return key;
   }, [edit]);
   const onAddAndOpen = useCallback(() => setOpenKey(onAdd()), [onAdd]);
+  // R8b: the tester stages a literal rule for what it just tested, at the TOP — a rule added
+  // under the one that already decided this destination would change nothing, which is exactly
+  // the confusion the button exists to end. Staged, never saved.
+  const onAddTested = useCallback((type: "domain" | "ip", value: string, action: RuleAction) => {
+    edit((state) => ({
+      ...state,
+      rows: [{ key: newRowKey(), id: null, type, value, action, enabled: true, label: "", dataset: "" as const }, ...state.rows],
+    }));
+    notifyOk(`${type} ${value} → ${action} staged at the top — review and Save`);
+  }, [edit]);
   const onDefaultAction = useCallback((defaultAction: RuleAction) => edit((state) => ({ ...state, defaultAction })), [edit]);
   const onDomainStrategy = useCallback((domainStrategy: DomainStrategy) => edit((state) => ({ ...state, domainStrategy })), [edit]);
 
@@ -122,7 +133,11 @@ export function Routing() {
                 onDefaultAction={onDefaultAction}
                 onDomainStrategy={onDomainStrategy}
               />
-              <DestinationTester state={current} />
+              <DestinationTester
+                state={current}
+                devices={devices.data?.reservations ?? []}
+                onAddRule={rulesLocked ? undefined : onAddTested}
+              />
             </div>
           </fieldset>
           {!desktop ? (

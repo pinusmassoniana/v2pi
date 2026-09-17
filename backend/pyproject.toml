@@ -1,6 +1,6 @@
 [project]
 name = "pi-gw-panel"
-version = "2.2"
+version = "2.2.1"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -37,3 +37,8 @@ packages = ["pi_gw_panel"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff.lint.per-file-ignores]
+# protoc's output is generated, not written: it carries imports it does not use and lines longer
+# than anything here. Regenerating it (see the READMEs next to each proto) must not need edits.
+"pi_gw_panel/*/proto/*_pb2*.py" = ["F401", "E501", "E402"]

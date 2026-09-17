@@ -324,4 +324,66 @@ describe("Routing › destination tester (R8)", () => {
     await userEvent.type(input, "2a00:1450:4010::65");
     expect(within(tester).getByRole("status")).toHaveTextContent("IPv6 preview is not evaluated locally — Validate/Save uses Xray's matcher.");
   });
+
+  it("A5: the live answer comes from the running tunnel, and both are shown when they differ", async () => {
+    const { api$ } = await openRouting();
+    const tester = screen.getByRole("region", { name: "Destination tester" });
+    const input = within(tester).getByRole("textbox");
+    api$.testRoute.mockResolvedValueOnce({
+      ok: true, outbound: "block", host: "doubleclick.net", port: 443, network: "tcp", source_ip: "", error: "",
+    });
+
+    await userEvent.type(input, "doubleclick.net");
+    // The staged answer says proxy (no literal rule matches); the live one evaluates geosite.
+    await userEvent.click(within(tester).getByRole("button", { name: "Test live" }));
+
+    await waitFor(() => expect(api$.testRoute).toHaveBeenCalledWith("doubleclick.net", "tcp", ""));
+    expect(await within(tester).findByText(/live · doubleclick.net:443 tcp/)).toBeInTheDocument();
+    expect(tester).toHaveTextContent("the live answer differs from the staged one — these edits are not applied yet");
+  });
+
+  it("A5: a live answer the gateway cannot give is shown as the reason, not as a route", async () => {
+    const { api$ } = await openRouting();
+    const tester = screen.getByRole("region", { name: "Destination tester" });
+    api$.testRoute.mockResolvedValueOnce({
+      ok: false, outbound: "", host: "x.example", port: 443, network: "tcp", source_ip: "",
+      error: "xray is not running — start the tunnel to ask it",
+    });
+
+    await userEvent.type(within(tester).getByRole("textbox"), "x.example");
+    await userEvent.click(within(tester).getByRole("button", { name: "Test live" }));
+
+    expect(await within(tester).findByText("xray is not running — start the tunnel to ask it")).toBeInTheDocument();
+  });
+
+  it("A5: the answer can be turned into a rule, staged at the top", async () => {
+    const { table, api$ } = await openRouting();
+    const tester = screen.getByRole("region", { name: "Destination tester" });
+    api$.testRoute.mockResolvedValueOnce({
+      ok: true, outbound: "proxy", host: "news.example", port: 443, network: "tcp", source_ip: "", error: "",
+    });
+
+    await userEvent.type(within(tester).getByRole("textbox"), "news.example");
+    await userEvent.click(within(tester).getByRole("button", { name: "Test live" }));
+    await within(tester).findByText(/live · news.example/);
+    await userEvent.click(within(tester).getByRole("button", { name: "direct" }));
+
+    // Staged at position 1, so it decides before the rules that already answered.
+    expect(within(table).getByLabelText("Rule 1 value")).toHaveValue("news.example");
+    expect(within(table).getByLabelText("Rule 1 action")).toHaveValue("direct");
+    expect(banner()).toHaveTextContent("STAGED");
+    expect(api$.putRouting).not.toHaveBeenCalled();
+  });
+
+  it("A5: a pinned device can be asked as, once the gateway has one", async () => {
+    const { api$ } = await openRouting();
+    const tester = screen.getByRole("region", { name: "Destination tester" });
+    await userEvent.type(within(tester).getByRole("textbox"), "example.com");
+
+    await userEvent.selectOptions(within(tester).getByLabelText("As device"), "192.168.50.123");
+    await userEvent.selectOptions(within(tester).getByLabelText("Network"), "udp");
+    await userEvent.click(within(tester).getByRole("button", { name: "Test live" }));
+
+    await waitFor(() => expect(api$.testRoute).toHaveBeenCalledWith("example.com", "udp", "192.168.50.123"));
+  });
 });

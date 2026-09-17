@@ -1,5 +1,6 @@
 import copy
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ from pi_gw_panel.api.schemas import (
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     GeoOut, GeoFileOut, GeoUpdateIn, GeoUpdateOut,
     ReservationIn, ReservationPatch, ReservationOut, ReservationsOut,
+    RouteTestIn, RouteTestOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut,
@@ -1036,6 +1038,75 @@ def routing_validate(body: RoutingIn, request: Request,
             if not ok2:
                 return RoutingValidateOut(ok=False, error=explain_xray_error(out))
     return RoutingValidateOut(ok=True)
+
+
+def _split_destination(raw: str) -> tuple[str, int]:
+    """"example.com", "1.2.3.4:443", "[2606:4700::1111]:443" → (host, port). A bare IPv6 address
+    is taken whole: its colons are part of the address, not a port separator."""
+    text = (raw or "").strip()
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif text.count(":") > 1:
+        host, port = text, ""
+    else:
+        host, _, port = text.rpartition(":")
+        if not host:
+            host, port = text, ""
+    try:
+        return host.strip(), max(1, min(65535, int(port))) if port else 443
+    except ValueError:
+        return host.strip(), 443
+
+
+@router.post("/routing/test", response_model=RouteTestOut)
+def routing_test(body: RouteTestIn, request: Request,
+                 _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> RouteTestOut:
+    """A5: ask the RUNNING xray where a destination would go.
+
+    This is the only way to answer for `geoip`/`geosite` and for IPv6 — the data is tens of
+    megabytes of files on the gateway, so the panel's client-side tester over the staged rules
+    cannot evaluate them. It reads the LIVE config: staged edits are not in the answer, which is
+    the point of having both.
+    """
+    state = get_state(request)
+    host, port = _split_destination(body.destination)
+    out = RouteTestOut(ok=False, host=host, port=port, network=body.network,
+                       source_ip=body.source_ip)
+    if not host:
+        out.error = "type a host, an address, or address:port"
+        return out
+    client = getattr(state, "routing_client", None)
+    if client is None:
+        out.error = "this gateway has no routing API client"
+        return out
+    if not state.supervisor.status().get("running"):
+        out.error = "xray is not running — start the tunnel to ask it"
+        return out
+    if (state.store.get_setting("stats_enabled") or "1") != "1":
+        # The api inbound the routing service listens on is the stats one (builder.build_config).
+        out.error = "the live test needs the stats API, which is switched off on System › Panel"
+        return out
+    try:
+        ipaddress.ip_address(host)
+        target = {"ip": host}
+    except ValueError:
+        target = {"domain": host}
+    try:
+        outbound = client.test_route(port=port, network=body.network,
+                                     source_ip=body.source_ip.strip(), **target)
+    except ValueError as exc:                     # an unparsable source address
+        out.error = str(exc)
+        return out
+    except Exception as exc:
+        out.error = f"xray could not answer: {exc}"
+        return out
+    if not outbound:
+        out.error = "xray matched no rule at all"
+        return out
+    out.ok = True
+    out.outbound = outbound
+    return out
 
 
 @router.post("/routing/preset/{name}", response_model=RoutingOut)

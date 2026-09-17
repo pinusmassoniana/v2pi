@@ -368,7 +368,12 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     if stats is not None:
         cfg["stats"] = {}
         cfg["policy"] = {"system": {"statsOutboundUplink": True, "statsOutboundDownlink": True}}
-        cfg["api"] = {"tag": "api", "services": ["StatsService"]}
+        # RoutingService (A5) rides the SAME loopback api inbound: it answers "where would this
+        # go?" for the live config — the one question the panel's own client-side tester cannot
+        # answer, because geoip/geosite live in files on the gateway. It exposes no traffic and
+        # changes nothing; the inbound stays loopback-only and the dispatch rule below is what
+        # keeps it off every other path.
+        cfg["api"] = {"tag": "api", "services": ["StatsService", "RoutingService"]}
         cfg["inbounds"].append({
             "tag": "api",
             "protocol": "dokodemo-door",

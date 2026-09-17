@@ -46,6 +46,8 @@ export const INVALIDATES = {
   putRw: RW, addRwClient: RW, setRwClientEnabled: RW, deleteRwClient: RW,
   putSettings: [keys.settings, keys.status, keys.network],
   checkUpdates: [keys.diagnostics],
+  // A question, not a change: it reads the live router and writes nothing.
+  testRoute: [],
   // A geo swap reloads xray, so the connection state and the routing screen both re-read.
   updateGeo: [keys.geo, keys.status, keys.routing],
   // Pinning re-renders dnsmasq and the ruleset, so the network card's lease view changes too.

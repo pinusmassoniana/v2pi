@@ -1,6 +1,6 @@
 // Tunnel › Routing rules: the staged ruleset, what counts as a change, what Save sends, the inline row checks, JSON
 // import and the destination tester. Pure and unit-tested; no rendering here.
-import type { Geo, Routing, RoutingIn, RoutingRuleIn } from "../../api/client";
+import type { Geo, RouteTest, Routing, RoutingIn, RoutingRuleIn } from "../../api/client";
 import { ipv4Number, ipv4Span, isIPv6Network } from "../../lib/ip";
 import { parseDestination } from "../../lib/routing";
 
@@ -48,6 +48,10 @@ export const BLOCK_DEFAULT_CONFIRM = "Default action is BLOCK — all non-matchi
 export const RESET_CONFIRM = "Reset to the default ruleset (no rules, default = proxy)?";
 export const DISCARD_STAGED_CONFIRM = "Discard staged rules?";
 export const TESTER_SUBTITLE = "how would this host/port be routed? (literal rules only — geo not evaluated locally)";
+/** A5: the card now has two answers, and the header says which is which. */
+export const LIVE_SUBTITLE = "staged rules · or ask the running tunnel";
+export const LIVE_DISAGREES =
+  "the live answer differs from the staged one — these edits are not applied yet";
 export const TESTER_PLACEHOLDER = "example.com  |  1.2.3.4  |  1.2.3.4:443";
 export const IPV6_NOT_EVALUATED = "IPv6 preview is not evaluated locally — Validate/Save uses Xray's matcher.";
 
@@ -303,6 +307,21 @@ export function validateRuleRow(row: Pick<RuleRow, "type" | "value" | "action">)
     if (row.type === "geoip" && tokens.some((token) => token.toLowerCase() === "private")) return `geoip:private — ${SHADOWED_BY_PRIVATE}`;
   }
   return null;
+}
+
+/** What the live answer is worth saying out loud: what was asked, and as whom. */
+export function liveOutcome(live: Pick<RouteTest, "host" | "port" | "network" | "source_ip">): string {
+  const asDevice = live.source_ip ? ` as ${live.source_ip}` : "";
+  return `(live · ${live.host}:${live.port} ${live.network}${asDevice})`;
+}
+
+/** R8b: the rule the tester offers to stage for what was just tested — a literal, never a guess
+ *  at which geo category the gateway matched. */
+export function addableRule(live: Pick<RouteTest, "host">): { type: "domain" | "ip"; value: string } | null {
+  const host = live.host.trim();
+  if (!host) return null;
+  const isAddress = ipv4Span(host) !== null || host.includes(":");
+  return { type: isAddress ? "ip" : "domain", value: host };
 }
 
 export type ImportResult = { ok: true; state: StagedRouting } | { ok: false; error: "invalid JSON" | "no rules array / bad rule shape" };

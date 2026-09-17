@@ -131,6 +131,16 @@ export interface Routing { rules: RoutingRule[]; default_action: string; domain_
 export interface RoutingIn { rules: RoutingRuleIn[]; default_action: string; domain_strategy?: string; }
 export interface PresetInfo { name: string; title: string; dataset: string; default_action: string | null; }
 
+// --- A5: where would this destination go, according to the RUNNING xray? ---
+export interface RouteTest {
+  ok: boolean;
+  /** direct | proxy | block, or whatever tag a hand-made config named. */
+  outbound: string;
+  host: string; port: number; network: string; source_ip: string;
+  /** Why there is no answer: xray stopped, the stats API off, a destination we cannot parse. */
+  error: string;
+}
+
 // --- A4/B1: pinned devices (DHCP reservations) and what each moved ---
 export interface Reservation {
   id: number; mac: string; ip: string; name: string; created_at: number;
@@ -437,6 +447,9 @@ export const api = {
   // A reset writes every re-apply key back to its default, so it always re-applies.
   resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS).then(announceCapabilityChange); },
   getDiagnostics(): Promise<Diagnostics> { return req("/diagnostics"); },
+
+  /** Asks the live router, which is the only thing that can evaluate geoip/geosite and IPv6. */
+  testRoute(destination: string, network: "tcp" | "udp", source_ip: string): Promise<RouteTest> { return mutate("POST", "/routing/test", { destination, network, source_ip }); },
 
   listReservations(): Promise<Reservations> { return req("/net/reservations"); },
   /** Pins one device's address: re-renders dnsmasq (which restarts) and the nft ruleset. */

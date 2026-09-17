@@ -23,7 +23,9 @@ def test_stats_block_present_when_enabled():
     assert cfg["stats"] == {}
     assert cfg["policy"]["system"]["statsOutboundUplink"] is True
     assert cfg["policy"]["system"]["statsOutboundDownlink"] is True
-    assert cfg["api"] == {"tag": "api", "services": ["StatsService"]}
+    # A5: RoutingService rides the same loopback api inbound, so the panel can ask the live
+    # router where a destination would go (geoip/geosite/IPv6, which no client can evaluate).
+    assert cfg["api"] == {"tag": "api", "services": ["StatsService", "RoutingService"]}
     api_in = next(i for i in cfg["inbounds"] if i["tag"] == "api")
     assert api_in["protocol"] == "dokodemo-door"
     assert api_in["listen"] == "127.0.0.1" and api_in["port"] == 10085

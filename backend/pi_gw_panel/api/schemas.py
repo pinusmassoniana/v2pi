@@ -347,6 +347,26 @@ class SettingsIn(NonNullPatch):
     update_check_enabled: bool | None = None
 
 
+# --- A5: where would this destination go? ---
+class RouteTestIn(StrictIn):
+    destination: str = Field(max_length=_MAX_FIELD)
+    network: Literal["tcp", "udp"] = "tcp"
+    # A pinned device to ask as, so a `device` rule can be tried without a client to test from.
+    source_ip: str = Field(default="", max_length=64)
+
+
+class RouteTestOut(BaseModel):
+    ok: bool
+    # The outbound xray picked: direct | proxy | block (or a tag a hand-made config named).
+    outbound: str = ""
+    host: str = ""
+    port: int = 0
+    network: str = "tcp"
+    source_ip: str = ""
+    # Why there is no answer: xray stopped, the stats API off, or a destination we cannot parse.
+    error: str = ""
+
+
 # --- A4: DHCP reservations (pinned devices) ---
 class ReservationIn(StrictIn):
     mac: str = Field(max_length=64)

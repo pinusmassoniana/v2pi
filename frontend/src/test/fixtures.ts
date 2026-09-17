@@ -574,6 +574,10 @@ export function mockApi() {
     previewSub: vi.spyOn(api, "previewSub").mockResolvedValue(PREVIEW),
     previewSubNodes: vi.spyOn(api, "previewSubNodes").mockResolvedValue(PREVIEW_NODES),
     listRoutingPresets: vi.spyOn(api, "listRoutingPresets").mockResolvedValue(ROUTING_PRESETS),
+    // A5: the live router's answer — "proxy" unless a test says otherwise.
+    testRoute: vi.spyOn(api, "testRoute").mockImplementation(async (destination: string, network: "tcp" | "udp", source_ip: string) => ({
+      ok: true, outbound: "proxy", host: destination.split(":")[0] ?? destination, port: 443, network, source_ip, error: "",
+    })),
     routingPreset: vi.spyOn(api, "routingPreset").mockResolvedValue(RU_DIRECT_PRESET),
     validateRouting: vi.spyOn(api, "validateRouting").mockResolvedValue(VALID),
     putRouting: vi.spyOn(api, "putRouting").mockImplementation(async (body: RoutingIn) => ({

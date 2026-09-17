@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RU_DIRECT_PRESET, TUNNEL_ROUTING } from "../../test/fixtures";
 import {
-  addRule, applyPreset, changeCount, changesLabel, datasetInstalled, datasetOf, exportJson, GEO_TOKENS, importJson, isIPv6Network, isPrivateIPv4, isStaged, missingDatasetConfirm, moveRule, PRIVATE_IPV4_RANGES, removeRule, resetRouting, stagedFromRouting, testDestination, toRoutingIn, updateRule, validateRuleRow, VALUE_PLACEHOLDERS, type StagedRouting,
+  addableRule, addRule, applyPreset, changeCount, changesLabel, datasetInstalled, datasetOf, exportJson, GEO_TOKENS, importJson, isIPv6Network, isPrivateIPv4, isStaged, liveOutcome, missingDatasetConfirm, moveRule, PRIVATE_IPV4_RANGES, removeRule, resetRouting, stagedFromRouting, testDestination, toRoutingIn, updateRule, validateRuleRow, VALUE_PLACEHOLDERS, type StagedRouting,
 } from "./rules";
 
 const saved = () => stagedFromRouting(TUNNEL_ROUTING);
@@ -419,5 +419,21 @@ describe("A4 · device rules", () => {
     // The domain rule still answers, and the device rule neither matches nor blocks the answer.
     expect(testDestination("netflix.com", state)?.action).toBe("block");
     expect(testDestination("example.org", state)?.action).toBe("proxy");
+  });
+});
+
+describe("A5 · the live answer", () => {
+  const live = { ok: true, outbound: "block", host: "doubleclick.net", port: 443, network: "tcp", source_ip: "", error: "" };
+
+  it("says what was asked and as whom", () => {
+    expect(liveOutcome(live)).toBe("(live · doubleclick.net:443 tcp)");
+    expect(liveOutcome({ ...live, source_ip: "192.168.50.123" })).toBe("(live · doubleclick.net:443 tcp as 192.168.50.123)");
+  });
+
+  it("offers a literal rule for what was tested, never a guess at the geo category that matched", () => {
+    expect(addableRule(live)).toEqual({ type: "domain", value: "doubleclick.net" });
+    expect(addableRule({ host: "77.88.55.88" })).toEqual({ type: "ip", value: "77.88.55.88" });
+    expect(addableRule({ host: "2606:4700:4700::1111" })).toEqual({ type: "ip", value: "2606:4700:4700::1111" });
+    expect(addableRule({ host: "  " })).toBeNull();
   });
 });

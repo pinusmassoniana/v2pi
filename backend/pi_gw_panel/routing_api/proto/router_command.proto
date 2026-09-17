@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+// Reconstructed from xray-core app/router/command/command.proto (RoutingService), pinned target
+// xray 26.3.27. Only TestRoute and the fields the panel fills are here: the panel asks "where
+// would this destination go?" and reads the outbound tag back.
+//
+// Field NUMBERS are the contract, so they match upstream exactly; the newer LocalIPs/LocalPort/
+// VlessRoute (13-15) are omitted deliberately — an older xray would not send them and proto3
+// ignores what it does not know.
+package xray.app.router.command;
+option go_package = "github.com/xtls/xray-core/app/router/command";
+
+import "network.proto";
+
+message RoutingContext {
+  string InboundTag = 1;
+  xray.common.net.Network Network = 2;
+  repeated bytes SourceIPs = 3;
+  repeated bytes TargetIPs = 4;
+  uint32 SourcePort = 5;
+  uint32 TargetPort = 6;
+  string TargetDomain = 7;
+  string Protocol = 8;
+  string User = 9;
+  map<string, string> Attributes = 10;
+  repeated string OutboundGroupTags = 11;
+  string OutboundTag = 12;
+}
+
+message TestRouteRequest {
+  RoutingContext RoutingContext = 1;
+  repeated string FieldSelectors = 2;
+  bool PublishResult = 3;
+}
+
+service RoutingService {
+  rpc TestRoute(TestRouteRequest) returns (RoutingContext) {}
+}

@@ -5,6 +5,7 @@ from pi_gw_panel.config import Settings, SETTINGS_DEFAULTS, safe_int
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.xray_supervisor.supervisor import XraySupervisor
 from pi_gw_panel.db import connect, init_schema
+from pi_gw_panel.routing_api.client import RoutingClient
 from pi_gw_panel.stats.client import StatsClient
 from pi_gw_panel.stats.sampler import TrafficSampler
 from pi_gw_panel.stats.history import TrafficHistory, TrafficRecorder
@@ -21,6 +22,7 @@ class AppState:
     net: object              # NetBackend (duck-typed: apply_tproxy/teardown)
     xray_bin: str | None = None
     stats_client: object | None = None
+    routing_client: object | None = None    # A5: RoutingService.TestRoute against the live config
     sampler: object | None = None   # sole TrafficSampler, owned/driven by recorder
     history: object | None = None   # TrafficHistory ring buffer (long-window graph)
     recorder: object | None = None  # TrafficRecorder background task (started in lifespan)
@@ -66,6 +68,8 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
     port = safe_int(store.get_setting("stats_api_port"),
                     int(SETTINGS_DEFAULTS["stats_api_port"]), "stats_api_port")
     stats_client = StatsClient(f"127.0.0.1:{port}")
+    # A5: the same loopback api inbound, asked a different question. Lazy channel as well.
+    routing_client = RoutingClient(f"127.0.0.1:{port}")
     sampler = TrafficSampler(lambda: stats_client.query("outbound>>>"))
     # Always-on history + immutable live frame are produced by this one sampler. WebSockets
     # only consume recorder snapshots, so clients cannot multiply gRPC calls.
@@ -137,6 +141,7 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         net=net,
         xray_bin=settings.xray_bin,
         stats_client=stats_client,
+        routing_client=routing_client,
         sampler=sampler,
         history=history,
         recorder=recorder,
