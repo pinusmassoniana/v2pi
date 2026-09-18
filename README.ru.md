@@ -172,6 +172,34 @@ docker compose pull
 docker compose up -d
 ```
 
+<details>
+<summary><b>Установка легаси-панели на Svelte</b> <sub>(v1.17.26.2)</sub></summary>
+
+<br/>
+
+`v1.17.26.2 - Legacy` — последний релиз до переписывания фронтенда на React, панель в нём ещё на Svelte.
+Он заморожен: новых релизов и исправлений не будет, как и всего, что появилось позже. Ставить нужно с
+его же тега — Compose-файл должен соответствовать образу:
+
+```bash
+git clone --branch v1.17.26.2 https://github.com/pinusmassoniana/v2pi.git v2pi-legacy
+cd v2pi-legacy
+cp .env.example .env
+# V2PI_IMAGE=ghcr.io/pinusmassoniana/v2pi-x@sha256:85add5c23ba79221036f661382b5e7084650daf8294a71f0850e18bc24e095f9
+docker compose pull
+docker compose up -d
+```
+
+Этот digest — опубликованный мультиарх-манифест версии `1.17.26.2` для `linux/amd64` и `linux/arm64`.
+
+> [!IMPORTANT]
+> Это путь установки с нуля, а не откат. Схема базы в той сборке заканчивается на ревизии 15, а
+> документ бэкапа — на schema 2, поэтому каталог данных или файл бэкапа, прошедший через любой релиз
+> 2.x, она откажется открывать. Чтобы вернуться, нужен пустой каталог данных и бэкап, записанный самой
+> сборкой 1.x.
+
+</details>
+
 > [!WARNING]
 > Готовый Compose-файл запускает контейнер `privileged` с `network_mode: host`, чтобы он владел всем
 > шлюзом на хосте: sysctl, клиентский VLAN, адресация, DHCP, IPv6 RA. Таков размен за выделенную

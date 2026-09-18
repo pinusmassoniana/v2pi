@@ -164,6 +164,34 @@ docker compose pull
 docker compose up -d
 ```
 
+<details>
+<summary><b>Installing the legacy Svelte panel</b> <sub>(v1.17.26.2)</sub></summary>
+
+<br/>
+
+`v1.17.26.2 - Legacy` is the last release before the React rewrite; its panel is the original Svelte
+one. It is frozen: no further releases, no fixes, and none of the features added since. Install it from
+its own tag, because the Compose file has to match the image:
+
+```bash
+git clone --branch v1.17.26.2 https://github.com/pinusmassoniana/v2pi.git v2pi-legacy
+cd v2pi-legacy
+cp .env.example .env
+# V2PI_IMAGE=ghcr.io/pinusmassoniana/v2pi-x@sha256:85add5c23ba79221036f661382b5e7084650daf8294a71f0850e18bc24e095f9
+docker compose pull
+docker compose up -d
+```
+
+That digest is the published multi-arch manifest for `1.17.26.2`, for `linux/amd64` and `linux/arm64`.
+
+> [!IMPORTANT]
+> This is a fresh-install path, not a downgrade. That build's database schema stops at revision 15 and
+> its backup documents at schema 2, so a data directory or a backup file that has been through any 2.x
+> release is refused rather than opened. To move back, start from an empty data directory and a backup
+> the 1.x build itself wrote.
+
+</details>
+
 > [!WARNING]
 > The shipped Compose file runs the container `privileged` with `network_mode: host` so it can own the
 > gateway on the host: sysctls, the client VLAN, addressing, DHCP and IPv6 RA. That is the trade-off
