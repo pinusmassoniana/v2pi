@@ -81,6 +81,48 @@ describe("Add server (N12)", () => {
     expect(within(sheet).getByLabelText("SNI")).toBeInTheDocument();
   });
 
+  it("B4: picking Trojan asks for a password, and Shadowsocks for a cipher instead of a transport", async () => {
+    const { api$ } = await openList("/nodes?group=servers");
+    await userEvent.click(screen.getByRole("button", { name: "Add server" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add server" });
+    expect(within(sheet).getByRole("radio", { name: "vless" })).toBeChecked();
+
+    await userEvent.click(within(sheet).getByRole("radio", { name: "trojan" }));
+    expect(within(sheet).queryByLabelText("UUID")).toBeNull();
+    expect(within(sheet).getByLabelText("Password")).toBeInTheDocument();
+    // Trojan has no Vision flow and no XHTTP, so the transport choice is not offered at all —
+    // and the security one still is, because xray builds trojan over reality as well as tls.
+    expect(within(sheet).queryByRole("radio", { name: "xhttp" })).toBeNull();
+    expect(within(sheet).getByRole("radio", { name: "reality" })).toBeInTheDocument();
+    expect(sheet).toHaveTextContent("xray marks Trojan deprecated");
+
+    await userEvent.click(within(sheet).getByRole("radio", { name: "shadowsocks" }));
+    expect(within(sheet).getByLabelText("Cipher")).toHaveValue("aes-128-gcm");
+    // No TLS layer of its own: nothing under Security applies to it.
+    expect(within(sheet).queryByRole("radio", { name: "reality" })).toBeNull();
+    expect(within(sheet).queryByLabelText("SNI")).toBeNull();
+
+    await userEvent.type(within(sheet).getByLabelText("Name"), "ss-fra");
+    await userEvent.type(within(sheet).getByLabelText("Address"), "198.51.100.77");
+    await userEvent.selectOptions(within(sheet).getByLabelText("Cipher"), "2022-blake3-aes-128-gcm");
+    await userEvent.type(within(sheet).getByLabelText("Password"), "not-a-key");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Add server" }));
+
+    // A 2022 cipher takes a base64 key, and xray refuses to START on one it cannot decode —
+    // so the form says so rather than letting the answer arrive as a failed apply.
+    expect(await within(sheet).findByText(/needs a base64-encoded 16-byte key/)).toBeInTheDocument();
+    expect(api$.addNode).not.toHaveBeenCalled();
+
+    await userEvent.clear(within(sheet).getByLabelText("Password"));
+    await userEvent.type(within(sheet).getByLabelText("Password"), btoa("k".repeat(16)));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Add server" }));
+
+    await waitFor(() => expect(api$.addNode).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: "shadowsocks", method: "2022-blake3-aes-128-gcm", password: btoa("k".repeat(16)),
+      uuid: "", sni: "", alpn: "", public_key: "", transport: "vision",
+    })));
+  });
+
   it("Validate checks the form first, then asks the gateway without saving or refreshing anything", async () => {
     const { api$, client } = await openList("/nodes?group=servers");
     const invalidate = vi.spyOn(client, "invalidateQueries");
@@ -116,7 +158,8 @@ describe("Add server (N12)", () => {
     await userEvent.type(within(sheet).getByLabelText("Port"), "8443");
     await userEvent.click(within(sheet).getByRole("button", { name: "Add server" }));
     await waitFor(() => expect(api$.addNode).toHaveBeenCalledWith({
-      name: "vps-ams-02", address: "198.51.100.77", port: 8443, uuid: "3f1c9a52-7b1e-4c7d-9a0e-5d2c1b8e4f10", transport: "vision",
+      name: "vps-ams-02", address: "198.51.100.77", port: 8443, protocol: "vless",
+      uuid: "3f1c9a52-7b1e-4c7d-9a0e-5d2c1b8e4f10", password: "", method: "", transport: "vision",
       security: "tls", sni: "", public_key: "", short_id: "", alpn: "h2", path: "", host: "", mode: "", note: "", fingerprint: "chrome",
     }));
     await waitFor(() => expect(success).toHaveBeenCalledWith("Added vps-ams-02", { duration: 8000 }));

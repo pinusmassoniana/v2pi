@@ -5,7 +5,7 @@ from pi_gw_panel.db import connect, init_schema
 from pi_gw_panel.models import Node, Subscription, TuningProfile, RoutingRule
 from pi_gw_panel.nodes.store import NodeStore
 from pi_gw_panel.net_control.dryrun import DryRunBackend
-from pi_gw_panel.backup import export_state, import_state
+from pi_gw_panel.backup import BACKUP_SCHEMA, export_state, import_state
 from conftest import _client, _login
 
 
@@ -29,7 +29,7 @@ def test_backup_roundtrip_preserves_new_fields(tmp_path):
     src.replace_routing([RoutingRule(id=None, position=0, type="domain", value="x.com",
                                      action="block", enabled=False, label="ads")])
     doc = export_state(src)
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == BACKUP_SCHEMA
 
     dst = _store(tmp_path / "dst")
     import_state(dst, doc)

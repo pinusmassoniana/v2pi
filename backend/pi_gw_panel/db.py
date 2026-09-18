@@ -588,6 +588,17 @@ def _migration_20(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM settings WHERE key='conn_events'")
 
 
+def _migration_21(conn: sqlite3.Connection) -> None:
+    # B4: nodes stop being VLESS-only. `protocol` names what the row is; `password` is the
+    # Trojan/Shadowsocks credential (VLESS keeps using `uuid`) and `method` the Shadowsocks
+    # cipher. Explicit columns, not a JSON blob, because that is how this table already models
+    # the VLESS fields — and because a query like "which nodes are Shadowsocks" should be one.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    for column, default in (("protocol", "'vless'"), ("password", "''"), ("method", "''")):
+        if column not in cols:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT {default}")
+
+
 # (version, fn) ascending; each runs once when user_version < version.
 _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4),
                (5, _migration_5), (6, _migration_6), (7, _migration_7), (8, _migration_8),
@@ -595,7 +606,7 @@ _MIGRATIONS = [(1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _mig
                (12, _migration_12), (13, _migration_13), (14, _migration_14),
                (15, _migration_15), (16, _migration_16), (17, _migration_17),
                (18, _migration_18), (19, _migration_19),
-               (20, _migration_20)]
+               (20, _migration_20), (21, _migration_21)]
 
 
 def _assert_supported_schema(conn: sqlite3.Connection) -> int:

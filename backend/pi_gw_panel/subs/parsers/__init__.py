@@ -51,7 +51,7 @@ _DEFAULT_STR_LIMIT = 512
 # tcp/xhttp by Node.normalize().
 _CLAMP_FIELDS = ("name", "address", "uuid", "sni", "path", "host", "alpn",
                  "public_key", "short_id", "fingerprint", "flow", "mode", "note",
-                 "security", "transport")
+                 "security", "transport", "password", "method")
 
 
 def clamp_node_fields(node):

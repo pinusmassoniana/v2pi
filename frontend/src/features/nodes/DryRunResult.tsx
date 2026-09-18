@@ -30,6 +30,7 @@ export function DryRunResult({ result, url }: { result: PreviewNodes; url: strin
                 <th scope="col" className="py-1 pr-2 font-semibold">name</th>
                 <th scope="col" className="py-1 pr-2 font-semibold">address</th>
                 <th scope="col" className="py-1 pr-2 font-semibold">port</th>
+                <th scope="col" className="py-1 pr-2 font-semibold">protocol</th>
                 <th scope="col" className="py-1 pr-2 font-semibold">transport</th>
                 <th scope="col" className="py-1 font-semibold">security</th>
               </tr>
@@ -40,6 +41,7 @@ export function DryRunResult({ result, url }: { result: PreviewNodes; url: strin
                   <td className="max-w-40 truncate py-1 pr-2 text-t1">{node.name}</td>
                   <td className="py-1 pr-2 font-mono text-t2">{node.address}</td>
                   <td className="py-1 pr-2 font-mono text-t2">{node.port}</td>
+                  <td className="py-1 pr-2 text-t2">{node.protocol ?? "vless"}</td>
                   <td className="py-1 pr-2 text-t2">{node.transport}</td>
                   <td className="py-1 text-t2">{node.security}</td>
                 </tr>

@@ -48,6 +48,8 @@ export const INVALIDATES = {
   checkUpdates: [keys.diagnostics],
   // A question, not a change: it reads the live router and writes nothing.
   testRoute: [],
+  // The same: a diagnosis measures one node and keeps nothing, so nothing is re-read after it.
+  diagnoseNode: [],
   // A geo swap reloads xray, so the connection state and the routing screen both re-read.
   updateGeo: [keys.geo, keys.status, keys.routing],
   // Pinning re-renders dnsmasq and the ruleset, so the network card's lease view changes too.

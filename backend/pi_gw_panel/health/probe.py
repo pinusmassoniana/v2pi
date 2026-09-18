@@ -19,6 +19,7 @@ import time
 import urllib.request
 
 from pi_gw_panel.proc import stop_process
+from pi_gw_panel.xray_config.builder import proxy_settings
 
 log = logging.getLogger("pi_gw_panel")
 
@@ -414,16 +415,15 @@ def _free_port() -> int:
 
 
 def _probe_outbound(node, dial_ip: str | None = None) -> dict:
-    """The node's vless proxy outbound — mirrors xray_config.builder (transport/security
-    aware) but without the tproxy egress mark or tuning profile (a clean probe path).
+    """The node's proxy outbound — the builder's own `proxy_settings` for the credential, and
+    the same transport/security shape, but without the tproxy egress mark or tuning profile
+    (a clean probe path).
 
     ``dial_ip`` is the address validated by `resolve_endpoint`; xray must dial exactly that,
     or the throwaway instance would resolve the hostname a second time and undo the check.
     SNI therefore has to carry the original hostname explicitly: with no ``sni`` on the node
     xray falls back to the vnext address, which would now put a bare IP on the wire."""
-    user = {"id": node.uuid, "encryption": "none"}
-    if node.flow:
-        user["flow"] = node.flow
+    protocol, settings = proxy_settings(node, dial_ip or node.address)
     network = node.network or "tcp"
     security = node.security or "reality"
     server_name = node.sni or node.address
@@ -431,17 +431,14 @@ def _probe_outbound(node, dial_ip: str | None = None) -> dict:
     if security == "reality":
         stream["realitySettings"] = {"serverName": server_name, "fingerprint": node.fingerprint,
                                      "publicKey": node.public_key, "shortId": node.short_id}
-    else:
+    elif security == "tls":
         tls: dict = {"serverName": server_name, "fingerprint": node.fingerprint}
         if node.alpn:
             tls["alpn"] = [a.strip() for a in node.alpn.split(",") if a.strip()]
         stream["tlsSettings"] = tls
     if network == "xhttp":
         stream["xhttpSettings"] = {k: getattr(node, k) for k in ("path", "host", "mode") if getattr(node, k)}
-    return {"tag": "proxy", "protocol": "vless",
-            "settings": {"vnext": [{"address": dial_ip or node.address, "port": node.port,
-                                    "users": [user]}]},
-            "streamSettings": stream}
+    return {"tag": "proxy", "protocol": protocol, "settings": settings, "streamSettings": stream}
 
 
 def _wait_ready(port: int, deadline: float, clock=time.monotonic, sleep=time.sleep) -> None:

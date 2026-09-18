@@ -16,6 +16,7 @@ export const SETTINGS_KEYS = [
   "health_interval", "health_active_interval", "health_hysteresis", "health_probe_url", "failover_enabled",
   "failover_cooldown", "stats_enabled", "stats_api_port", "traffic_sample_ms", "dns_intercept",
   "session_timeout_min", "auto_backup_enabled", "update_check_enabled", "traffic_cap_gb", "traffic_cap_reset_day",
+  "diag_url", "diag_bytes",
 ] as const satisfies readonly (keyof Settings)[];
 
 /**

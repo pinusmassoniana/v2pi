@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, Skeleton } from "../../components/ui/States";
 import { flagEmoji } from "../../lib/flag";
 import { connectedState } from "../../lib/nodeHealth";
 import { HEALTH_FAILED, SERVERS, groupOf } from "./list";
+import { DiagnoseCard } from "./DiagnoseCard";
 import { NodeConfigCard } from "./NodeConfigCard";
 import { NodeHealthCard } from "./NodeHealthCard";
 import { DISCONNECT_FIRST, NO_MENU_CALLBACKS, type NodeMenuCallbacks } from "./NodeRowActions";
@@ -130,7 +131,7 @@ export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: N
           {node.stale ? <StaleBadge /> : null}
           {failCount > 0 ? <FailBadge count={failCount} /> : null}
           <span className="font-mono text-t3">id {node.id}</span>
-          <span>· {node.transport} · {node.security}</span>
+          <span>· {node.protocol === "vless" ? `${node.transport} · ${node.security}` : node.protocol}</span>
         </div>
         {active ? <ActiveLine state={connectedState(status, statusError)} since={since} className="text-xs" /> : null}
       </header>
@@ -141,6 +142,7 @@ export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: N
         <NodeHealthCard node={node} health={nodeHealth} active={active} />
       )}
       <NodeConfigCard node={node} />
+      <DiagnoseCard node={node} />
       <ProfileRow node={node} active={active} />
       <SecondaryActions node={node} active={active} menu={menu} />
     </div>

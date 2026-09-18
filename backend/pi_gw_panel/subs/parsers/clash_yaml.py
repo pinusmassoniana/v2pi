@@ -1,5 +1,5 @@
 import yaml
-from pi_gw_panel.models import Node
+from pi_gw_panel.models import SS_METHODS, Node, ss_password_issue
 from pi_gw_panel.subs.parsers import note_skip, safe_port
 
 
@@ -60,8 +60,18 @@ def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -
         if not isinstance(p, dict):
             note_skip(skipped, "invalid")
             continue
-        if p.get("type") != "vless":
+        kind = str(p.get("type") or "")
+        if kind not in ("vless", "trojan", "ss"):
             note_skip(skipped, p.get("type"))
+            continue
+        if kind != "vless":
+            node = _trojan(p) if kind == "trojan" else _shadowsocks(p)
+            if node is None:
+                note_skip(skipped, "invalid")
+                continue
+            nodes.append(node)
+            if limit is not None and len(nodes) >= limit:
+                break
             continue
         ro = p.get("reality-opts")
         ro = ro if isinstance(ro, dict) else {}
@@ -90,3 +100,43 @@ def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -
         if limit is not None and len(nodes) >= limit:
             break
     return nodes
+
+
+def _trojan(p: dict) -> Node | None:
+    """A clash `trojan` proxy. Only the plain-TCP form: a ws/grpc one is refused rather than
+    imported as TCP, because the panel builds no other transport for it."""
+    port = safe_port(p.get("port"))
+    address = str(p.get("server", ""))
+    password = str(p.get("password", ""))
+    if port is None or not address or not password:
+        return None
+    if str(p.get("network") or "tcp").lower() not in ("tcp", "original", "none"):
+        return None
+    ro = p.get("reality-opts")
+    ro = ro if isinstance(ro, dict) else {}
+    pbk = str(ro.get("public-key", ""))
+    alpn = p.get("alpn")
+    return Node(
+        id=None, name=str(p.get("name", address)), address=address, port=port,
+        uuid="", protocol="trojan", password=password,
+        security="reality" if pbk else "tls",
+        sni=str(p.get("sni", p.get("servername", ""))), public_key=pbk,
+        short_id=str(ro.get("short-id", "")),
+        fingerprint=str(p.get("client-fingerprint", "chrome")),
+        alpn=",".join(str(a) for a in alpn) if isinstance(alpn, list) else str(alpn or ""),
+    )
+
+
+def _shadowsocks(p: dict) -> Node | None:
+    """A clash `ss` proxy. A `plugin` (obfs, v2ray-plugin) changes what goes on the wire, and a
+    cipher xray cannot build is no better than none: both are refused rather than imported."""
+    port = safe_port(p.get("port"))
+    address = str(p.get("server", ""))
+    password = str(p.get("password", ""))
+    method = str(p.get("cipher", "")).strip().lower()
+    if port is None or not address or not password or method not in SS_METHODS or p.get("plugin"):
+        return None
+    if ss_password_issue(method, password):
+        return None
+    return Node(id=None, name=str(p.get("name", address)), address=address, port=port,
+                uuid="", protocol="shadowsocks", password=password, method=method)

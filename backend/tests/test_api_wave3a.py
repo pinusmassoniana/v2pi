@@ -1,4 +1,5 @@
 from conftest import _client
+from pi_gw_panel.backup import BACKUP_SCHEMA
 
 
 def test_setup_creates_credential_and_authenticates(settings, stub_xray):
@@ -50,7 +51,7 @@ def test_backup_and_restore_api(settings, stub_xray):
     h = {"X-CSRF-Token": c.get("/api/csrf").json()["csrf"]}
     c.post("/api/nodes", json={"name": "bk", "address": "5.5.5.5", "port": 443, "uuid": "ub"}, headers=h)
     doc = c.get("/api/backup").json()
-    assert doc["schema_version"] == 2 and any(n["name"] == "bk" for n in doc["nodes"])
+    assert doc["schema_version"] == BACKUP_SCHEMA and any(n["name"] == "bk" for n in doc["nodes"])
     assert c.post("/api/restore", json=doc).status_code == 403          # csrf required
     r = c.post("/api/restore", json=doc, headers=h)
     assert r.status_code == 200 and r.json()["ok"] is True and r.json()["restored"]["nodes"] == 1

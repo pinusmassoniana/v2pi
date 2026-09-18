@@ -1,5 +1,43 @@
+import base64
+import binascii
 from dataclasses import dataclass, field
 from typing import Literal
+
+
+# B4: what a node speaks. VLESS is the original and the default; Trojan and Shadowsocks were
+# added because a mixed subscription carries them and the panel used to drop those entries.
+# Hysteria2 is NOT here — xray 26.3.27 refuses the outbound outright ("unknown config id:
+# hysteria2"), so offering it would be a node that can never connect.
+PROTOCOLS = ("vless", "trojan", "shadowsocks")
+
+# The Shadowsocks ciphers xray 26.3.27 builds an outbound for, minus `none` (no encryption at
+# all — the same reason `security=none` is downgraded below). Verified against the pinned
+# binary; `rc4-md5` and friends are refused by it, so they are refused here.
+SS_METHODS = ("aes-128-gcm", "aes-256-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305",
+              "xchacha20-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+              "2022-blake3-chacha20-poly1305")
+DEFAULT_SS_METHOD = "aes-128-gcm"
+
+# The 2022 ciphers take a base64 key of an exact length, and xray refuses to START on a wrong
+# one — not at config-build time. Left to xray that is a failed apply with a base64 error in the
+# log; caught here it is a sentence next to the field the key was typed into.
+_SS2022_KEY_BYTES = {"2022-blake3-aes-128-gcm": 16, "2022-blake3-aes-256-gcm": 32,
+                     "2022-blake3-chacha20-poly1305": 32}
+
+
+def ss_password_issue(method: str, password: str) -> str | None:
+    """Why this password cannot be used with this cipher, or None. Only the 2022 ciphers
+    constrain it; the older ones take any string."""
+    needed = _SS2022_KEY_BYTES.get(method)
+    if needed is None:
+        return None
+    try:
+        key = base64.b64decode(password, validate=True)
+    except (binascii.Error, ValueError):
+        return f"{method} needs a base64-encoded {needed}-byte key"
+    if len(key) != needed:
+        return f"{method} needs a {needed}-byte key ({len(key)} bytes decoded)"
+    return None
 
 
 @dataclass
@@ -9,6 +47,9 @@ class Node:
     address: str
     port: int
     uuid: str
+    protocol: str = "vless"     # vless | trojan | shadowsocks
+    password: str = ""          # trojan/shadowsocks credential (vless uses `uuid`)
+    method: str = ""            # shadowsocks cipher
     transport: Literal["vision", "xhttp"] = "vision"
     sni: str = ""
     public_key: str = ""
@@ -40,7 +81,25 @@ class Node:
 
         Idempotent: safe to run on DB reads and repeated edits.
         """
-        if self.transport == "xhttp":
+        if self.protocol not in PROTOCOLS:
+            self.protocol = "vless"          # an unknown protocol is never rendered into a config
+        if self.protocol != "vless":
+            # Trojan and Shadowsocks carry a password, not a uuid, and neither takes a Vision
+            # flow or XHTTP: the panel builds both as plain TCP. Clearing the XHTTP fields here
+            # (rather than leaving them) keeps a node converted from VLESS from carrying a path
+            # and Host that nothing reads.
+            self.transport = "vision"
+            self.network = "tcp"
+            self.flow = ""
+            self.path = self.host = self.mode = ""
+            if self.protocol == "shadowsocks":
+                # Its own cipher end to end — no TLS layer to configure, and an unknown method
+                # is not silently corrected: the builder refuses it where it is visible.
+                self.security = "none"
+                self.method = self.method or DEFAULT_SS_METHOD
+                return
+            # Trojan keeps the VLESS reality/tls rule below — xray builds trojan over either.
+        elif self.transport == "xhttp":
             self.network = "xhttp"
             self.flow = ""                       # Vision-only flow; XHTTP carries none
         else:                                    # vision

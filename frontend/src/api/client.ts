@@ -12,7 +12,11 @@ export interface Status {
   active_health_fresh?: boolean; health_enabled?: boolean; failover_enabled?: boolean; failovers_24h?: number;
 }
 export interface Node {
-  id: number; name: string; address: string; port: number; uuid: string; transport: string;
+  id: number; name: string; address: string; port: number; uuid: string;
+  /** B4: "vless" | "trojan" | "shadowsocks". The credential itself never comes back — only
+   *  whether there is one — the same rule the Reality private key follows. */
+  protocol: string; has_password: boolean; method: string;
+  transport: string;
   network: string; security: string;
   sni: string; public_key: string; short_id: string; fingerprint: string;
   path: string; host: string; mode: string; alpn: string; note: string;
@@ -20,6 +24,7 @@ export interface Node {
 }
 export interface NodeIn {
   name: string; address: string; port: number; uuid: string;
+  protocol?: string; password?: string; method?: string;
   transport?: string; security?: string; sni?: string; public_key?: string; short_id?: string;
   fingerprint?: string; path?: string; host?: string; mode?: string; alpn?: string; note?: string;
 }
@@ -45,7 +50,7 @@ export interface SubscriptionIn {
   enabled?: boolean; default_profile_id?: number | null;
 }
 export interface Preview { method: string; url: string; headers: Record<string, string>; query: Record<string, string>; }
-export interface PreviewNode { name: string; address: string; port: number; transport: string; network: string; security: string; }
+export interface PreviewNode { name: string; address: string; port: number; protocol?: string; transport: string; network: string; security: string; }
 export interface PreviewNodes { format: string; count: number; returned_count: number; truncated: boolean; nodes: PreviewNode[]; skipped: SkippedEntries; }
 export interface RefreshResult { id?: number; name?: string; ok?: boolean; status?: string; error?: string | null; }
 export interface RefreshAllResult { attempted: number; succeeded: number; failed: number; results: RefreshResult[] | Record<string, RefreshResult>; }
@@ -68,6 +73,29 @@ export interface Settings {
   /** A7: monthly cap in GB (0 = none) and the day of the month the period restarts. */
   traffic_cap_gb: number;
   traffic_cap_reset_day: number;
+  /** B3: what the on-demand node diagnosis pulls through the tunnel, and how much of it. */
+  diag_url: string;
+  diag_bytes: number;
+}
+
+/**
+ * B3, POST /nodes/{id}/diagnose: one node measured phase by phase. Every number is milliseconds
+ * except `bytes`/`kbps`, and any of them can be null — a phase that did not happen has no
+ * timing, and `detail` says which one stopped it.
+ */
+export interface Diagnosis {
+  node_id: number;
+  verdict: "ok" | "slow" | "stalls" | "down";
+  detail: string;
+  tcp_ms: number | null;
+  tls_ms: number | null;
+  ttfb_ms: number | null;
+  transfer_ms: number;
+  bytes: number;
+  requested_bytes: number;
+  kbps: number | null;
+  url: string;
+  error: string;
 }
 /**
  * The settings PUT /settings re-applies the live tunnel for (routes.py _SETTINGS_CONFIG_KEYS), inside the same
@@ -539,6 +567,10 @@ export const api = {
   deleteToken(id: number) { return mutate("DELETE", `/tokens/${id}`); },
 
   listAudit(limit = 100): Promise<AuditEntry[]> { return req(`/audit?limit=${limit}`); },
+
+  // A question about one node, not a change to it: it spawns a throwaway xray, measures, and
+  // keeps nothing. CSRF-guarded like every POST, so nothing invalidates after it.
+  diagnoseNode(id: number): Promise<Diagnosis> { return mutate("POST", `/nodes/${id}/diagnose`, undefined, NETWORK_APPLY_TIMEOUT_MS); },
 
   getBackup(): Promise<BackupDoc> { return req("/backup"); },
   listBackups(): Promise<BackupFile[]> { return req("/backups"); },

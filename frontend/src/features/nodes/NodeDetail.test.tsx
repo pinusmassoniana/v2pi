@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type NodeHealth, type Status } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ALL_NODE_HEALTH, NODE_HEALTH, NOW_SEC, PROFILES, STATUS, holdConnectionWrite, mockApi, mockNodeGroups } from "../../test/fixtures";
+import { ALL_NODE_HEALTH, NODE_HEALTH, NOW_SEC, PROFILES, STATUS, holdConnectionWrite, mockApi, mockNodeGroups, node } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 
@@ -119,23 +119,42 @@ describe("Node detail › health and config (N5)", () => {
     expect(terms(health)).not.toContain("Failures");
   });
 
+  it("B4: a Shadowsocks node shows its cipher instead of a transport it does not have", async () => {
+    setViewportWidth(390);
+    const api$ = mockNodeGroups(mockApi());
+    api$.listNodes.mockResolvedValue([{
+      ...node(1, "ss-fra"), protocol: "shadowsocks", method: "aes-256-gcm", has_password: true,
+      uuid: "", security: "none", sni: "",
+    }]);
+    renderApp("/nodes/1");
+    const config = await screen.findByRole("region", { name: "Config" });
+
+    expect(terms(config)).toEqual(["Protocol", "Address", "Port", "Cipher", "Password", "Note"]);
+    expect(value(config, "Cipher")).toHaveTextContent("aes-256-gcm");
+    // The credential is never sent back to the panel — only whether there is one.
+    expect(value(config, "Password")).toHaveTextContent("stored");
+    // The profile selector stays offered, and says which of its knobs this node can use.
+    expect(screen.getByRole("region", { name: "Tuning profile" }))
+      .toHaveTextContent("Only fragmentation, noise, DoH and QUIC apply");
+  });
+
   it("config shows reality keys, TLS ALPN and xhttp fields only for their kind", async () => {
     const first = await openDetail("/nodes/1", { phone: true });
     let config = await screen.findByRole("region", { name: "Config" });
-    expect(terms(config)).toEqual(["Address", "Port", "Transport", "Security", "SNI", "Public key", "Short ID", "Fingerprint", "Flow", "Note"]);
+    expect(terms(config)).toEqual(["Protocol", "Address", "Port", "Transport", "Security", "SNI", "Public key", "Short ID", "Fingerprint", "Flow", "Note"]);
     expect(value(config, "Flow")).toHaveTextContent("xtls-rprx-vision");
     first.unmount();
 
     const second = await openDetail("/nodes/3", { phone: true });
     config = await screen.findByRole("region", { name: "Config" });
-    expect(terms(config)).toEqual(["Address", "Port", "Transport", "Security", "SNI", "Public key", "Short ID", "Path", "Host", "Mode", "Fingerprint", "Flow", "Note"]);
+    expect(terms(config)).toEqual(["Protocol", "Address", "Port", "Transport", "Security", "SNI", "Public key", "Short ID", "Path", "Host", "Mode", "Fingerprint", "Flow", "Note"]);
     expect(value(config, "Path")).toHaveTextContent("/xh");
     expect(value(config, "Flow")).toHaveTextContent("—");
     second.unmount();
 
     await openDetail("/nodes/4", { phone: true });
     config = await screen.findByRole("region", { name: "Config" });
-    expect(terms(config)).toEqual(["Address", "Port", "Transport", "Security", "SNI", "ALPN", "Path", "Host", "Mode", "Fingerprint", "Flow", "Note"]);
+    expect(terms(config)).toEqual(["Protocol", "Address", "Port", "Transport", "Security", "SNI", "ALPN", "Path", "Host", "Mode", "Fingerprint", "Flow", "Note"]);
     expect(value(config, "ALPN")).toHaveTextContent("h2,http/1.1");
   });
 

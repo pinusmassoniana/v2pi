@@ -23,11 +23,12 @@ from pi_gw_panel.api.schemas import (
     RoutingIn, RoutingOut, RoutingRuleOut, RoutingValidateOut, PresetInfo, NodeHealthOut,
     GeoOut, GeoFileOut, GeoUpdateIn, GeoUpdateOut,
     ReservationIn, ReservationPatch, ReservationOut, ReservationsOut,
-    RouteTestIn, RouteTestOut, EventsOut, IncidentOut, TrafficUsageOut, TrafficDayOut,
+    RouteTestIn, RouteTestOut, DiagnoseOut, EventsOut, IncidentOut, TrafficUsageOut, TrafficDayOut,
     NetworkOut, NetworkIn, NetworkSegmentOut, NetworkStatusOut, RouterRecOut,
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut, BackupFileOut,
     RwOut, RwIn, RwClientIn, RwClientPatch, RwClientOut, RwLinkOut, RwConfigOut, RwShortIdOut,
+    check_credential,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import (
@@ -49,6 +50,7 @@ from pi_gw_panel.health import probe, geo
 from pi_gw_panel.health.selection import best_node
 from pi_gw_panel.health.snapshot import health_status
 from pi_gw_panel import backup as backup_mod
+from pi_gw_panel import diagnose as diagnose_mod
 from pi_gw_panel import logs as logs_mod
 from pi_gw_panel import updates
 from pi_gw_panel import geo_data
@@ -84,6 +86,7 @@ def _health_out(h) -> NodeHealthOut:
 
 def _node_out(n: Node) -> NodeOut:
     return NodeOut(id=n.id, name=n.name, address=n.address, port=n.port, uuid=n.uuid,
+                   protocol=n.protocol, has_password=bool(n.password), method=n.method,
                    transport=n.transport, network=n.network, security=n.security,
                    sni=n.sni, public_key=n.public_key, short_id=n.short_id,
                    fingerprint=n.fingerprint, path=n.path, host=n.host, mode=n.mode, alpn=n.alpn,
@@ -219,7 +222,9 @@ def _settings_out(state) -> SettingsOut:
         auto_backup_enabled=val("auto_backup_enabled") == "1",
         update_check_enabled=val("update_check_enabled") == "1",
         traffic_cap_gb=num("traffic_cap_gb"),
-        traffic_cap_reset_day=num("traffic_cap_reset_day"))
+        traffic_cap_reset_day=num("traffic_cap_reset_day"),
+        diag_url=val("diag_url"),
+        diag_bytes=num("diag_bytes"))
 
 
 _NET_EDITABLE = ("segment_iface", "segment_ip", "segment_ip6",
@@ -652,7 +657,8 @@ def add_node(body: NodeIn, request: Request,
     # Node.__post_init__ normalizes transport↔network↔security↔flow, so an xhttp manual
     # node is built as xhttp (not silently tcp) and reality-without-key falls back to tls.
     node = Node(id=None, name=body.name, address=body.address, port=body.port,
-                uuid=body.uuid, transport=body.transport, security=body.security,
+                uuid=body.uuid, protocol=body.protocol, password=body.password,
+                method=body.method, transport=body.transport, security=body.security,
                 sni=body.sni, public_key=body.public_key, short_id=body.short_id,
                 fingerprint=body.fingerprint, path=body.path, host=body.host,
                 mode=body.mode, alpn=body.alpn, note=body.note)
@@ -687,12 +693,48 @@ def update_node(node_id: int, body: NodeUpdate, request: Request,
         setattr(node, k, v)
     # single source of truth: re-derive network/security/flow from the edited fields
     node.normalize()
+    # A patch is judged as the node it produces, not field by field: switching `protocol` to
+    # trojan without sending a password is only wrong once both are in hand.
+    try:
+        check_credential(node)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         state.store.update_node(node)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
             status_code=409, detail="a node with this identity already exists") from exc
     return _node_out(state.store.get_node(node_id))
+
+
+@router.post("/nodes/{node_id}/diagnose", response_model=DiagnoseOut)
+def diagnose_node(node_id: int, request: Request,
+                  _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> DiagnoseOut:
+    """B3: measure one node's connection phase by phase — on demand, never on a timer.
+
+    A write only in the CSRF sense: it starts an outbound transfer on the operator's behalf and
+    spawns a process, so it is not something a cross-site GET should be able to trigger. It
+    changes nothing, keeps nothing, and takes its own lock rather than `apply_lock` — a
+    diagnosis must not be able to block a connect, or be blocked by one.
+    """
+    state = get_state(request)
+    node = state.store.get_node(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="node not found")
+    url = state.store.get_setting("diag_url") or SETTINGS_DEFAULTS["diag_url"]
+    try:
+        assert_public_url(url)              # the same SSRF gate a subscription URL goes through
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"diagnosis URL refused: {exc}") from exc
+    max_bytes = safe_int(state.store.get_setting("diag_bytes")
+                         or SETTINGS_DEFAULTS["diag_bytes"], 262_144, "diag_bytes")
+    if not diagnose_mod.lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="a diagnosis is already running")
+    try:
+        result = diagnose_mod.run(node, state.xray_bin, url, max_bytes)
+    finally:
+        diagnose_mod.lock.release()
+    return DiagnoseOut(node_id=node_id, **result)
 
 
 @router.delete("/nodes/{node_id}")
@@ -1514,7 +1556,7 @@ def preview_sub_nodes(body: PreviewIn, request: Request,
         format=fmt, count=min(len(nodes), service.MAX_NODES),
         returned_count=min(len(nodes), service.MAX_NODES, 200),
         truncated=min(len(nodes), service.MAX_NODES) > 200,
-        nodes=[PreviewNodeOut(name=n.name, address=n.address, port=n.port,
+        nodes=[PreviewNodeOut(name=n.name, address=n.address, port=n.port, protocol=n.protocol,
                               transport=n.transport, network=n.network, security=n.security)
                for n in nodes[:200]],
         skipped=dropped)

@@ -21,11 +21,12 @@ from pi_gw_panel import rw_inbound as rw
 from pi_gw_panel.config import (NET_CROSS_FIELD_KEYS, SETTINGS_DEFAULTS, Settings,
                                 check_change_safe, validate_net_settings,
                                 validate_setting_values)
-from pi_gw_panel.models import Node, RoutingRule, Subscription, TuningProfile
+from pi_gw_panel.models import (SS_METHODS, Node, RoutingRule, Subscription,
+                                TuningProfile, ss_password_issue)
 from pi_gw_panel.net_control.render import reservation_value_issue
 from pi_gw_panel.nodes.store import _NODE_COLS, _node_values, _PROFILE_COLS, _profile_values
 
-BACKUP_SCHEMA = 2
+BACKUP_SCHEMA = 3
 MAX_NODES = 5000
 MAX_SUBSCRIPTIONS = 256
 MAX_PROFILES = 256
@@ -186,7 +187,13 @@ class BackupNode(_Strict):
     name: str = Field(min_length=1, max_length=512)
     address: str = Field(min_length=1, max_length=253)
     port: int = Field(ge=1, le=65535)
-    uuid: str = Field(min_length=1, max_length=512)
+    # B4: a node is no longer necessarily VLESS, so the credential is no longer necessarily a
+    # uuid — `required_credential` below asks each protocol for its own. Absent in documents
+    # written before v2.4, where every node was VLESS.
+    uuid: str = Field(default="", max_length=512)
+    protocol: Literal["vless", "trojan", "shadowsocks"] = "vless"
+    password: str = Field(default="", max_length=512)
+    method: str = Field(default="", max_length=64)
     transport: Literal["vision", "xhttp"] = "vision"
     sni: str = Field(default="", max_length=253)
     public_key: str = Field(default="", max_length=512)
@@ -204,6 +211,25 @@ class BackupNode(_Strict):
     stale: bool = False
     tuning_profile_id: int | None = Field(default=None, gt=0)
     position: int = Field(default=0, ge=0, le=MAX_NODES)
+
+
+    @model_validator(mode="after")
+    def required_credential(self):
+        """Every protocol's own credential, refused at the document boundary rather than
+        discovered as a node that cannot connect. A Shadowsocks cipher this build cannot render
+        is refused here for the same reason: xray would not start on it."""
+        if self.protocol == "vless":
+            if not self.uuid:
+                raise ValueError("a vless node needs a uuid")
+        elif not self.password:
+            raise ValueError(f"a {self.protocol} node needs a password")
+        if self.protocol == "shadowsocks":
+            if self.method not in SS_METHODS:
+                raise ValueError(f"unsupported shadowsocks cipher {self.method!r}")
+            issue = ss_password_issue(self.method, self.password)
+            if issue:
+                raise ValueError(issue)
+        return self
 
 
 class BackupRule(_Strict):
@@ -240,7 +266,7 @@ class BackupRouting(_Strict):
 
 
 class BackupDocument(_Strict):
-    schema_version: Literal[1, 2]
+    schema_version: Literal[1, 2, 3]
     created_at: int | None = Field(default=None, ge=0)
     nodes: list[BackupNode] = Field(default_factory=list, max_length=MAX_NODES)
     subscriptions: list[BackupSubscription] = Field(
@@ -255,7 +281,7 @@ class BackupDocument(_Strict):
     def normalize_legacy_empty_profiles(cls, value):
         """Schema 1 allowed an empty profile list; restore it with a safe default.
 
-        Schema 2 deliberately keeps the stricter non-empty contract.
+        Schema 2 and 3 deliberately keep the stricter non-empty contract.
         """
         if (isinstance(value, dict) and value.get("schema_version") == 1
                 and value.get("profiles") == []):

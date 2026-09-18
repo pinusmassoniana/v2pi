@@ -1,7 +1,7 @@
 import logging
 
 from pi_gw_panel.config import Settings
-from pi_gw_panel.models import Node, TuningProfile
+from pi_gw_panel.models import SS_METHODS, Node, TuningProfile
 from pi_gw_panel.xray_config.routing import rules_to_xray
 
 logger = logging.getLogger(__name__)
@@ -148,6 +148,37 @@ def rw_lan_rule(hosts: dict) -> dict:
             "outboundTag": DIRECT_LAN_TAG}
 
 
+def proxy_settings(node: Node, address: str | None = None) -> tuple[str, dict]:
+    """`(protocol, settings)` for the node's outbound — the one place that knows how each
+    protocol names its server and spells its credential.
+
+    Shared with `health.probe`, which builds the same outbound without the egress mark or a
+    tuning profile: two hand-written copies of this drifted once already (an xhttp node probed
+    as tcp), and a credential in the wrong field is a node that silently never connects.
+    """
+    if node.protocol == "trojan":
+        return "trojan", {"servers": [{"address": address or node.address, "port": node.port,
+                                       "password": node.password}]}
+    if node.protocol == "shadowsocks":
+        if node.method not in SS_METHODS:
+            # Fail closed where it is visible. xray refuses an unknown cipher at start-up, and a
+            # tunnel that dies on apply is worse than a config that is never written.
+            raise ValueError(f"unsupported shadowsocks cipher {node.method!r}")
+        return "shadowsocks", {"servers": [{"address": address or node.address, "port": node.port,
+                                            "method": node.method, "password": node.password}]}
+    user: dict = {"id": node.uuid, "encryption": "none"}
+    if node.flow:                         # Vision flow only; XHTTP nodes carry none
+        user["flow"] = node.flow
+    return "vless", {"vnext": [{"address": address or node.address, "port": node.port,
+                                "users": [user]}]}
+
+
+def security_choices(node: Node) -> tuple[str, ...]:
+    """What `streamSettings.security` may be for this node. Shadowsocks has no TLS layer of its
+    own to configure; everything else must have one — `none` there is plaintext."""
+    return ("none",) if node.protocol == "shadowsocks" else ("reality", "tls")
+
+
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
                  dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch",
@@ -210,21 +241,21 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
     # proxy outbound: user + transport/security-aware streamSettings.
     #   tcp+reality+vision (legacy) ── realitySettings + user.flow
     #   xhttp+tls            ──────── xhttpSettings{path,host,mode} + tlsSettings{sni,alpn}
-    user: dict = {"id": node.uuid, "encryption": "none"}
-    if node.flow:                         # Vision flow only; XHTTP nodes carry none
-        user["flow"] = node.flow
+    protocol, proxy_settings_block = proxy_settings(node)
     network = node.network or "tcp"
     security = node.security or "reality"
     # Fail closed: Node.normalize() allow-lists this, so an unknown value means something
     # bypassed normalization — never render it into streamSettings (`none` = plaintext VLESS).
-    if security not in ("reality", "tls"):
-        raise ValueError(f"unsupported node security '{security}' (expected reality or tls)")
+    allowed = security_choices(node)
+    if security not in allowed:
+        raise ValueError(f"unsupported security '{security}' for a {protocol} node "
+                         f"(expected {' or '.join(allowed)})")
     stream: dict = {"network": network, "security": security,
                     "sockopt": {"mark": settings.egress_mark}}
     if security == "reality":
         stream["realitySettings"] = {"serverName": node.sni, "fingerprint": fingerprint,
                                      "publicKey": node.public_key, "shortId": node.short_id}
-    else:
+    elif security == "tls":
         tls: dict = {"serverName": node.sni, "fingerprint": fingerprint}
         # alpn is also a subscription-carried node field — same rule as fingerprint: only an
         # explicitly-assigned profile overrides it; the default profile keeps the node's own.
@@ -271,12 +302,8 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
         "outbounds": [
             {
                 "tag": "proxy",
-                "protocol": "vless",
-                "settings": {
-                    "vnext": [
-                        {"address": node.address, "port": node.port, "users": [user]}
-                    ]
-                },
+                "protocol": protocol,
+                "settings": proxy_settings_block,
                 "streamSettings": stream,
             },
             {"tag": "direct", "protocol": "freedom", "settings": {},
@@ -310,7 +337,9 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
 
     if profile is not None:
         # mux is invalid with XTLS Vision — only emit it for non-Vision (xhttp) outbounds (TC1).
-        if not node.flow:
+        # Shadowsocks is left out too: xray's mux rides VMess/VLESS/Trojan, and a knob that is
+        # quietly ignored is worse than one the node is honestly not offered.
+        if not node.flow and node.protocol != "shadowsocks":
             mux: dict = {"enabled": bool(profile.mux_enabled)}
             if profile.mux_enabled and profile.mux_concurrency.strip():
                 mux["concurrency"] = int(profile.mux_concurrency)

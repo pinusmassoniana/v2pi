@@ -2,7 +2,7 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { vi, type MockedFunction } from "vitest";
 import type {
-  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, BackupFile, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
+  ApiToken, ApiTokenCreated, ApiTokenScope, AuditEntry, BackupDoc, BackupFile, Diagnosis, Diagnostics, Geo, Network, NetworkPatch, Node, NodeHealth, NodeIn, NodeUpdate,
   Events, Reservation, Reservations, TrafficUsage,
   PresetInfo, PreviewNodes, Preview, ProfileIn, ProfilePreset, ProfileUpdate,
   RefreshAllResult, RestoreResult, Routing, RoutingIn, Rw, RwClient, RwIn, Settings, Status, Subscription, SubscriptionIn, TrafficFrame, TrafficMessage,
@@ -26,7 +26,8 @@ export const STATUS: Status = {
 
 export function node(id: number, name: string): Node {
   return {
-    id, name, address: `${name}.example.org`, port: 443, uuid: `uuid-${id}`, transport: "vision",
+    id, name, address: `${name}.example.org`, port: 443, uuid: `uuid-${id}`,
+    protocol: "vless", has_password: false, method: "", transport: "vision",
     network: "tcp", security: "reality", sni: "", public_key: "", short_id: "", fingerprint: "chrome",
     path: "", host: "", mode: "", alpn: "", note: "", subscription_id: null, stale: false,
     tuning_profile_id: null,
@@ -166,6 +167,7 @@ export const SETTINGS: Settings = {
   stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000,
   dns_intercept: false, session_timeout_min: 60, auto_backup_enabled: true, update_check_enabled: true,
   traffic_cap_gb: 0, traffic_cap_reset_day: 1,
+  diag_url: "https://speed.cloudflare.com/__down?bytes=1048576", diag_bytes: 262_144,
 };
 
 /** What previewSub answers for "work": the request it would send. */
@@ -566,6 +568,15 @@ export const RESTORE_RESULT: RestoreResult = {
   pre_restore_snapshot: "/app/data/backups/pre-restore-1700000000-9c4e1f2a7b6d4e8fa0c35d71e2b48f60.json",
 };
 
+/** B3: one diagnosis — a node that hands over the first byte fast and then stops mid-stream. */
+export const DIAGNOSIS: Diagnosis = {
+  node_id: 1, verdict: "stalls",
+  detail: "the handshake is fine and the first byte arrived, then the stream stopped after 96 KB — the shape "
+    + "throttling leaves, and also what a busy server or a lossy uplink looks like.",
+  tcp_ms: 24, tls_ms: 71, ttfb_ms: 143, transfer_ms: 4_100, bytes: 98_304, requested_bytes: 262_144,
+  kbps: 191, url: "https://speed.cloudflare.com/__down?bytes=1048576", error: "",
+};
+
 /** A8: what the gateway keeps in data/backups — a pre-restore snapshot and two daily copies, newest first. */
 export const BACKUP_FILES: BackupFile[] = [
   { name: "pre-restore-1700003600-9c4e1f2a7b6d4e8fa0c35d71e2b48f60.json", bytes: 41_213, created_at: 1_700_003_600, kind: "pre-restore" },
@@ -610,6 +621,7 @@ export function mockApi() {
     disconnect: vi.spyOn(api, "disconnect").mockResolvedValue({ ok: true }),
     connectBest: vi.spyOn(api, "connectBest").mockResolvedValue({ ok: true, node_id: 2 }),
     probeNode: vi.spyOn(api, "probeNode").mockImplementation(async (id: number) => ALL_NODE_HEALTH.find((h) => h.node_id === id) ?? health(id, { checked_at: iso(NOW_SEC) })),
+    diagnoseNode: vi.spyOn(api, "diagnoseNode").mockImplementation(async (id: number) => ({ ...DIAGNOSIS, node_id: id })),
     probeTcp: vi.spyOn(api, "probeTcp").mockResolvedValue(NODE_HEALTH),
     probeHttp: vi.spyOn(api, "probeHttp").mockResolvedValue(NODE_HEALTH),
     reorderNodes: vi.spyOn(api, "reorderNodes").mockResolvedValue({ ok: true }),

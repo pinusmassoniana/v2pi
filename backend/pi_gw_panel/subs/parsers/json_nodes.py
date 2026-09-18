@@ -33,7 +33,10 @@ def parse_obj(data, *, limit: int | None = None, skipped: dict | None = None) ->
             nodes.append(Node(
                 id=None, name=str(it.get("name", addr)),
                 address=str(addr), port=port_n,
-                uuid=str(it.get("uuid", "")), transport=transport,
+                uuid=str(it.get("uuid", "")),
+                protocol=str(it.get("protocol", "") or "vless"),
+                password=str(it.get("password", "")), method=str(it.get("method", "")),
+                transport=transport,
                 network=net or ("xhttp" if transport == "xhttp" else "tcp"),
                 security=str(it.get("security", "")) or ("reality" if pbk else "tls"),
                 sni=str(it.get("sni", "")), public_key=pbk,

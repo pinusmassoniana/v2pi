@@ -123,7 +123,8 @@ def _safe_json(row: sqlite3.Row, field: str, fallback, expected_type):
         logger.warning("invalid JSON in %s for row %s: %s", field, row_id, exc)
         return fallback()
 
-_NODE_COLS = ("name", "address", "port", "uuid", "transport", "sni",
+_NODE_COLS = ("name", "address", "port", "uuid", "protocol", "password", "method",
+              "transport", "sni",
               "public_key", "short_id", "fingerprint", "flow",
               "network", "security", "path", "host", "mode", "alpn", "note",
               "subscription_id", "stale", "tuning_profile_id", "position")
@@ -148,7 +149,8 @@ def _node_values(node: Node) -> tuple:
 def _row_to_node(row: sqlite3.Row) -> Node:
     return Node(
         id=row["id"], name=row["name"], address=row["address"], port=row["port"],
-        uuid=row["uuid"], transport=row["transport"], sni=row["sni"],
+        uuid=row["uuid"], protocol=row["protocol"], password=row["password"],
+        method=row["method"], transport=row["transport"], sni=row["sni"],
         public_key=row["public_key"], short_id=row["short_id"],
         fingerprint=row["fingerprint"], flow=row["flow"],
         network=row["network"], security=row["security"], path=row["path"],

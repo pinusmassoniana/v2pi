@@ -1,7 +1,9 @@
-"""A6: a VLESS-only panel reading a mixed feed must SAY what it dropped.
+"""A6: a panel reading a mixed feed must SAY what it dropped.
 
 Before this, a subscription that lists 12 servers and yields 6 nodes looked like a smaller
-subscription; the six Trojan/Hysteria2 entries left no trace anywhere in the panel.
+subscription; the six Trojan/Hysteria2 entries left no trace anywhere in the panel. Since v2.4
+Trojan and Shadowsocks are imported rather than counted (B4), so what is left in the counts is
+what this build genuinely cannot carry — which is the point: the number shrinks as support grows.
 """
 import json
 
@@ -35,17 +37,17 @@ BASE64_BODY = "\n".join([
 def test_clash_feed_counts_every_dropped_entry_by_protocol():
     skipped: dict = {}
     nodes = parse_subscription(CLASH, skipped=skipped)
-    assert [n.name for n in nodes] == ["a"]
+    assert [n.name for n in nodes] == ["a", "b", "d"]        # vless, trojan and ss all import
     # e is a VLESS entry with an out-of-range port and the last item is not a mapping: both are
     # "invalid", not a protocol we chose not to support.
-    assert skipped == {"trojan": 1, "hysteria2": 1, "ss": 1, "invalid": 2}
+    assert skipped == {"hysteria2": 1, "invalid": 2}
 
 
 def test_base64_feed_counts_other_schemes_and_unusable_vless_lines():
     skipped: dict = {}
     nodes = parse_subscription(BASE64_BODY, skipped=skipped)
-    assert [n.name for n in nodes] == ["a"]
-    assert skipped == {"trojan": 1, "hysteria2": 1, "ss": 1, "invalid": 1}
+    assert [n.name for n in nodes] == ["a", "b", "d"]
+    assert skipped == {"hysteria2": 1, "invalid": 1}
 
 
 def test_free_text_lines_are_not_counted_as_entries():
@@ -73,8 +75,8 @@ def test_a_feed_cannot_choose_the_label():
 
 def test_parsers_still_work_for_callers_that_do_not_ask():
     """`skipped` is opt-in: nothing in the parse path changes for a caller that passes nothing."""
-    assert len(parse_subscription(CLASH)) == 1
-    assert len(parse_subscription(BASE64_BODY)) == 1
+    assert len(parse_subscription(CLASH)) == 3
+    assert len(parse_subscription(BASE64_BODY)) == 3
 
 
 def test_counts_survive_a_restart(tmp_path):

@@ -11,6 +11,18 @@ import { DISCONNECT_FIRST } from "./NodeRowActions";
 import { nodeMutationMessage } from "./nodeForm";
 
 /**
+ * B4: which of a profile's knobs a node can actually use. The selector stays enabled for every
+ * protocol — fragmentation and noise are the anti-DPI knobs that matter most on a censored link,
+ * and they ride a dialerProxy outbound that works under any of them. What does NOT apply is
+ * named instead of being silently ignored.
+ */
+export const PROFILE_SCOPE: Record<string, string> = {
+  trojan: "XHTTP padding and xmux do not apply to a Trojan node; fragmentation, noise, mux, DoH and QUIC do.",
+  shadowsocks: "Only fragmentation, noise, DoH and QUIC apply to a Shadowsocks node — it has no TLS layer to "
+    + "fingerprint and xray's mux does not ride it.",
+};
+
+/**
  * T6 / N13: the node's tuning profile, changed in place. Picking a profile only stages it — arrow keys on a closed
  * select change its value too — and Save (or Enter) sends it. The active node refuses edits (409), so the select and
  * Save are disabled there, also when the node becomes active while the row is open.
@@ -76,6 +88,9 @@ export function ProfileRow({ node, active }: { node: Node; active: boolean }) {
         </div>
         {active ? <span className="mt-0.5 text-[11px] text-t3">{DISCONNECT_FIRST}</span> : null}
       </div>
+      {PROFILE_SCOPE[node.protocol] ? (
+        <p className="w-full text-[11px] leading-relaxed text-t3">{PROFILE_SCOPE[node.protocol]}</p>
+      ) : null}
     </section>
   );
 }

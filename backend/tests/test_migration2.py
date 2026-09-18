@@ -44,7 +44,9 @@ def test_migration2_tables_and_seeded_default_profile(tmp_path):
     assert "dhcp_reservations" in tables   # migration 18 — pinned devices
     assert "device_minutes" in tables       # migration 19 — per-device traffic
     assert "conn_events" in tables          # migration 20 — events, off the settings ring
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 20
+    ncols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    assert {"protocol", "password", "method"} <= ncols   # migration 21 — nodes beyond VLESS
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
     prof = conn.execute("SELECT * FROM tuning_profiles WHERE name='default'").fetchone()
     assert prof is not None
     did = conn.execute("SELECT value FROM settings WHERE key='default_profile_id'").fetchone()["value"]

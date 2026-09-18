@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from pi_gw_panel import rw_inbound as rw_mod
 from pi_gw_panel.auth.tokens import SCOPES
+from pi_gw_panel.models import SS_METHODS, ss_password_issue
 
 
 # Upper bounds so one request can't ship a multi-MB string (memory/CPU DoS — hashing a huge
@@ -84,6 +85,25 @@ class PasswordChangeIn(StrictIn):
     new_password: str = Field(min_length=8, max_length=_MAX_PW)
 
 
+def check_credential(node):
+    """One protocol → one credential. Raises like any other field rule, so the API and the
+    backup document refuse the same things (see BackupNode.required_credential). Takes anything
+    carrying the four fields, which is how `PATCH /nodes/{id}` re-checks the patched Node: a
+    partial patch cannot be judged field by field — only the node it produces can."""
+    if node.protocol == "vless":
+        if not node.uuid:
+            raise ValueError("a vless node needs a uuid")
+    elif not node.password:
+        raise ValueError(f"a {node.protocol} node needs a password")
+    if node.protocol == "shadowsocks":
+        if node.method not in SS_METHODS:
+            raise ValueError(f"method must be one of: {', '.join(SS_METHODS)}")
+        issue = ss_password_issue(node.method, node.password)
+        if issue:
+            raise ValueError(issue)
+    return node
+
+
 # min_length mirrors the backup schema (BackupNode). Without it the API could store a node the
 # panel's own backup document refuses to carry — and the drift only surfaced as an unrestorable
 # backup, long after the empty name was accepted.
@@ -91,7 +111,13 @@ class NodeIn(StrictIn):
     name: str = Field(min_length=1, max_length=_MAX_FIELD)
     address: str = Field(min_length=1, max_length=_MAX_HOST)
     port: int = Field(ge=1, le=65535)
-    uuid: str = Field(min_length=1, max_length=_MAX_FIELD)
+    # B4: the credential depends on the protocol — vless carries a uuid, trojan and shadowsocks
+    # a password (and shadowsocks a cipher). `credential_matches_protocol` is the one rule, and
+    # it mirrors BackupNode's, so nothing storable is unbackupable.
+    uuid: str = Field(default="", max_length=_MAX_FIELD)
+    protocol: Literal["vless", "trojan", "shadowsocks"] = "vless"
+    password: str = Field(default="", max_length=_MAX_FIELD)
+    method: str = Field(default="", max_length=64)
     transport: str = Field(default="vision", max_length=64)
     security: str = Field(default="reality", max_length=32)   # reality | tls (normalize() downgrades reality→tls if no key)
     sni: str = Field(default="", max_length=_MAX_HOST)
@@ -104,13 +130,20 @@ class NodeIn(StrictIn):
     alpn: str = Field(default="", max_length=_MAX_FIELD)             # tls ALPN (comma-separated)
     note: str = Field(default="", max_length=_MAX_FIELD)             # free-text operator note / label
 
+    @model_validator(mode="after")
+    def credential_matches_protocol(self):
+        return check_credential(self)
+
 
 class NodeUpdate(NonNullPatch):
     nullable_fields = frozenset({"tuning_profile_id"})
     name: str | None = Field(default=None, min_length=1, max_length=_MAX_FIELD)
     address: str | None = Field(default=None, min_length=1, max_length=_MAX_HOST)
     port: int | None = Field(default=None, ge=1, le=65535)
-    uuid: str | None = Field(default=None, min_length=1, max_length=_MAX_FIELD)
+    uuid: str | None = Field(default=None, max_length=_MAX_FIELD)
+    protocol: Literal["vless", "trojan", "shadowsocks"] | None = None
+    password: str | None = Field(default=None, max_length=_MAX_FIELD)
+    method: str | None = Field(default=None, max_length=64)
     transport: str | None = Field(default=None, max_length=64)
     security: str | None = Field(default=None, max_length=32)
     sni: str | None = Field(default=None, max_length=_MAX_HOST)
@@ -131,6 +164,11 @@ class NodeOut(BaseModel):
     address: str
     port: int
     uuid: str
+    protocol: str = "vless"
+    # The credential itself is never sent back — the panel shows a node it cannot re-read, the
+    # same way it never re-sends the Reality private key. `has_password` is what the form needs.
+    has_password: bool = False
+    method: str = ""
     transport: str
     network: str = "tcp"
     security: str = "reality"
@@ -252,6 +290,7 @@ class PreviewNodeOut(BaseModel):
     name: str
     address: str
     port: int
+    protocol: str = "vless"
     transport: str
     network: str
     security: str
@@ -298,6 +337,22 @@ class NodeValidateOut(BaseModel):
     error: str = ""
 
 
+# B3: one on-demand diagnosis of a node — the phases, not just a verdict.
+class DiagnoseOut(BaseModel):
+    node_id: int
+    verdict: Literal["ok", "slow", "stalls", "down"]
+    detail: str                      # what the verdict was read from, in one sentence
+    tcp_ms: int | None = None        # TCP connect to the node
+    tls_ms: int | None = None        # TLS handshake with the node's own SNI (null: shadowsocks)
+    ttfb_ms: int | None = None       # first byte back through the tunnel
+    transfer_ms: int = 0
+    bytes: int = 0
+    requested_bytes: int = 0
+    kbps: int | None = None
+    url: str = ""
+    error: str = ""
+
+
 # N9: connect to the healthiest node in a scope (a subscription, or manual when null).
 class ConnectBestIn(StrictIn):
     subscription_id: int | None = None
@@ -326,6 +381,8 @@ class SettingsOut(BaseModel):
     update_check_enabled: bool
     traffic_cap_gb: int
     traffic_cap_reset_day: int
+    diag_url: str
+    diag_bytes: int
 
 
 class SettingsIn(NonNullPatch):
@@ -349,6 +406,8 @@ class SettingsIn(NonNullPatch):
     update_check_enabled: bool | None = None
     traffic_cap_gb: int | None = None
     traffic_cap_reset_day: int | None = None
+    diag_url: str | None = Field(default=None, max_length=_MAX_URL)
+    diag_bytes: int | None = None
 
 
 # --- A5: where would this destination go? ---

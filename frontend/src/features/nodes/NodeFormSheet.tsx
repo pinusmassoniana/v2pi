@@ -10,14 +10,16 @@ import { useUnsavedGuard } from "../../app/guard";
 import { closeGuarded } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { FieldShell, SegmentedField, TextField } from "../../components/ui/Field";
+import { Select } from "../../components/ui/Select";
 import { ProfileSelect } from "../../components/ui/ProfileSelect";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
 import { SERVERS } from "./list";
 import {
-  ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, MAX_FIELD, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
-  isIdentityConflict, nodeFormSchema, nodeToForm, validateMessage, type NodeFormValues,
+  ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, MAX_FIELD, PROTOCOLS, PROTOCOL_NOTE, SS_METHODS, cloneToForm,
+  formToNodeIn, formToNodeUpdate, formToValidate, isIdentityConflict, makeNodeFormSchema, nodeToForm, validateMessage,
+  type NodeFormValues,
 } from "./nodeForm";
 import { useNodesStatus } from "./nodesStatus";
 import { useNodeConnection } from "./useNodeActions";
@@ -70,12 +72,18 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   const edit = mode === "edit" && node !== undefined;
   const navigate = useNavigate();
   const [defaults] = useState<NodeFormValues>(() => (edit ? nodeToForm(node) : mode === "clone" && node ? cloneToForm(node) : BLANK_NODE_FORM));
+  // Edit keeps the stored password when the field is left empty — the panel is never given it to
+  // show — so the "password is required" rule only applies where there is none yet.
+  const [schema] = useState(() => makeNodeFormSchema(edit && node.has_password));
   const { register, handleSubmit, control, formState, getValues, trigger } = useForm<NodeFormValues>({
-    resolver: zodResolver(nodeFormSchema),
+    resolver: zodResolver(schema),
     defaultValues: defaults,
   });
+  const protocol = useWatch({ control, name: "protocol" });
   const transport = useWatch({ control, name: "transport" });
   const security = useWatch({ control, name: "security" });
+  const vless = protocol === "vless";
+  const shadowsocks = protocol === "shadowsocks";
   const dirty = formState.isDirty;
   useUnsavedGuard(dirty);
   const profiles = useQuery({ ...queries.profiles(), enabled: edit });
@@ -97,7 +105,7 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   });
 
   async function validate() {
-    const parsed = nodeFormSchema.safeParse(getValues());
+    const parsed = schema.safeParse(getValues());
     if (!parsed.success) {
       void trigger();
       setValidation({ ok: false, text: `✗ ${parsed.error.issues[0]!.message}` });
@@ -149,37 +157,62 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
           </Section>
 
           <Section title="Endpoint">
+            <SegmentedField legend="Protocol" options={PROTOCOLS} radio={register("protocol")} />
+            {PROTOCOL_NOTE[protocol] ? <p className="text-[11px] leading-relaxed text-t3">{PROTOCOL_NOTE[protocol]}</p> : null}
             <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2.5">
               <TextField label="Address" required error={errors.address?.message} autoComplete="off" className="font-mono" {...register("address")} />
               <TextField label="Port" required hint="1–65535" type="number" inputMode="numeric" error={errors.port?.message} {...register("port")} />
             </div>
-            <TextField label="UUID" required error={errors.uuid?.message} autoComplete="off" className="font-mono" {...register("uuid")} />
-          </Section>
-
-          <Section title="Transport">
-            <SegmentedField legend="Transport" options={["vision", "xhttp"]} radio={register("transport")} />
-            {transport === "xhttp" ? (
-              <div className="grid grid-cols-1 gap-2.5 md:grid-cols-3">
-                <TextField label="Path" error={errors.path?.message} className="font-mono" {...register("path")} />
-                <TextField label="Host" error={errors.host?.message} className="font-mono" {...register("host")} />
-                <TextField label="Mode" error={errors.mode?.message} {...register("mode")} />
-              </div>
+            {vless ? (
+              <TextField label="UUID" required error={errors.uuid?.message} autoComplete="off" className="font-mono" {...register("uuid")} />
+            ) : (
+              <TextField
+                label="Password"
+                required={!(edit && node.has_password)}
+                hint={edit && node.has_password ? "leave empty to keep the stored one" : undefined}
+                error={errors.password?.message}
+                autoComplete="off"
+                className="font-mono"
+                {...register("password")}
+              />
+            )}
+            {shadowsocks ? (
+              <FieldShell id="node-form-method" label="Cipher" required error={errors.method?.message}>
+                <Select id="node-form-method" {...register("method")}>
+                  {SS_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}
+                </Select>
+              </FieldShell>
             ) : null}
           </Section>
 
-          <Section title="Security">
-            <SegmentedField legend="Security" options={["reality", "tls"]} radio={register("security")} />
-            {security === "reality" ? (
-              <div className="grid grid-cols-1 gap-2.5 md:grid-cols-[minmax(0,1fr)_9rem]">
-                <TextField label="Public key" error={errors.public_key?.message} className="font-mono" {...register("public_key")} />
-                <TextField label="Short ID" error={errors.short_id?.message} className="font-mono" {...register("short_id")} />
-              </div>
-            ) : (
-              <TextField label="ALPN" hint="tls only" placeholder="h2,http/1.1" error={errors.alpn?.message} className="font-mono" {...register("alpn")} />
-            )}
-            <TextField label="SNI" error={errors.sni?.message} className="font-mono" {...register("sni")} />
-            {edit ? <TextField label="Fingerprint" error={errors.fingerprint?.message} {...register("fingerprint")} /> : null}
-          </Section>
+          {vless ? (
+            <Section title="Transport">
+              <SegmentedField legend="Transport" options={["vision", "xhttp"]} radio={register("transport")} />
+              {transport === "xhttp" ? (
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-3">
+                  <TextField label="Path" error={errors.path?.message} className="font-mono" {...register("path")} />
+                  <TextField label="Host" error={errors.host?.message} className="font-mono" {...register("host")} />
+                  <TextField label="Mode" error={errors.mode?.message} {...register("mode")} />
+                </div>
+              ) : null}
+            </Section>
+          ) : null}
+
+          {shadowsocks ? null : (
+            <Section title="Security">
+              <SegmentedField legend="Security" options={["reality", "tls"]} radio={register("security")} />
+              {security === "reality" ? (
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-[minmax(0,1fr)_9rem]">
+                  <TextField label="Public key" error={errors.public_key?.message} className="font-mono" {...register("public_key")} />
+                  <TextField label="Short ID" error={errors.short_id?.message} className="font-mono" {...register("short_id")} />
+                </div>
+              ) : (
+                <TextField label="ALPN" hint="tls only" placeholder="h2,http/1.1" error={errors.alpn?.message} className="font-mono" {...register("alpn")} />
+              )}
+              <TextField label="SNI" error={errors.sni?.message} className="font-mono" {...register("sni")} />
+              {edit ? <TextField label="Fingerprint" error={errors.fingerprint?.message} {...register("fingerprint")} /> : null}
+            </Section>
+          )}
 
           {edit ? (
             <FieldShell id="node-form-profile" label="Tuning profile">

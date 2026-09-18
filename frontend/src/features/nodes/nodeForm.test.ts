@@ -3,7 +3,8 @@ import { ApiError } from "../../api/client";
 import { NODES, PROFILES, SERVER_NODES, node } from "../../test/fixtures";
 import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, addNodeMessage, cloneToForm, formToNodeIn, formToNodeUpdate, formToValidate,
-  isIdentityConflict, nodeFormSchema, nodeMutationMessage, nodeToForm, validateMessage, type NodeFormValues,
+  isIdentityConflict, makeNodeFormSchema, nodeFormSchema, nodeMutationMessage, nodeToForm, ssPasswordIssue, validateMessage,
+  type NodeFormValues,
 } from "./nodeForm";
 import { GLOBAL_DEFAULT, profileFromValue, profileName, profileValue } from "../../lib/profiles";
 
@@ -41,7 +42,8 @@ describe("what the form sends", () => {
   it("vision · reality keeps the reality keys and drops ALPN and the xhttp fields", () => {
     const values: NodeFormValues = { ...VALID, port: " 8443", sni: " www.microsoft.com ", public_key: "pbk", short_id: "sid", alpn: "h2", path: "/xh", host: "h", mode: "auto", note: " own VPS " };
     expect(formToNodeIn(values)).toEqual({
-      name: "vps-ams-02", address: "198.51.100.77", port: 8443, uuid: "3f1c9a52", transport: "vision", security: "reality",
+      name: "vps-ams-02", address: "198.51.100.77", port: 8443, protocol: "vless", uuid: "3f1c9a52",
+      password: "", method: "", transport: "vision", security: "reality",
       sni: "www.microsoft.com", public_key: "pbk", short_id: "sid", alpn: "", path: "", host: "", mode: "", note: " own VPS ", fingerprint: "chrome",
     });
   });
@@ -84,7 +86,8 @@ describe("what the form sends", () => {
 describe("prefilled forms", () => {
   it("edit starts from the stored node, its profile included", () => {
     expect(nodeToForm(NODES[0]!)).toEqual({
-      name: "nl-ams-03", address: "nl-ams-03.example.org", port: "443", uuid: "uuid-1", transport: "vision", security: "reality",
+      name: "nl-ams-03", address: "nl-ams-03.example.org", port: "443", protocol: "vless", uuid: "uuid-1",
+      password: "", method: "aes-128-gcm", transport: "vision", security: "reality",
       sni: "www.microsoft.com", public_key: "Zm9vX3JlYWxpdHlfcHViX2tleQ", short_id: "6ba85179e3", alpn: "", path: "", host: "", mode: "", note: "",
       fingerprint: "chrome", tuning_profile_id: "2",
     });
@@ -127,5 +130,66 @@ describe("messages", () => {
   it("validate reads ✓ config valid or ✗ with the error", () => {
     expect(validateMessage({ ok: true, error: "" })).toEqual({ ok: true, text: "✓ config valid" });
     expect(validateMessage({ ok: false, error: "reality: bad public key" })).toEqual({ ok: false, text: "✗ reality: bad public key" });
+  });
+});
+
+
+describe("protocols (B4)", () => {
+  const trojan: NodeFormValues = {
+    ...BLANK_NODE_FORM, name: "t", address: "1.2.3.5", protocol: "trojan", password: " pw ",
+    uuid: "left over from vless", sni: "b.example", alpn: "h2", security: "tls",
+    transport: "xhttp", path: "/xh", host: "h", mode: "auto",
+  };
+
+  it("sends each protocol's own credential and nothing from the others", () => {
+    expect(formToNodeIn(trojan)).toMatchObject({
+      protocol: "trojan", password: "pw", uuid: "", method: "",
+      // A trojan node has no Vision flow and no XHTTP: what was typed under a transport it does
+      // not have must not be saved as if it did.
+      transport: "vision", path: "", host: "", mode: "", alpn: "h2", sni: "b.example",
+    });
+
+    const ss = formToNodeIn({ ...trojan, protocol: "shadowsocks", method: "aes-256-gcm", security: "reality", public_key: "pbk" });
+    expect(ss).toMatchObject({
+      protocol: "shadowsocks", method: "aes-256-gcm", password: "pw", uuid: "",
+      // Shadowsocks IS the encryption — nothing under Security belongs to it.
+      sni: "", alpn: "", public_key: "", short_id: "",
+    });
+
+    expect(formToNodeIn({ ...BLANK_NODE_FORM, name: "v", address: "1.2.3.4", uuid: " u " }))
+      .toMatchObject({ protocol: "vless", uuid: "u", password: "", method: "" });
+  });
+
+  it("an untouched password on edit means keep it, not clear it", () => {
+    expect(formToNodeUpdate({ ...trojan, password: "  " })).not.toHaveProperty("password");
+    expect(formToNodeUpdate(trojan)).toMatchObject({ password: "pw" });
+  });
+
+  it("asks each protocol for what it needs, and Edit for nothing it already has", () => {
+    const parse = (values: NodeFormValues, stored = false) => makeNodeFormSchema(stored).safeParse(values);
+    const issues = (values: NodeFormValues, stored = false) =>
+      (parse(values, stored).error?.issues ?? []).map((issue) => `${issue.path.join(".")}: ${issue.message}`);
+
+    expect(issues({ ...BLANK_NODE_FORM, name: "v", address: "a", uuid: "" })).toContain("uuid: uuid is required");
+    expect(issues({ ...trojan, password: "" })).toContain("password: password is required");
+    // Edit never receives the stored password, so an empty field there is "keep it".
+    expect(parse({ ...trojan, password: "" }, true).success).toBe(true);
+    expect(issues({ ...trojan, protocol: "shadowsocks", method: "rc4-md5" })).toContain("method: choose a cipher");
+    expect(nodeFormSchema.safeParse({ ...trojan, protocol: "shadowsocks", method: "aes-128-gcm" }).success).toBe(true);
+  });
+
+  it("a 2022 cipher takes a key, and says so before the gateway has to", () => {
+    expect(ssPasswordIssue("aes-128-gcm", "any passphrase")).toBeNull();
+    expect(ssPasswordIssue("2022-blake3-aes-128-gcm", "")).toBeNull();           // empty = "keep it"
+    expect(ssPasswordIssue("2022-blake3-aes-128-gcm", "not base64!!")).toMatch(/base64-encoded 16-byte key/);
+    expect(ssPasswordIssue("2022-blake3-aes-128-gcm", "passphrase")).toMatch(/16-byte key/);   // decodes, wrong length
+    expect(ssPasswordIssue("2022-blake3-aes-128-gcm", btoa("k".repeat(16)))).toBeNull();
+    expect(ssPasswordIssue("2022-blake3-aes-256-gcm", btoa("k".repeat(16)))).toMatch(/32-byte key/);
+  });
+
+  it("a stored node opens as what it is", () => {
+    const stored = { ...node(9, "ss-fra"), protocol: "shadowsocks", method: "aes-256-gcm", has_password: true, uuid: "" };
+    expect(nodeToForm(stored)).toMatchObject({ protocol: "shadowsocks", method: "aes-256-gcm", password: "" });
+    expect(nodeToForm({ ...node(9, "x"), protocol: "wireguard" })).toMatchObject({ protocol: "vless" });
   });
 });

@@ -228,6 +228,11 @@ SETTINGS_DEFAULTS = {
     # outbound notification channel it cannot do more, and it never throttles or disconnects.
     "traffic_cap_gb": "0",
     "traffic_cap_reset_day": "1",
+    # B3: the on-demand node diagnosis. `diag_url` is what it pulls through the tunnel and
+    # `diag_bytes` how much of it to read. Never fetched on a timer — only when someone presses
+    # the button (so the gateway does not call this host on its own).
+    "diag_url": "https://speed.cloudflare.com/__down?bytes=1048576",
+    "diag_bytes": "262144",
     # IPv6 tunnel (off by default): carry segment client v6 through xray (static prefix; RA is
     # host-managed). segment_ip6 is the segment's static /64, informational + recommendation.
     "ipv6_enabled": "0",
@@ -426,6 +431,9 @@ SETTINGS_INT_BOUNDS: dict[str, tuple[int, int | None]] = {
     # becoming a number the UI has to render.
     "traffic_cap_gb": (0, 1_000_000),
     "traffic_cap_reset_day": (1, 28),          # every month has a 28th
+    # B3: enough bytes for a stall to be visible, capped so one press cannot pull a megabyte
+    # more than the diagnosis needs.
+    "diag_bytes": (16_384, 1_048_576),
 }
 # Settings that feed straight into the built xray config: an out-of-set value produces a config
 # xray rejects on the next apply (a self-inflicted outage).
