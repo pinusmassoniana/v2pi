@@ -16,20 +16,28 @@ if [[ "$registry_digest" != 1 && !( "$local_image_id" == 1 && "${V2PI_ALLOW_LOCA
   exit 2
 fi
 
+platform_args=()
+if [[ -n "$platform" ]]; then
+  platform_args=(--platform "$platform")
+fi
+
 tmp_dir="$(mktemp -d)"
 container_id=""
 cleanup() {
   if [[ -n "$container_id" ]]; then
     docker rm -f "$container_id" >/dev/null 2>&1 || true
   fi
-  rm -rf -- "$tmp_dir"
+  # The panel runs as root inside the container, and what it writes into the bind-mounted /data
+  # belongs to root on the host — the geo datasets it seeds on first boot most of all. An
+  # unprivileged CI user cannot delete those, so the tree is emptied from inside a throwaway
+  # container of the same image (already local by now) before the directory goes.
+  docker run --rm "${platform_args[@]}" --volume "$tmp_dir:/data" --entrypoint sh "$image_ref" \
+    -c 'rm -rf -- /data/* /data/.[!.]*' >/dev/null 2>&1 || true
+  # Cleanup never decides the outcome: by the time it runs the smoke has already answered, and a
+  # temporary directory left behind on an ephemeral runner is not a reason to fail a good build.
+  rm -rf -- "$tmp_dir" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
-
-platform_args=()
-if [[ -n "$platform" ]]; then
-  platform_args=(--platform "$platform")
-fi
 
 container_id="$(docker run -d "${platform_args[@]}" \
   --publish 127.0.0.1::8080 \
