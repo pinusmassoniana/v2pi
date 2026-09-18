@@ -37,11 +37,11 @@ def test_a_domain_test_names_the_network_because_every_ruleset_ends_in_a_catch_a
     stub = _Stub("block")
     client = RoutingClient("127.0.0.1:0", stub_factory=lambda: stub)
 
-    assert client.test_route(domain="doubleclick.net", port=443) == "block"
+    assert client.test_route(domain="ads.example.com", port=443) == "block"
 
     request, timeout = stub.seen[0]
     context = request.RoutingContext
-    assert context.TargetDomain == "doubleclick.net" and context.TargetPort == 443
+    assert context.TargetDomain == "ads.example.com" and context.TargetPort == 443
     assert context.Network == network_pb2.TCP           # not Unknown: the catch-all is tcp,udp
     assert context.InboundTag == "tproxy-in"
     assert request.PublishResult is False               # a question, not traffic to report

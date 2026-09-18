@@ -69,6 +69,18 @@ path = '''^backend/tests/.*\.py$'''
 
   [[rules.allowlists]]
   description = """
+  This project's own version numbers. The scheme is an uncapped integer chain
+  (MAJOR.HIGH.MED.LOW.FIX, see CLAUDE.md), so any version with four or more segments — and every
+  fixture that compares two of them — is shaped exactly like an IPv4 literal and always will be.
+  Scoped by the shape those fixtures have rather than by file: the whole line must open a tuple
+  with a `v`-prefixed version, which is the `latest` argument `updates.is_newer` takes. An address
+  assignment never looks like that, and a new comparison case is covered without touching this file.
+  """
+  regexTarget = "line"
+  regexes = ['''^\s*\("v[0-9]''']
+
+  [[rules.allowlists]]
+  description = """
   Long-standing synthetic placeholders in this suite. They cannot be moved to RFC5737: the
   subscription SSRF guard rejects every address `ipaddress` calls private, and Python counts the
   documentation ranges as private, so a test that must exercise the allow path needs an address
