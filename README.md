@@ -4,7 +4,7 @@
 
 <br/>
 
-**A web panel that turns a dedicated Linux box into a managed [Xray](https://github.com/XTLS/Xray-core) VPN gateway.** Nodes, anti-DPI tuning, rule-based routing, health failover, remote access, and full control of the host network. No monitor, no keyboard.
+**A web panel that turns a dedicated Linux box into a managed [Xray](https://github.com/XTLS/Xray-core) VPN gateway.** Nodes, anti-DPI tuning, rule-based routing, health failover, per-device policy, remote access, and full control of the host network. No monitor, no keyboard.
 
 <br/>
 
@@ -44,15 +44,18 @@ It is selective about what it tunnels:
 Ordered geoip/geosite rules keep local and in-country traffic direct, so banking and government sites
 stay fast and unbroken, and send only the rest through the proxy. There is a one-click RU-direct preset.
 
-Getting through DPI is the point, so nodes speak VLESS Vision, XHTTP and REALITY, and each one carries
-its own tuning profile: uTLS fingerprint, TLS fragmentation, mux, DoH. Changes apply to the live tunnel.
+Getting through DPI is the point, so nodes speak VLESS Vision, XHTTP and REALITY — plus Trojan and
+Shadowsocks, for the mixed subscriptions that carry them — and each one carries its own tuning profile:
+uTLS fingerprint, TLS fragmentation, mux, DoH. Changes apply to the live tunnel. When a node connects
+and then crawls, a diagnosis measures it phase by phase and says where the stream stops.
 
 If the tunnel drops, the kill-switch stops the segment rather than letting it fall back to the naked
 connection. Active probes move traffic to a working node on their own, and a reboot comes back to a
 clean gateway without help.
 
 It runs on hardware you own, with no third-party app and no per-seat client, behind a dashboard that
-shows traffic, node health and every client lease.
+shows traffic, node health, every client lease, how much each pinned device moved and how long the
+tunnel was down.
 
 The image ships for amd64 and arm64, but this is not a generic "any Docker host" workload. It needs
 Linux host networking, the documented interfaces, and appliance-level privileges on a box dedicated to
@@ -65,15 +68,17 @@ the job.
 <td width="50%" valign="top">
 
 ### Nodes
-Xray node management: VLESS Vision and XHTTP, including XHTTP-over-TLS. Subscriptions support custom
-header and query injection, and keep the feed's order on import.
+Xray node management: VLESS Vision and XHTTP (including XHTTP-over-TLS), Trojan and Shadowsocks.
+Subscriptions support custom header and query injection, keep the feed's order on import, and report
+what they dropped and why, so a feed that lists twelve servers and yields six says so.
 
 </td>
 <td width="50%" valign="top">
 
 ### Anti-DPI tuning
 Per-node profiles for uTLS fingerprint, TLS fragmentation, mux, DoH, QUIC and the rest. Applying a
-profile restarts Xray briefly and reconnects the tunnel.
+profile restarts Xray briefly and reconnects the tunnel. A node can also be diagnosed on demand: TCP,
+the TLS handshake, the first byte and a bounded transfer, measured separately.
 
 </td>
 </tr>
@@ -81,15 +86,18 @@ profile restarts Xray briefly and reconnects the tunnel.
 <td width="50%" valign="top">
 
 ### Routing
-Ordered rules (`geoip` / `geosite` / domain / ip / port to direct, proxy or block) with staged presets,
-per-rule validation, and a ready-made RU-direct preset.
+Ordered rules (`geoip` / `geosite` / domain / ip / port / device to direct, proxy or block) with staged
+presets, per-rule validation, and a ready-made RU-direct preset. The geo data is updatable from the
+panel — the stock lists or the Russian blocklists — and a tester asks the running tunnel where any
+destination would actually go.
 
 </td>
 <td width="50%" valign="top">
 
 ### Health and traffic
 Active probes with automatic failover to a healthy node, plus a live up/down traffic graph fed by Xray
-stats over a WebSocket.
+stats over a WebSocket. A month of connection events adds up to a drop list with downtime and uptime,
+and usage totals cover today, the week and the billing month against an optional cap.
 
 </td>
 </tr>
@@ -98,7 +106,8 @@ stats over a WebSocket.
 
 ### Network control
 Editable gateway network (segment interface and IP, DHCP range, client DNS) with a fail-closed
-kill-switch, applied to the host as real nftables tproxy and policy routing.
+kill-switch, applied to the host as real nftables tproxy and policy routing. Devices can be pinned to a
+fixed address, routed one by one, and counted separately.
 
 </td>
 <td width="50%" valign="top">
@@ -113,8 +122,9 @@ LAN. One credential per device, revocable individually, with a ready-to-import c
 <td colspan="2" valign="top">
 
 ### Operations
-Backup and restore, first-run admin setup, light and dark themes, and boot self-heal so the box comes
-back clean after a reboot.
+Backup and restore — including the copies the gateway keeps on itself, downloadable, with an undo for
+the last restore — first-run admin setup, an optional release check, light and dark themes, and boot
+self-heal so the box comes back clean after a reboot.
 
 </td>
 </tr>
