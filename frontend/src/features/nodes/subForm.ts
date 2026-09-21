@@ -35,6 +35,144 @@ export const DEFAULT_HEADERS: readonly KeyValue[] = [
   { key: "user-agent", value: "v2pi/1.0" },
 ];
 
+/**
+ * A client the subscription fetch can pose as: the headers it sends, and how much of that is known.
+ *
+ * A provider can answer each client differently (a Remnawave panel picks the body by User-Agent) and
+ * count devices by `x-hwid`, so "the gateway" and "a Happ install" can get different feeds. Every row
+ * stays editable after a preset fills it. `{hwid16}` is a per-subscription pseudonym shaped like
+ * Happ's own ID — stable across refreshes, unrelated between feeds, never the host's.
+ *
+ * Sources and what was verified: docs/2026-09-21-client-presets-research.md (local).
+ */
+export interface ClientPreset {
+  id: string;
+  label: string;
+  headers: readonly KeyValue[];
+  /** Said under the select: where the values come from, and which are plausible fill-ins. */
+  note: string;
+}
+
+const HAPP_NOTE = "Header names as Happ sends them (Remnawave's HWID standard, and a captured Android request).";
+
+export const CLIENT_PRESETS: readonly ClientPreset[] = [
+  {
+    id: "v2pi", label: "v2pi (default)", headers: DEFAULT_HEADERS,
+    note: "Coarse OS data and the panel's own user agent. No device ID is sent.",
+  },
+  {
+    id: "happ-android", label: "Happ · Android",
+    headers: [
+      { key: "user-agent", value: "Happ/4.3.0" },
+      { key: "x-hwid", value: "{hwid16}" },
+      { key: "x-device-os", value: "Android" },
+      { key: "x-ver-os", value: "15" },
+      { key: "x-device-model", value: "SM-S921B" },
+      { key: "x-device-locale", value: "ru" },
+      { key: "accept-encoding", value: "gzip" },
+      { key: "connection", value: "close" },
+    ],
+    note: `${HAPP_NOTE} This set matches a real Android request; the version, OS version and model are plausible values.`,
+  },
+  {
+    id: "happ-ios", label: "Happ · iOS",
+    headers: [
+      { key: "user-agent", value: "Happ/4.6.0" },
+      { key: "x-hwid", value: "{hwid16}" },
+      { key: "x-device-os", value: "iOS" },
+      { key: "x-ver-os", value: "26.0" },
+      { key: "x-device-model", value: "iPhone 15 Pro" },
+      { key: "x-device-locale", value: "ru" },
+      { key: "accept-encoding", value: "gzip" },
+    ],
+    note: `${HAPP_NOTE} The iOS user agent is not documented anywhere: it assumes the same "Happ/<version>" as Android.`,
+  },
+  {
+    id: "happ-windows", label: "Happ · Windows",
+    headers: [
+      { key: "user-agent", value: "Happ/4.2.1" },
+      { key: "x-hwid", value: "{hwid16}" },
+      { key: "x-device-os", value: "Windows" },
+      { key: "x-ver-os", value: "11" },
+      { key: "x-device-model", value: "PC" },
+      { key: "x-device-locale", value: "ru" },
+      { key: "accept-encoding", value: "gzip" },
+    ],
+    note: `${HAPP_NOTE} Desktop values are not documented: the user agent, model and ID format are plausible guesses.`,
+  },
+  {
+    id: "happ-macos", label: "Happ · macOS",
+    headers: [
+      { key: "user-agent", value: "Happ/4.6.0" },
+      { key: "x-hwid", value: "{hwid16}" },
+      { key: "x-device-os", value: "macOS" },
+      { key: "x-ver-os", value: "26.0" },
+      { key: "x-device-model", value: "Mac" },
+      { key: "x-device-locale", value: "ru" },
+      { key: "accept-encoding", value: "gzip" },
+    ],
+    note: `${HAPP_NOTE} On a Mac Happ is the App Store app; the user agent, model and ID format are plausible guesses.`,
+  },
+  {
+    id: "v2raytun", label: "v2RayTun · Android",
+    headers: [
+      { key: "user-agent", value: "v2raytun/android" },
+      { key: "x-hwid", value: "{hwid16}" },
+      { key: "x-device-os", value: "Android" },
+      { key: "x-ver-os", value: "15" },
+      { key: "x-device-model", value: "SM-S921B" },
+      { key: "x-app-version", value: "5.25.80" },
+      { key: "accept-encoding", value: "gzip" },
+    ],
+    note: "Header names from v2RayTun's docs, the user agent from a public UA database, the app version from its store listing. The model and ID format are plausible guesses.",
+  },
+  {
+    id: "v2rayng", label: "v2rayNG",
+    headers: [
+      { key: "user-agent", value: "v2rayNG/2.2.6" },
+      { key: "connection", value: "close" },
+      { key: "accept-encoding", value: "gzip" },
+    ],
+    note: "Taken from v2rayNG's own source (latest stable release). It sends no device ID.",
+  },
+  {
+    id: "hiddify", label: "Hiddify",
+    headers: [
+      { key: "user-agent", value: "HiddifyNext/4.1.1 (android) like ClashMeta v2ray sing-box" },
+      { key: "accept-encoding", value: "gzip" },
+    ],
+    note: "Taken from Hiddify's own source (latest release). It sends no device ID.",
+  },
+];
+
+export const CUSTOM_PRESET = "custom";
+
+/** Which preset these rows are, ignoring header-name case and order — or CUSTOM_PRESET once edited. */
+export function matchPreset(headers: readonly KeyValue[]): string {
+  const key = (list: readonly KeyValue[]) => list
+    .filter((row) => row.key.trim())
+    .map((row) => `${row.key.trim().toLowerCase()}\u0000${row.value}`)
+    .sort()
+    .join("\n");
+  const current = key(headers);
+  return CLIENT_PRESETS.find((preset) => key(preset.headers) === current)?.id ?? CUSTOM_PRESET;
+}
+
+/** The rows a preset fills in — fresh copies, so editing one never edits the preset. */
+export function presetHeaders(id: string): KeyValue[] {
+  return (CLIENT_PRESETS.find((preset) => preset.id === id)?.headers ?? []).map((row) => ({ ...row }));
+}
+
+/** Whether moving from `before` to `after` changes the device ID a provider would count. */
+export function changesDeviceId(before: readonly KeyValue[], after: readonly KeyValue[]): boolean {
+  const hwid = (list: readonly KeyValue[]) => list.find((row) => row.key.trim().toLowerCase() === "x-hwid")?.value ?? "";
+  return hwid(before) !== hwid(after);
+}
+
+export const DEVICE_CHANGE_WARNING =
+  "This changes the device ID the provider sees. A provider that limits devices counts it as a new one — "
+  + "it can use up a slot, or push one of your other devices out.";
+
 const rows = z.array(z.object({ key: z.string(), value: z.string() }));
 
 export const subFormSchema = z.object({

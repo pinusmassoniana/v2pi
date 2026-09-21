@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NOW_SEC, REFRESH_ALL, SUBS } from "../../test/fixtures";
-import { DEFAULT_HEADERS, blankSubForm, buildInjection, compactBytes, deleteSubMessage, formToSubIn, importedMessage, injectionToRows, intervalText, minutesToSeconds, quotaFraction, quotaText, refreshAllMessage, refreshOneMessage, secondsToMinutes, skippedText, skippedTotal, subFormSchema, subToForm, type SubFormValues } from "./subForm";
+import { CLIENT_PRESETS, CUSTOM_PRESET, DEFAULT_HEADERS, changesDeviceId, matchPreset, presetHeaders, blankSubForm, buildInjection, compactBytes, deleteSubMessage, formToSubIn, importedMessage, injectionToRows, intervalText, minutesToSeconds, quotaFraction, quotaText, refreshAllMessage, refreshOneMessage, secondsToMinutes, skippedText, skippedTotal, subFormSchema, subToForm, type SubFormValues } from "./subForm";
 
 const issues = (values: SubFormValues) => {
   const result = subFormSchema.safeParse(values);
@@ -140,5 +140,52 @@ describe("A6 · unsupported entries", () => {
       .toBe("imported 2/3 node(s) (clash) · 4 unsupported (Trojan ×4)");
     expect(importedMessage({ added: 3, total: 3, format: "clash", skipped: {} }))
       .toBe("imported 3/3 node(s) (clash)");
+  });
+});
+
+
+describe("client presets", () => {
+  const byId = (id: string) => CLIENT_PRESETS.find((preset) => preset.id === id)!;
+  const header = (id: string, name: string) => byId(id).headers.find((row) => row.key === name)?.value;
+
+  it("every preset names a user agent, and only the clients that send a device ID carry one", () => {
+    for (const preset of CLIENT_PRESETS) expect(header(preset.id, "user-agent"), preset.id).toBeTruthy();
+    for (const id of ["happ-android", "happ-ios", "happ-windows", "happ-macos", "v2raytun"]) {
+      expect(header(id, "x-hwid"), id).toBe("{hwid16}");
+    }
+    for (const id of ["v2pi", "v2rayng", "hiddify"]) expect(header(id, "x-hwid"), id).toBeUndefined();
+    // Every client that asks for compression asks for gzip only — the one encoding the fetcher decodes.
+    for (const preset of CLIENT_PRESETS) {
+      const encoding = header(preset.id, "accept-encoding");
+      if (encoding !== undefined) expect(encoding, preset.id).toBe("gzip");
+    }
+  });
+
+  it("the Happ presets agree with themselves: one OS per preset, stated the way Happ states it", () => {
+    expect(["happ-android", "happ-ios", "happ-windows", "happ-macos"].map((id) => header(id, "x-device-os")))
+      .toEqual(["Android", "iOS", "Windows", "macOS"]);
+    for (const id of ["happ-android", "happ-ios", "happ-windows", "happ-macos"]) expect(header(id, "user-agent")).toMatch(/^Happ\/\d+\.\d+\.\d+$/);
+  });
+
+  it("recognises a preset whatever the header-name case and row order, and Custom once edited", () => {
+    expect(matchPreset(DEFAULT_HEADERS)).toBe("v2pi");
+    expect(matchPreset(blankSubForm().headers)).toBe("v2pi");
+    const reversed = [...presetHeaders("happ-ios")].reverse().map((row) => ({ ...row, key: row.key.toUpperCase() }));
+    expect(matchPreset(reversed)).toBe("happ-ios");
+    expect(matchPreset([...reversed, { key: "", value: "" }])).toBe("happ-ios");      // a blank row is not a header
+    expect(matchPreset([{ key: "user-agent", value: "curl/8" }])).toBe(CUSTOM_PRESET);
+  });
+
+  it("hands out copies, so editing a filled row never edits the preset", () => {
+    const rows = presetHeaders("v2rayng");
+    rows[0]!.value = "changed";
+    expect(header("v2rayng", "user-agent")).toBe("v2rayNG/2.2.6");
+    expect(presetHeaders("no-such-preset")).toEqual([]);
+  });
+
+  it("knows when a change is a new device to the provider", () => {
+    expect(changesDeviceId(DEFAULT_HEADERS, presetHeaders("happ-ios"))).toBe(true);
+    expect(changesDeviceId(presetHeaders("happ-ios"), presetHeaders("happ-android"))).toBe(false);   // the same {hwid16}
+    expect(changesDeviceId(DEFAULT_HEADERS, presetHeaders("hiddify"))).toBe(false);
   });
 });

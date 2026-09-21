@@ -194,3 +194,60 @@ describe("Preview and dry-run (U8, U9)", () => {
     expect(within(sheet).queryByLabelText("Request preview")).toBeNull();
   });
 });
+
+describe("Pose as client (header presets)", () => {
+  const cell = (sheet: HTMLElement, n: number, part: "name" | "value") =>
+    within(sheet).getByRole("textbox", { name: `Header ${n} ${part}` });
+
+  it("a new subscription starts as the panel itself, and a pick fills every row", async () => {
+    const { sheet } = await openForm("add");
+    const client = within(sheet).getByLabelText("Pose as client");
+    expect(client).toHaveValue("v2pi");
+    expect(sheet).toHaveTextContent("No device ID is sent");
+
+    await userEvent.selectOptions(client, "happ-ios");
+
+    expect(cell(sheet, 1, "value")).toHaveValue("Happ/4.6.0");
+    expect(cell(sheet, 2, "name")).toHaveValue("x-hwid");
+    expect(cell(sheet, 2, "value")).toHaveValue("{hwid16}");
+    expect(cell(sheet, 3, "value")).toHaveValue("iOS");
+    // It says what is known and what is not — the iOS user agent is documented nowhere.
+    expect(sheet).toHaveTextContent("The iOS user agent is not documented anywhere");
+    expect(sheet).toHaveTextContent("the TLS handshake is still the gateway's own");
+    // A brand-new subscription has no device to replace, so there is nothing to warn about.
+    expect(within(sheet).queryByRole("alert")).toBeNull();
+  });
+
+  it("an edited row turns the choice to Custom", async () => {
+    const { sheet } = await openForm("add");
+    await userEvent.selectOptions(within(sheet).getByLabelText("Pose as client"), "v2rayng");
+    expect(cell(sheet, 1, "value")).toHaveValue("v2rayNG/2.2.6");
+
+    await userEvent.type(cell(sheet, 1, "value"), "-mod");
+
+    expect(within(sheet).getByLabelText("Pose as client")).toHaveValue("custom");
+    expect(sheet).toHaveTextContent("Edited by hand");
+  });
+
+  it("the preset headers are what the request carries", async () => {
+    const { api$, sheet } = await openForm("work");
+    await userEvent.selectOptions(within(sheet).getByLabelText("Pose as client"), "hiddify");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Preview request" }));
+
+    await waitFor(() => expect(api$.previewSub).toHaveBeenCalledWith(SUBS[0]!.url, {
+      headers: { "user-agent": "HiddifyNext/4.1.1 (android) like ClashMeta v2ray sing-box", "accept-encoding": "gzip" },
+      query: SUBS[0]!.injection.query,
+    }));
+  });
+
+  it("on an existing subscription, a new device ID is said before it is saved", async () => {
+    const { sheet } = await openForm("work");            // stored without any x-hwid
+    await userEvent.selectOptions(within(sheet).getByLabelText("Pose as client"), "happ-android");
+
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("counts it as a new one");
+
+    // Back to what is stored: no change of device, no warning.
+    await userEvent.selectOptions(within(sheet).getByLabelText("Pose as client"), "v2pi");
+    expect(within(sheet).queryByRole("alert")).toBeNull();
+  });
+});

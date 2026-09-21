@@ -1,6 +1,6 @@
 import json
 from pi_gw_panel.models import Node
-from pi_gw_panel.subs.parsers import note_skip, safe_port
+from pi_gw_panel.subs.parsers import note_skip, safe_port, xray_json
 
 
 def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -> list[Node]:
@@ -10,6 +10,9 @@ def parse(body: str, *, limit: int | None = None, skipped: dict | None = None) -
 def parse_obj(data, *, limit: int | None = None, skipped: dict | None = None) -> list[Node]:
     """Build nodes from an already-decoded JSON object — lets the dispatcher hand over the
     object it parsed to sniff the format, avoiding a second json.loads on a 5MB body (P3)."""
+    # A Remnawave XRAY_JSON feed is JSON too, but an array of whole client configs, not of nodes.
+    if xray_json.looks_like(data):
+        return xray_json.parse_obj(data, limit=limit, skipped=skipped)
     items = data if isinstance(data, list) else data.get("nodes", []) if isinstance(data, dict) else []
     nodes = []
     for it in items:

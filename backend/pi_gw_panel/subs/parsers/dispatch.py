@@ -1,6 +1,6 @@
 import json
 from pi_gw_panel.models import Node
-from pi_gw_panel.subs.parsers import base64_vless, clash_yaml, json_nodes
+from pi_gw_panel.subs.parsers import base64_vless, clash_yaml, json_nodes, xray_json
 
 
 def detect(body: str) -> str:
@@ -9,10 +9,11 @@ def detect(body: str) -> str:
     text = body.strip()
     if text[:1] in ("[", "{"):
         try:
-            json.loads(text)
-            return "json"
+            data = json.loads(text)
         except ValueError:
-            pass
+            data = None
+        if data is not None:
+            return "xray-json" if xray_json.looks_like(data) else "json"
     if "proxies:" in text:
         return "clash"
     return "base64/vless"

@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 import urllib.parse
+import zlib
 
 from pi_gw_panel.subs.inject import build_request
 
@@ -300,6 +301,33 @@ def _request_once(parts, pinned_ip: str, headers: dict, proxy: str | None,
             sock.close()
 
 
+def _decode_content(raw: bytes, headers, max_bytes: int) -> bytes:
+    """Undo a gzip `Content-Encoding`. Every client a header preset imitates sends
+    `Accept-Encoding: gzip`, so a provider may well answer compressed — and a compressed body read
+    as text is noise that parses into zero nodes.
+
+    Decompressed under the same cap as the wire body: a megabyte of gzip can expand a thousandfold,
+    and the cap exists for exactly what a feed could make this box hold. An encoding nobody asked
+    for is refused by name rather than parsed as garbage.
+    """
+    encoding = (_header(headers, "content-encoding") or "").strip().lower()
+    if encoding in ("", "identity"):
+        return raw
+    if encoding not in ("gzip", "x-gzip"):
+        raise ValueError(f"subscription body uses an unsupported content-encoding: {encoding}")
+    decoder = zlib.decompressobj(zlib.MAX_WBITS | 16)          # gzip framing only
+    try:
+        out = decoder.decompress(raw, max_bytes + 1)
+    except zlib.error as exc:
+        raise ValueError(f"subscription body is not valid gzip: {exc}") from exc
+    if len(out) > max_bytes or decoder.unconsumed_tail:
+        raise ValueError(
+            f"subscription body exceeds the {max_bytes // 1024} KiB cap once decompressed")
+    if not decoder.eof:
+        raise ValueError("subscription body was truncated (incomplete gzip stream)")
+    return out
+
+
 def _charset(headers) -> str:
     """The declared charset, but only if we recognise it. The label is feed-controlled and
     ``bytes.decode`` reaches every registered codec by name — ``idna``/``punycode`` raise
@@ -378,6 +406,7 @@ def _http_get(url: str, headers: dict, proxy: str | None, timeout: float,
             continue
         if status < 200 or status >= 300:
             raise ValueError(f"subscription endpoint returned HTTP {status}")
+        raw = _decode_content(raw, response_headers, max_bytes)
         if raw_body:
             # A geo .dat is not text: decoding it with errors="replace" would silently rewrite
             # every byte that is not valid UTF-8, and the checksum would be the only thing that

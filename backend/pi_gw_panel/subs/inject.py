@@ -5,6 +5,9 @@ import urllib.parse
 from dataclasses import dataclass
 
 
+_HWID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
 @dataclass
 class BuiltRequest:
     method: str
@@ -63,10 +66,16 @@ def host_tokens(machine_id: str, *, app_secret: str = "", subscription_id=None) 
     key_source = app_secret if app_secret and app_secret != "dev-insecure-secret" else machine_id
     key = key_source.encode("utf-8")
     pseudonym = hmac.new(key, subject.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    # A client-shaped HWID for the header presets: 16 lowercase letters and digits, the shape a
+    # captured Happ request carries (the value's shape is all that matters here). Same key, same subject, so it is stable across refreshes and
+    # unrelated between subscriptions — a provider that counts devices sees one per feed.
+    digest = hmac.new(key, ("hwid16:" + subject).encode("utf-8"), hashlib.sha256).digest()
+    hwid16 = "".join(_HWID_ALPHABET[b % len(_HWID_ALPHABET)] for b in digest[:16])
     release = platform.release()
     machine = platform.machine()
     return {
         "machine_id": pseudonym,
+        "hwid16": hwid16,
         "device_os": platform.system().lower(),
         "device_ver": release.split(".", 1)[0],
         "device_model": "arm" if machine.lower().startswith(("arm", "aarch")) else "other",

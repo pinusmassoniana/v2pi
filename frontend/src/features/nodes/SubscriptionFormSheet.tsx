@@ -9,6 +9,7 @@ import { useUnsavedGuard } from "../../app/guard";
 import { closeGuarded } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { FieldShell, TextField } from "../../components/ui/Field";
+import { Select } from "../../components/ui/Select";
 import { ProfileSelect } from "../../components/ui/ProfileSelect";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { Toggle } from "../../components/ui/Toggle";
@@ -17,7 +18,10 @@ import { FORM_CHANGED, isStaleRun, runKey } from "../../lib/staleResult";
 import { DryRunResult } from "./DryRunResult";
 import { KeyValueRowsEditor } from "./KeyValueRowsEditor";
 import { RequestPreview } from "./RequestPreview";
-import { blankSubForm, buildInjection, formToSubIn, subFormSchema, subToForm, type SubFormValues } from "./subForm";
+import {
+  CLIENT_PRESETS, CUSTOM_PRESET, DEVICE_CHANGE_WARNING, blankSubForm, buildInjection, changesDeviceId, formToSubIn, matchPreset,
+  presetHeaders, subFormSchema, subToForm, type SubFormValues,
+} from "./subForm";
 
 // previewSubNodes' own fetch is the slow one — the backend budgets 20 s for it; give the client a
 // margin over that instead of racing it with the shared 20 s default (REQUEST_TIMEOUT_MS in client.ts).
@@ -32,10 +36,45 @@ const IDLE: Peek<never> = { busy: false, data: null, error: null, target: null }
  * U5 edit and U7 add, with U8 Preview request and U9 Dry-run parse. Preview and dry-run are peeks: they change
  * nothing, so they invalidate nothing and never touch what was typed.
  */
+/**
+ * Which client the fetch poses as. Picking one fills the header rows — they stay editable, and an edit
+ * turns the select to "Custom". On an existing subscription, a pick that changes the device ID says
+ * what that means before anything is saved.
+ */
+function ClientPresetField({ headers, storedHeaders, onPick }: {
+  headers: SubFormValues["headers"];
+  /** The rows as saved, on edit; null on add, where there is no device yet to replace. */
+  storedHeaders: SubFormValues["headers"] | null;
+  onPick: (id: string) => void;
+}) {
+  const current = matchPreset(headers);
+  const preset = CLIENT_PRESETS.find((item) => item.id === current);
+  const deviceChanged = storedHeaders !== null && changesDeviceId(storedHeaders, headers);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <FieldShell id="sub-form-client" label="Pose as client">
+        <Select id="sub-form-client" value={current} onChange={(event) => { if (event.target.value !== CUSTOM_PRESET) onPick(event.target.value); }}>
+          {CLIENT_PRESETS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          <option value={CUSTOM_PRESET} disabled>Custom</option>
+        </Select>
+      </FieldShell>
+      <p className="px-1 text-[11px] leading-relaxed text-t3">
+        {preset ? preset.note : "Edited by hand — no preset matches these headers."}{" "}
+        Only the HTTP request is imitated; the TLS handshake is still the gateway's own.
+      </p>
+      {deviceChanged ? (
+        <p role="alert" className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-[11.5px] leading-relaxed text-t1">
+          {DEVICE_CHANGE_WARNING}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; onClose: () => void }) {
   const edit = sub !== undefined;
   const [defaults] = useState<SubFormValues>(() => (edit ? subToForm(sub) : blankSubForm()));
-  const { register, control, handleSubmit, formState, getValues, trigger } = useForm<SubFormValues>({
+  const { register, control, handleSubmit, formState, getValues, setValue, trigger } = useForm<SubFormValues>({
     resolver: zodResolver(subFormSchema),
     defaultValues: defaults,
   });
@@ -149,6 +188,11 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
             </>
           ) : null}
 
+          <ClientPresetField
+            headers={liveHeaders ?? []}
+            storedHeaders={edit ? defaults.headers : null}
+            onPick={(id) => setValue("headers", presetHeaders(id), { shouldDirty: true })}
+          />
           <KeyValueRowsEditor name="headers" control={control} register={register} legend="Headers" item="Header" addLabel="Add header" keyPlaceholder="header" empty="No headers" />
           <p className="-mt-1.5 px-1 text-[11px] text-t3">Detailed device fingerprint placeholders are opt-in; the default sends only coarse OS data.</p>
           <KeyValueRowsEditor name="queries" control={control} register={register} legend="Query params" item="Query param" addLabel="Add param" keyPlaceholder="key" empty="No query params" />
