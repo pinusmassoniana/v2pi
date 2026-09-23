@@ -106,7 +106,8 @@ def run(state, now: float, apply_fn=apply_node, real_through=probe.real_through_
     Returns the new active node_id on a successful switch, else None.
 
     Candidates require fresh health and pass a throwaway-Xray real request before apply;
-    a failed preflight/apply falls through to the next ranked candidate."""
+    a failed preflight/apply falls through to the next ranked candidate. Raises RuntimeError
+    when not one candidate's preflight could even run."""
     store = state.store
     if (store.get_setting("failover_enabled") or "1") != "1":
         return None
@@ -144,6 +145,7 @@ def run(state, now: float, apply_fn=apply_node, real_through=probe.real_through_
     )[:MAX_PREFLIGHTS]
     checked_at = datetime.fromtimestamp(now, timezone.utc).isoformat()
     probe_url = store.get_setting("health_probe_url") or "https://api.ipify.org?format=json"
+    preflight_errors: list[str] = []
     for node in candidates:
         with apply_lock:
             cur_v = store.get_setting("active_node_id")
@@ -158,8 +160,14 @@ def run(state, now: float, apply_fn=apply_node, real_through=probe.real_through_
                 node, state.xray_bin, probe_url, timeout=PREFLIGHT_TIMEOUT,
                 allow_private=probe.operator_added(node),
             )
-        except Exception:
-            real_ok, real_ms, egress, egress6 = False, None, None, None
+        except Exception as exc:
+            # Our failure (no xray to spawn, no temp file, a bug), not the node's: logged, the
+            # node's health left as it was, and on to the next candidate. If NO candidate could be
+            # tried, the raise after the loop reaches the liveness loop's "failover evaluation
+            # failed" event instead of reading as "all nodes down".
+            log.warning("failover: the preflight of node %s could not run", node.id, exc_info=True)
+            preflight_errors.append(f"node {node.id}: {exc}")
+            continue
         with apply_lock:
             cur_v = store.get_setting("active_node_id")
             if (int(cur_v) if cur_v else None) != active_id:
@@ -177,6 +185,8 @@ def run(state, now: float, apply_fn=apply_node, real_through=probe.real_through_
             # it on one successful preflight (see DEMOTION_GRACE).
             store.set_setting("last_demoted_node_id", str(active_id) if active_id is not None else "")
             return node.id
+    if preflight_errors and len(preflight_errors) == len(candidates):
+        raise RuntimeError("no failover preflight could run: " + "; ".join(preflight_errors))
     _maybe_report_all_down(
         store, health, nodes, active_id, hysteresis, cooldown, now, last_failover_at,
         candidates_exhausted=True, active_ttl=active_ttl, standby_ttl=standby_ttl,

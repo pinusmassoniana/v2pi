@@ -9,24 +9,28 @@ kinds: connect · disconnect · xray-stop · xray-restart · failover · all-nod
 `record()` keeps its old contract to the letter — same signature, and it NEVER raises, because
 telemetry may not break a connection action. Only the storage changed.
 """
+import logging
 import time
+
+log = logging.getLogger("pi_gw_panel")
 
 _CAP = 40      # what `recent()` returns by default: the Network card's feed, unchanged
 
 
 def record(store, kind: str, detail: str = "", now: float | None = None) -> None:
-    """Append an event. Never raises."""
+    """Append an event. Never raises — but a lost event is logged, not dropped unseen."""
     try:
         store.add_event(int(time.time() if now is None else now), kind, detail)
     except Exception:
-        pass
+        log.warning("could not record the %s event (%s)", kind, detail, exc_info=True)
 
 
 def recent(store, limit: int = _CAP) -> list[dict]:
-    """The recorded events, oldest→newest; [] when the store cannot answer."""
+    """The recorded events, oldest→newest; [] (and a log line) when the store cannot answer."""
     try:
         return store.list_events(limit=limit)
     except Exception:
+        log.warning("could not read the connection events", exc_info=True)
         return []
 
 

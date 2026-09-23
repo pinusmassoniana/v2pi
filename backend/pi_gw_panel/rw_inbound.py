@@ -14,10 +14,13 @@ import base64
 import binascii
 import ipaddress
 import json
+import logging
 import re
 import secrets
 import uuid
 from urllib.parse import quote
+
+log = logging.getLogger("pi_gw_panel")
 
 # k/v defaults. Absent key ⇒ this value; `rw_private_key`/`rw_endpoint` have no default on
 # purpose — without them the feature cannot work and resolve() returns None.
@@ -244,6 +247,22 @@ def validate_email(email: str) -> str:
 
 # --- clients ----------------------------------------------------------------------------
 
+def _roster(store) -> tuple[list, str]:
+    """(stored entries, why they could not be read — "" when they could)."""
+    try:
+        raw = json.loads(_get(store, "rw_clients"))
+    except (TypeError, ValueError):
+        return [], "the stored client list is not valid JSON"
+    if not isinstance(raw, list):
+        return [], "the stored client list is not a list"
+    return raw, ""
+
+
+def roster_issue(store) -> str:
+    """What `get_clients` returning [] would hide: a roster that exists but cannot be read."""
+    return _roster(store)[1]
+
+
 def get_clients(store) -> list[dict]:
     """Every client we would put in the config or in a generated profile.
 
@@ -251,13 +270,11 @@ def get_clients(store) -> list[dict]:
     repaired: a hand-edited DB can put anything here, and both fields are interpolated into the
     `[Proxy]` line and the `vless://` link. Dropping errs toward less access, never more.
     (A backup can no longer put anything here — the roster is never restored from a document.)
+    An unreadable roster serves no one, as before, but no longer silently: see `roster_issue`.
     """
-    try:
-        raw = json.loads(_get(store, "rw_clients"))
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(raw, list):
-        return []
+    raw, issue = _roster(store)
+    if issue:
+        log.warning("remote access: %s — serving no clients until it is fixed", issue)
     out = []
     for c in raw:
         if not isinstance(c, dict):

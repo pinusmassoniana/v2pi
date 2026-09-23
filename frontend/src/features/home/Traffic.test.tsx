@@ -86,6 +86,15 @@ describe("Traffic › KPIs", () => {
     expect(region("Uptime")).toHaveTextContent("Uptime—not connected");
   });
 
+  it("H1: a failover count the gateway could not take reads unknown, never a reassuring 0", async () => {
+    const api$ = mockApi();
+    api$.getStatus.mockResolvedValue({ ...STATUS, failovers_24h: null });
+    api$.getNetwork.mockResolvedValue({ ...NETWORK, events: [] });
+    renderApp("/traffic");
+    const failovers = await screen.findByRole("region", { name: "Failovers · 24h" });
+    await waitFor(() => expect(failovers).toHaveTextContent("—none recorded"));
+  });
+
   it("H1: uptime reads unknown while health is not fresh, as the topbar does", async () => {
     await openTraffic({ tunnel_online: false, active_health_fresh: false });
     await waitFor(() => expect(region("Uptime")).toHaveTextContent("Uptime—unknown"));

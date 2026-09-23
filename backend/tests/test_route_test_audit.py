@@ -128,7 +128,10 @@ def test_the_answer_carries_what_was_asked(settings, stub_xray, monkeypatch):
     ("1.2.3.4:53", "1.2.3.4", 53),
     ("2606:4700:4700::1111", "2606:4700:4700::1111", 443),      # bare v6: the colons are the address
     ("[2606:4700:4700::1111]:443", "2606:4700:4700::1111", 443),
-    ("example.com:not-a-port", "example.com", 443),
+    # A port that is not 1-65535 is refused (None), never answered for as 443 or clamped.
+    ("example.com:not-a-port", "example.com", None),
+    ("example.com:70000", "example.com", None),
+    ("example.com:0", "example.com", None),
 ])
 def test_destinations_are_split_the_way_the_field_is_typed(destination, host, port):
     from pi_gw_panel.api.routes import _split_destination

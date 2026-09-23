@@ -97,8 +97,14 @@ exit 0
         try:
             with open(self.prefix_file) as f:
                 prefix = f.read().strip() or None
+        except FileNotFoundError:
+            prefix = None                 # the hook's `rm -f` on expiry: the delegation is gone
         except OSError:
-            prefix = None
+            # Unreadable is not gone: acting on it would re-address the segment to the fallback
+            # and back again on the next good read. Keep what we had, and say why.
+            _log.warning("could not read the delegated prefix from %s", self.prefix_file,
+                         exc_info=True)
+            return
         if prefix == self._last_prefix:
             return
         self._last_prefix = prefix

@@ -34,18 +34,28 @@ NM_CONF_PATH = "/etc/NetworkManager/conf.d/99-v2pi.conf"
 
 
 def _write_file(path: str, text: str) -> None:
+    """Replace `path` whole — a sibling temp file renamed over it — so NetworkManager never reads a
+    half-written drop-in. Best-effort, as before, but a failure is logged rather than dropped."""
+    tmp = f"{path}.tmp"
     try:
-        with open(path, "w") as f:
+        with open(tmp, "w") as f:
             f.write(text)
+        os.replace(tmp, path)
     except OSError:
-        pass
+        _log.warning("could not write %s", path, exc_info=True)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _remove_file(path: str) -> None:
     try:
         os.remove(path)
+    except FileNotFoundError:
+        pass                              # already gone: the state this was asked for
     except OSError:
-        pass
+        _log.warning("could not remove %s", path, exc_info=True)
 
 
 # --- durable records: the one place a settings write becomes a fact ---------------------------
@@ -2736,8 +2746,9 @@ def _nm_reload(run, nm_active) -> None:
     if nm_active():
         try:
             run(["nsenter", "-t", "1", "-m", "-n", "--", "nmcli", "general", "reload"])
-        except (subprocess.CalledProcessError, OSError):
-            pass
+        except (subprocess.CalledProcessError, OSError) as exc:
+            _log.warning("NetworkManager reload failed; the drop-in applies at its next restart: %s",
+                         (getattr(exc, "stderr", "") or "").strip() or exc)
 
 
 def ensure_nm_unmanaged(seg: str, run=_run, write_file=None, nm_active=None,

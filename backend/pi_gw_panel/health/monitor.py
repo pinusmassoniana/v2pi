@@ -31,6 +31,15 @@ class LoopErrorReporter:
         self._last = now
         events.record(store, self._kind, detail, now=now)
 
+    async def record_off_loop(self, store, detail: str) -> None:
+        """`record` for a caller on the event loop: the event write takes the store's lock, which a
+        request thread can hold across a whole apply. Never raises — the loop reporting its own
+        error must outlive that report."""
+        try:
+            await asyncio.to_thread(self.record, store, detail)
+        except Exception:
+            log.warning("could not record a loop error: %s", detail, exc_info=True)
+
 
 class HealthMonitor:
     """Background asyncio loop (mirrors subs/scheduler.py): every `health_interval`
@@ -267,7 +276,14 @@ class HealthMonitor:
                 raise
             except Exception as exc:
                 log.warning("health monitor tick could not run", exc_info=True)
-                self._errors.record(self._state.store, f"health sweep could not run: {exc}")
+                await self._errors.record_off_loop(self._state.store,
+                                                   f"health sweep could not run: {exc}")
             if self._stop_event.is_set():
                 return
-            await asyncio.sleep(self._interval())
+            # `_interval()` reads the store, so off the loop like the tick itself.
+            try:
+                interval = await asyncio.to_thread(self._interval)
+            except Exception:                 # no worker thread to be had: this loop must go on
+                log.warning("health monitor: could not read the sweep interval", exc_info=True)
+                interval = DEFAULT_INTERVAL
+            await asyncio.sleep(interval)

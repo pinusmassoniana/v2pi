@@ -374,7 +374,8 @@ class LivenessLoop:
                 raise
             except Exception as exc:
                 log.warning("liveness tick could not run", exc_info=True)
-                self._errors.record(self._state.store, f"liveness tick could not run: {exc}")
+                await self._errors.record_off_loop(self._state.store,
+                                                   f"liveness tick could not run: {exc}")
             if self._stop_event.is_set():
                 return
             await asyncio.sleep(self._interval)

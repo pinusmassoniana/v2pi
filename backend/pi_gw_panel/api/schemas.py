@@ -212,7 +212,7 @@ class StatusOut(BaseModel):
     eligible_standby_count: int
     health_enabled: bool
     failover_enabled: bool
-    failovers_24h: int
+    failovers_24h: int | None      # null: the count itself failed (logged) — never a made-up 0
 
 
 class SubscriptionIn(NonNullPatch):

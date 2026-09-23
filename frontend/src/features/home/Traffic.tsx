@@ -179,7 +179,8 @@ export function Traffic() {
   const nowMs = serverNow();
   const activeId = status.data?.active_node_id ?? null;
   const history = network.data ? failoverHistory(network.data.events, status.data?.last_failover_at) : [];
-  const failovers = status.data?.failovers_24h ?? 0;
+  // null: the gateway could not count them (it logs why) — "—", never a reassuring 0.
+  const failovers = status.data?.failovers_24h === null ? null : (status.data?.failovers_24h ?? 0);
   // "last …" under the count: the newest event the count itself counts (kind exactly "failover", as the backend's
   // failovers_24h does) — a manual switch is not a failover.
   const lastFailover = network.data
@@ -193,8 +194,8 @@ export function Traffic() {
         <ActiveLatencyKpi activeNodeId={activeId} />
         <Kpi
           label="Failovers · 24h"
-          value={String(failovers)}
-          tone={failovers > 0 ? "warn" : "neutral"}
+          value={failovers === null ? "—" : String(failovers)}
+          tone={failovers ? "warn" : "neutral"}
           sub={lastFailover ? <>last <span className="font-mono text-t2">{whenLabel(lastFailover.ts, nowMs)}</span></> : "none recorded"}
           className="xl:col-span-3"
         />

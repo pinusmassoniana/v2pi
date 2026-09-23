@@ -1,7 +1,10 @@
 import ipaddress
+import logging
 import os
 from dataclasses import dataclass
 from pi_gw_panel.config import Settings
+
+_log = logging.getLogger("pi_gw_panel")
 
 
 def _abs_leases(path: str, data_dir: str) -> str:
@@ -100,10 +103,13 @@ class NetPlan:
 
 def _reservations(store):
     """Never let a reservation read break the plan every other caller needs: a gateway with an
-    unreadable table still has a segment to serve."""
+    unreadable table still has a segment to serve. Said out loud, though — that plan renders no
+    static leases and no per-device counters."""
     try:
         return store.list_reservations()
     except Exception:
+        _log.warning("pinned devices could not be read: this plan has no DHCP reservations and "
+                     "no per-device counters", exc_info=True)
         return []
 
 

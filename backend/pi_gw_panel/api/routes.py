@@ -496,7 +496,9 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     try:
         failovers_24h = state.store.count_events("failover", int(now) - 86400)
     except Exception:
-        failovers_24h = 0
+        # Unknown, not zero: "0 failovers" is the one reassuring answer that must not be made up.
+        logger.warning("could not count the last 24 h of failovers", exc_info=True)
+        failovers_24h = None
     # `running: true` says a process exists, not that it is serving the config on disk. The
     # comparison lives in netcheck so /api/ready decides on the same answer this reports, and it
     # costs one os.stat per poll: the digest of the file is memoized on (inode, mtime_ns, size),
@@ -1161,9 +1163,10 @@ def routing_validate(body: RoutingIn, request: Request,
     return RoutingValidateOut(ok=True)
 
 
-def _split_destination(raw: str) -> tuple[str, int]:
+def _split_destination(raw: str) -> tuple[str, int | None]:
     """"example.com", "1.2.3.4:443", "[2606:4700::1111]:443" → (host, port). A bare IPv6 address
-    is taken whole: its colons are part of the address, not a port separator."""
+    is taken whole: its colons are part of the address, not a port separator. A port that is not
+    1-65535 comes back as None, for the caller to refuse — never quietly answered for as 443."""
     text = (raw or "").strip()
     if text.startswith("["):
         host, _, rest = text[1:].partition("]")
@@ -1174,10 +1177,13 @@ def _split_destination(raw: str) -> tuple[str, int]:
         host, _, port = text.rpartition(":")
         if not host:
             host, port = text, ""
-    try:
-        return host.strip(), max(1, min(65535, int(port))) if port else 443
-    except ValueError:
+    if not port:
         return host.strip(), 443
+    try:
+        number = int(port)
+    except ValueError:
+        return host.strip(), None
+    return host.strip(), number if 1 <= number <= 65535 else None
 
 
 @router.post("/routing/test", response_model=RouteTestOut)
@@ -1192,10 +1198,13 @@ def routing_test(body: RouteTestIn, request: Request,
     """
     state = get_state(request)
     host, port = _split_destination(body.destination)
-    out = RouteTestOut(ok=False, host=host, port=port, network=body.network,
+    out = RouteTestOut(ok=False, host=host, port=port or 0, network=body.network,
                        source_ip=body.source_ip)
     if not host:
         out.error = "type a host, an address, or address:port"
+        return out
+    if port is None:
+        out.error = "the port must be a number from 1 to 65535"
         return out
     client = getattr(state, "routing_client", None)
     if client is None:
@@ -2197,6 +2206,9 @@ def _rw_out(state, *, revocation: str = "") -> RwOut:
         hosts = rw_mod.get_hosts(store)
     except ValueError as exc:
         hosts, state_error = {}, f"{state_error}; {exc}".lstrip("; ")
+    roster_issue = rw_mod.roster_issue(store)
+    if roster_issue:
+        state_error = f"{state_error}; {roster_issue}".lstrip("; ")
     return RwOut(
         enabled=get("rw_enabled") == "1",
         port=port,

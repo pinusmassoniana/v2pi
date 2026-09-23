@@ -291,22 +291,34 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
         logging.getLogger("pi_gw_panel").warning(
             "session_secret unset/dev-default — using an ephemeral secret (sessions reset on restart)")
     # SameSite=strict (first-party SPA) + a bounded lifetime, defense-in-depth atop CSRF.
+    def _audit_actor(request) -> str:
+        try:
+            principal = _token_principal(request)
+            if principal is not None:
+                return f"token:{principal.get('prefix', principal['id'])}"
+            if request.session.get(SESSION_AUTHED):
+                return f"user:{app_state.store.get_setting('auth_username') or '?'}"
+        except Exception:
+            logging.getLogger("pi_gw_panel").debug(
+                "audit principal resolution failed", exc_info=True)
+        return "anon"
+
+    def _audit_write(actor: str, method: str, path: str, status: int) -> None:
+        try:
+            app_state.store.add_audit(int(time.time()), actor, method, path, status)
+        except Exception:
+            logging.getLogger("pi_gw_panel").debug("audit log write failed", exc_info=True)
+
     @app.middleware("http")
     async def audit_mw(request, call_next):
-        """Record the pre-endpoint principal and the final result of every API mutation."""
+        """Record the pre-endpoint principal and the final result of every API mutation.
+
+        Both store touches go through the threadpool, as the traffic socket's do below: inline,
+        they take the store's connection lock ON the event loop, and every mutation made while a
+        request thread holds it across an apply would stall the whole panel for that long."""
         mutating = (request.method in ("POST", "PUT", "PATCH", "DELETE")
                     and request.url.path.startswith("/api"))
-        actor = "anon"
-        if mutating:
-            try:
-                principal = _token_principal(request)
-                if principal is not None:
-                    actor = f"token:{principal.get('prefix', principal['id'])}"
-                elif request.session.get(SESSION_AUTHED):
-                    actor = f"user:{app_state.store.get_setting('auth_username') or '?'}"
-            except Exception:
-                logging.getLogger("pi_gw_panel").debug(
-                    "audit principal resolution failed", exc_info=True)
+        actor = await anyio.to_thread.run_sync(_audit_actor, request) if mutating else "anon"
         status = 500
         try:
             response = await call_next(request)
@@ -314,12 +326,10 @@ def create_app(settings: Settings, state: AppState | None = None) -> FastAPI:
             return response
         finally:
             if mutating:
-                try:
-                    app_state.store.add_audit(
-                        int(time.time()), actor, request.method, request.url.path, status)
-                except Exception:
-                    logging.getLogger("pi_gw_panel").debug(
-                        "audit log write failed", exc_info=True)
+                # Shielded: a request cancelled mid-flight (the client went away) still mutated.
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(
+                        _audit_write, actor, request.method, request.url.path, status)
 
     # Session must wrap the audit middleware so it can resolve the principal before logout.
     app.add_middleware(SessionMiddleware, secret_key=secret,

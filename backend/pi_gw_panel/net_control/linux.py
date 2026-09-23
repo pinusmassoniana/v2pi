@@ -117,22 +117,25 @@ class LinuxBackend:
             script += v6
         return script
 
-    def read_counters(self) -> dict[str, tuple[int, int]]:
-        """B1: every named counter in the panel's table → (packets, bytes).
+    def read_counters(self) -> dict[str, tuple[int, int]] | None:
+        """B1: every named counter in the panel's table → (packets, bytes); None when the read
+        failed.
 
         Read-only and failure-tolerant: the sampler runs every minute on a box whose table may
         not exist yet (tunnel never started), and a missing table is "nothing to count", not an
-        error worth waking anyone for.
+        error worth waking anyone for. But a failed read is not an empty table: None tells the
+        sampler to keep its baseline, where {} made the next good reading book every counter's
+        whole value into one minute.
         """
         try:
             result = self._run(["nft", "-j", "list", "counters", "table", "ip", NFT_TABLE])
         except Exception:
-            return {}
+            return None
         raw = getattr(result, "stdout", "") or ""
         try:
             doc = json.loads(raw)
         except ValueError:
-            return {}
+            return None
         out: dict[str, tuple[int, int]] = {}
         for item in doc.get("nftables", []):
             counter = item.get("counter") if isinstance(item, dict) else None

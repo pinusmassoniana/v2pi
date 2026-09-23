@@ -69,6 +69,8 @@ class DeviceSampler:
         if read is None:
             return 0
         current = read()
+        if current is None:          # the read failed: keep the baseline, or the next good reading
+            return 0                 # books each counter's whole value into this one minute
         moved = deltas(self._previous, current)
         self._previous = current
         if not moved:

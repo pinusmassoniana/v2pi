@@ -126,6 +126,9 @@ class TrafficRecorder:
         self._latest: dict | None = None
         self._latest_error = ""
         self._latest_lock = threading.Lock()
+        # Held by a tick and by the flush on stop: a tick abandoned by stop()'s cancel keeps running
+        # on its worker thread, and must not race the final flush over the same pending bytes.
+        self._tick_lock = threading.Lock()
 
     def _warn(self, kind: str, msg: str) -> None:
         """Surface a failure at a level that actually reaches a handler, at most once a minute
@@ -296,28 +299,42 @@ class TrafficRecorder:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        try:
-            self.flush_total()        # don't lose the last batch of data-used on shutdown
-            self.flush_minute(include_current=True)
-        except Exception:
-            self._warn("stop", "data-used flush on stop failed")
+        await asyncio.to_thread(self._flush_on_stop)
 
-    async def _run(self) -> None:
-        loop = asyncio.get_running_loop()
-        next_t = time.monotonic()                   # fixed-deadline cadence base (monotonic → NTP-immune)
-        while True:
+    def _flush_on_stop(self) -> None:
+        with self._tick_lock:
+            try:
+                self.flush_total()        # don't lose the last batch of data-used on shutdown
+                self.flush_minute(include_current=True)
+            except Exception:
+                self._warn("stop", "data-used flush on stop failed")
+
+    def _tick(self) -> float:
+        """One sample and its bookkeeping; returns the seconds until the next one.
+
+        Runs on a worker thread, all of it: the settings reads and the data-used flushes reach the
+        SQLite store, whose lock a request thread holds across a whole xray/nft apply — taken on
+        the event loop, that stalls the entire panel for as long (see the traffic WebSocket in
+        app.py)."""
+        with self._tick_lock:
             interval = 1.0
             try:
                 interval = bounded_interval_ms(self._interval_ms()) / 1000.0
                 if self._stats_enabled():
                     if self._running():
-                        out = await loop.run_in_executor(None, self._sampler.sample)
-                        self.record_sample(out)
+                        self.record_sample(self._sampler.sample())
                     else:
                         self.record_error("xray is not running")
             except Exception as exc:
                 self.record_error(exc)
                 self._warn("sample", "traffic history sample failed")
+            return interval
+
+    async def _run(self) -> None:
+        loop = asyncio.get_running_loop()
+        next_t = time.monotonic()                   # fixed-deadline cadence base (monotonic → NTP-immune)
+        while True:
+            interval = await loop.run_in_executor(None, self._tick)
             # sleep to the next deadline so sample latency doesn't stretch the real period
             next_t += interval
             now = time.monotonic()

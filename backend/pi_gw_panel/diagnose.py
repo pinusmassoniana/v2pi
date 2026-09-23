@@ -14,6 +14,7 @@ and what that is consistent with — never "you are being throttled".
 
 Never scheduled (D4): one diagnosis at a time, started by a person, with a hard overall bound.
 """
+import http.client
 import json
 import logging
 import os
@@ -25,7 +26,8 @@ import threading
 import time
 import urllib.request
 
-from pi_gw_panel.health.probe import _free_port, _probe_outbound, _wait_ready, resolve_endpoint
+from pi_gw_panel.health.probe import (_GuardedHTTPHandler, _GuardedHTTPSHandler, _fetcher,
+                                      _free_port, _probe_outbound, _wait_ready, resolve_endpoint)
 from pi_gw_panel.proc import stop_process
 
 logger = logging.getLogger(__name__)
@@ -82,8 +84,13 @@ def _transfer(proxy: str, url: str, max_bytes: int, deadline: float) -> dict:
     and then for as much of the body as the budget and `max_bytes` allow."""
     out: dict = {"ttfb_ms": None, "bytes": 0, "transfer_ms": 0, "kbps": None,
                  "stalled": False, "error": ""}
+    # `timeout=` below is urllib's per-recv IDLE timer: a peer that drips a byte at a time — which
+    # is what throttling looks like — resets it forever, and one 32 KiB read outlasts the whole
+    # budget. The guard makes TOTAL_BUDGET hard by shutting the live socket down at `deadline`.
+    guard = _fetcher()._DeadlineGuard(deadline)
     handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-    opener = urllib.request.build_opener(handler)
+    opener = urllib.request.build_opener(handler, _GuardedHTTPHandler(guard),
+                                         _GuardedHTTPSHandler(guard))
     start = time.monotonic()
     try:
         remaining = deadline - time.monotonic()
@@ -99,11 +106,15 @@ def _transfer(proxy: str, url: str, max_bytes: int, deadline: float) -> dict:
                 want = max_bytes
             body_start = time.monotonic()
             received = 0
-            while received < want and time.monotonic() < deadline:
-                chunk = response.read(min(CHUNK, want - received))
-                if not chunk:
-                    break
-                received += len(chunk)
+            try:
+                while received < want and time.monotonic() < deadline:
+                    chunk = response.read(min(CHUNK, want - received))
+                    if not chunk:
+                        break
+                    received += len(chunk)
+            except (OSError, http.client.HTTPException):
+                if not guard.expired:
+                    raise              # a real failure, not the deadline cutting the socket
             out["bytes"] = received
             out["transfer_ms"] = int((time.monotonic() - body_start) * 1000)
             # Short of what the server said it would send is the signal: the stream started and
@@ -114,6 +125,8 @@ def _transfer(proxy: str, url: str, max_bytes: int, deadline: float) -> dict:
                 out["kbps"] = int(received * 8 / out["transfer_ms"])
     except Exception as exc:                      # noqa: BLE001 — any failure is an answer here
         out["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        guard.cancel()
     return out
 
 

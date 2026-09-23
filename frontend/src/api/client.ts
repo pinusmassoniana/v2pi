@@ -9,7 +9,7 @@ export interface Status {
   // answer — nothing started yet, the normal state at boot — and must never render as a problem.
   config_drift?: "ok" | "drift" | "unknown";
   tunnel_online?: boolean | null; failover_ready?: boolean; eligible_standby_count?: number;
-  active_health_fresh?: boolean; health_enabled?: boolean; failover_enabled?: boolean; failovers_24h?: number;
+  active_health_fresh?: boolean; health_enabled?: boolean; failover_enabled?: boolean; failovers_24h?: number | null;
 }
 export interface Node {
   id: number; name: string; address: string; port: number; uuid: string;

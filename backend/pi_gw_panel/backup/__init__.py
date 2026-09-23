@@ -21,6 +21,7 @@ from pi_gw_panel import rw_inbound as rw
 from pi_gw_panel.config import (NET_CROSS_FIELD_KEYS, SETTINGS_DEFAULTS, Settings,
                                 check_change_safe, validate_net_settings,
                                 validate_setting_values)
+from pi_gw_panel.db import _secure_path
 from pi_gw_panel.models import (SS_METHODS, Node, RoutingRule, Subscription,
                                 TuningProfile, ss_password_issue)
 from pi_gw_panel.net_control.render import reservation_value_issue
@@ -501,10 +502,7 @@ def backups_dir(settings) -> str:
     # mode= on the create, not only the chmod after it: between the two the directory stood
     # open at whatever the process umask allowed, and the first backup can land in that window.
     os.makedirs(path, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(path, 0o700)
-    except OSError:
-        pass
+    _secure_path(path, 0o700, kind="backups directory")    # a failure is logged, not dropped
     return path
 
 
