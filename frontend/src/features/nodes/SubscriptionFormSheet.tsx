@@ -202,18 +202,17 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
             <Button disabled={dryRun.busy} onClick={() => void runDryRun()}>{dryRun.busy ? "Parsing… (up to 20 s)" : "Dry-run parse"}</Button>
             <span className="text-[11px] text-t3">preview doesn't fetch · dry-run does</span>
           </div>
-          {preview.data ? (
-            previewStale ? <p className="text-xs text-t3">{FORM_CHANGED}</p> : <RequestPreview preview={preview.data} />
+          {/* An answer — result or failure — is about the input it ran on; once the form moves past it, it is marked. */}
+          {preview.data || preview.error ? (
+            previewStale ? <p className="text-xs text-t3">{FORM_CHANGED}</p>
+              : preview.data ? <RequestPreview preview={preview.data} />
+                : <p role="alert" className="text-xs text-bad">{preview.error}</p>
           ) : null}
-          {preview.error ? <p role="alert" className="text-xs text-bad">{preview.error}</p> : null}
-          {dryRun.data ? (
-            dryRunStale ? (
-              <p className="text-xs text-t3">{FORM_CHANGED}</p>
-            ) : (
-              <DryRunResult result={dryRun.data} url={dryRun.target?.url ?? ""} />
-            )
+          {dryRun.data || dryRun.error ? (
+            dryRunStale ? <p className="text-xs text-t3">{FORM_CHANGED}</p>
+              : dryRun.data ? <DryRunResult result={dryRun.data} url={dryRun.target?.url ?? ""} />
+                : <p role="alert" className="text-xs text-bad">{dryRun.error}</p>
           ) : null}
-          {dryRun.error ? <p role="alert" className="text-xs text-bad">{dryRun.error}</p> : null}
 
           <div className="sticky bottom-0 -mx-5 -mb-5 flex items-center justify-end gap-2 border-t border-line bg-solid px-5 py-3">
             <span className="mr-auto text-[11px] text-t3">Nothing is saved until {edit ? "Save" : "Add subscription"}</span>

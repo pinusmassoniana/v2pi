@@ -5,6 +5,7 @@ import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { PICK_PROFILE, ProfileSelect } from "../../components/ui/ProfileSelect";
+import { ReadError } from "../../components/ui/States";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
 import { profileFromValue, profileName } from "../../lib/profiles";
@@ -83,32 +84,25 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   const profiles = useQuery(queries.profiles());   // read for the select; nothing here polls it
   const detachNodes = useApiWrite("detachNodes");
 
+  // What a run did is said even when the bar has gone; clearing the selection is passed to mutate, which runs only
+  // while this bar is still mounted — a run finishing after a group switch must not wipe the selection made there.
   const assign = useMutation({
     mutationKey: BULK_KEY,
     mutationFn: ({ nodes, profileId }: BulkRun & { profileId: number | null; profileName: string }) =>
       eachInTurn(queryClient, "updateNode", nodes, (node) => api.updateNode(node.id, { tuning_profile_id: profileId })),
-    onSuccess: (count, { profileName, skipped }) => {
-      notifyOk(`Assigned ${profileName} to ${count} node(s)${skippedNote(skipped)}`);
-      onClear();
-    },
+    onSuccess: (count, { profileName, skipped }) => notifyOk(`Assigned ${profileName} to ${count} node(s)${skippedNote(skipped)}`),
     onError: (error) => stopped(error, "assign failed"),
   });
   const detach = useMutation({
     mutationKey: BULK_KEY,
     mutationFn: (nodes: readonly Node[]) => detachNodes(nodes.map((node) => node.id)).then(() => nodes.length),
-    onSuccess: (count) => {
-      notifyOk(`Detached ${count} node(s) to Servers`);
-      onClear();
-    },
+    onSuccess: (count) => notifyOk(`Detached ${count} node(s) to Servers`),
     onError: (error) => notifyError(error, "detach failed"),
   });
   const remove = useMutation({
     mutationKey: BULK_KEY,
     mutationFn: ({ nodes }: BulkRun) => eachInTurn(queryClient, "deleteNode", nodes, (node) => api.deleteNode(node.id)),
-    onSuccess: (count, { skipped }) => {
-      notifyOk(`Deleted ${count} server(s)${skippedNote(skipped)}`);
-      onClear();
-    },
+    onSuccess: (count, { skipped }) => notifyOk(`Deleted ${count} server(s)${skippedNote(skipped)}`),
     onError: (error) => stopped(error, "delete failed"),
   });
 
@@ -119,14 +113,14 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
   function onAssign(value: string) {
     if (value === PICK_PROFILE) return;
     const profileId = profileFromValue(value);
-    assign.mutate({ ...withoutActive(queryClient, selected), profileId, profileName: profileName(profiles.data, profileId) });
+    assign.mutate({ ...withoutActive(queryClient, selected), profileId, profileName: profileName(profiles.data, profileId) }, { onSuccess: onClear });
   }
 
   async function onDelete() {
     const chosen = [...selected];
     if (!(await confirm(`Delete ${withoutActive(queryClient, chosen).nodes.length} server(s)?`, { confirmLabel: "Delete" }))) return;
     if (queryClient.isMutating({ mutationKey: BULK_KEY }) > 0) return;   // another bulk write started meanwhile
-    remove.mutate(withoutActive(queryClient, chosen));   // the active node as it is now, after the question
+    remove.mutate(withoutActive(queryClient, chosen), { onSuccess: onClear });   // the active node as it is now, after the question
   }
 
   return (
@@ -144,10 +138,11 @@ export function BulkBar({ group, selected, onClear, className }: BulkBarProps) {
         onChange={(event) => onAssign(event.target.value)}
         className="h-9"
       />
+      <ReadError query={profiles} message="Profiles did not load" />
       {group === SERVERS ? (
         <Button size="sm" variant="danger" disabled={busy} onClick={() => void onDelete()}>{remove.isPending ? "Deleting…" : "Delete"}</Button>
       ) : (
-        <Button size="sm" disabled={busy} onClick={() => detach.mutate(selected)}>{detach.isPending ? "Detaching…" : "Detach to Servers"}</Button>
+        <Button size="sm" disabled={busy} onClick={() => detach.mutate(selected, { onSuccess: onClear })}>{detach.isPending ? "Detaching…" : "Detach to Servers"}</Button>
       )}
       <Button size="sm" variant="ghost" disabled={busy} onClick={onClear} className="ml-auto">Clear</Button>
     </section>

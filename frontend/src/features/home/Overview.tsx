@@ -32,7 +32,14 @@ export function Overview() {
 
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-12">
-      <Alerts status={status.data} subs={subs.data} activeLabel={activeLabel} className="md:col-span-2 xl:col-span-12" />
+      <Alerts
+        status={status.data}
+        subs={subs.data}
+        subsFailed={subs.isError && subs.data === undefined}
+        onRetrySubs={() => void subs.refetch()}
+        activeLabel={activeLabel}
+        className="md:col-span-2 xl:col-span-12"
+      />
       <StatusBlock status={status.data} statusError={status.isError} network={network.data} nodes={nodes.data} className="md:col-span-2 xl:col-span-5" />
       <KpiGrid className="md:col-span-2 xl:col-span-7" />
       <OverviewThroughput className="md:col-span-2 xl:col-span-8" />

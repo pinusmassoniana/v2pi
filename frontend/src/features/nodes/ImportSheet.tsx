@@ -55,6 +55,8 @@ export function ImportSheet({ onClose }: { onClose: () => void }) {
           <textarea
             id={id}
             value={text}
+            // Locked while the import runs: its answer is about the text that was sent, so that text stays on screen.
+            readOnly={run.isPending}
             onChange={(event) => {
               setText(event.target.value);
               setError(null);

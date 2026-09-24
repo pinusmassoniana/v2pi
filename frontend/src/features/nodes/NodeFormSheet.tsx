@@ -8,13 +8,14 @@ import { useApiWrite } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { useUnsavedGuard } from "../../app/guard";
 import { closeGuarded } from "../../components/confirm";
+import { CheckLine } from "../../components/data/CheckLine";
 import { Button } from "../../components/ui/Button";
 import { FieldShell, SegmentedField, TextField } from "../../components/ui/Field";
 import { Select } from "../../components/ui/Select";
 import { ProfileSelect } from "../../components/ui/ProfileSelect";
 import { Sheet, SheetContent } from "../../components/ui/Sheet";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
-import { cn } from "../../lib/cn";
+import { runKey, type CheckResult } from "../../lib/staleResult";
 import { SERVERS } from "./list";
 import {
   ACTIVE_NODE_MESSAGE, BLANK_NODE_FORM, IDENTITY_MESSAGE, MAX_FIELD, PROTOCOLS, PROTOCOL_NOTE, SS_METHODS, cloneToForm,
@@ -82,12 +83,14 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   const protocol = useWatch({ control, name: "protocol" });
   const transport = useWatch({ control, name: "transport" });
   const security = useWatch({ control, name: "security" });
+  // What Validate checked, compared with the form now: a verdict for input the form has moved past is marked stale.
+  const liveKey = runKey(useWatch({ control }));
   const vless = protocol === "vless";
   const shadowsocks = protocol === "shadowsocks";
   const dirty = formState.isDirty;
   useUnsavedGuard(dirty);
   const profiles = useQuery({ ...queries.profiles(), enabled: edit });
-  const [validation, setValidation] = useState<{ ok: boolean; text: string } | null>(null);
+  const [validation, setValidation] = useState<CheckResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [conflict, setConflict] = useState<"active" | "identity" | null>(null);
   const addWrite = useApiWrite("addNode");
@@ -105,18 +108,20 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
   });
 
   async function validate() {
-    const parsed = schema.safeParse(getValues());
+    const current = getValues();
+    const key = runKey(current);
+    const parsed = schema.safeParse(current);
     if (!parsed.success) {
       void trigger();
-      setValidation({ ok: false, text: `✗ ${parsed.error.issues[0]!.message}` });
+      setValidation({ ok: false, text: `✗ ${parsed.error.issues[0]!.message}`, key });
       return;
     }
     setValidating(true);
     try {
       // A peek: it checks the config with xray and changes nothing, so nothing is invalidated after it.
-      setValidation(validateMessage(await api.validateNode(formToValidate(parsed.data, edit))));
+      setValidation({ ...validateMessage(await api.validateNode(formToValidate(parsed.data, edit))), key });
     } catch (error) {
-      setValidation({ ok: false, text: `✗ ${errText(error, "validate failed")}` });
+      setValidation({ ok: false, text: `✗ ${errText(error, "validate failed")}`, key });
     } finally {
       setValidating(false);
     }
@@ -227,9 +232,7 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
 
           <div className="sticky bottom-0 -mx-5 -mb-5 flex flex-wrap items-center gap-2 border-t border-line bg-solid px-5 py-3">
             <Button disabled={validating} onClick={() => void validate()}>{validating ? "Validating…" : "Validate"}</Button>
-            {validation ? (
-              <p role="status" className={cn("min-w-0 flex-1 truncate font-mono text-xs", validation.ok ? "text-ok" : "text-bad")} title={validation.text}>{validation.text}</p>
-            ) : <span className="flex-1" />}
+            <div className="min-w-0 flex-1"><CheckLine result={validation} liveKey={liveKey} /></div>
             <Button onClick={() => void closeGuarded(dirty, onClose)}>Cancel</Button>
             <Button type="submit" variant="primary" disabled={save.isPending}>{save.isPending ? "Saving…" : edit ? "Save" : "Add server"}</Button>
           </div>

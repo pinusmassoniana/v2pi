@@ -38,6 +38,9 @@ export function ThroughputCard({ windowSec, onWindowChange, series, activeNodeId
   return (
     <GlassCard aria-label="Throughput" className={className}>
       <CardHeader title="Throughput" />
+      {series.liveHistoryFailed ? (
+        <ErrorState role="status" message="Traffic history did not load — showing live samples only" onRetry={series.refillHistory} />
+      ) : null}
       <TrafficChart
         samples={series.samples}
         windowSec={windowSec}

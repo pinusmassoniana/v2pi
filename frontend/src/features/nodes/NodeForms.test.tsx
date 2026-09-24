@@ -445,3 +445,27 @@ describe("Export (N16)", () => {
     await waitFor(() => expect(error).toHaveBeenCalledWith("copy failed", { duration: 20000 }));
   });
 });
+
+describe("Forms › an answer stays tied to the input it was for", () => {
+  it("a Validate verdict is marked as out of date once the form changes", async () => {
+    await openList("/nodes?group=servers");
+    await userEvent.click(screen.getByRole("button", { name: "Add server" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add server" });
+    await fillRequired(sheet);
+    await userEvent.click(within(sheet).getByRole("button", { name: "Validate" }));
+    await waitFor(() => expect(within(sheet).getByRole("status")).toHaveTextContent("✓ config valid"));
+    await userEvent.type(within(sheet).getByLabelText("Address"), "9");
+    expect(within(sheet).getByRole("status")).toHaveTextContent("Form changed since this run — run it again.");
+  });
+
+  it("the pasted text is locked while its import runs, so what the sheet shows is what was sent", async () => {
+    const { api$ } = await openList("/nodes?group=servers");
+    api$.importNodes.mockImplementation(() => new Promise(() => {}));
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+    const sheet = await screen.findByRole("dialog", { name: "Import servers" });
+    const text = within(sheet).getByLabelText("Nodes to import");
+    await userEvent.type(text, "proxies:");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(text).toHaveAttribute("readonly"));
+  });
+});

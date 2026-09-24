@@ -27,3 +27,24 @@ export function ErrorState({ message, onRetry, retryLabel = "Retry", role = "ale
     </div>
   );
 }
+
+/** The parts of a query a control needs to say that its read failed. */
+export interface ReadQuery {
+  data: unknown;
+  isError: boolean;
+  refetch: () => Promise<unknown>;
+}
+
+/**
+ * A read that a control depends on failed with nothing to show: said on one line where the control is, with Retry,
+ * so the control is never just disabled or empty with no reason. Renders nothing while the read is fine.
+ */
+export function ReadError({ query, message, className }: { query: ReadQuery; message: string; className?: string }) {
+  if (!query.isError || query.data !== undefined) return null;
+  return (
+    <p role="alert" className={cn("flex flex-wrap items-center gap-2 text-xs text-bad", className)}>
+      {message}
+      <Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button>
+    </p>
+  );
+}

@@ -15,6 +15,9 @@ export interface LastRestore {
  * shape `components/confirm.ts` uses, does exactly that and dies with the page.
  */
 let current: LastRestore | null = null;
+// Bumped when the session ends: a restore started before a logout can still answer after it, and that answer
+// belongs to the session that asked, not to whoever logs in next.
+let session = 0;
 const listeners = new Set<() => void>();
 const emit = () => { for (const listener of listeners) listener(); };
 
@@ -23,8 +26,14 @@ export function recordLastRestore(entry: LastRestore): void {
   emit();
 }
 
+/** The session a restore or undo starts in; record its reply only while `lastRestoreSession()` still says so. */
+export function lastRestoreSession(): number {
+  return session;
+}
+
 /** Cleared with the query cache when the session ends, so a later login never sees the previous operator's restore. */
 export function clearLastRestore(): void {
+  session += 1;
   current = null;
   emit();
 }

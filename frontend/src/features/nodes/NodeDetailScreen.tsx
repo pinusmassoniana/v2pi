@@ -35,7 +35,9 @@ function DetailSheet({ nodeId, search }: DetailProps) {
       {/* Closing replaces the node's history entry, so Back does not open the sheet again. */}
       <Sheet open onOpenChange={(open) => { if (!open) void navigate({ to: "/nodes", search: listSearch(search, group), replace: true }); }}>
         <SheetContent title={title}>
-          <NodeDetailBody nodeId={nodeId} showName={false} menu={dialogs.menu} />
+          {/* Keyed by node: another node opened in place (the palette goes node → node) starts fresh, so nothing
+              one node showed or started — a diagnosis, a pending Test — appears or is announced as the next one's. */}
+          <NodeDetailBody key={nodeId} nodeId={nodeId} showName={false} menu={dialogs.menu} />
         </SheetContent>
       </Sheet>
       <NodeDialogs dialog={dialogs.dialog} onClose={dialogs.close} />
@@ -60,7 +62,8 @@ function DetailPage({ nodeId, search }: DetailProps) {
         <ArrowLeft size={16} aria-hidden />
         Servers{groupName ? ` · ${groupName}` : ""}
       </Link>
-      <NodeDetailBody nodeId={nodeId} showName menu={dialogs.menu} />
+      {/* Keyed by node, as in DetailSheet. */}
+      <NodeDetailBody key={nodeId} nodeId={nodeId} showName menu={dialogs.menu} />
       <NodeDialogs dialog={dialogs.dialog} onClose={dialogs.close} />
     </div>
   );

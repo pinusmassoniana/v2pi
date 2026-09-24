@@ -17,6 +17,8 @@ export interface TrafficSnapshot {
    * the first frame. The store keeps the last frame when the stream stops, so screens must not show it as live.
    */
   fresh: boolean;
+  /** The history that seeds the window failed to load: the samples are the live ones only. Cleared by a refill. */
+  historyFailed: boolean;
 }
 
 export const RING_SIZE = 4000;
@@ -37,7 +39,7 @@ export function createTrafficStore(
   // One array for the life of the store: copying 4000 samples every second is what the Svelte
   // dashboard learned to avoid. Subscribers re-render off `version` instead.
   const samples: TrafficSample[] = [];
-  let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0, fresh: false };
+  let snapshot: TrafficSnapshot = { live: null, samples, disabled: false, version: 0, fresh: false, historyFailed: false };
   const listeners = new Set<() => void>();
   // Follow the store without holding the socket open (see useTrafficIfOpen).
   const observers = new Set<() => void>();
@@ -47,7 +49,7 @@ export function createTrafficStore(
   // Bumped by reset(), so a history request from the ended session cannot refill the window.
   let epoch = 0;
 
-  const emit = (patch: Partial<Pick<TrafficSnapshot, "live" | "disabled" | "fresh">>) => {
+  const emit = (patch: Partial<Pick<TrafficSnapshot, "live" | "disabled" | "fresh" | "historyFailed">>) => {
     snapshot = { ...snapshot, ...patch, samples, version: snapshot.version + 1 };
     for (const listener of listeners) listener();
     for (const observer of observers) observer();
@@ -82,9 +84,10 @@ export function createTrafficStore(
       samples.length = 0;
       for (const sample of merged) samples.push(sample);
       trim();
-      emit({});
+      emit({ historyFailed: false });
     } catch {
-      // history is best-effort; the live stream keeps flowing
+      // Best-effort — the live stream keeps flowing — but said: without it the window is live samples only.
+      if (started === epoch) emit({ historyFailed: true });
     }
   };
 
@@ -138,7 +141,11 @@ export function createTrafficStore(
       cancelStale();
       close();
       samples.length = 0;
-      emit({ live: null, disabled: false, fresh: false });
+      emit({ live: null, disabled: false, fresh: false, historyFailed: false });
+    },
+    /** Load the history again, after it failed: the Retry beside the chart. */
+    refill(): void {
+      void backfill();
     },
     getSnapshot(): TrafficSnapshot {
       return snapshot;

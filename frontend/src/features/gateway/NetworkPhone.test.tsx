@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { STATUS, mockApi, mockGateway } from "../../test/fixtures";
 import { settleConfirm } from "../../components/confirm";
 import { renderApp } from "../../test/renderApp";
@@ -112,5 +113,16 @@ describe("Network on a phone", () => {
     await userEvent.click(step);
     expect(step).toHaveAttribute("aria-expanded", "true");
     expect(within(steps).getByText(/two DHCP servers on one VLAN conflict/)).toBeVisible();
+  });
+
+  it("gateway DNS settings that failed to load open its section to say so, with Retry", async () => {
+    setViewportWidth(390);
+    const api$ = mockGateway(mockApi());
+    api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: null });
+    api$.getSettings.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/gateway/network");
+    await screen.findByRole("region", { name: "Kill-switch" });
+    await waitFor(() => expect(within(section("Gateway DNS")).getByText("Gateway DNS did not load")).toBeVisible(), { timeout: 3000 });
+    expect(header("Gateway DNS")).toHaveAttribute("aria-expanded", "true");
   });
 });

@@ -443,4 +443,16 @@ describe("Overview › KPIs", () => {
     expect(within(path).getByText("stats off")).toHaveAttribute("data-tone", "neutral");
     expect(within(path).getByRole("img")).toHaveAccessibleName(/ Tunnel health unknown, rates unknown\. Direct by routing rules: rates unknown\. /);
   });
+
+  it("O3: subscriptions that failed to load are said, instead of their warnings silently vanishing", async () => {
+    const api$ = mockApi();
+    api$.listSubs.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/");
+    await screen.findByRole("region", { name: "Status" });
+    const banner = await screen.findByRole("group", { name: "Subscriptions" }, { timeout: 3000 });
+    expect(banner).toHaveTextContent("did not load");
+    api$.listSubs.mockResolvedValue(SUBS);
+    await userEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Subscriptions" })).getByText("work: expires in 2d")).toBeInTheDocument());
+  });
 });

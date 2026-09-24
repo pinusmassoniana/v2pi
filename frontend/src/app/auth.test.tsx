@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/client";
 import { keys, queries } from "../api/keys";
@@ -42,6 +43,14 @@ describe("resolvePhase", () => {
     expect(client.getQueryData(keys.status)).toEqual(STATUS);
     getStatus.mockRejectedValue(new ApiError(401, "unauthorized"));
     await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "login" });
+  });
+
+  it("a status read that fails for any reason but a lost session is offline, never a login form", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue({ needs_setup: false });
+    const getStatus = vi.spyOn(api, "getStatus").mockRejectedValue(new ApiError(0, "request timed out"));
+    await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "offline" });
+    getStatus.mockRejectedValue(new ApiError(500, "internal error"));
+    await expect(resolvePhase(new QueryClient())).resolves.toEqual({ kind: "offline" });
   });
 });
 
@@ -131,5 +140,27 @@ describe("AuthGate", () => {
     expect(await screen.findByRole("button", { name: "Log in" })).toBeInTheDocument();
     expect(logout).toHaveBeenCalled();
     expect(client.getQueryData(["nodes"])).toBeUndefined();
+  });
+
+  it("a log out the gateway never received keeps the session, and says so", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue({ needs_setup: false });
+    vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    vi.spyOn(api, "logout").mockRejectedValue(new ApiError(0, "network error"));
+    const failed = vi.spyOn(toast, "error");
+    renderGate();
+    await userEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(failed).toHaveBeenCalledWith(
+      "Log out did not reach the gateway — this browser is still logged in. Try again.", expect.anything()));
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log in" })).toBeNull();
+  });
+
+  it("a log out whose session was already gone still ends it here", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue({ needs_setup: false });
+    vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
+    vi.spyOn(api, "logout").mockRejectedValue(new ApiError(401, "unauthorized"));
+    renderGate();
+    await userEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    expect(await screen.findByRole("button", { name: "Log in" })).toBeInTheDocument();
   });
 });

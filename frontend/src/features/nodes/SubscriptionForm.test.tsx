@@ -250,4 +250,25 @@ describe("Pose as client (header presets)", () => {
     await userEvent.selectOptions(within(sheet).getByLabelText("Pose as client"), "v2pi");
     expect(within(sheet).queryByRole("alert")).toBeNull();
   });
+
+  it("a dry-run failure no longer matching the form is marked, not left looking current", async () => {
+    const { api$, sheet } = await openForm("work");
+    api$.previewSubNodes.mockRejectedValueOnce(new ApiError(502, "fetch failed: timeout"));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("fetch failed: timeout");
+    await userEvent.type(within(sheet).getByLabelText("URL"), "&extra=1");
+    expect(within(sheet).queryByText("fetch failed: timeout")).toBeNull();
+    expect(within(sheet).getByText("Form changed since this run — run it again.")).toBeInTheDocument();
+  });
+
+  it("a preview failure no longer matching the form is marked, not left looking current", async () => {
+    const { api$, sheet } = await openForm("work");
+    api$.previewSub.mockRejectedValueOnce(new ApiError(422, "url: not a valid http(s) URL"));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Preview request" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("url: not a valid http(s) URL");
+    await userEvent.type(within(sheet).getByLabelText("URL"), "&extra=1");
+    expect(within(sheet).queryByText("url: not a valid http(s) URL")).toBeNull();
+    expect(within(sheet).getByText("Form changed since this run — run it again.")).toBeInTheDocument();
+  });
 });
+

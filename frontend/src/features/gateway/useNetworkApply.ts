@@ -1,5 +1,5 @@
 import { useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, isNoAnswer, type Network, type NetworkPatch } from "../../api/client";
 import { CONNECTION_BUSY, NETWORK_WRITE, invalidateRefused, isConnectionBusy, useApiWrite } from "../../api/invalidation";
 import { keys } from "../../api/keys";
@@ -37,6 +37,13 @@ export function useNetworkApply(network: Network, state: NetworkFormState): Netw
   const putNetwork = useApiWrite("putNetwork");
   const [formError, setFormError] = useState<string | null>(null);
   const { form } = state;
+  // Whether the screen that started an apply is still here. A 422 is shown under its field by the per-call handler
+  // below, which dies with the screen — so a refusal that lands after leaving is said by the hook instead.
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => { shown.current = false; };
+  }, []);
 
   // Messages come from here, so they are said even when the screen was left while the apply ran.
   const mutation = useMutation({
@@ -53,6 +60,8 @@ export function useNetworkApply(network: Network, state: NetworkFormState): Netw
         void invalidateRefused(queryClient);
       } else if (!(error instanceof ApiError && error.status === 422)) {
         notifyError(error, "apply failed");
+      } else if (!shown.current) {
+        notifyError(error, "apply refused");
       }
     },
   });

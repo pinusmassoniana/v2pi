@@ -78,6 +78,20 @@ describe("traffic store", () => {
     expect(c.handle.close).toHaveBeenCalledTimes(1);
   });
 
+  it("says when the history backfill failed, and a refill that succeeds clears it", async () => {
+    const c = fakeConnection();
+    const loadHistory = vi.fn<() => Promise<TrafficHistoryResp>>()
+      .mockRejectedValueOnce(new Error("request timed out"))
+      .mockImplementation(noHistory);
+    const store = createTrafficStore(c.connect, loadHistory);
+    store.subscribe(() => {});
+    await flush();
+    expect(store.getSnapshot().historyFailed).toBe(true);
+    store.refill();
+    await flush();
+    expect(store.getSnapshot().historyFailed).toBe(false);
+  });
+
   it("appends proxy samples, keeps the last frame, and notifies with a new snapshot", () => {
     const c = fakeConnection();
     const store = createTrafficStore(c.connect, noHistory);

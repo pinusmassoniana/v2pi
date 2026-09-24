@@ -359,4 +359,22 @@ describe("Network › Gateway DNS (G1)", () => {
     expect(await within(await screen.findByRole("region", { name: "Gateway DNS" })).findByText("Gateway DNS did not load", {}, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Gateway Segment" })).toBeInTheDocument();
   });
+
+  it("a 422 that lands after the screen was left is still said", async () => {
+    const { api$, router } = await openNetwork({ status: { ...STATUS, active_node_id: null } });
+    const failed = vi.spyOn(toast, "error");
+    let refuse!: (error: Error) => void;
+    api$.putNetwork.mockImplementationOnce(() => new Promise((_, reject) => { refuse = reject; }));
+    await fill(field("DHCP range end"), "192.168.50.150");
+    await waitFor(() => expect(segmentApply()).toBeEnabled());
+    await userEvent.click(segmentApply());
+    await waitFor(() => expect(api$.putNetwork).toHaveBeenCalled());
+
+    act(() => { void router.navigate({ to: "/" }); });
+    await answer("Discard");
+    // Gone for real, not just navigated: the old screen stays mounted until the next one has loaded.
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Gateway Segment" })).toBeNull());
+    await act(async () => refuse(new ApiError(422, "segment_ip: not a usable address")));
+    await waitFor(() => expect(failed).toHaveBeenCalledWith("segment_ip: not a usable address", expect.anything()));
+  });
 });

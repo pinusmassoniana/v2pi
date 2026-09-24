@@ -5,6 +5,7 @@ import { useApiWrite } from "../../api/invalidation";
 import { queries } from "../../api/keys";
 import { Button } from "../../components/ui/Button";
 import { ProfileSelect } from "../../components/ui/ProfileSelect";
+import { ReadError } from "../../components/ui/States";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { GLOBAL_DEFAULT, profileFromValue, profileName, profileValue } from "../../lib/profiles";
 import { DISCONNECT_FIRST } from "./NodeRowActions";
@@ -80,6 +81,7 @@ export function ProfileRow({ node, active }: { node: Node; active: boolean }) {
         ) : (
           <p className="mt-0.5 truncate text-[13px] font-semibold text-t1">{label}</p>
         )}
+        {editing ? <ReadError query={profiles} message="Profiles did not load — only the global default can be picked" className="mt-1" /> : null}
       </div>
       <div className="flex flex-col items-end">
         <div className="flex gap-1.5">

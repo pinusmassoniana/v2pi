@@ -2,6 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
 import { RU_DIRECT_PRESET, STATUS, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
@@ -174,5 +175,16 @@ describe("Routing on a phone", () => {
     expect(result.closest(".sticky")).not.toBeNull();
     expect(before).toContain(result);   // the footer's live region was mounted before the answer came
     expect(screen.queryByText("Validate never saves")).toBeNull();
+  });
+
+  it("routing presets that failed to load are said in the ⋯ menu, with a way to retry", async () => {
+    setViewportWidth(390);
+    const api$ = mockTunnel(mockApi());
+    api$.listRoutingPresets.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/tunnel/routing");
+    await screen.findByRole("list", { name: "Routing rules" });
+    await userEvent.click(screen.getByRole("button", { name: "More routing actions" }));
+    const menu = await screen.findByRole("menu");
+    expect(await within(menu).findByRole("menuitem", { name: "Routing presets did not load — Retry" }, { timeout: 3000 })).toBeInTheDocument();
   });
 });

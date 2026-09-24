@@ -2,9 +2,9 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type RoutingIn } from "../../api/client";
+import { ApiError, type RouteTest, type RoutingIn } from "../../api/client";
 import { settleConfirm } from "../../components/confirm";
-import { ROUTING_INVALID, RU_DIRECT_PRESET, STATUS, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
+import { ROUTING_INVALID, ROUTING_PRESETS, RU_DIRECT_PRESET, STATUS, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { GATEWAY_CHANGED } from "./StagedBanner";
 
@@ -385,5 +385,33 @@ describe("Routing › destination tester (R8)", () => {
     await userEvent.click(within(tester).getByRole("button", { name: "Test live" }));
 
     await waitFor(() => expect(api$.testRoute).toHaveBeenCalledWith("example.com", "udp", "192.168.50.123"));
+  });
+
+  it("a live answer still on its way when the destination changes is dropped, not shown for the new one", async () => {
+    const { api$ } = await openRouting();
+    const tester = screen.getByRole("region", { name: "Destination tester" });
+    const input = within(tester).getByRole("textbox");
+    let reply!: (answer: RouteTest) => void;
+    api$.testRoute.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }));
+    await userEvent.type(input, "doubleclick.net");
+    await userEvent.click(within(tester).getByRole("button", { name: "Test live" }));
+    await waitFor(() => expect(api$.testRoute).toHaveBeenCalledWith("doubleclick.net", "tcp", ""));
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "example.org");
+    await act(async () => reply({ ok: true, outbound: "block", host: "doubleclick.net", port: 443, network: "tcp", source_ip: "", error: "" }));
+    expect(within(tester).queryByText(/live · doubleclick.net/)).toBeNull();
+    expect(within(tester).queryByText(/Add a rule for doubleclick.net/)).toBeNull();
+  });
+
+  it("routing presets that failed to load are said next to Import preset, with Retry", async () => {
+    const api$ = mockTunnel(mockApi());
+    api$.listRoutingPresets.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/tunnel/routing");
+    await screen.findByRole("table", { name: "Routing rules" });
+    expect(await screen.findByText("Routing presets did not load", {}, { timeout: 3000 })).toBeInTheDocument();
+    api$.listRoutingPresets.mockResolvedValue(ROUTING_PRESETS);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(toolbarButton("Import preset")).toBeEnabled());
   });
 });

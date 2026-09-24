@@ -609,7 +609,8 @@ export const api = {
       timer = setTimeout(() => { timer = null; open(); }, delay);
     };
     const open = () => {
-      if (stop || terminal || hidden()) return;
+      // One live socket at a time: a second would be orphaned — never closed, and feeding every frame twice.
+      if (stop || terminal || hidden() || ws) return;
       const socket = _openTrafficSocket((message) => {
         if ("disabled" in message) terminal = true;
         onMessage(message);
@@ -627,6 +628,7 @@ export const api = {
       if (stop) return;
       terminal = false;
       retry = 0;
+      if (timer) { clearTimeout(timer); timer = null; }   // this open replaces a reconnect already scheduled
       if (!hidden() && !ws) { onGap?.(); open(); }
     };
     const onVis = () => {

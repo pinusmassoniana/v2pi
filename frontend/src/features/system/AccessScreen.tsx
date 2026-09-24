@@ -18,6 +18,7 @@ import { confirm } from "../../components/confirm";
 import { Button } from "../../components/ui/Button";
 import { TextField } from "../../components/ui/Field";
 import { GlassCard } from "../../components/ui/GlassCard";
+import { ReadError, type ReadQuery } from "../../components/ui/States";
 import { notifyError, notifyOk, notifyWarn } from "../../components/ui/Toaster";
 import { cn } from "../../lib/cn";
 import { DESKTOP_QUERY, useMediaQuery } from "../../lib/media";
@@ -247,7 +248,12 @@ export function useIdleTimeout(settings: Settings | undefined) {
   };
 }
 
-export function SessionCard({ timeout, phone = false }: { timeout: ReturnType<typeof useIdleTimeout>; phone?: boolean }) {
+export function SessionCard({ timeout, settings, phone = false }: {
+  timeout: ReturnType<typeof useIdleTimeout>;
+  /** The settings read the saved value comes from: when it failed, the empty field says why. */
+  settings?: ReadQuery;
+  phone?: boolean;
+}) {
   return (
     <GlassCard aria-label="Session">
       <CardHeader title="Session" aside={<Chip plain>{phone ? "saved on change" : "saved as soon as you change it"}</Chip>} />
@@ -264,15 +270,17 @@ export function SessionCard({ timeout, phone = false }: { timeout: ReturnType<ty
         onBlur={timeout.commit}
         onKeyDown={(event) => { if (event.key === "Enter") timeout.commit(); }}
       />
+      {settings ? <ReadError query={settings} message="Settings did not load — the saved idle timeout is unknown" className="mt-1" /> : null}
       <p className="mt-2 text-[11px] leading-relaxed text-t2">{SESSION_NOTE}</p>
       <p className="mt-2 text-[11px] leading-relaxed text-t3">{SESSION_HINT}</p>
     </GlassCard>
   );
 }
 
-function AccessPhone({ password, timeout, tokens, list, tokenCount, nowSec }: {
+function AccessPhone({ password, timeout, settings, tokens, list, tokenCount, nowSec }: {
   password: ReturnType<typeof usePasswordChange>;
   timeout: ReturnType<typeof useIdleTimeout>;
+  settings: ReadQuery;
   tokens: ReturnType<typeof useTokens>;
   list: ReturnType<typeof usePolledQuery<ApiToken[], typeof keys.tokens>>;
   tokenCount: number | undefined;
@@ -281,7 +289,7 @@ function AccessPhone({ password, timeout, tokens, list, tokenCount, nowSec }: {
   return (
     <div className="flex flex-col gap-3">
       <PasswordCard password={password} tokenCount={tokenCount} />
-      <SessionCard timeout={timeout} phone />
+      <SessionCard timeout={timeout} settings={settings} phone />
       <TokensCard list={list} tokens={tokens} nowSec={nowSec} phone />
       <AuditCard phone />
       <TokenSheet tokens={tokens} open={tokens.formOpen || tokens.secret !== null} onOpenChange={(open) => { if (!open) tokens.closeForm(); }} />
@@ -300,13 +308,13 @@ export function Access() {
   // One clock read for the whole screen's relative dates, through the shared now.
   const nowSec = Math.floor(useNow(60_000) / 1000);
   const desktop = useMediaQuery(DESKTOP_QUERY);
-  if (!desktop) return <AccessPhone password={passwordState} timeout={timeout} tokens={tokens} list={list} tokenCount={tokenCount} nowSec={nowSec} />;
+  if (!desktop) return <AccessPhone password={passwordState} timeout={timeout} settings={settings} tokens={tokens} list={list} tokenCount={tokenCount} nowSec={nowSec} />;
   return (
     <div className="flex flex-col gap-3">
       <div className="grid gap-3 md:grid-cols-[5fr_7fr] md:items-start">
         <div className="flex flex-col gap-3">
           <PasswordCard password={passwordState} tokenCount={tokenCount} />
-          <SessionCard timeout={timeout} />
+          <SessionCard timeout={timeout} settings={settings} />
         </div>
         <div className="flex flex-col gap-3">
           <ScopesCard />

@@ -274,4 +274,16 @@ describe("Access — idle timeout (G5)", () => {
     expect(card).toHaveTextContent("Changing it ends nobody's session now");
     expect(within(card).getByText("saved as soon as you change it")).toBeInTheDocument();
   });
+
+  it("settings that failed to load are said under the idle timeout, with Retry", async () => {
+    const api$ = mockSystem(mockApi());
+    api$.getSettings.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/system/access");
+    await screen.findByRole("region", { name: "Password" });
+    const session = screen.getByRole("region", { name: "Session" });
+    expect(await within(session).findByText("Settings did not load — the saved idle timeout is unknown", {}, { timeout: 3000 })).toBeInTheDocument();
+    api$.getSettings.mockResolvedValue(SETTINGS);
+    await userEvent.click(within(session).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(field("Idle timeout")).toHaveValue(SETTINGS.session_timeout_min));
+  });
 });

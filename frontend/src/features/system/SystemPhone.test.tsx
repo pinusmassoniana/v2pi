@@ -427,4 +427,13 @@ describe("Panel on a phone", () => {
     expect(screen.getByRole("button", { name: /Traffic stats/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: /Settings file/ })).toHaveAttribute("aria-expanded", "true");
   });
+
+  it("settings that failed to load open the auto-backup section to say so, with Retry", async () => {
+    const api$ = mockSystem(mockApi());
+    api$.getSettings.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/system/backups");
+    await screen.findByRole("region", { name: "Backup & restore" });
+    await waitFor(() => expect(screen.getByText("Settings did not load")).toBeVisible(), { timeout: 3000 });
+    expect(screen.getByRole("button", { name: /Daily auto-backup/ })).toHaveAttribute("aria-expanded", "true");
+  });
 });

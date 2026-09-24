@@ -4,6 +4,7 @@ import { ApiError, api, errText, type PresetInfo, type Routing, type RoutingIn, 
 import { CONNECTION_BUSY, ROUTING_WRITE, invalidate, isConnectionBusy, saveRefusedMessage, useApiWrite } from "../../api/invalidation";
 import { keys, queries } from "../../api/keys";
 import { confirm } from "../../components/confirm";
+import type { ReadQuery } from "../../components/ui/States";
 import { notifyError, notifyOk } from "../../components/ui/Toaster";
 import { copyText } from "../../lib/clipboard";
 import { checkResult, runKey, type CheckResult } from "../../lib/staleResult";
@@ -34,6 +35,8 @@ export interface RoutingActions {
   saveError: string | null;
   save: () => Promise<void>;
   presets: readonly PresetInfo[] | undefined;
+  /** The presets read itself, so a failure can be said where Import preset is. */
+  presetsQuery: ReadQuery;
   presetBusy: boolean;
   stagePreset: (name: string) => Promise<void>;
   exportRules: () => Promise<void>;
@@ -160,7 +163,7 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
   }
 
   return {
-    check, validating, validate, saving: saveMutation.isPending, saveError, save, presets: presets.data, presetBusy, stagePreset,
+    check, validating, validate, saving: saveMutation.isPending, saveError, save, presets: presets.data, presetsQuery: presets, presetBusy, stagePreset,
     exportRules, importRules, reset, discard,
   };
 }

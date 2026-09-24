@@ -298,4 +298,30 @@ describe("Servers › selection and bulk (N18, T6)", () => {
     expect(screen.queryByRole("region", { name: "Selection" })).toBeNull();
     expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toBeInTheDocument();
   });
+
+  it("a bulk run that finishes after the group was switched leaves the selection made there alone", async () => {
+    const { api$, router } = await openList();
+    let done!: (value: { ok: boolean }) => void;
+    api$.detachNodes.mockImplementation(() => new Promise((resolve) => { done = resolve; }));
+    await userEvent.click(within(row("de-fra-01")).getByRole("checkbox", { name: "Select de-fra-01" }));
+    await userEvent.click(within(selectionBar()).getByRole("button", { name: "Detach to Servers" }));
+    expect(api$.detachNodes).toHaveBeenCalledWith([2]);
+
+    await act(() => router.navigate({ to: "/nodes", search: { group: "servers" } }));
+    await waitFor(() => expect(row("vps-hel")).toBeTruthy());
+    await userEvent.click(within(row("vps-hel")).getByRole("checkbox", { name: "Select vps-hel" }));
+    await act(async () => { done({ ok: true }); await Promise.resolve(); });
+    expect(within(row("vps-hel")).getByRole("checkbox", { name: "Select vps-hel" })).toBeChecked();
+    expect(selectionBar()).toBeInTheDocument();
+  });
+
+  it("profiles that failed to load are said in the selection bar", async () => {
+    const api$ = mockNodeGroups(mockApi());
+    api$.listProfiles.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/nodes");
+    await waitFor(() => expect(document.querySelectorAll("[data-node-id]").length).toBeGreaterThan(0));
+    await userEvent.click(within(row("de-fra-01")).getByRole("checkbox", { name: "Select de-fra-01" }));
+    expect(await within(selectionBar()).findByText("Profiles did not load", {}, { timeout: 3000 })).toBeInTheDocument();
+  });
 });
+

@@ -161,6 +161,9 @@ function NetworkPhone({ network, state, apply, canApply, dns, devices, locked }:
   const [toggled, setToggled] = useState<Record<PhoneSection, boolean>>({ segment: false, ipv6: false, dns: false, checklist: false });
   const failing = new Set((Object.keys(errors) as NetworkField[]).map((field) => FIELD_SECTION[field]));
   if (poolIssue({ ip, dhcpStart, dhcpEnd })) failing.add("segment");
+  // A DNS read that failed opens its section too: the switch in the header can only read off and disabled, and the
+  // reason (with Retry) is in the section's body.
+  if (dns.settings.isError && dns.settings.data === undefined) failing.add("dns");
   const section = (name: PhoneSection) => {
     const open = toggled[name] || failing.has(name);
     return { collapsible: true, open, onToggle: () => setToggled((current) => ({ ...current, [name]: !open })) };

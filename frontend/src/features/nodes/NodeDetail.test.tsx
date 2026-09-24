@@ -382,3 +382,67 @@ describe("Node detail › the list survives opening and closing a node (fix roun
     expect(health).toHaveTextContent("checked 20 s ago");
   });
 });
+
+// Opening another node in place (the command palette goes node → node) must start that node's detail fresh:
+// nothing one node showed or started may appear, or be announced, as the next node's.
+describe("Node detail › one node's state stays with that node", () => {
+  it("a diagnosis of one node is not shown for the node opened in its place", async () => {
+    const { router } = await openDetail("/nodes/2", { phone: true });
+    const card = await screen.findByRole("region", { name: "Diagnose" });
+    await userEvent.click(within(card).getByRole("button", { name: "Diagnose" }));
+    expect(await within(card).findByText("stalls mid-stream")).toBeInTheDocument();
+
+    await act(() => router.navigate({ to: "/nodes/$nodeId", params: { nodeId: "3" } }));
+    await screen.findByRole("heading", { level: 2, name: /fi-hel-02/ });
+    const next = screen.getByRole("region", { name: "Diagnose" });
+    expect(within(next).queryByText("stalls mid-stream")).toBeNull();
+    expect(within(next).getByRole("button", { name: "Diagnose" })).toBeEnabled();
+  });
+
+  it("a test still running for one node neither busies the next node's Test nor is announced as its", async () => {
+    const { api$, router } = await openDetail("/nodes/2", { phone: true });
+    const failed = vi.spyOn(toast, "error");
+    let fail!: (error: Error) => void;
+    api$.probeNode.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    await userEvent.click(await screen.findByRole("button", { name: "Test" }));
+    expect(screen.getByRole("button", { name: "Testing…" })).toBeDisabled();
+
+    await act(() => router.navigate({ to: "/nodes/$nodeId", params: { nodeId: "3" } }));
+    await screen.findByRole("heading", { level: 2, name: /fi-hel-02/ });
+    expect(screen.getByRole("button", { name: "Test" })).toBeEnabled();
+
+    await act(async () => fail(new Error("socket closed")));
+    await waitFor(() => expect(failed).toHaveBeenCalledWith("test of de-fra-01 failed", expect.anything()));
+    expect(failed).not.toHaveBeenCalledWith("test of fi-hel-02 failed", expect.anything());
+  });
+
+  it("a delete that finishes after another node was opened leaves the user on that node", async () => {
+    const { api$, router } = await openDetail("/nodes/7", { phone: true });
+    let done!: (value: { ok: boolean }) => void;
+    api$.deleteNode.mockImplementation(() => new Promise((resolve) => { done = resolve; }));
+    const actions = await screen.findByRole("region", { name: "Node actions" });
+    await userEvent.click(within(actions).getByRole("button", { name: "Delete" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Confirm" })).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(api$.deleteNode).toHaveBeenCalledWith(7));
+
+    await act(() => router.navigate({ to: "/nodes/$nodeId", params: { nodeId: "8" } }));
+    await screen.findByRole("heading", { level: 2, name: /lab-lan/ });
+    await act(async () => { done({ ok: true }); await Promise.resolve(); });
+    expect(router.state.location.pathname).toBe("/nodes/8");
+  });
+
+  it("profiles that failed to load are said where a profile is picked, with Retry", async () => {
+    setViewportWidth(390);
+    const api$ = mockNodeGroups(mockApi());
+    api$.listProfiles.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/nodes/2");
+    const row = await screen.findByRole("region", { name: "Tuning profile" });
+    await userEvent.click(within(row).getByRole("button", { name: "Change" }));
+    expect(await within(row).findByText("Profiles did not load — only the global default can be picked", {}, { timeout: 3000 })).toBeInTheDocument();
+
+    api$.listProfiles.mockResolvedValue(PROFILES);
+    await userEvent.click(within(row).getByRole("button", { name: "Retry" }));
+    const select = within(row).getByRole("combobox", { name: "Tuning profile" });
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(3));
+  });
+});

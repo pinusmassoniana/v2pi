@@ -370,4 +370,15 @@ describe("Overview › card states", () => {
     const card = await screen.findByRole("region", { name: "Upstream health" });
     expect(await within(card).findByRole("alert")).toHaveTextContent("Node health did not load");
   });
+
+  it("O6: history that failed to load is said above the live chart, with Retry", async () => {
+    const api$ = mockApi();
+    api$.getTrafficHistory.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/");
+    const card = await screen.findByRole("region", { name: "Throughput" });
+    expect(await within(card).findByText("Traffic history did not load — showing live samples only")).toBeInTheDocument();
+    api$.getTrafficHistory.mockResolvedValue({ samples: [], interval_ms: 1000 });
+    await userEvent.click(within(card).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(within(card).queryByText(/Traffic history did not load/)).toBeNull());
+  });
 });

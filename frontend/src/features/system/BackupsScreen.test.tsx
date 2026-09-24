@@ -1,11 +1,12 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type Settings } from "../../api/client";
+import { ApiError, type RestoreResult, type Settings, type UndoResult } from "../../api/client";
 import { SETTINGS_CONNECTION_WRITE, SETTINGS_WRITE } from "../../api/invalidation";
 import { keys } from "../../api/keys";
+import { endSession } from "../../app/auth";
 import { settleConfirm } from "../../components/confirm";
-import { BACKUP_DOC, BACKUP_FILES, RESTORE_RESULT, SETTINGS, holdConnectionWrite, holdWrite, mockApi, mockSystem } from "../../test/fixtures";
+import { BACKUP_DOC, BACKUP_FILES, RESTORE_RESULT, SETTINGS, UNDO_RESULT, holdConnectionWrite, holdWrite, mockApi, mockSystem } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { clearLastRestore } from "./lastRestore";
 
@@ -443,5 +444,33 @@ describe("Backups — what the gateway already holds (A8)", () => {
     await answer("Undo restore");
 
     expect(await screen.findByText("not restored — nothing to restore")).toBeInTheDocument();
+  });
+
+  it("a restore that finishes after logout leaves no restore card for the next session", async () => {
+    const { api$, client } = await openBackups();
+    let reply!: (result: RestoreResult) => void;
+    api$.restore.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }));
+    await pick(backupFile("v2pi-backup-2026-09-14.json"));
+    await userEvent.click(restoreButton());
+    await answer("Restore");
+    await waitFor(() => expect(api$.restore).toHaveBeenCalledTimes(1));
+
+    act(() => endSession(client));   // what Log out does, while the restore still runs
+    await act(async () => reply(RESTORE_RESULT));
+    expect(screen.queryByRole("region", { name: "Last restore" })).toBeNull();
+  });
+
+  it("an undo that finishes after logout leaves no restore card for the next session", async () => {
+    const { api$, client } = await openBackups();
+    await screen.findByRole("list", { name: "Stored backups" });
+    let reply!: (result: UndoResult) => void;
+    api$.undoRestore.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }));
+    await userEvent.click(within(stored()).getByRole("button", { name: "Undo last restore" }));
+    await answer("Undo restore");
+    await waitFor(() => expect(api$.undoRestore).toHaveBeenCalledTimes(1));
+
+    act(() => endSession(client));
+    await act(async () => reply(UNDO_RESULT));
+    expect(screen.queryByRole("region", { name: "Last restore" })).toBeNull();
   });
 });

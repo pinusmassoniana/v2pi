@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Activity, CopyPlus, Pencil, Share2, Trash2, Unlink } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { Node } from "../../api/client";
 import { queries } from "../../api/keys";
 import { Button } from "../../components/ui/Button";
@@ -50,6 +50,13 @@ function PrimaryActions({ node, active }: { node: Node; active: boolean }) {
 function SecondaryActions({ node, active, menu }: { node: Node; active: boolean; menu: NodeMenuCallbacks }) {
   const navigate = useNavigate();
   const removal = useNodeRemoval();
+  // Whether this node's detail is still the one on screen when a delete lands: the request can outlast a move to
+  // another node or screen, and must not pull the user back to the list from there.
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => { shown.current = false; };
+  }, []);
   const manual = node.subscription_id === null;
   const { onEdit, onClone, onExport } = menu;
   return (
@@ -68,7 +75,7 @@ function SecondaryActions({ node, active, menu }: { node: Node; active: boolean;
             variant="danger"
             disabled={active || removal.busy}
             onClick={async () => {
-              if (await removal.deleteNode(node)) void navigate({ to: "/nodes", search: { group: SERVERS } });
+              if ((await removal.deleteNode(node)) && shown.current) void navigate({ to: "/nodes", search: { group: SERVERS } });
             }}
           >
             <Trash2 size={14} aria-hidden />Delete

@@ -548,6 +548,30 @@ describe("api client", () => {
     vi.useRealTimers();
   });
 
+  it("a capability change during a reconnect wait opens one socket, never a second that nothing closes", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onmessage: ((e: { data: string }) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn(() => this.onclose?.());
+      constructor(public url: string) { sockets.push(this); }
+    }
+    (globalThis as any).WebSocket = FakeSocket;
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    const handle = api.connectTraffic(() => {});
+    sockets[0].onclose?.();                                        // the stream dropped: a reconnect is scheduled
+    document.dispatchEvent(new Event(TRAFFIC_CAPABILITY_EVENT));   // a settings write lands while it waits
+    expect(sockets).toHaveLength(2);
+    vi.advanceTimersByTime(60_000);                                // the scheduled reconnect's moment passes
+    expect(sockets).toHaveLength(2);
+    handle.close();
+    expect(sockets[1].close).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("announces a traffic capability change after every write that can change the stats settings", async () => {
     mockFetch();
     let seen = 0;

@@ -44,15 +44,21 @@ export const DestinationTester = memo(function DestinationTester({ state, device
   const testRoute = useApiWrite("testRoute");
   const result = testDestination(input, state);
 
-  const ask = useMutation({
-    mutationFn: () => testRoute(input.trim(), network, sourceIp),
-    onSuccess: (answer) => setLive(answer),
-    onError: (error) => notifyError(error, "the live test failed"),
-  });
+  const ask = useMutation({ mutationFn: () => testRoute(input.trim(), network, sourceIp) });
 
+  // A live answer is about the destination it was asked for. Its callbacks ride the ask itself, which lands only for
+  // the latest ask while this input is unchanged: every change resets it, so an answer still on its way is dropped
+  // instead of shown — or offered as a rule — for the new destination. A stale answer is worse than none.
+  function run() {
+    ask.mutate(undefined, { onSuccess: setLive, onError: (error) => notifyError(error, "the live test failed") });
+  }
+  function forget() {
+    setLive(null);
+    ask.reset();
+  }
   function update(value: string) {
     setInput(value);
-    setLive(null);                 // a stale live answer for another destination is worse than none
+    forget();
   }
 
   const addable = live?.ok ? addableRule(live) : null;
@@ -70,19 +76,19 @@ export const DestinationTester = memo(function DestinationTester({ state, device
           onChange={(event) => update(event.target.value)}
           className="min-w-0 flex-1 font-mono text-xs md:max-w-80"
         />
-        <Select aria-label="Network" value={network} onChange={(event) => { setNetwork(event.target.value as "tcp" | "udp"); setLive(null); }} className="h-9 w-20">
+        <Select aria-label="Network" value={network} onChange={(event) => { setNetwork(event.target.value as "tcp" | "udp"); forget(); }} className="h-9 w-20">
           <option value="tcp">tcp</option>
           <option value="udp">udp</option>
         </Select>
         {devices.length ? (
-          <Select aria-label="As device" value={sourceIp} onChange={(event) => { setSourceIp(event.target.value); setLive(null); }} className="h-9 w-40">
+          <Select aria-label="As device" value={sourceIp} onChange={(event) => { setSourceIp(event.target.value); forget(); }} className="h-9 w-40">
             <option value="">any device</option>
             {devices.map((device) => (
               <option key={device.ip} value={device.ip}>{device.name || device.ip}</option>
             ))}
           </Select>
         ) : null}
-        <Button size="sm" disabled={!input.trim() || ask.isPending} onClick={() => ask.mutate()}>
+        <Button size="sm" disabled={!input.trim() || ask.isPending} onClick={run}>
           {ask.isPending ? "Asking…" : "Test live"}
         </Button>
       </div>

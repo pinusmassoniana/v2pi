@@ -14,13 +14,16 @@ import { failoverBanner, hasConfigDrift, readFailoverDismissed, writeFailoverDis
 export interface AlertsProps {
   status: Status | undefined;
   subs: Subscription[] | undefined;
+  /** The subscriptions read failed with nothing to show: their warnings are unknown, which is said, with Retry. */
+  subsFailed?: boolean;
+  onRetrySubs?: () => void;
   /** activeNodeLabel(): the node the gateway failed over to. */
   activeLabel: string;
   className?: string;
 }
 
 /** O1 config drift, O2 auto-failover, O3 subscriptions. Nothing renders when all is well. */
-export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
+export function Alerts({ status, subs, subsFailed = false, onRetrySubs, activeLabel, className }: AlertsProps) {
   const [dismissed, setDismissed] = useState<number | null>(readFailoverDismissed);
   const queryClient = useQueryClient();
   const apply = useApiWrite("apply");
@@ -38,7 +41,7 @@ export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
   const failoverAt = failoverBanner(status?.last_failover_at, dismissed, nowMs);
   const warnings = subWarnings(subs ?? [], nowMs / 1000);
 
-  if (!drift && failoverAt === null && warnings.length === 0) return null;
+  if (!drift && failoverAt === null && warnings.length === 0 && !subsFailed) return null;
 
   // Re-apply the node that is active when the button is pressed, not the one this render saw.
   function reloadActive() {
@@ -67,6 +70,15 @@ export function Alerts({ status, subs, activeLabel, className }: AlertsProps) {
             setDismissed(failoverAt);
             writeFailoverDismissed(failoverAt);
           }}
+        />
+      ) : null}
+      {subsFailed ? (
+        <AlertBanner
+          tone="warn"
+          icon="◷"
+          title="Subscriptions"
+          text="· did not load — expiry and data-cap warnings are unknown"
+          action={onRetrySubs ? { label: "Retry", onClick: onRetrySubs } : undefined}
         />
       ) : null}
       {warnings.length > 0 ? (

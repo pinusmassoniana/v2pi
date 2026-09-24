@@ -12,6 +12,7 @@ import { useNow } from "../../components/data/Ago";
 import { AlertBanner } from "../../components/data/AlertBanner";
 import { CardHeader } from "../../components/data/CardHeader";
 import { cardFallback } from "../../components/data/CardState";
+import { ReadError } from "../../components/ui/States";
 import { Chip } from "../../components/data/Chip";
 import { Elapsed } from "../../components/data/Elapsed";
 import { KeyValueRows } from "../../components/data/KeyValueRows";
@@ -34,7 +35,7 @@ import {
   restoredMessage, snapshotNote, undoConfirm, type PreCheck,
 } from "./backupFile";
 import { FilePicker } from "./FilePicker";
-import { recordLastRestore, useLastRestore } from "./lastRestore";
+import { lastRestoreSession, recordLastRestore, useLastRestore } from "./lastRestore";
 
 const CREATE_HELPER = "the file is built and handed straight to the browser, never kept";
 const RESTORE_HELPER =
@@ -139,16 +140,18 @@ export function useRestore() {
   const connectionBusy = useConnectionBusy();
   const pendingDoc = useRef<Record<string, unknown> | null>(null);
 
-  const mutation = useMutation<RestoreResult, Error, RestoreVariables>({
+  const mutation = useMutation<RestoreResult, Error, RestoreVariables, number>({
     mutationKey: RESTORE_WRITE,
+    // The session this restore starts in: a reply that lands after a logout is not shown to the next login.
+    onMutate: () => lastRestoreSession(),
     mutationFn: () => {
       const doc = pendingDoc.current;
       pendingDoc.current = null;
       if (!doc) throw new Error("useRestore: restore fired with no pending document");
       return restore(doc);
     },
-    onSuccess: (result, { filename }) => {
-      recordLastRestore({ result, filename, at: Date.now() });
+    onSuccess: (result, { filename }, startedIn) => {
+      if (startedIn === lastRestoreSession()) recordLastRestore({ result, filename, at: Date.now() });
       setPicked(null);
       const { message, tone } = restoredMessage(result);
       if (tone === "warn") notifyWarn(message);
@@ -394,12 +397,13 @@ export function useStoredBackups() {
   const connectionBusy = useConnectionBusy();
   const undoRestore = useApiWrite("undoRestore");
 
-  const undo = useMutation<UndoResult, Error, BackupFile>({
+  const undo = useMutation<UndoResult, Error, BackupFile, number>({
     // The same key a restore writes under: it IS one, so the two block each other everywhere.
     mutationKey: RESTORE_WRITE,
+    onMutate: () => lastRestoreSession(),   // as for a restore: a reply after a logout is not the next login's
     mutationFn: () => undoRestore(),
-    onSuccess: (result, file) => {
-      recordLastRestore({ result, filename: file.name, at: Date.now() });
+    onSuccess: (result, file, startedIn) => {
+      if (startedIn === lastRestoreSession()) recordLastRestore({ result, filename: file.name, at: Date.now() });
       const { message, tone } = restoredMessage(result);
       if (tone === "warn") notifyWarn(message);
       else notifyOk(message);
@@ -566,6 +570,9 @@ export function RestoreSheet({ restore, open, onOpenChange }: { restore: Restore
 
 function BackupsPhone({ create, restore, auto, stored }: { create: ReturnType<typeof useCreateBackup>; restore: RestoreState; auto: ReturnType<typeof useAutoBackup>; stored: StoredBackupsState }) {
   const [open, setOpen] = useState<"restore" | "auto" | null>("restore");
+  // A settings read that failed opens the auto-backup section: its switch can only read off and disabled, and the
+  // reason, with Retry, is in the body (the desktop card shows the same thing in place of its content).
+  const autoFailed = auto.settings.isError && auto.settings.data === undefined;
   const [sheet, setSheet] = useState(false);
   return (
     <div className="flex flex-col gap-3">
@@ -605,11 +612,12 @@ function BackupsPhone({ create, restore, auto, stored }: { create: ReturnType<ty
           title="Daily auto-backup"
           note="data/backups · the newest 7"
           collapsible
-          open={open === "auto"}
+          open={open === "auto" || autoFailed}
           onToggle={() => setOpen((current) => (current === "auto" ? null : "auto"))}
           // Beside the header button, never inside it: no nested interactive controls.
           aside={<AutoBackupSwitch auto={auto} />}
         >
+          <ReadError query={auto.settings} message="Settings did not load" className="mb-2" />
           <p className="text-[11.5px] leading-relaxed text-t3">
             {AUTO_BACKUP_STAYS_NOTE} {AUTO_BACKUP_ON_NOTE}
           </p>

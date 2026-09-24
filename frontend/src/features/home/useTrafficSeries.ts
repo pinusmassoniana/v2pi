@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import type { TrafficFrame } from "../../api/client";
 import { queries } from "../../api/keys";
 import { usePolledQuery } from "../../api/live";
-import { useTraffic, type TrafficSample } from "../../api/traffic";
+import { trafficStore, useTraffic, type TrafficSample } from "../../api/traffic";
 import type { TrafficWindowSec } from "../../components/data/TrafficChart";
 import { windowSlice } from "../../components/data/trafficGeometry";
 import { HISTORY_POLL_MS, LIVE_WINDOW_MAX_SEC } from "../../api/cadence";
@@ -15,6 +15,9 @@ export interface TrafficSeries {
   /** A long window's history failed to load. */
   error: Error | null;
   retry: () => void;
+  /** A live window whose seeding history failed to load: it shows live samples only, with a way to load it again. */
+  liveHistoryFailed: boolean;
+  refillHistory: () => void;
   /** The gateway reports traffic stats switched off. */
   disabled: boolean;
   /** The latest live frame, null while none has arrived or stats are off. */
@@ -53,6 +56,8 @@ export function useTrafficSeries(windowSec: TrafficWindowSec): TrafficSeries {
     pending: long && history.isPending,
     error: long && history.isError ? history.error : null,
     retry,
+    liveHistoryFailed: !long && !traffic.disabled && traffic.historyFailed,
+    refillHistory: trafficStore.refill,
     disabled: traffic.disabled,
     live: traffic.disabled ? null : traffic.live,
   };

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type TuningProfile } from "../../api/client";
 import { CONNECTION_WRITE } from "../../api/invalidation";
 import { settleConfirm } from "../../components/confirm";
-import { PROFILE_INVALID, STATUS, TUNNEL_PROFILES, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
+import { PROFILE_INVALID, PROFILE_PRESETS, STATUS, TUNNEL_PROFILES, holdConnectionWrite, mockApi, mockTunnel } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { setViewportWidth } from "../../test/viewport";
 import { blankProfileForm, formToProfileIn, profileToForm } from "./profileForm";
@@ -316,5 +316,17 @@ describe("Anti-DPI › phone editor (T3)", () => {
     await userEvent.click(within(page).getByRole("button", { name: "Back to profiles" }));
     await answer("Discard unsaved profile changes?", "Discard");
     expect(await screen.findByRole("list", { name: "Profiles" })).toBeInTheDocument();
+  });
+
+  it("presets that failed to load are said next to Stage preset, with Retry", async () => {
+    const api$ = mockTunnel(mockApi());
+    api$.getStatus.mockResolvedValue(STATUS);
+    api$.listProfilePresets.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/tunnel/anti-dpi");
+    await screen.findByRole("table", { name: "Profiles" });
+    expect(await within(editor()).findByText("Presets did not load", {}, { timeout: 3000 })).toBeInTheDocument();
+    api$.listProfilePresets.mockResolvedValue(PROFILE_PRESETS);
+    await userEvent.click(within(editor()).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(within(editor()).getByRole("button", { name: "Stage preset…" })).toBeEnabled());
   });
 });

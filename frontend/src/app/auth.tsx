@@ -1,12 +1,13 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { api, setOnUnauthorized } from "../api/client";
+import { ApiError, api, setOnUnauthorized } from "../api/client";
 import { recordServerNow, resetClock } from "../api/clock";
 import { keys } from "../api/keys";
 import { trafficStore } from "../api/traffic";
 import { confirm, settleConfirm } from "../components/confirm";
 import { Button } from "../components/ui/Button";
+import { notifyError } from "../components/ui/Toaster";
 import { LoginScreen } from "../features/auth/LoginScreen";
 import { SetupScreen } from "../features/auth/SetupScreen";
 import { clearLastRestore } from "../features/system/lastRestore";
@@ -37,8 +38,10 @@ export async function resolvePhase(queryClient: QueryClient): Promise<Phase> {
     recordServerNow(status.server_now);
     queryClient.setQueryData(keys.status, status);
     return { kind: "authed" };
-  } catch {
-    return { kind: "login" };
+  } catch (error) {
+    // Only a lost session is a login. A status read that timed out or failed otherwise is the gateway not answering
+    // (a long write holds it, a restart is under way): a bare login form would read as "your session expired".
+    return error instanceof ApiError && error.status === 401 ? { kind: "login" } : { kind: "offline" };
   }
 }
 
@@ -92,8 +95,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (hasUnsavedEdits() && !(await confirm("Discard unsaved changes and log out?", { confirmLabel: "Log out" }))) return;
     try {
       await api.logout();
-    } catch {
-      // the session may already be gone; drop local state regardless
+    } catch (error) {
+      // Only a session that is already gone (401) is safe to forget here. Any other failure means the gateway may
+      // never have heard it: the browser's session cookie stays valid, so showing the login form would be a lie.
+      if (!(error instanceof ApiError && error.status === 401)) {
+        notifyError(null, "Log out did not reach the gateway — this browser is still logged in. Try again.");
+        return;
+      }
     }
     endSession(queryClient);
     setPhase({ kind: "login" });

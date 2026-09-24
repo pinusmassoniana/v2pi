@@ -129,8 +129,15 @@ export function CommandPalette() {
       />
       <Command.List className="max-h-[60dvh] overflow-y-auto p-2">
         <Command.Empty className="p-4 text-sm text-t3">No matches.</Command.Empty>
-        <Command.Group heading={mode === "nodes" ? "Connect to" : "Nodes"} className={GROUP}>
+        {/* forceMount while the nodes failed: cmdk hides a group none of whose items match what is typed */}
+        <Command.Group heading={mode === "nodes" ? "Connect to" : "Nodes"} forceMount={nodes.isError && nodes.data === undefined} className={GROUP}>
           {nodes.isPending ? <Command.Loading>Loading nodes…</Command.Loading> : null}
+          {nodes.isError && nodes.data === undefined ? (
+            // Said whatever is typed — never left to read as "No matches." — and picking it tries again.
+            <Command.Item forceMount value="__nodes-did-not-load" onSelect={() => void nodes.refetch()}>
+              Nodes did not load — Retry
+            </Command.Item>
+          ) : null}
           {nodes.data?.map((n) => (
             <Command.Item
               key={n.id}

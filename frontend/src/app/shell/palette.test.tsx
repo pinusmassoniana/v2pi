@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
-import { api, type NodeHealth, type RefreshResult, type Status } from "../../api/client";
+import { ApiError, api, type NodeHealth, type RefreshResult, type Status } from "../../api/client";
 import { DIAGNOSTICS, NODE_HEALTH, STATUS, holdConnectionWrite, mockApi } from "../../test/fixtures";
 import { renderApp } from "../../test/renderApp";
 import { closePalette, openPalette } from "./palette";
@@ -181,5 +181,15 @@ describe("command palette", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
     await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed — try again", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
+  });
+
+  it("nodes that failed to load are said in the palette with a way to retry, never as No matches", async () => {
+    const api$ = mockApi();
+    api$.listNodes.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/");
+    await screen.findByRole("heading", { level: 1, name: "Overview" });
+    await userEvent.click(await screen.findByRole("button", { name: "Search and commands" }));
+    await userEvent.type(await screen.findByPlaceholderText("Search nodes, screens and actions…"), "de-fra");
+    expect(await screen.findByRole("option", { name: "Nodes did not load — Retry" }, { timeout: 3000 })).toBeInTheDocument();
   });
 });
