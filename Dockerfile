@@ -8,18 +8,18 @@ ARG NODE_VERSION=24-bookworm-slim
 ARG NODE_IMAGE_DIGEST=sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 ARG PYTHON_VERSION=3.13-slim-bookworm
 ARG PYTHON_IMAGE_DIGEST=sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
-ARG XRAY_VERSION=v26.3.27
+ARG XRAY_VERSION=v26.11.9
 ARG UV_VERSION=0.11.6
 ARG UV_IMAGE_DIGEST=sha256:b1e699368d24c57cda93c338a57a8c5a119009ba809305cc8e86986d4a006754
 # db-ip keeps only the last couple of monthly builds; an older pin starts 404ing and takes the
 # image build down with it. Bump version and checksum together.
-ARG DBIP_VERSION=2026-09
-ARG DBIP_SHA256=cb0578ce59f569f2c933bb40feb820804a334855a60739011b0a89cab1d6e4ed
+ARG DBIP_VERSION=2026-11
+ARG DBIP_SHA256=75fe430010f6d38a8c4331c202bf0df6ce3221a6e6d823b9e5a6d951e4cf9758
 # SHA256 of the pinned release assets (from the release's .dgst files) — release assets are
 # mutable on GitHub, so the version pin alone doesn't guarantee the bytes. Bump together
 # with XRAY_VERSION.
-ARG XRAY_SHA256_AMD64=23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
-ARG XRAY_SHA256_ARM64=4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c
+ARG XRAY_SHA256_AMD64=b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82
+ARG XRAY_SHA256_ARM64=64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be
 
 # The installer is copied from one immutable, multi-arch upstream image. Keep the
 # version and manifest digest together when upgrading uv.

@@ -152,12 +152,11 @@ class LinuxBackend:
             self._run(["nft", "-f", "-"], input=nft_text)
             # Policy routing: deliver fwmark'd packets locally (table 100 → lo) so xray's
             # tproxy socket receives them. del-before-add keeps it to exactly one rule.
-            self._delete_or_absent(["ip", "rule", "del", "fwmark", fw, "lookup", tbl])
+            self._delete_policy_rules(["ip"], fw, tbl)
             self._run(["ip", "rule", "add", "fwmark", fw, "lookup", tbl])
             self._run(["ip", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
             if plan.ipv6_enabled:           # mirror the policy routing for v6 tproxy
-                self._delete_or_absent(
-                    ["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl])
+                self._delete_policy_rules(["ip", "-6"], fw, tbl)
                 self._run(["ip", "-6", "rule", "add", "fwmark", fw, "lookup", tbl])
                 self._run(["ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", tbl])
             else:                            # E: drop any stale v6 routing left from a prior v6 on
@@ -245,12 +244,14 @@ class LinuxBackend:
             "no such", "does not exist", "not found", "cannot find", "bad rule",
             "no chain/target/match"))
 
-    def _delete_or_absent(self, cmd: list[str]) -> None:
+    def _delete_or_absent(self, cmd: list[str]) -> bool:
         try:
             self._run(cmd)
         except subprocess.CalledProcessError as exc:
             if not self._is_absent_error(exc):
                 raise
+            return False
+        return True
 
     def _cleanup_command(self, cmd: list[str], failed: list[str], label: str) -> None:
         try:
@@ -258,6 +259,26 @@ class LinuxBackend:
         except subprocess.CalledProcessError as exc:
             if not self._is_absent_error(exc):
                 failed.append(f"{label}: {(exc.stderr or str(exc)).strip()}")
+        except OSError as exc:
+            failed.append(f"{label}: {exc}")
+
+    def _delete_policy_rules(self, cmd: list[str], mark: str, table: str) -> None:
+        selector = ["fwmark", mark, "lookup", table]
+        if not self._delete_or_absent([*cmd, "rule", "del", *selector]):
+            return
+        for rule in self._json([*cmd, "-j", "rule", "show"]):
+            priority = rule.get("priority")
+            if (isinstance(priority, int) and rule.get("src") == "all"
+                    and rule.get("fwmark") == mark and str(rule.get("table")) == table
+                    and rule.get("fwmask", "0xffffffff") == "0xffffffff"
+                    and rule.keys() <= {"priority", "src", "fwmark", "fwmask", "table", "protocol"}):
+                self._delete_or_absent([*cmd, "rule", "del", "pref", str(priority), *selector])
+
+    def _cleanup_policy_rules(self, cmd, mark, table, failed, label) -> None:
+        try:
+            self._delete_policy_rules(cmd, mark, table)
+        except subprocess.CalledProcessError as exc:
+            failed.append(f"{label}: {(exc.stderr or str(exc)).strip()}")
         except OSError as exc:
             failed.append(f"{label}: {exc}")
 
@@ -270,8 +291,7 @@ class LinuxBackend:
         """
         failed: list[str] = []
         fw, tbl = f"0x{fwmark:x}", str(table)
-        self._cleanup_command(
-            ["ip", "rule", "del", "fwmark", fw, "lookup", tbl], failed, "IPv4 rule")
+        self._cleanup_policy_rules(["ip"], fw, tbl, failed, "IPv4 rule")
         self._cleanup_command(
             ["ip", "route", "del", "local", "default", "dev", "lo", "table", tbl],
             failed, "IPv4 route")
@@ -281,9 +301,7 @@ class LinuxBackend:
     def _remove_v6_policy_routing(self, fwmark: int, table: int) -> list[str]:
         failed: list[str] = []
         fw, tbl = f"0x{fwmark:x}", str(table)
-        self._cleanup_command(
-            ["ip", "-6", "rule", "del", "fwmark", fw, "lookup", tbl], failed,
-            "IPv6 rule")
+        self._cleanup_policy_rules(["ip", "-6"], fw, tbl, failed, "IPv6 rule")
         self._cleanup_command(
             ["ip", "-6", "route", "del", "local", "default", "dev", "lo", "table", tbl],
             failed, "IPv6 route")

@@ -153,7 +153,7 @@ def disk_config_digest(path: str) -> str | None:
     return digest
 
 
-def config_drift(supervisor, config_path: str = "") -> tuple[str, str]:
+def config_drift(supervisor, config_path: str = "", *, sample=None) -> tuple[str, str]:
     """Is the running xray serving the config that is on disk? → (verdict, one-line detail).
 
     "drift"   — proven divergence: a LIVE process loaded one config and the file now hashes to
@@ -173,7 +173,8 @@ def config_drift(supervisor, config_path: str = "") -> tuple[str, str]:
     try:
         # ONE sample for both fields: "what is the live process serving" is a question about one
         # process, and reading `running` and the digest from two calls can answer it about two.
-        sample = supervisor.status()
+        if sample is None:
+            sample = supervisor.status()
         running = bool(sample.get("running"))
         loaded = sample.get("loaded_config_digest")
     except Exception:
@@ -474,7 +475,7 @@ def router_recommendations(settings: Settings | NetPlan, ipv6_enabled: bool = Fa
          "detail": f"Add VLAN {vlan} on the router and tag the client switch port to it "
                    f"(the Pi's client leg is {iface})."},
         {"title": f"Disable the router's DHCP on VLAN {vlan}",
-         "detail": f"The Pi serves DHCP + DNS on this segment ({settings.dhcp_start}–{settings.dhcp_end}); "
+         "detail": f"The Pi advertises gateway and DNS settings over DHCP on this segment ({settings.dhcp_start}–{settings.dhcp_end}); "
                    f"two DHCP servers on one VLAN conflict."},
         {"title": "Give the Pi's Home leg internet",
          "detail": f"The Pi reaches the tunnel through its Home leg {settings.mgmt_iface} "

@@ -20,6 +20,7 @@ def test_dryrun_records_combined_nft_and_dnsmasq():
     assert len(be.applied) == 1                                            # one combined entry
     assert "tproxy ip to :52345" in res.rendered                          # nft half
     assert "dhcp-range=192.168.10.30,192.168.10.200,12h" in res.rendered  # dnsmasq half
+    assert "\nport=0\n" in res.rendered
     assert "dhcp-option=3,192.168.10.2" in res.rendered
 
 

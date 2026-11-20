@@ -69,6 +69,19 @@ def test_apply_dedupes_ip_rule_before_adding():
            cmds.index(["ip", "rule", "add", "fwmark", "0x40", "lookup", "100"])
 
 
+def test_policy_cleanup_removes_duplicate_but_preserves_distinct_rules():
+    rules = [
+        {"priority": 32765, "src": "all", "fwmark": "0x40", "table": "100"},
+        {"priority": 5210, "src": "all", "fwmark": "0x80000", "fwmask": "0xff0000", "table": "main"},
+        {"priority": 5300, "src": "192.0.2.0/24", "fwmark": "0x40", "table": "100"},
+    ]
+    fake = FakeRun(rules=json.dumps(rules))
+    assert _backend(fake).teardown().ok
+    for ip in (["ip"], ["ip", "-6"]):
+        assert [*ip, "rule", "del", "pref", "32765", "fwmark", "0x40", "lookup", "100"] in fake.cmds()
+    assert not any("5210" in cmd or "5300" in cmd for cmd in fake.cmds())
+
+
 def test_apply_returns_error_when_nft_fails():
     fake = FakeRun(fail="nft", stderr="nft: syntax error")
     res = _backend(fake).apply_tproxy(NetPlan.from_settings(Settings()))

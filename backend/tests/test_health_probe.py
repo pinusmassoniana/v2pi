@@ -729,8 +729,8 @@ def test_the_throwaway_probe_spends_one_deadline_across_every_phase(monkeypatch)
     # every phase was handed what was LEFT of the 8 s, never a fresh copy of it
     assert seen["resolve"] == pytest.approx(8.0)
     assert seen["gate"] == pytest.approx(6.0)                       # 8 − 2 s of resolution
-    assert seen["requests"] == [pytest.approx(2.0), pytest.approx(1.0)]   # …− 3 s gate − 1 s wait
-    assert seen["teardown"] == pytest.approx(0.5)                   # even the teardown is inside
+    assert seen["requests"] == [pytest.approx(1.0), pytest.approx(0.5)]   # …− 3 s gate − 1 s wait
+    assert seen["teardown"] == pytest.approx(0.625)                   # even the teardown is inside
     assert seen["released"] is True
     assert clock() <= 8.0, f"the 8 s bound is per phase, not end to end: spent {clock():.1f}s"
 
@@ -935,21 +935,15 @@ def test_a_throwaway_xray_that_ignores_sigkill_never_blocks_the_teardown(monkeyp
     assert (ok, egress) == (True, "9.9.9.9")
 
 
-def test_a_teardown_at_the_deadline_gets_no_allowance_past_it(monkeypatch, caplog):
-    """Both teardown waits come out of what is LEFT of the one deadline, and at the deadline
-    that is zero — for the reap as much as for the SIGTERM grace.
-
-    A `_REAP_WAIT` granted *in addition to* an exhausted budget is not a bound on the probe, it
-    is a second of overrun per stuck probe charged to the liveness worker that drives failover.
-    Zero is not the unbounded wait by another name: `wait(0)` returns or raises at once, and a
-    child that is still there is still reported as a survivor — which is what the caller needs
-    to know, and all this last wait was ever for."""
+@pytest.mark.parametrize("overrun", [0.0, 1.0])
+def test_teardown_reserves_reap_time_without_passing_the_deadline(monkeypatch, caplog, overrun):
+    """Reserve teardown time during request timeouts; tolerate no wait after a real overrun."""
     clock = _Clock()
     proc = _UnkillableProc()
     monkeypatch.setattr(probe, "resolve_endpoint", lambda *_a, **_k: "1.2.3.7")
 
     def spend_it_all(proxy, url, timeout=5.0):
-        clock.spend(timeout)                       # the request uses every second of the budget
+        clock.spend(timeout + overrun)
         return False, None, None, None
 
     monkeypatch.setattr(probe, "real_request", spend_it_all)
@@ -966,7 +960,7 @@ def test_a_teardown_at_the_deadline_gets_no_allowance_past_it(monkeypatch, caplo
         assert probe.real_through_node(
             node, "xray", "https://v4", timeout=4.0, spawn=lambda _p: proc,
             wait_ready=lambda _p: None, clock=clock, sem=_FreeGate()) == (False, None, None, None)
-    assert proc.waits == [0.0, 0.0], "the teardown bought time the deadline no longer had"
+    assert proc.waits == ([0.0, 0.0] if overrun else [0.5, 1.0])
     assert proc.killed is True, "the reap was skipped rather than bounded at zero"
     assert clock() <= 4.0, f"the 4 s bound was overrun by the teardown: spent {clock():.1f}s"
     # …and a survivor is still never reported as stopped, however little budget was left to try.

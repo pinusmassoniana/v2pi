@@ -1,5 +1,6 @@
 import hashlib
 import logging
+from collections import Counter
 
 from pi_gw_panel.models import Node
 from pi_gw_panel.nodes.store import NodeStore
@@ -52,6 +53,12 @@ def _dedupe(parsed: list[Node]) -> list[Node]:
     return list(by_key.values())
 
 
+def _rotation_key(n: Node) -> tuple:
+    # Preserve local state only when the uniquely named endpoint and its security still agree.
+    return (n.name, n.address, n.port, n.uuid, n.path,
+            n.transport, n.network, n.security, n.public_key)
+
+
 def _shrink_fingerprint(parsed: list[Node]) -> str:
     identities = repr(sorted(_identity(node) for node in parsed)).encode("utf-8")
     return hashlib.sha256(identities).hexdigest()
@@ -93,11 +100,18 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
             fingerprint = _shrink_fingerprint(parsed) if anomalous_shrink else ""
             shrink_confirmed = anomalous_shrink and store.get_setting(shrink_key) == fingerprint
             store.set_setting(shrink_key, fingerprint)
-            seen: set[tuple] = set()
+            incoming = {_identity(n) for n in parsed}
+            old_names = Counter(n.name for n in existing)
+            new_names = Counter(n.name for n in parsed)
+            rotated = {_rotation_key(n): n for n in existing
+                       if n.name and old_names[n.name] == 1 and new_names[n.name] == 1
+                       and _identity(n) not in incoming}
+            seen_ids: set[int] = set()
             for pos, p in enumerate(parsed):
                 key = _identity(p)
-                seen.add(key)
                 cur = store.get_node_by_identity(sub_id, *key)
+                if cur is None and not anomalous_shrink:
+                    cur = rotated.get(_rotation_key(p))
                 p.subscription_id = sub_id
                 p.stale = False
                 p.position = pos
@@ -108,6 +122,7 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
                     added += 1
                 else:
                     p.id = cur.id
+                    seen_ids.add(cur.id)
                     # user-owned columns the feed never carries: update_node writes the whole
                     # row, so anything not carried over here is wiped on every refresh.
                     p.tuning_profile_id = cur.tuning_profile_id
@@ -134,7 +149,7 @@ def reconcile(store: NodeStore, sub_id: int, parsed: list[Node],
                     store.update_node(p)  # also clears a prior first-shrink stale marker
                     updated += 1
             for n in existing:
-                if _identity(n) in seen:
+                if n.id in seen_ids:
                     continue
                 if not parsed:
                     skipped_deletes += 1

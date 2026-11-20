@@ -304,6 +304,10 @@ class XraySupervisor:
         self._stop_child()
         return False
 
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._proc is not None and self._proc.poll() is None
+
     def status(self) -> SupervisorStatus:
         with self._lock:
             running = self._proc is not None and self._proc.poll() is None

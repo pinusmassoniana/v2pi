@@ -42,3 +42,6 @@ data/
 
 # Publish tooling
 .publish-audit.md
+
+# Legacy local Telegram bot token
+/bot.md

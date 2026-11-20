@@ -311,6 +311,7 @@ def render_dnsmasq(plan: NetPlan) -> str:
     base = f"""\
 interface={plan.segment_iface}
 bind-interfaces
+port=0
 dhcp-leasefile={plan.dnsmasq_leases}
 dhcp-range={plan.dhcp_start},{plan.dhcp_end},{plan.dhcp_lease}
 dhcp-option=3,{plan.segment_ip}

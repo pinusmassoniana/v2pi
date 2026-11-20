@@ -123,7 +123,7 @@ def build_state(settings: Settings, net: object | None = None) -> AppState:
         sampler=sampler,
         history=history,
         stats_enabled=lambda: (store.get_setting("stats_enabled") or "1") == "1",
-        running=lambda: supervisor.status()["running"],   # don't poke a dead stats port (F5)
+        running=supervisor.is_running,   # don't poke a dead stats port (F5)
         interval_ms=lambda: store.get_setting("traffic_sample_ms")
         or SETTINGS_DEFAULTS["traffic_sample_ms"],
         on_total=_add_data_used,

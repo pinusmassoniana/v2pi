@@ -1,3 +1,4 @@
+from dataclasses import replace
 import threading
 import time
 
@@ -27,6 +28,20 @@ def test_reconcile_add_update_remove(settings):
     names = {n.address: n.name for n in s.list_nodes_for_sub(sid)}
     assert names == {"1.1.1.1": "A2", "3.3.3.3": "C"}  # B removed
     assert s.get_node(a).id == a  # A kept its id across the update
+
+
+def test_reconcile_sni_rotation_keeps_id_and_operator_note(settings):
+    store = _store(settings)
+    sub = store.add_subscription(Subscription(id=None, name="feed", url="u"))
+    node = Node(id=None, name="unique", address="1.1.1.1", port=443, uuid="u",
+                sni="old.example", subscription_id=sub, note="keep")
+    node_id = store.add_node(node)
+    refreshed = replace(node, sni="new.example", note="")
+    counts = reconcile(store, sub, [refreshed], active_node_id=node_id)
+    assert (counts["added"], counts["updated"], counts["removed"]) == (0, 1, 0)
+    assert counts["active_changed"] is True
+    saved = store.get_node(node_id)
+    assert saved.note == "keep" and saved.sni == "new.example"
 
 
 def test_reconcile_active_config_change_flags_restart(settings):

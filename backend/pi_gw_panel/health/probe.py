@@ -29,6 +29,8 @@ _PROBE_SEM = threading.BoundedSemaphore(3)
 _READY_WAIT = 3.0      # a throwaway xray that hasn't opened its inbound by now isn't going to
 _TEARDOWN_WAIT = 3.0   # SIGTERM grace before the throwaway instance is killed
 _REAP_WAIT = 1.0       # …and the cap on reaping it afterwards, itself capped by what is left
+_PROBE_TEARDOWN_RESERVE = 1.0
+_PROBE_IPV6_TIMEOUT = 2.5
 
 
 def _fetcher():
@@ -503,6 +505,9 @@ def real_through_node(node, xray_bin: str, probe_url: str, timeout: float = 8.0,
 
 def _real_through_node(node, xray_bin, probe_url, deadline, spawn, wait_ready, probe_url6=None,
                        dial_ip=None, clock=time.monotonic):
+    probe_deadline = deadline - _PROBE_TEARDOWN_RESERVE
+    if probe_deadline <= clock():
+        return False, None, None, None
     port = _free_port()
     cfg = {
         "log": {"loglevel": "warning"},
@@ -515,7 +520,7 @@ def _real_through_node(node, xray_bin, probe_url, deadline, spawn, wait_ready, p
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if wait_ready is None:
         def wait_ready(p):
-            _wait_ready(p, deadline, clock)
+            _wait_ready(p, probe_deadline, clock)
     fd, path = tempfile.mkstemp(suffix=".json")
     proc = None
     try:
@@ -525,11 +530,11 @@ def _real_through_node(node, xray_bin, probe_url, deadline, spawn, wait_ready, p
         wait_ready(port)
         proxy = f"http://127.0.0.1:{port}"
         # every request gets what is LEFT of the one deadline, never a fresh copy of it
-        budget = deadline - clock()
+        budget = probe_deadline - clock()
         if budget <= 0:
             return False, None, None, None
         ok, _status, ms, egress = real_request(proxy, probe_url, timeout=budget)
-        budget6 = deadline - clock()
+        budget6 = min(_PROBE_IPV6_TIMEOUT, probe_deadline - clock())
         egress6 = (real_request(proxy, probe_url6, timeout=budget6)[3]
                    if probe_url6 and budget6 > 0 else None)
         return ok, ms, egress, egress6
@@ -543,7 +548,9 @@ def _real_through_node(node, xray_bin, probe_url, deadline, spawn, wait_ready, p
         # *after* the deadline expired is exactly that, one second at a time, per stuck probe.
         # At the deadline both waits are zero: still bounded, still honest about a survivor.
         # (`proc` is None when the spawn itself failed; stopping nothing succeeds.)
-        if not stop_process(proc, budget=deadline - clock(), grace=_TEARDOWN_WAIT,
+        remaining = deadline - clock()
+        if not stop_process(proc, budget=remaining,
+                            grace=min(_TEARDOWN_WAIT, max(0.0, remaining / 2)),
                             reap=_REAP_WAIT, name="probe xray", clock=clock):
             # Reported, not swallowed: the instance is leaked, with its inbound port still bound.
             # `ok` stays what was measured — a node that answered is not unhealthy because our

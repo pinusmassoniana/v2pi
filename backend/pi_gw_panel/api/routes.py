@@ -1,3 +1,4 @@
+from functools import lru_cache
 import copy
 import hmac
 import ipaddress
@@ -280,28 +281,39 @@ def _validate_net_fields(data: dict, state) -> None:
         raise HTTPException(status_code=422, detail="; ".join(problems))
 
 
+@lru_cache(maxsize=24)
+def _network_probe(bucket: int, probe, *args):
+    return probe(*args)
+
+
 def _network_out(state) -> NetworkOut:
     store, settings = state.store, state.settings
-    def ov(key: str) -> str:                       # editable field: DB override or config
-        return store.get_setting(key) or getattr(settings, key)
+    overrides = store.get_settings_map()
+
+    def ov(key: str) -> str:
+        return overrides.get(key) or getattr(settings, key)
     # C1: only the real Pi backend probes the uplink (a live socket); dev/CI = unknown.
-    uplink_check = netcheck.uplink_up if type(state.net).__name__ == "LinuxBackend" else (lambda: None)
-    kill_switch = (store.get_setting("kill_switch_enabled") or "1") == "1"
-    lan_access = (store.get_setting("lan_access_enabled") or ("1" if settings.lan_access else "0")) == "1"
-    ipv6_enabled = (store.get_setting("ipv6_enabled") or "0") == "1"
+    bucket = int(time.monotonic() // 15)
+    on_linux = type(state.net).__name__ == "LinuxBackend"
+
+    def uplink_check():
+        return _network_probe(bucket, netcheck.uplink_up) if on_linux else None
+    kill_switch = (overrides.get("kill_switch_enabled") or "1") == "1"
+    lan_access = (overrides.get("lan_access_enabled") or ("1" if settings.lan_access else "0")) == "1"
+    ipv6_enabled = (overrides.get("ipv6_enabled") or "0") == "1"
     st = netcheck.network_status(store, settings, uplink_check=uplink_check)
     # Host enforcement is transient fact, not intent. It remains unknown until a backend
     # operation returns a verified result, and becomes nullable/error after a failed mutation.
     st["wan_blocked"] = getattr(state.net, "wan_blocked", None)
     st["enforcement_status"] = getattr(state.net, "enforcement_status", "unknown")
     st["enforcement_error"] = getattr(state.net, "enforcement_error", "")
-    if ipv6_enabled and type(state.net).__name__ == "LinuxBackend":
+    if ipv6_enabled and on_linux:
         # DHCPv6-PD 'auto': observe the host-delegated segment prefix (reads /proc/net/if_inet6).
         v6 = (ov("segment_ip6") or "").strip().lower()
         if v6 == "auto":
             st["ipv6_prefix"] = netcheck.segment_prefix6(ov("segment_iface"))
-        st["uplink6"] = netcheck.uplink_up("2606:4700:4700::1111")   # G: v6 uplink reachability
-        st["foreign_ra"] = netcheck.foreign_ra(ov("segment_iface"))  # Phase C: rogue-RA leak
+        st["uplink6"] = _network_probe(bucket, netcheck.uplink_up, "2606:4700:4700::1111")
+        st["foreign_ra"] = _network_probe(bucket, netcheck.foreign_ra, ov("segment_iface"))
         st["ipv6_prefix_source"] = "pd" if v6 == "auto" else "static" if v6 else "ula"
     return NetworkOut(
         segment=NetworkSegmentOut(
@@ -505,7 +517,7 @@ def status(request: Request, _: None = Depends(require_auth)) -> StatusOut:
     # so the read+parse+hash happens only after something actually rewrote it — this endpoint is
     # polled every 3s by every open dashboard tab (`subscribeStatus(3000)`), and re-hashing an
     # unchanged config that often is a cost with nothing to show for it.
-    drift = netcheck.config_drift(state.supervisor)[0]
+    drift = netcheck.config_drift(state.supervisor, sample=st)[0]
     return StatusOut(running=st["running"], pid=st["pid"],
                      active_node_id=active_id,  # "" (post-rollback) → None
                      xray_state=state.supervisor.state(),
