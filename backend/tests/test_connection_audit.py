@@ -239,16 +239,19 @@ def test_uplink_up_true_false():
     assert netcheck.uplink_up(connect=boom) is False
 
 
-@pytest.mark.parametrize("working", ["2001:4860:4860::8888", None])
+@pytest.mark.parametrize("working", ["2001:db8::2", None])
 def test_ipv6_uplink_needs_only_one_reachable_target(monkeypatch, working):
+    targets = ("2001:db8::1", "2001:db8::2", "2001:db8::3")
     tried = []
+
     def probe(host):
         tried.append(host)
         return host == working
 
+    monkeypatch.setattr(netcheck, "IPV6_UPLINK_TARGETS", targets)
     monkeypatch.setattr(netcheck, "uplink_up", probe)
     assert netcheck.uplink6_up() is (working is not None)
-    assert set(tried) == {"2606:4700:4700::1111", "2001:4860:4860::8888", "2620:fe::fe"}
+    assert set(tried) == set(targets)
 
 
 def test_network_status_uplink_injected():

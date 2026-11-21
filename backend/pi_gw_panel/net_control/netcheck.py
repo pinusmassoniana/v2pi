@@ -387,15 +387,17 @@ def uplink_up(host: str = "1.1.1.1", port: int = 443, timeout: float = 1.5,
         return False
 
 
+IPV6_UPLINK_TARGETS = (
+    "2606:4700:4700::1111",  # Cloudflare
+    "2001:4860:4860::8888",  # Google
+    "2620:fe::fe",  # Quad9
+)
+
+
 def uplink6_up() -> bool:
     """Probe independent IPv6 networks within one TCP timeout window."""
-    hosts = (
-        "2606:4700:4700::1111",  # Cloudflare
-        "2001:4860:4860::8888",  # Google
-        "2620:fe::fe",  # Quad9
-    )
-    with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
-        return any(pool.map(uplink_up, hosts))
+    with ThreadPoolExecutor(max_workers=len(IPV6_UPLINK_TARGETS)) as pool:
+        return any(pool.map(uplink_up, IPV6_UPLINK_TARGETS))
 
 
 def segment_up(iface: str, sysfs: str = "/sys/class/net") -> bool | None:
