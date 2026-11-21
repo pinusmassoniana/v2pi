@@ -312,7 +312,7 @@ def _network_out(state) -> NetworkOut:
         v6 = (ov("segment_ip6") or "").strip().lower()
         if v6 == "auto":
             st["ipv6_prefix"] = netcheck.segment_prefix6(ov("segment_iface"))
-        st["uplink6"] = _network_probe(bucket, netcheck.uplink_up, "2606:4700:4700::1111")
+        st["uplink6"] = _network_probe(bucket, netcheck.uplink6_up)
         st["foreign_ra"] = _network_probe(bucket, netcheck.foreign_ra, ov("segment_iface"))
         st["ipv6_prefix_source"] = "pd" if v6 == "auto" else "static" if v6 else "ula"
     return NetworkOut(

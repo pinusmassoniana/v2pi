@@ -11,6 +11,8 @@ sync_net/boot_guard — apply the right plan for the current tunnel state.
 import asyncio
 import threading
 
+import pytest
+
 from fastapi.testclient import TestClient
 from pi_gw_panel.app import create_app
 from pi_gw_panel.config import Settings
@@ -235,6 +237,18 @@ def test_uplink_up_true_false():
     def boom(addr, to):
         raise OSError("unreachable")
     assert netcheck.uplink_up(connect=boom) is False
+
+
+@pytest.mark.parametrize("working", ["2001:4860:4860::8888", None])
+def test_ipv6_uplink_needs_only_one_reachable_target(monkeypatch, working):
+    tried = []
+    def probe(host):
+        tried.append(host)
+        return host == working
+
+    monkeypatch.setattr(netcheck, "uplink_up", probe)
+    assert netcheck.uplink6_up() is (working is not None)
+    assert set(tried) == {"2606:4700:4700::1111", "2001:4860:4860::8888", "2620:fe::fe"}
 
 
 def test_network_status_uplink_injected():

@@ -5,6 +5,8 @@ import os
 import socket
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
+
 from pi_gw_panel.config import Settings
 from pi_gw_panel.health.snapshot import active_health
 from pi_gw_panel.net_control.linux import _run
@@ -383,6 +385,17 @@ def uplink_up(host: str = "1.1.1.1", port: int = 443, timeout: float = 1.5,
         return True
     except OSError:
         return False
+
+
+def uplink6_up() -> bool:
+    """Probe independent IPv6 networks within one TCP timeout window."""
+    hosts = (
+        "2606:4700:4700::1111",  # Cloudflare
+        "2001:4860:4860::8888",  # Google
+        "2620:fe::fe",  # Quad9
+    )
+    with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
+        return any(pool.map(uplink_up, hosts))
 
 
 def segment_up(iface: str, sysfs: str = "/sys/class/net") -> bool | None:
