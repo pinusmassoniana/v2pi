@@ -42,18 +42,18 @@ test("a fresh gateway: no groups but Servers, no servers, no subscriptions", asy
   await page.goto("/#/nodes");
   await expect(page.locator("h1.page-title")).toHaveText("Servers");
   await expect(page.getByRole("navigation", { name: "Node groups" }).getByRole("link")).toHaveText(["Servers 0"]);
-  await expect(page.getByText("No servers here — add one with Add server.")).toBeVisible();
+  await expect(page.getByText("No servers here. Add one with Add server.")).toBeVisible();
 
   await page.goto("/#/nodes/subscriptions");
   await expect(page.locator("h1.page-title")).toHaveText("Subscriptions");
   await expect(page.getByRole("region", { name: "Subscription fetching" })).toBeVisible();
-  await expect(page.getByText("No subscriptions yet — add one")).toBeVisible();
+  await expect(page.getByText("No subscriptions yet. Add one")).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh all" })).toBeDisabled();
 });
 
 test("add a manual server with Validate, open it, export its link, delete it", async ({ page }, info) => {
   await page.goto("/#/nodes?group=servers");
-  await expect(page.getByText("No servers here — add one with Add server.")).toBeVisible();
+  await expect(page.getByText("No servers here. Add one with Add server.")).toBeVisible();
   if (info.project.name === "phone") {
     await page.getByRole("button", { name: "Add or import servers" }).click();
     await page.getByRole("menuitem", { name: "Add server" }).click();
@@ -88,7 +88,7 @@ test("add a manual server with Validate, open it, export its link, delete it", a
   await expect(ask).toContainText('Delete server "e2e-vps" (198.51.100.77)?');
   await ask.getByRole("button", { name: "Delete" }).click();
   await expect(page).toHaveURL(/#\/nodes\?group=servers$/);
-  await expect(page.getByText("No servers here — add one with Add server.")).toBeVisible();
+  await expect(page.getByText("No servers here. Add one with Add server.")).toBeVisible();
 });
 
 test("a subscription whose URL cannot be fetched shows the refresh error", async ({ page }) => {

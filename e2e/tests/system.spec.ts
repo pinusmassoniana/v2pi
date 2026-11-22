@@ -327,7 +327,7 @@ test("Panel: diagnostics, a saved sample interval, the settings file out and bac
   const sent = page.waitForResponse((response) => response.url().endsWith("/api/settings") && response.request().method() === "PUT");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   expect((await sent).request().postDataJSON()).toEqual({ traffic_sample_ms: 2000 });
-  await expect(page.getByText("saved — applies on next Connect")).toBeVisible();
+  await expect(page.getByText("saved, applies on next Connect")).toBeVisible();
 
   await openSection(/^Settings file/);
   const exported = page.waitForEvent("download");

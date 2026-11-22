@@ -39,7 +39,7 @@ test("stage a domain rule, validate and save it, test a destination against it, 
   const phone = info.project.name === "phone";
   await page.goto("/#/tunnel/routing");
   await page.reload();   // the ruleset was reset behind the screen's back: load it afresh
-  await expect(page.getByText("no rules — all traffic follows the default action")).toBeVisible();
+  await expect(page.getByText("no rules, all traffic follows the default action")).toBeVisible();
 
   await page.getByRole("button", { name: "Add rule" }).click();
   if (phone) {
@@ -51,7 +51,7 @@ test("stage a domain rule, validate and save it, test a destination against it, 
     await page.getByLabel("Rule 1 value").fill("e2e-test.example");
   }
   const staged = page.getByRole("region", { name: "Staged changes" });
-  await expect(staged.getByRole("status")).toHaveText("STAGED · 1 change — not yet applied to the live config.");
+  await expect(staged.getByRole("status")).toHaveText("STAGED · 1 change, not yet applied to the live config.");
 
   await page.getByRole("button", { name: "Validate" }).click();
   // No node is active, so the gateway checks the rules' structure only.
@@ -64,7 +64,7 @@ test("stage a domain rule, validate and save it, test a destination against it, 
   await expect(tester.getByRole("status")).toHaveText("→ direct (private range, always matched first)");
 
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("saved — applies on next Connect")).toBeVisible();
+  await expect(page.getByText("saved, applies on next Connect")).toBeVisible();
   await expect(staged).toBeHidden();
 
   await page.reload();
@@ -77,10 +77,10 @@ test("stage a domain rule, validate and save it, test a destination against it, 
     await expect(page.getByLabel("Rule 1 value")).toHaveValue("e2e-test.example");
     await page.getByRole("button", { name: "Remove rule 1" }).click();
   }
-  await expect(staged.getByRole("status")).toHaveText("STAGED · 1 change — not yet applied to the live config.");
+  await expect(staged.getByRole("status")).toHaveText("STAGED · 1 change, not yet applied to the live config.");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(staged).toBeHidden();
-  await expect(page.getByText("no rules — all traffic follows the default action")).toBeVisible();
+  await expect(page.getByText("no rules, all traffic follows the default action")).toBeVisible();
   const api = await gateway(page);
   expect((await api.get<{ rules: unknown[] }>("/routing")).rules).toEqual([]);
 });
@@ -95,7 +95,7 @@ test("create a profile from a preset, validate and save it, then delete it", asy
   // A clean editor takes the preset without asking, and its name with it.
   await editor.getByRole("button", { name: phone ? "Stage preset" : "Stage preset…" }).click();
   await page.getByRole("menuitem", { name: /ru-hardened/ }).click();
-  await expect(page.getByText('preset "ru-hardened" staged into the editor — Create/Save to apply')).toBeVisible();
+  await expect(page.getByText('preset "ru-hardened" staged into the editor, Create/Save to apply')).toBeVisible();
   await expect(editor.getByLabel("Name", { exact: true })).toHaveValue("ru-hardened");
   await editor.getByLabel("Name", { exact: true }).fill("e2e-hardened");
   await expect(editor.getByRole("switch", { name: "TLS fragmentation" })).toHaveAttribute("aria-checked", "true");

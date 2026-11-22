@@ -122,7 +122,7 @@ test("Network: a refused interface and pool, an apply that sticks, the kill-swit
   const dns = page.getByRole("switch", { name: "Gateway DNS" });
   await expect(dns).toHaveAttribute("aria-checked", "false");
   await dns.click();
-  await expect(page.getByText("saved — applies on next Connect")).toBeVisible();
+  await expect(page.getByText("saved, applies on next Connect")).toBeVisible();
   await expect(dns).toHaveAttribute("aria-checked", "true");
   await dns.click();
   await expect(dns).toHaveAttribute("aria-checked", "false");
@@ -139,7 +139,7 @@ test("Remote access: set up and enable the inbound, add a device, reveal it, dow
   await page.getByLabel("Public key", { exact: true }).fill(PUBLIC_KEY);
   await page.getByLabel("Private key").fill(PRIVATE_KEY);
   await page.getByRole("button", { name: "Generate" }).click();
-  await expect(page.getByText("short id added — save to apply")).toBeVisible();
+  await expect(page.getByText("short id added, save to apply")).toBeVisible();
   await expect(page.getByRole("list", { name: "Short ids list" }).getByRole("listitem")).toHaveCount(1);
   const enable = page.getByRole("switch", { name: "Accept inbound connections" });
   await enable.click();
@@ -173,7 +173,7 @@ test("Remote access: set up and enable the inbound, add a device, reveal it, dow
   const download = page.waitForEvent("download");
   await device.getByRole("button", { name: "Download .conf for e2e-phone" }).click();
   expect((await download).suggestedFilename()).toBe("e2e-phone.conf");
-  await expect(page.getByText("e2e-phone.conf downloaded — import it in Shadowrocket")).toBeVisible();
+  await expect(page.getByText("e2e-phone.conf downloaded, import it in Shadowrocket")).toBeVisible();
 
   await device.getByRole("button", { name: "Copy link for e2e-phone" }).click();
   await expect(page.getByText("vless:// link copied")).toBeVisible();
@@ -187,7 +187,7 @@ test("Remote access: set up and enable the inbound, add a device, reveal it, dow
   } else {
     await device.getByRole("button", { name: "Suspend e2e-phone" }).click();
   }
-  await expect(page.getByText("client suspended — its uuid is kept — xray stopped — remote access is down for everyone until you reconnect")).toBeVisible();
+  await expect(page.getByText("client suspended; its uuid is kept; xray stopped; remote access is down for everyone until you reconnect")).toBeVisible();
   await expect(device).toContainText("suspended");
 
   if (phone) {
@@ -199,6 +199,6 @@ test("Remote access: set up and enable the inbound, add a device, reveal it, dow
   const ask = page.getByRole("dialog", { name: "Confirm" });
   await expect(ask).toContainText("Remove e2e-phone? Its link and config stop working immediately.");
   await ask.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByText("removed e2e-phone — xray stopped — remote access is down for everyone until you reconnect")).toBeVisible();
+  await expect(page.getByText("removed e2e-phone; xray stopped; remote access is down for everyone until you reconnect")).toBeVisible();
   await expect(page.getByText("No clients yet.")).toBeVisible();
 });
