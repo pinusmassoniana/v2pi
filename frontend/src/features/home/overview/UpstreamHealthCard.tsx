@@ -17,7 +17,7 @@ export interface UpstreamHealthCardProps {
   className?: string;
 }
 
-const SUBHEAD = "text-[9.5px] font-semibold uppercase tracking-[.07em] text-t3";
+const SUBHEAD = "text-2xs font-semibold uppercase tracking-[.07em] text-t3";
 
 /** O7: the active node's live probe, up to four standbys from the background sweep, and whether failover can happen. */
 export function UpstreamHealthCard({ status, statusError, nodes, health, className }: UpstreamHealthCardProps) {
@@ -44,7 +44,7 @@ export function UpstreamHealthCard({ status, statusError, nodes, health, classNa
       {staleNotice(queries, "Node health did not refresh")}
       {allNodes.length === 0 ? (
         <p className="py-2 text-sm text-t3">
-          No nodes yet — add one in <Link to="/nodes" className="font-semibold text-t1 underline">Nodes › Servers</Link>.
+          No nodes yet. Add one in <Link to="/nodes" className="font-semibold text-t1 underline">Nodes › Servers</Link>.
         </p>
       ) : (
         <>

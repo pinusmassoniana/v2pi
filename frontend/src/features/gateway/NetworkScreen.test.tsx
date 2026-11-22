@@ -98,7 +98,7 @@ describe("Network › segment, options, leases and checklist", () => {
     await screen.findByRole("region", { name: "Gateway Segment" });
     api$.getNetwork.mockRejectedValue(new ApiError(0, "network error"));
     await act(() => client.refetchQueries({ queryKey: keys.network }).catch(() => {}));
-    expect(await screen.findByText("Network did not refresh — showing the last data", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText("Network did not refresh, showing the last data", {}, { timeout: 3000 })).toBeInTheDocument();
     expect(field("Segment interface")).toHaveValue("eth0.2");
   });
 });
@@ -113,10 +113,10 @@ describe("Network › host warnings (W1)", () => {
       "WAN blocked", "Host enforcement is error; leak protection is not confirmed.", "Applied with a warning", "Another router is advertising IPv6 on the client VLAN",
     ]);
     expect(banners.map((banner) => banner.dataset.tone)).toEqual(["warn", "bad", "warn", "bad"]);
-    expect(banners[0]).toHaveTextContent("WAN blocked — kill-switch holding traffic (tunnel down). No leak.");
+    expect(banners[0]).toHaveTextContent("WAN blocked Kill-switch is holding traffic while the tunnel is down. No leak.");
     expect(banners[1]).toHaveTextContent("nft: Could not process rule");
-    expect(banners[2]).toHaveTextContent("Applied with a warning — LAN access chain not applied: iptables: No chain/target/match by that name.");
-    expect(banners[3]).toHaveTextContent("— clients will leak. Disable RA for this VLAN on your router.");
+    expect(banners[2]).toHaveTextContent("Applied with a warning LAN access chain not applied: iptables: No chain/target/match by that name.");
+    expect(banners[3]).toHaveTextContent("Clients will leak. Disable RA for this VLAN on your router.");
     expect(screen.getByRole("alert", { name: "Host enforcement is error; leak protection is not confirmed." })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Dismiss/ })).toBeNull();
     // the kill-switch is configured but not confirmed
@@ -194,7 +194,7 @@ describe("Network › kill-switch (W6)", () => {
     const toggle = within(kill).getByRole("switch", { name: "Fail-closed kill-switch" });
     await userEvent.click(toggle);
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
-    expect(dialog).toHaveTextContent("Disarm the fail-closed kill-switch? If the tunnel goes down, client traffic will no longer be dropped — it can leak around the tunnel instead.");
+    expect(dialog).toHaveTextContent("Disarm the fail-closed kill-switch? If the tunnel goes down, client traffic will no longer be dropped. It can leak around the tunnel instead.");
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(toggle).toBeChecked();
     expect(region("Gateway Segment")).not.toHaveTextContent("unsaved changes");
@@ -241,7 +241,7 @@ describe("Network › following the gateway", () => {
     await fill(field("DHCP range end"), "192.168.50.150");
     api$.getNetwork.mockResolvedValue({ ...GATEWAY_NETWORK, segment: { ...GATEWAY_NETWORK.segment, dhcp_lease: "6h" } });
     await act(() => client.refetchQueries({ queryKey: keys.network }));
-    const notice = await screen.findByText("Changed on the gateway since you started editing — Discard to load it");
+    const notice = await screen.findByText("Changed on the gateway since you started editing. Discard to load it");
     expect(notice).toHaveAttribute("role", "status");
     expect(field("DHCP lease")).toHaveValue("24h");
     expect(field("DHCP range end")).toHaveValue("192.168.50.150");

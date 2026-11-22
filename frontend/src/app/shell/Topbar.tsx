@@ -25,12 +25,12 @@ export function Topbar({ title, status, stale }: { title: string; status?: Statu
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-line bg-chrome px-4 backdrop-blur-md md:px-5">
-      <h1 className="page-title mr-auto min-w-0 truncate text-[17px] font-bold tracking-tight text-t1">{title}</h1>
+      <h1 className="page-title mr-auto min-w-0 truncate text-heading font-bold tracking-tight text-t1">{title}</h1>
       <span aria-live="polite"><Pill tone={tunnel.tone} dot>Tunnel {tunnel.label.toLowerCase()}</Pill></span>
       <Button variant="secondary" size="sm" aria-label="Search and commands" onClick={() => openPalette()}>
         <Search size={14} aria-hidden />
         <span className="hidden text-t3 md:inline">Search…</span>
-        <kbd className="hidden rounded-md bg-glass-2 px-1.5 py-0.5 text-[10.5px] text-t2 md:inline">⌘K</kbd>
+        <kbd className="hidden rounded-md bg-glass-2 px-1.5 py-0.5 text-2xs text-t2 md:inline">⌘K</kbd>
       </Button>
       <Button variant="ghost" size="icon" aria-label="Toggle theme" title="Toggle theme" onClick={flipTheme}>
         {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}

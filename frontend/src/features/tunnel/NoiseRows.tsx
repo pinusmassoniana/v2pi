@@ -19,7 +19,7 @@ export function NoiseRows({ control, register, errors }: NoiseRowsProps) {
   return (
     <div className="flex flex-col gap-2">
       {fields.length > 0 ? (
-        <div className="grid grid-cols-[5.5rem_minmax(0,1fr)_minmax(0,1fr)_2rem] gap-x-2 px-0.5 text-[10.5px] font-semibold text-t3" aria-hidden>
+        <div className="grid grid-cols-[5.5rem_minmax(0,1fr)_minmax(0,1fr)_2rem] gap-x-2 px-0.5 text-2xs font-semibold text-t3" aria-hidden>
           <span>Type</span><span>Packet</span><span>Delay · ms</span><span />
         </div>
       ) : null}
@@ -51,7 +51,7 @@ export function NoiseRows({ control, register, errors }: NoiseRowsProps) {
                 <X size={15} aria-hidden />
               </Button>
             </div>
-            {problem ? <p className="text-[11px] text-bad">Noise {n} {problem}</p> : null}
+            {problem ? <p className="text-caption text-bad">Noise {n} {problem}</p> : null}
           </div>
         );
       })}
@@ -59,7 +59,7 @@ export function NoiseRows({ control, register, errors }: NoiseRowsProps) {
         <Button size="sm" variant="ghost" className="border border-dashed border-line" disabled={fields.length >= MAX_NOISES} onClick={() => append({ ...NEW_NOISE })}>
           <Plus size={14} aria-hidden />Add noise
         </Button>
-        <span className="text-[11px] text-t3">{fields.length} / {MAX_NOISES}</span>
+        <span className="text-caption text-t3">{fields.length} / {MAX_NOISES}</span>
       </div>
     </div>
   );

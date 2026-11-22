@@ -94,7 +94,7 @@ describe("Overview › traffic chart", () => {
     const { api$ } = await openOverview();
     api$.emitTraffic(frame({ stale: true }, TRAFFIC_FRAME.ts - 1_000));
     api$.emitTraffic(frame({ stale: true }));
-    expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale — rates are not proof of a healthy tunnel");
+    expect(within(region("Throughput")).getByRole("status")).toHaveTextContent("Tunnel health is stale. Rates are not proof of a healthy tunnel");
   });
 
   it("O6: with no active node there is no tunnel to judge — no stale caption, no dimming", async () => {
@@ -263,7 +263,7 @@ describe("Overview › connection path, events and summaries", () => {
       ["bad", "leak"], ["info", "health"], ["bad", "failover"], ["warn", "retry"], ["info", "subscription"], ["bad", "failover"],
     ]);
     expect(card).not.toHaveTextContent("config applied for fi-hel-02");
-    expect(within(card).getByRole("link", { name: /View all/ })).toHaveAttribute("href", expect.stringContaining("/system/logs"));
+    expect(within(card).getByRole("link", { name: "All logs" })).toHaveAttribute("href", expect.stringContaining("/system/logs"));
   });
 
   it("O9: the first four enabled rules, the count, and the default towards the active node", async () => {
@@ -358,7 +358,7 @@ describe("Overview › card states", () => {
     await within(card).findByText("domain:netflix.com");
     api$.getRouting.mockRejectedValue(new ApiError(500, "boom"));
     await act(() => client.refetchQueries({ queryKey: ["routing"] }));
-    expect(await within(card).findByRole("status")).toHaveTextContent("Routing did not refresh — showing the last data");
+    expect(await within(card).findByRole("status")).toHaveTextContent("Routing did not refresh, showing the last data");
     expect(within(card).queryByRole("alert")).toBeNull();   // a polite note: the card still has data
     expect(within(card).getByText("domain:netflix.com")).toBeInTheDocument();
   });
@@ -376,7 +376,7 @@ describe("Overview › card states", () => {
     api$.getTrafficHistory.mockRejectedValue(new ApiError(500, "boom"));
     renderApp("/");
     const card = await screen.findByRole("region", { name: "Throughput" });
-    expect(await within(card).findByText("Traffic history did not load — showing live samples only")).toBeInTheDocument();
+    expect(await within(card).findByText("Traffic history did not load. Showing live samples only")).toBeInTheDocument();
     api$.getTrafficHistory.mockResolvedValue({ samples: [], interval_ms: 1000 });
     await userEvent.click(within(card).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(within(card).queryByText(/Traffic history did not load/)).toBeNull());

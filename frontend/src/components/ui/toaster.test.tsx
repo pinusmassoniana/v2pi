@@ -13,17 +13,17 @@ describe("toasts", () => {
     const warning = vi.spyOn(toast, "warning");
     const error = vi.spyOn(toast, "error");
     notifyOk("saved");
-    notifyWarn("no answer yet — the gateway may still be applying; reloading");
+    notifyWarn("no answer yet, the gateway may still be applying; reloading");
     notifyError(new ApiError(422, "segment_iface: must not be blank"), "apply failed");
     notifyError(new Error("boom"), "apply failed");
     expect(success).toHaveBeenCalledWith("saved", { duration: 8000 });
-    expect(warning).toHaveBeenCalledWith("no answer yet — the gateway may still be applying; reloading", { duration: 20000 });
+    expect(warning).toHaveBeenCalledWith("no answer yet, the gateway may still be applying; reloading", { duration: 20000 });
     expect(error.mock.calls).toEqual([["segment_iface: must not be blank", { duration: 20000 }], ["apply failed", { duration: 20000 }]]);
   });
 
   it("a warning is amber on the screen, so it never reads as a failure; success and error keep the shared surface", async () => {
     render(<Toaster />);
-    const NO_ANSWER = "no answer yet — the gateway may still be applying; reloading";
+    const NO_ANSWER = "no answer yet, the gateway may still be applying; reloading";
     notifyOk("saved");
     notifyWarn(NO_ANSWER);
     notifyError(null, "apply failed");

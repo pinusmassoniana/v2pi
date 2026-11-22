@@ -16,7 +16,7 @@ export function Sidebar({ pathname, status, className }: { pathname: string; sta
       <nav aria-label="Primary" className="flex flex-1 flex-col gap-3 overflow-y-auto">
         {SECTIONS.map((section) => (
           <div key={section.id}>
-            <p data-nav-group className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[.1em] text-t3">{section.label}</p>
+            <p data-nav-group className="px-2 pb-1 text-2xs font-semibold uppercase tracking-[.1em] text-t3">{section.label}</p>
             <ul className="flex flex-col gap-0.5">
               {section.tabs.map((tab) => {
                 const active = isTabActive(tab.to, pathname);
@@ -26,7 +26,7 @@ export function Sidebar({ pathname, status, className }: { pathname: string; sta
                       to={tab.to}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "flex rounded-xl px-2.5 py-1.5 text-[13px] text-t2 hover:bg-glass-2 hover:text-t1",
+                        "flex rounded-xl px-2.5 py-1.5 text-body text-t2 hover:bg-glass-2 hover:text-t1",
                         active && "bg-glass-2 text-t1 shadow-[inset_0_0_0_1px_var(--line)]",
                       )}
                     >

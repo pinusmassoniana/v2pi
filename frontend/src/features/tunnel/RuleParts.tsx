@@ -14,12 +14,12 @@ export const ACTION_CHECKED: Readonly<Record<RuleAction, string>> = {
 
 export function ActionPill({ action, className }: { action: RuleAction; className?: string }) {
   return (
-    <span data-action={action} className={cn("inline-flex min-w-14 justify-center rounded-md px-2 py-0.5 text-[11px] font-bold", ACTION_PILL[action], className)}>
+    <span data-action={action} className={cn("inline-flex min-w-14 justify-center rounded-md px-2 py-0.5 text-caption font-bold", ACTION_PILL[action], className)}>
       {action}
     </span>
   );
 }
 
 export function TypeChip({ children }: { children: ReactNode }) {
-  return <span className="inline-flex rounded-md border border-line bg-glass-2 px-1.5 py-0.5 font-mono text-[11px] text-t2">{children}</span>;
+  return <span className="inline-flex rounded-md border border-line bg-glass-2 px-1.5 py-0.5 font-mono text-caption text-t2">{children}</span>;
 }

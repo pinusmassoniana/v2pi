@@ -9,7 +9,7 @@ import { DIAGNOSTICS, SETTINGS, STATUS, holdConnectionWrite, mockApi, mockSystem
 import { renderApp } from "../../test/renderApp";
 import { exportSettings } from "./settingsFile";
 
-// Two tests in this file save an interval-only patch that produces the same "saved — applies on next
+// Two tests in this file save an interval-only patch that produces the same "saved, applies on next
 // Connect" text (as toaster.test.tsx:8 does for the same reason): sonner's toast store is a module
 // singleton whose dismiss timer only runs while a Toaster is mounted, so an un-dismissed toast from an
 // earlier test is replayed into the next test's fresh Toaster and collides with an identical message.
@@ -142,7 +142,7 @@ describe("Panel — traffic stats (G2)", () => {
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await userEvent.click(saveButton());
 
-    await screen.findByText("saved — applies on next Connect");
+    await screen.findByText("saved, applies on next Connect");
     expect(api$.putSettings).toHaveBeenCalledWith({ traffic_sample_ms: 2000 });
     expect(keys$[0]).toEqual([...SETTINGS_WRITE]);
     // no question: this patch re-applies nothing
@@ -172,7 +172,7 @@ describe("Panel — traffic stats (G2)", () => {
     await fill(field("Sample interval"), "2000");
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await userEvent.click(saveButton());
-    await screen.findByText("saved — applies on next Connect");
+    await screen.findByText("saved, applies on next Connect");
     expect(screen.queryByRole("dialog", { name: "Confirm" })).toBeNull();
 
     await userEvent.click(screen.getByRole("switch", { name: "Collect traffic stats" }));
@@ -192,7 +192,7 @@ describe("Panel — traffic stats (G2)", () => {
     const release = holdConnectionWrite(client);
     await answer("Continue");
 
-    await screen.findByText("Another connection change is still running — try again when it finishes");
+    await screen.findByText("Another connection change is still running. Try again when it finishes");
     expect(api$.putSettings).not.toHaveBeenCalled();
     await release();
   });
@@ -207,7 +207,7 @@ describe("Panel — traffic stats (G2)", () => {
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await userEvent.click(saveButton());
 
-    await screen.findByText("not saved — applying to the tunnel failed: xray -test rejected the rebuilt config");
+    await screen.findByText("not saved, but applying to the tunnel failed: xray -test rejected the rebuilt config");
     await waitFor(() => expect(field("Xray API port")).toHaveValue(10085));
     expect(field("Sample interval")).toHaveValue(1000);
   });
@@ -272,7 +272,7 @@ describe("Panel — settings file (G6)", () => {
     await userEvent.upload(within(region("Settings file")).getByLabelText("Choose file…"), file);
 
     expect(await screen.findByText("2 fields are not settings keys: health_probe_urls, rw_enabled")).toBeInTheDocument();
-    expect(screen.getByText("Remove them, or export a fresh file from this panel — one unknown key refuses the whole import.")).toBeInTheDocument();
+    expect(screen.getByText("Remove them, or export a fresh file from this panel. One unknown key refuses the whole import.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import settings" })).toBeDisabled();
     expect(api$.putSettings).not.toHaveBeenCalled();
   });
@@ -355,11 +355,11 @@ describe("Panel — settings file (G6)", () => {
 
     api$.putSettings.mockRejectedValueOnce(new ApiError(422, "traffic_sample_ms must be >= 500"));
     await pick();
-    await screen.findByText("not applied — traffic_sample_ms must be >= 500");
+    await screen.findByText("not applied, traffic_sample_ms must be >= 500");
 
     api$.putSettings.mockRejectedValueOnce(new ApiError(502, "xray -test rejected the rebuilt config"));
     await pick();
-    await screen.findByText("not applied — applying to the tunnel failed: xray -test rejected the rebuilt config");
+    await screen.findByText("not applied, but applying to the tunnel failed: xray -test rejected the rebuilt config");
   });
 });
 
@@ -397,7 +397,7 @@ describe("Panel — danger zone (P5)", () => {
     await openPanel({ status: { active_node_id: null } });
     await userEvent.click(within(region("Danger zone")).getByRole("button", { name: "Reset settings" }));
     await answer("Reset settings");
-    await screen.findByText("settings reset to defaults — applies on next Connect");
+    await screen.findByText("settings reset to defaults, applies on next Connect");
   });
 
   it("a 502 says the whole reset was rolled back", async () => {
@@ -407,6 +407,6 @@ describe("Panel — danger zone (P5)", () => {
     await userEvent.click(within(region("Danger zone")).getByRole("button", { name: "Reset settings" }));
     await answer("Reset settings");
 
-    await screen.findByText("not reset — applying to the tunnel failed: xray -test rejected the rebuilt config");
+    await screen.findByText("not reset, but applying to the tunnel failed: xray -test rejected the rebuilt config");
   });
 });

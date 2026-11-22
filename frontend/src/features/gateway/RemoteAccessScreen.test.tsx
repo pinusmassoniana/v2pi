@@ -60,8 +60,8 @@ describe("Remote access › the inbound, hosts, subnets and checklist", () => {
     expect(key).toHaveAttribute("autocomplete", "off");
     expect(key).toHaveValue("");
     expect(key).toHaveAttribute("placeholder", "•••••••• stored");
-    expect(inbound()).toHaveTextContent("stored — leave blank to keep it");
-    expect(inbound()).toHaveTextContent("Generate the pair once on the gateway — docker exec v2pi xray x25519 — and paste both halves here.");
+    expect(inbound()).toHaveTextContent("stored, leave blank to keep it");
+    expect(inbound()).toHaveTextContent("Generate the pair once on the gateway with docker exec v2pi xray x25519 and paste both halves here.");
 
     const hosts = region("LAN hosts by name");
     expect(hosts).toHaveTextContent("2 / 32");
@@ -78,7 +78,7 @@ describe("Remote access › the inbound, hosts, subnets and checklist", () => {
       "3Check :8443 is free on the router itselfits own web UI or remote-access service often sits on 443.",
     ]);
     expect(saveButton()).toBeDisabled();
-    expect(screen.getByText("Save sends the whole form — settings, LAN hosts and routed subnets")).toBeInTheDocument();
+    expect(screen.getByText("Save sends the whole form: settings, LAN hosts and routed subnets")).toBeInTheDocument();
     expect(banners()).toEqual([]);
   });
 
@@ -110,10 +110,10 @@ describe("Remote access › warnings (A1)", () => {
     expect(banners()).toHaveLength(1);
     api$.getRw.mockResolvedValue({ ...RW, clients: RW.clients.map((c) => ({ ...c, enabled: false })), live: false });
     await act(() => client.refetchQueries({ queryKey: keys.rw }));
-    await waitFor(() => expect(banners()[0]).toHaveTextContent("Enabled with no clients — nothing is listening."));
+    await waitFor(() => expect(banners()[0]).toHaveTextContent("Enabled with no clients Nothing is listening."));
     api$.getRw.mockResolvedValue({ ...RW, live: false });
     await act(() => client.refetchQueries({ queryKey: keys.rw }));
-    await waitFor(() => expect(banners()[0]).toHaveTextContent("Stored, but not in the running config yet — either there is no active node to rebuild it from"));
+    await waitFor(() => expect(banners()[0]).toHaveTextContent("Stored, but not in the running config yet Either there is no active node to rebuild it from"));
     expect(banners()).toHaveLength(1);
   });
 
@@ -122,7 +122,7 @@ describe("Remote access › warnings (A1)", () => {
     const names = within(inbound()).getByLabelText("Server names");
     await userEvent.click(within(inbound()).getByRole("button", { name: "Remove server name www.microsoft.com" }));
     expect(await screen.findByRole("group", { name: "Server name does not match dest." })).toHaveTextContent("Reality needs the SNI to be what the dest host actually serves");
-    expect(inbound()).toHaveTextContent("dest host is www.microsoft.com — it is not in this list");
+    expect(inbound()).toHaveTextContent("dest host is www.microsoft.com, it is not in this list");
     expect(names.parentElement).toHaveClass("border-warn/70");
     await fill(field("Reality dest"), "learn.microsoft.com:443");
     await waitFor(() => expect(screen.queryByRole("group", { name: "Server name does not match dest." })).toBeNull());
@@ -171,7 +171,7 @@ describe("Remote access › fields", () => {
     const { api$ } = await openRemoteAccess();
     const success = vi.spyOn(toast, "success");
     await userEvent.click(within(inbound()).getByRole("button", { name: "Generate" }));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("short id added — save to apply", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("short id added, save to apply", { duration: 8000 }));
     const chips = within(within(inbound()).getByRole("list", { name: "Short ids list" })).getAllByRole("listitem");
     expect(chips.at(-1)).toHaveTextContent("0123456789abcdef");
     expect(chips.at(-1)).toHaveAttribute("data-unsaved", "true");
@@ -354,14 +354,14 @@ describe("Remote access › Save (A4)", () => {
     await fill(field("External endpoint"), "home.example.org");
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await userEvent.click(saveButton());
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad inbound", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved, but applying to the tunnel failed: xray -test failed: bad inbound", { duration: 20000 }));
     expect(field("External endpoint")).toHaveValue("home.example.org");
 
     const reads = api$.getRw.mock.calls.length;
     api$.putRw.mockRejectedValueOnce(new ApiError(0, "request timed out"));
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await userEvent.click(saveButton());
-    await waitFor(() => expect(warning).toHaveBeenCalledWith("no answer yet — the gateway may still be applying; reloading", { duration: 20000 }));
+    await waitFor(() => expect(warning).toHaveBeenCalledWith("no answer yet, the gateway may still be applying; reloading", { duration: 20000 }));
     await waitFor(() => expect(api$.getRw.mock.calls.length).toBeGreaterThan(reads));
     expect(field("External endpoint")).toHaveValue("home.example.org");
   });
@@ -369,7 +369,7 @@ describe("Remote access › Save (A4)", () => {
   it("a malformed key never leaves the browser", async () => {
     const { api$ } = await openRemoteAccess();
     await fill(field("Private key"), "not-a-key");
-    expect(await within(inbound()).findByText("the Reality private key must be a base64 x25519 key — 43 characters, exactly as `xray x25519` prints it")).toBeInTheDocument();
+    expect(await within(inbound()).findByText("the Reality private key must be a base64 x25519 key, 43 characters, exactly as `xray x25519` prints it")).toBeInTheDocument();
     await userEvent.click(saveButton());
     expect(api$.putRw).not.toHaveBeenCalled();
     expect(screen.queryByText(/not-a-key/)).toBeNull();
@@ -382,7 +382,7 @@ describe("Remote access › Save (A4)", () => {
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await userEvent.click(saveButton());
     await waitFor(() => expect(field("Listen port")).toHaveFocus());
-    expect(await screen.findByText("not saved — fix the highlighted fields first")).toHaveAttribute("role", "status");
+    expect(await screen.findByText("not saved, fix the highlighted fields first")).toHaveAttribute("role", "status");
     expect(api$.putRw).not.toHaveBeenCalled();
   });
 });
@@ -396,7 +396,7 @@ describe("Remote access › following the gateway and leaving", () => {
     await fill(field("Private key"), RW_PRIVATE_KEY);
     api$.getRw.mockResolvedValue({ ...RW, endpoint: "wan.example.org" });
     await act(() => client.refetchQueries({ queryKey: keys.rw }));
-    expect(await screen.findByText("Changed on the gateway since you started editing — Discard to load it")).toHaveAttribute("role", "status");
+    expect(await screen.findByText("Changed on the gateway since you started editing. Discard to load it")).toHaveAttribute("role", "status");
     expect(field("External endpoint")).toHaveValue("home.example.org");
     await userEvent.click(screen.getByRole("button", { name: "Discard" }));
     await waitFor(() => expect(field("External endpoint")).toHaveValue("wan.example.org"));

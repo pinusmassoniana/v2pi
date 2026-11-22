@@ -27,17 +27,15 @@ import {
 } from "./tokenForm";
 
 const EMPTY: TokenFormValues = { name: "", scope: "monitor", expiry: "never" };
-const SCOPE_HELPER = "monitor is enough for a dashboard — it cannot read any secret";
+const SCOPE_HELPER = "monitor is enough for a dashboard and cannot read any secret";
 const CREATE_FOOTER = "the secret is shown once, right after it is created";
 const TOKENS_FOOTER_1 =
   "Last used is stamped at most once a minute, so a token used seconds ago can still read “—”. An expired token is " +
   "refused before the stamp, so it never gets one.";
-const TOKENS_FOOTER_2 = "the prefix is not a secret — the secret itself is only ever shown once";
+const TOKENS_FOOTER_2 = "the prefix is not a secret; the secret itself is only ever shown once";
 const SECRET_NOTE =
-  "Copy it now, it is shown only once. The gateway keeps only its hash — if you lose it, revoke this token and issue another.";
+  "Copy it now, it is shown only once. The gateway keeps only its hash. If you lose it, revoke this token and issue another.";
 const SECRET_WARN_TITLE = "Leaving this screen loses the secret.";
-const SECRET_WARN_TEXT =
-  "Navigation is blocked while it is on display; it is never written to the cache, a URL, a toast or the log.";
 
 /** G7: the token list's two writes, and the secret the create answers with — which exists nowhere else. */
 export function useTokens() {
@@ -134,7 +132,7 @@ export function ScopesCard() {
         {SCOPE_COPY.map((row) => (
           <li key={row.scope} className="flex items-start gap-2.5">
             <Pill className="mt-px shrink-0">{row.label}</Pill>
-            <p className="min-w-0 text-[11.5px] leading-relaxed text-t3">
+            <p className="min-w-0 text-caption leading-relaxed text-t3">
               <span className="font-semibold text-t1">{row.lead}</span> {row.body}
             </p>
           </li>
@@ -160,11 +158,11 @@ export function SecretPanel({ tokens }: { tokens: TokensState }) {
     <div role="group" aria-label={`New token ${secret.name}`} className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2">
         <Pill tone="warn">shown once</Pill>
-        <p className="min-w-0 truncate text-[12px] font-semibold text-t1">New token “{secret.name}” · {scopeLabel(secret.scope)}</p>
+        <p className="min-w-0 truncate text-caption font-semibold text-t1">New token “{secret.name}” · {scopeLabel(secret.scope)}</p>
       </div>
-      <p className="text-[11.5px] leading-relaxed text-t2">{SECRET_NOTE}</p>
-      <p className="select-all break-all rounded-xl border border-line bg-glass px-3 py-2 font-mono text-[12px] text-t1">{secret.token}</p>
-      <AlertBanner tone="warn" title={SECRET_WARN_TITLE} text={SECRET_WARN_TEXT} />
+      <p className="text-caption leading-relaxed text-t2">{SECRET_NOTE}</p>
+      <p className="select-all break-all rounded-xl border border-line bg-glass px-3 py-2 font-mono text-caption text-t1">{secret.token}</p>
+      <AlertBanner tone="warn" title={SECRET_WARN_TITLE} />
       <div className="flex flex-wrap justify-end gap-2">
         <Button onClick={() => void copy()}>{copied ? "Copied ✓" : "Copy"}</Button>
         <Button variant="primary" onClick={tokens.dismissSecret}>Done</Button>
@@ -211,7 +209,7 @@ export function TokenFormFields({ form }: { form: ReturnType<typeof useTokenForm
           />
         )}
       />
-      <p className="-mt-1 text-[11px] text-t3">{expiryHelper(expiry, nowMs)}</p>
+      <p className="-mt-1 text-caption text-t3">{expiryHelper(expiry, nowMs)}</p>
       <Controller
         control={control}
         name="scope"
@@ -224,7 +222,7 @@ export function TokenFormFields({ form }: { form: ReturnType<typeof useTokenForm
           />
         )}
       />
-      <p className="-mt-1 text-[11px] text-t3">{SCOPE_HELPER}</p>
+      <p className="-mt-1 text-caption text-t3">{SCOPE_HELPER}</p>
     </>
   );
 }
@@ -243,7 +241,7 @@ export function TokenFormCard({ tokens }: { tokens: TokensState }) {
         <div className="flex flex-col gap-2.5">
           <TokenFormFields form={form} />
           <div className="mt-1 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-            <p className="min-w-0 flex-1 text-[11px] text-t3">{CREATE_FOOTER}</p>
+            <p className="min-w-0 flex-1 text-caption text-t3">{CREATE_FOOTER}</p>
             <Button onClick={tokens.closeForm}>Cancel</Button>
             <Button variant="primary" disabled={!form.isValid || tokens.busy} onClick={() => void form.submit()}>
               {tokens.create.isPending ? "Creating…" : "Create token"}
@@ -275,7 +273,7 @@ export function TokenSheet({ tokens, open, onOpenChange }: { tokens: TokensState
       <SheetContent title="New token" onEscapeKeyDown={keepSecretOnScreen} onPointerDownOutside={keepSecretOnScreen}>
         <div className="flex flex-col gap-2.5">
           {tokens.secret ? <SecretPanel tokens={tokens} /> : <TokenFormFields form={form} />}
-          {tokens.secret ? <p className="text-[11px] text-t3">{FINISH_COPYING}</p> : <p className="text-[11px] text-t3">{CREATE_FOOTER}</p>}
+          {tokens.secret ? <p className="text-caption text-t3">{FINISH_COPYING}</p> : <p className="text-caption text-t3">{CREATE_FOOTER}</p>}
           <div className="glass sticky bottom-0 -mx-1 flex bg-solid p-2">
             <Button
               variant="primary"
@@ -299,7 +297,7 @@ export function TokenCard({ token, tokens, nowSec }: { token: ApiToken; tokens: 
   return (
     <li className="rounded-xl border border-line bg-glass px-3 py-2">
       <div className="flex items-baseline gap-2">
-        <span className="min-w-0 truncate text-[13px] font-semibold text-t1">{token.name}</span>
+        <span className="min-w-0 truncate text-body font-semibold text-t1">{token.name}</span>
         <Pill className="shrink-0">{scopeLabel(token.scope)}</Pill>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -310,10 +308,10 @@ export function TokenCard({ token, tokens, nowSec }: { token: ApiToken; tokens: 
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <p className="truncate font-mono text-[11px] text-t3">
+      <p className="truncate font-mono text-caption text-t3">
         {token.prefix} · created {localDate(token.created_at)} · last used {lastUsedLabel(token.last_used_at)}
       </p>
-      <p className="text-[11px] text-t3">
+      <p className="text-caption text-t3">
         {token.expires_at ? `expires ${expiryLabel(token.expires_at)}` : "never expires"}
         {badge ? <Pill tone="warn" className="ml-1.5">{badge}</Pill> : null}
       </p>
@@ -325,12 +323,12 @@ function TokenRow({ token, tokens, nowSec }: { token: ApiToken; tokens: TokensSt
   const badge = expiryBadge(token.expires_at, nowSec);
   return (
     <tr className="border-t border-line">
-      <td className="px-2 py-2 text-[12.5px] font-semibold text-t1">{token.name}</td>
-      <td className="px-2 py-2 text-[12px] text-t2">{scopeLabel(token.scope)}</td>
-      <td className="px-2 py-2 font-mono text-[12px] text-t3">{token.prefix}</td>
-      <td className="px-2 py-2 text-[12px] text-t3">{localDate(token.created_at)}</td>
-      <td className="px-2 py-2 text-[12px] text-t3">{lastUsedLabel(token.last_used_at)}</td>
-      <td className="px-2 py-2 text-[12px] text-t3">
+      <td className="px-2 py-2 text-body font-semibold text-t1">{token.name}</td>
+      <td className="px-2 py-2 text-caption text-t2">{scopeLabel(token.scope)}</td>
+      <td className="px-2 py-2 font-mono text-caption text-t3">{token.prefix}</td>
+      <td className="px-2 py-2 text-caption text-t3">{localDate(token.created_at)}</td>
+      <td className="px-2 py-2 text-caption text-t3">{lastUsedLabel(token.last_used_at)}</td>
+      <td className="px-2 py-2 text-caption text-t3">
         {expiryLabel(token.expires_at)}
         {badge ? <Pill tone="warn" className="ml-1.5">{badge}</Pill> : null}
       </td>
@@ -368,7 +366,7 @@ export function TokensCard({ list, tokens, nowSec, phone = false }: { list: UseQ
             <thead>
               <tr>
                 {COLUMNS.map((column) => (
-                  <th key={column} scope="col" className="px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{column}</th>
+                  <th key={column} scope="col" className="px-2 pb-1 text-2xs font-semibold uppercase tracking-[.07em] text-t3">{column}</th>
                 ))}
                 <th scope="col" className="px-2 pb-1"><span className="sr-only">Actions</span></th>
               </tr>
@@ -379,8 +377,8 @@ export function TokensCard({ list, tokens, nowSec, phone = false }: { list: UseQ
           </table>
         </div>
       ))}
-      <p className="mt-3 text-[11px] leading-relaxed text-t3">{TOKENS_FOOTER_1}</p>
-      {phone ? null : <p className="mt-1 text-[11px] text-t3">{TOKENS_FOOTER_2}</p>}
+      <p className="mt-3 text-caption leading-relaxed text-t3">{TOKENS_FOOTER_1}</p>
+      {phone ? null : <p className="mt-1 text-caption text-t3">{TOKENS_FOOTER_2}</p>}
     </GlassCard>
   );
 }

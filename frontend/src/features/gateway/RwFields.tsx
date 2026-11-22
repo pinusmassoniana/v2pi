@@ -22,7 +22,7 @@ export function WithCode({ text }: { text: string }): ReactNode {
 }
 
 export const KEY_NOTE =
-  "Generate the pair once on the gateway — `docker exec v2pi xray x25519` — and paste both halves here. The panel keeps the private key on the gateway and never returns it to the browser after it is set, and it is deliberately left out of backups — after restoring onto a new host, paste it again.";
+  "Generate the pair once on the gateway with `docker exec v2pi xray x25519` and paste both halves here. The panel keeps the private key on the gateway and never returns it to the browser after it is set, and it is deliberately left out of backups. After restoring onto a new host, paste it again.";
 
 /** A2: the enable switch. On needs a key, stored or typed; off is always allowed. */
 export function EnableToggle({ rw, state, disabled }: { rw: Rw; state: RwFormState; disabled: boolean }) {
@@ -36,7 +36,7 @@ export function EnableToggle({ rw, state, disabled }: { rw: Rw; state: RwFormSta
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-semibold text-t1">Accept inbound connections from outside.</p>
-        <p className="text-xs leading-relaxed text-t3">LAN access keeps working when the exit node is down — <code>private → direct</code> does not depend on the tunnel.</p>
+        <p className="text-xs leading-relaxed text-t3">LAN access keeps working when the exit node is down. <code>private → direct</code> does not depend on the tunnel.</p>
       </div>
       {rw.has_private_key ? <Chip className="shrink-0">private key <b>STORED</b></Chip> : null}
     </div>
@@ -55,7 +55,7 @@ export function InboundFields({ rw, state, disabled }: { rw: Rw; state: RwFormSt
     try {
       const { short_id: shortId } = await api.newRwShortId();
       setValue("shortIds", [...getValues("shortIds"), shortId], { shouldDirty: true, shouldValidate: true });
-      notifyOk("short id added — save to apply");
+      notifyOk("short id added, save to apply");
     } catch {
       notifyError(null, "could not generate a short id");
     } finally {
@@ -106,7 +106,7 @@ export function InboundFields({ rw, state, disabled }: { rw: Rw; state: RwFormSt
             />
           )}
         />
-        {mismatch && !errors.serverNames ? <p className="text-[11px] text-warn">dest host is {destHost({ dest })} — it is not in this list</p> : null}
+        {mismatch && !errors.serverNames ? <p className="text-caption text-warn">dest host is {destHost({ dest })}, it is not in this list</p> : null}
       </div>
       <div className="flex flex-col gap-1 sm:col-span-2">
         <Controller
@@ -125,7 +125,7 @@ export function InboundFields({ rw, state, disabled }: { rw: Rw; state: RwFormSt
       <div className="flex flex-col gap-1">
         <TextField
           label="Private key"
-          hint={rw.has_private_key ? "stored — leave blank to keep it" : "required before enabling"}
+          hint={rw.has_private_key ? "stored, leave blank to keep it" : "required before enabling"}
           type="password"
           autoComplete="off"
           placeholder={rw.has_private_key ? "•••••••• stored" : "paste the private key from `xray x25519`"}
@@ -142,7 +142,7 @@ export function InboundFields({ rw, state, disabled }: { rw: Rw; state: RwFormSt
 }
 
 export const HOSTS_NOTE =
-  "A remote client that routes `192.168.1.0/24` into the tunnel collides with every cafe running the same prefix, and `192.168.1.88` can silently mean their printer. A name cannot collide. The gateway resolves these, so the client only needs one rule per suffix. Avoid `.local` — iOS and macOS answer it over mDNS and it never reaches the tunnel.";
+  "A remote client on a network with the same prefix (`192.168.1.0/24` is common) reaches its own devices, not yours. A name cannot collide. The gateway resolves these, so the client needs one rule per suffix. Avoid `.local`: iOS and macOS answer it over mDNS and it never reaches the tunnel.";
 
 /** A5: LAN hosts by name — rows of a name and an IPv4 address, sent with Save. */
 export function HostRows({ state, disabled }: { state: RwFormState; disabled: boolean }) {
@@ -171,8 +171,8 @@ export function HostRows({ state, disabled }: { state: RwFormState; disabled: bo
     <div className="flex flex-col gap-2">
       {fields.length > 0 ? (
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-x-2 gap-y-1.5">
-          <span aria-hidden className="text-[10.5px] font-semibold tracking-wide text-t3">Name</span>
-          <span aria-hidden className="text-[10.5px] font-semibold tracking-wide text-t3">IPv4</span>
+          <span aria-hidden className="text-2xs font-semibold tracking-wide text-t3">Name</span>
+          <span aria-hidden className="text-2xs font-semibold tracking-wide text-t3">IPv4</span>
           <span />
           {fields.map((row, index) => {
             const rowErrors = errors.hosts?.[index];
@@ -185,24 +185,24 @@ export function HostRows({ state, disabled }: { state: RwFormState; disabled: bo
                 <Button size="icon" variant="ghost" aria-label={`Remove host ${index + 1}`} disabled={disabled} onClick={() => removeRow(index)}>
                   <X size={15} aria-hidden />
                 </Button>
-                {message ? <p id={errorId} className="col-span-3 -mt-0.5 text-[11px] text-bad">{message}</p> : null}
+                {message ? <p id={errorId} className="col-span-3 -mt-0.5 text-caption text-bad">{message}</p> : null}
               </div>
             );
           })}
         </div>
       ) : null}
-      {hostsError ? <p className="text-[11px] text-bad">{hostsError}</p> : null}
+      {hostsError ? <p className="text-caption text-bad">{hostsError}</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button ref={addRef} size="sm" variant="ghost" disabled={disabled || fields.length >= MAX_HOSTS} onClick={() => append({ name: "", ip: "" }, { shouldFocus: true })}>
           <Plus size={14} aria-hidden />Add host
         </Button>
-        <span className="text-[11px] text-t3">dotted name, not .local · IPv4 only</span>
+        <span className="text-caption text-t3">dotted name, not .local · IPv4 only</span>
       </div>
     </div>
   );
 }
 
-export const SUBNETS_NOTE = "Pushed into the generated client config. Derived from the live network plan, so they follow your addressing instead of a hardcoded guess.";
+export const SUBNETS_NOTE = "Added to the generated client config, taken from the current network settings.";
 
 /** A7: the subnets clients route into the tunnel (saved), and the override sent with Save. */
 export function SubnetFields({ rw, state, disabled }: { rw: Rw; state: RwFormState; disabled: boolean }) {

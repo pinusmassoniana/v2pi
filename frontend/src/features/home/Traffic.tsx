@@ -32,7 +32,7 @@ function FailoverRows({ events, nowMs }: { events: readonly ConnEvent[]; nowMs: 
     <>
       <table className="hidden w-full table-fixed text-left text-xs md:table">
         <thead>
-          <tr className="text-[9.5px] uppercase tracking-[.07em] text-t3">
+          <tr className="text-2xs uppercase tracking-[.07em] text-t3">
             <th scope="col" className="w-44 pb-1.5 font-semibold">When</th>
             <th scope="col" className="w-32 pb-1.5 font-semibold">Kind</th>
             <th scope="col" className="pb-1.5 font-semibold">Detail</th>
@@ -54,7 +54,7 @@ function FailoverRows({ events, nowMs }: { events: readonly ConnEvent[]; nowMs: 
             <span className="font-mono text-t3">{whenLabel(event.ts, nowMs)}</span>
             <span className="min-w-0 text-t1">
               {event.kind}
-              <span className="block truncate text-[11px] text-t2">{event.detail}</span>
+              <span className="block truncate text-caption text-t2">{event.detail}</span>
             </span>
           </li>
         ))}
@@ -134,7 +134,7 @@ function LatencyBarsCard({ activeNodeId, nodes, health }: {
     <GlassCard aria-label="Probe latency by node" aria-busy={(fallback !== null && !nodes.isError && !health.isError) || undefined} className="md:col-span-2 xl:col-span-6">
       <CardHeader
         title="Probe latency by node"
-        aside={<span className="inline-flex items-center gap-1.5 text-[11px] text-t2"><i aria-hidden className="h-2.5 w-px bg-warn/70" />slow &gt; 150 ms</span>}
+        aside={<span className="inline-flex items-center gap-1.5 text-caption text-t2"><i aria-hidden className="h-2.5 w-px bg-warn/70" />slow &gt; 150 ms</span>}
       />
       {fallback ?? (
         <>

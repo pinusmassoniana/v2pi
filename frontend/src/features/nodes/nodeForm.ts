@@ -54,7 +54,7 @@ export function ssPasswordIssue(method: string, password: string): string | null
 export const PROTOCOL_NOTE: Record<Protocol, string> = {
   vless: "",
   trojan: "xray marks Trojan deprecated in favour of VLESS + Reality; it still builds and connects.",
-  shadowsocks: "No TLS layer of its own — the cipher is the encryption. xray marks it deprecated in favour of VLESS.",
+  shadowsocks: "No TLS layer of its own. The cipher is the encryption. xray marks it deprecated in favour of VLESS.",
 };
 
 /** Every field is a string, as the inputs hold them; `tuning_profile_id` is the select's value (NO_PROFILE = the global default). */

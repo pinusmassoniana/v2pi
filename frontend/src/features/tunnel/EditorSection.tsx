@@ -23,8 +23,8 @@ export function EditorSection({ title, note, collapsible, open, onToggle, summar
   const shown = !collapsible || open;
   const heading = (
     <>
-      <span className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t2">{title}</span>
-      {note ? <span className="truncate text-[11px] font-normal normal-case text-t3">{note}</span> : null}
+      <span className="text-2xs font-semibold uppercase tracking-[.07em] text-t2">{title}</span>
+      {note ? <span className="truncate text-caption font-normal normal-case text-t3">{note}</span> : null}
     </>
   );
   return (
@@ -39,7 +39,7 @@ export function EditorSection({ title, note, collapsible, open, onToggle, summar
             className="flex min-h-9 min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-g2"
           >
             {heading}
-            {!open && summary ? <span className="ml-auto shrink-0 text-[11px] text-t3">{summary}</span> : null}
+            {!open && summary ? <span className="ml-auto shrink-0 text-caption text-t3">{summary}</span> : null}
             <ChevronDown size={15} aria-hidden className={cn("shrink-0 text-t3 transition-transform duration-150", !open && summary ? "" : "ml-auto", open && "rotate-180")} />
           </button>
         ) : (

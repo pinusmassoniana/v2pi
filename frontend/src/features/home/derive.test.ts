@@ -339,7 +339,7 @@ describe("events", () => {
 
   it("failover history falls back to last_failover_at when no event matches, and is empty without either", () => {
     const plain: ConnEvent[] = [{ ts: NOW_SEC - 5, kind: "apply", detail: "applied" }];
-    expect(failoverHistory(plain, NOW_SEC - 700)).toEqual([{ ts: NOW_SEC - 700, kind: "failover", detail: "Auto-failover — the gateway switched node" }]);
+    expect(failoverHistory(plain, NOW_SEC - 700)).toEqual([{ ts: NOW_SEC - 700, kind: "failover", detail: "Auto-failover switched node" }]);
     expect(failoverHistory(plain, null)).toEqual([]);
     expect(failoverHistory([], undefined)).toEqual([]);
   });

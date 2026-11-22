@@ -13,18 +13,18 @@ const NOTES: Record<Outcome, { client: string; save: string }> = {
   reapplied: { client: "live tunnel rebuilt without it", save: "live tunnel rebuilt with the narrowed settings" },
   rebuilt: { client: "previous config rebuilt and reloaded", save: "previous config rebuilt and reloaded with the narrowed settings" },
   cleaned: {
-    client: "xray was down — the stored config was rewritten without it, so it cannot come back on the next start",
-    save: "xray was down — the stored config was rewritten with the narrowed settings, so the old ones cannot come back on the next start",
+    client: "xray was down; the stored config was rewritten without it, so it cannot come back on the next start",
+    save: "xray was down; the stored config was rewritten with the narrowed settings, so the old ones cannot come back on the next start",
   },
   stopped: {
-    client: "xray stopped — remote access is down for everyone until you reconnect",
-    save: "xray stopped — remote access is down for everyone until you reconnect",
+    client: "xray stopped; remote access is down for everyone until you reconnect",
+    save: "xray stopped; remote access is down for everyone until you reconnect",
   },
   "stop-failed": {
     client: "SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.",
     save: "SECURITY WARNING: xray's stop could not be confirmed, so the settings you just narrowed may still be live. The panel keeps retrying; reboot the gateway if this does not clear.",
   },
-  "not-live": { client: "nothing was serving the inbound — no live access to cut", save: "nothing was serving the inbound — nothing live to narrow" },
+  "not-live": { client: "nothing was serving the inbound, no live access to cut", save: "nothing was serving the inbound, nothing live to narrow" },
 };
 
 /** The note for an outcome; "" when the write was not a revocation. */
@@ -51,13 +51,13 @@ export function rwSavedMessage(rw: Rw, activeAtSend: boolean): RwMessage {
 /** A6 Suspend: the uuid is kept, and how the revocation went. */
 export function suspendedMessage(rw: Rw): RwMessage {
   const note = revocationNote(rw.revocation, "client");
-  return { text: `client suspended — its uuid is kept${note ? ` — ${note}` : ""}`, error: revocationIsError(rw.revocation) };
+  return { text: `client suspended; its uuid is kept${note ? `; ${note}` : ""}`, error: revocationIsError(rw.revocation) };
 }
 
 /** A6 Remove: which device, and how the revocation went. */
 export function removedMessage(name: string, rw: Rw): RwMessage {
   const note = revocationNote(rw.revocation, "client");
-  return { text: `removed ${name}${note ? ` — ${note}` : ""}`, error: revocationIsError(rw.revocation) };
+  return { text: `removed ${name}${note ? `; ${note}` : ""}`, error: revocationIsError(rw.revocation) };
 }
 
 /** A client uuid is a credential: shown as its first four characters and dots until revealed. */

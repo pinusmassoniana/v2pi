@@ -8,7 +8,7 @@ import { cn } from "../../lib/cn";
 import type { ProfileRowCallbacks } from "./useProfileActions";
 
 export const APPLY_TITLE = "Apply to the active node and re-apply now";
-export const NO_ACTIVE_NODE_HINT = "No active node — connect one to apply a profile live.";
+export const NO_ACTIVE_NODE_HINT = "No active node. Connect one to apply a profile live.";
 
 /** What disables row actions: any profile write, a connection write (for those that move the tunnel), no active node. */
 export interface ProfileActionState {

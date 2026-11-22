@@ -96,7 +96,7 @@ export function useRwSave(rw: Rw, state: RwFormState): RwSave {
   async function save(): Promise<void> {
     setFormError(null);
     if (!(await form.trigger(undefined, { shouldFocus: true }))) {
-      setFormError("not saved — fix the highlighted fields first");
+      setFormError("not saved, fix the highlighted fields first");
       return;
     }
     const values = form.getValues();

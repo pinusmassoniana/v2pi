@@ -22,10 +22,10 @@ const AUDIT_413_NOTE = "the 413 was refused by the body limit before the session
 /** One path, masked while it carries a live remote-access credential. The full value enters the DOM only on Reveal. */
 export function AuditPath({ path, revealed, onToggle }: { path: string; revealed: boolean; onToggle: () => void }) {
   const masked = maskedAuditPath(path);
-  if (!masked) return <span className="min-w-0 truncate font-mono text-[12px] text-t2">{path}</span>;
+  if (!masked) return <span className="min-w-0 truncate font-mono text-caption text-t2">{path}</span>;
   return (
     <span className="flex min-w-0 items-center gap-2">
-      <span className="min-w-0 truncate font-mono text-[12px] text-t2">
+      <span className="min-w-0 truncate font-mono text-caption text-t2">
         {revealed ? masked.full : masked.masked}
         {revealed ? null : <span className="sr-only"> uuid hidden</span>}
       </span>
@@ -34,7 +34,7 @@ export function AuditPath({ path, revealed, onToggle }: { path: string; revealed
         aria-pressed={revealed}
         aria-label={`Reveal uuid in ${masked.masked}`}
         onClick={onToggle}
-        className="shrink-0 text-[11px] font-semibold text-t3 underline hover:text-t1 focus-visible:outline-2 focus-visible:outline-g2"
+        className="shrink-0 text-caption font-semibold text-t3 underline hover:text-t1 focus-visible:outline-2 focus-visible:outline-g2"
       >
         {revealed ? "Hide" : "Reveal"}
       </button>
@@ -49,12 +49,12 @@ function AuditRow({ row, revealed, onToggle, phone }: { row: AuditEntry; reveale
     return (
       <li className="rounded-xl border border-line bg-glass px-3 py-2">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="font-mono text-[11.5px] text-t3">{auditTime(row.ts)}</span>
-          <span className={cn("min-w-0 flex-1 truncate text-[11.5px]", actor)}>{row.actor}</span>
-          <span className={cn("shrink-0 font-mono text-[11.5px]", tone)}>→ {row.status}</span>
+          <span className="font-mono text-caption text-t3">{auditTime(row.ts)}</span>
+          <span className={cn("min-w-0 flex-1 truncate text-caption", actor)}>{row.actor}</span>
+          <span className={cn("shrink-0 font-mono text-caption", tone)}>→ {row.status}</span>
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[11.5px] font-bold text-t1">{row.method}</span>
+          <span className="shrink-0 text-caption font-bold text-t1">{row.method}</span>
           <AuditPath path={row.path} revealed={revealed} onToggle={onToggle} />
         </div>
       </li>
@@ -62,13 +62,13 @@ function AuditRow({ row, revealed, onToggle, phone }: { row: AuditEntry; reveale
   }
   return (
     <li className="grid grid-cols-[92px_158px_minmax(0,1fr)_72px] items-center gap-2 border-t border-line py-1.5">
-      <span className="font-mono text-[11.5px] text-t3">{auditTime(row.ts)}</span>
-      <span className={cn("truncate text-[11.5px]", actor)}>{row.actor}</span>
+      <span className="font-mono text-caption text-t3">{auditTime(row.ts)}</span>
+      <span className={cn("truncate text-caption", actor)}>{row.actor}</span>
       <span className="flex min-w-0 items-center gap-2">
-        <span className="shrink-0 text-[11.5px] font-bold text-t1">{row.method}</span>
+        <span className="shrink-0 text-caption font-bold text-t1">{row.method}</span>
         <AuditPath path={row.path} revealed={revealed} onToggle={onToggle} />
       </span>
-      <span className={cn("text-right font-mono text-[11.5px]", tone)}>→ {row.status}</span>
+      <span className={cn("text-right font-mono text-caption", tone)}>→ {row.status}</span>
     </li>
   );
 }
@@ -98,21 +98,21 @@ export function AuditCard({ phone = false }: { phone?: boolean }) {
           </>
         }
       />
-      {phone ? <p className="mb-2 text-[11px] leading-relaxed text-t3">{AUDIT_DESCRIPTION} Newest first.</p> : null}
+      {phone ? <p className="mb-2 text-caption leading-relaxed text-t3">{AUDIT_DESCRIPTION} Newest first.</p> : null}
       {/*
        * Mounted empty on every render, before Show is ever pressed — exactly as ResultLine mounts its own
        * role="status" empty before an editor's first result. A live region a screen reader first sees already
        * holding text is a region it never announces; one it sees empty, then watches gain text, it does.
        */}
-      <p role="status" className={shown && audit.isPending ? "text-[11.5px] text-t3" : "sr-only"}>
+      <p role="status" className={shown && audit.isPending ? "text-caption text-t3" : "sr-only"}>
         {shown && audit.isPending ? AUDIT_LOADING : ""}
       </p>
       {!shown ? (
-        <p className="text-[11.5px] leading-relaxed text-t3">{AUDIT_NOT_LOADED}</p>
+        <p className="text-caption leading-relaxed text-t3">{AUDIT_NOT_LOADED}</p>
       ) : audit.isError ? (
         <ErrorState message={audit.error.message} onRetry={() => void audit.refetch()} />
       ) : audit.isPending ? null : rows.length === 0 ? (
-        <p className="text-[11.5px] text-t3">{AUDIT_EMPTY}</p>
+        <p className="text-caption text-t3">{AUDIT_EMPTY}</p>
       ) : (
         <ul aria-label="Audit entries" className={cn(phone && "flex flex-col gap-1.5")}>
           {rows.map((row, index) => {
@@ -129,8 +129,8 @@ export function AuditCard({ phone = false }: { phone?: boolean }) {
           })}
         </ul>
       )}
-      <p className="mt-3 text-[11px] leading-relaxed text-t3">{AUDIT_FOOTER}</p>
-      {shown && rows.some((row) => row.status === 413) ? <p className="mt-1 text-[11px] text-t3">{AUDIT_413_NOTE}</p> : null}
+      <p className="mt-3 text-caption leading-relaxed text-t3">{AUDIT_FOOTER}</p>
+      {shown && rows.some((row) => row.status === 413) ? <p className="mt-1 text-caption text-t3">{AUDIT_413_NOTE}</p> : null}
     </GlassCard>
   );
 }

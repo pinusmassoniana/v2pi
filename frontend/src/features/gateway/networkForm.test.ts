@@ -168,15 +168,15 @@ describe("Apply to host", () => {
 
   it("its messages", () => {
     expect(RESTART_CONFIRM).toBe("Apply and restart the tunnel? Devices may drop briefly.");
-    expect(DISARM_CONFIRM).toBe("Disarm the fail-closed kill-switch?\nIf the tunnel goes down, client traffic will no longer be dropped — it can leak around the tunnel instead.");
-    expect(NO_ANSWER).toBe("no answer yet — the gateway may still be applying; reloading");
+    expect(DISARM_CONFIRM).toBe("Disarm the fail-closed kill-switch?\nIf the tunnel goes down, client traffic will no longer be dropped. It can leak around the tunnel instead.");
+    expect(NO_ANSWER).toBe("no answer yet, the gateway may still be applying; reloading");
     expect(appliedMessage(false)).toBe("saved · network + DHCP applied to host");
     expect(appliedMessage(true)).toBe("saved · network + DHCP applied to host · tunnel restarted for IPv6");
   });
 
   it("a 502 kept the previous settings; one whose restore reported problems stays until dismissed", () => {
     expect(applyRefusedMessage("host provisioning failed: ip link: no such device")).toEqual({
-      text: "not applied — the gateway kept its previous network settings: host provisioning failed: ip link: no such device", sticky: false,
+      text: "not applied, the gateway kept its previous network settings: host provisioning failed: ip link: no such device", sticky: false,
     });
     expect(applyRefusedMessage("network apply failed; recovery: fail-closed recovery failed: nft: busy")).toEqual({
       text: "not applied, and restoring the previous state reported problems: network apply failed; recovery: fail-closed recovery failed: nft: busy",
@@ -195,10 +195,10 @@ describe("host warnings (W1)", () => {
       wan_blocked: true, enforcement_status: "error", enforcement_error: "nft: Could not process rule", enforcement_warning: "LAN access chain not applied", foreign_ra: true,
     }));
     expect(warnings).toEqual([
-      { key: "wan-blocked", tone: "warn", title: "WAN blocked", text: "— kill-switch holding traffic (tunnel down). No leak." },
+      { key: "wan-blocked", tone: "warn", title: "WAN blocked", text: "Kill-switch is holding traffic while the tunnel is down. No leak." },
       { key: "enforcement", tone: "bad", title: "Host enforcement is error; leak protection is not confirmed.", detail: "nft: Could not process rule" },
-      { key: "apply-warning", tone: "warn", title: "Applied with a warning", text: "— LAN access chain not applied" },
-      { key: "foreign-ra", tone: "bad", title: "Another router is advertising IPv6 on the client VLAN", text: "— clients will leak. Disable RA for this VLAN on your router." },
+      { key: "apply-warning", tone: "warn", title: "Applied with a warning", text: "LAN access chain not applied" },
+      { key: "foreign-ra", tone: "bad", title: "Another router is advertising IPv6 on the client VLAN", text: "Clients will leak. Disable RA for this VLAN on your router." },
     ]);
   });
 

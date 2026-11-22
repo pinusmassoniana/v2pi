@@ -148,7 +148,7 @@ describe("command palette", () => {
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     const release = holdConnectionWrite(client);
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running. Try again when it finishes", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
     await release();
   });
@@ -179,7 +179,7 @@ describe("command palette", () => {
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     act(() => { client.setQueryData<Status>(["status"], (old) => ({ ...old!, prev_active_node_id: 3 })); });
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed — try again", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed. Try again", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
   });
 
@@ -190,6 +190,6 @@ describe("command palette", () => {
     await screen.findByRole("heading", { level: 1, name: "Overview" });
     await userEvent.click(await screen.findByRole("button", { name: "Search and commands" }));
     await userEvent.type(await screen.findByPlaceholderText("Search nodes, screens and actions…"), "de-fra");
-    expect(await screen.findByRole("option", { name: "Nodes did not load — Retry" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "Nodes did not load. Retry" }, { timeout: 3000 })).toBeInTheDocument();
   });
 });

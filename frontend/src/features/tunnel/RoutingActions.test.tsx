@@ -54,7 +54,7 @@ describe("Routing › Validate (R6)", () => {
     expect(sent.default_action).toBe("proxy");
 
     await stageLabel(table);
-    expect(result).toHaveTextContent("Form changed since this run — run it again.");
+    expect(result).toHaveTextContent("Form changed since this run. Run it again.");
     await userEvent.type(within(table).getByRole("textbox", { name: "Rule 3 label" }), "{Backspace}");
     expect(result).toHaveTextContent("✓ ruleset valid");
     expect(api$.getRouting).toHaveBeenCalledTimes(1);
@@ -96,7 +96,7 @@ describe("Routing › Save (R6)", () => {
     const success = vi.spyOn(toast, "success");
     await stageLabel(table, "yandex");
     await userEvent.click(within(banner()!).getByRole("button", { name: "Apply staged" }));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("saved, applies on next Connect", { duration: 8000 }));
     expect(api$.putRouting.mock.calls[0]![0].rules[2]).toEqual({ type: "domain", value: "*.ya.ru, yandex.net", action: "direct", enabled: true, label: "yandex", dataset: "" });
   });
 
@@ -104,7 +104,7 @@ describe("Routing › Save (R6)", () => {
     const { api$ } = await openRouting();
     await userEvent.selectOptions(within(screen.getByRole("region", { name: "Defaults" })).getByLabelText("Default action"), "block");
     await userEvent.click(toolbarButton("Save"));
-    await answer("Default action is BLOCK — all non-matching traffic from the segment will be dropped. Continue?", "Cancel");
+    await answer("Default action is BLOCK. All non-matching traffic from the segment will be dropped. Continue?", "Cancel");
     expect(api$.putRouting).not.toHaveBeenCalled();
     await userEvent.click(toolbarButton("Save"));
     await answer("Default action is BLOCK", "Save");
@@ -119,7 +119,7 @@ describe("Routing › Save (R6)", () => {
     await screen.findByRole("dialog", { name: "Confirm" });
     const release = holdConnectionWrite(client);
     await answer("Default action is BLOCK", "Save");
-    expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 });
+    expect(error).toHaveBeenCalledWith("Another connection change is still running. Try again when it finishes", { duration: 20000 });
     expect(api$.putRouting).not.toHaveBeenCalled();
     expect(toolbarButton("Save")).toBeDisabled();
     await release();
@@ -132,7 +132,7 @@ describe("Routing › Save (R6)", () => {
     api$.putRouting.mockRejectedValueOnce(new ApiError(502, "xray -test failed: bad config"));
     await stageLabel(table, "yandex");
     await userEvent.click(toolbarButton("Save"));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved, but applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
     // The store rolled the write back, so the gateway's ruleset never moved: no gateway-changed notice.
     await waitFor(() => expect(api$.getRouting).toHaveBeenCalledTimes(2));
     expect(banner()).toHaveTextContent("STAGED · 1 change");
@@ -191,7 +191,7 @@ describe("Routing › presets (R4)", () => {
     await userEvent.click(items[0]!);
     await waitFor(() => expect(api$.routingPreset).toHaveBeenCalledWith("ru-direct"));
     await waitFor(() => expect(within(table).getByLabelText("Rule 7 value")).toHaveValue("category-ru"));
-    expect(success).toHaveBeenCalledWith('preset "ru-direct" staged — review and Save', { duration: 8000 });
+    expect(success).toHaveBeenCalledWith('preset "ru-direct" staged, review and Save', { duration: 8000 });
     expect(banner()).toHaveTextContent("STAGED · 1 change");
     expect(api$.getRouting).toHaveBeenCalledTimes(1);
     expect(api$.putRouting).not.toHaveBeenCalled();
@@ -276,7 +276,7 @@ describe("Routing › JSON (R7) and Reset (R6)", () => {
     fireEvent.change(box, { target: { value: '{"rules":[{"type":"port","value":"25","action":"block","label":"no SMTP"}],"default_action":"direct"}' } });
     await userEvent.click(within(sheet).getByRole("button", { name: "Import" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import JSON" })).toBeNull());
-    expect(success).toHaveBeenCalledWith("imported — review and Save", { duration: 8000 });
+    expect(success).toHaveBeenCalledWith("imported, review and Save", { duration: 8000 });
     expect(within(table).getByLabelText("Rule 1 value")).toHaveValue("25");
     expect(within(table).queryByLabelText("Rule 2 value")).toBeNull();
     expect(within(screen.getByRole("region", { name: "Defaults" })).getByLabelText("Default action")).toHaveValue("direct");
@@ -299,7 +299,7 @@ describe("Routing › JSON (R7) and Reset (R6)", () => {
     await userEvent.selectOptions(within(screen.getByRole("region", { name: "Defaults" })).getByLabelText("Default action"), "block");
     await userEvent.click(toolbarButton("Reset"));
     await answer("Reset to the default ruleset (no rules, default = proxy)?", "Reset");
-    expect(within(table).getByText("no rules — all traffic follows the default action")).toBeInTheDocument();
+    expect(within(table).getByText("no rules, all traffic follows the default action")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Defaults" })).getByLabelText("Default action")).toHaveValue("proxy");
     expect(banner()).toHaveTextContent("STAGED · 6 changes");
     expect(api$.putRouting).not.toHaveBeenCalled();
@@ -310,8 +310,8 @@ describe("Routing › destination tester (R8)", () => {
   it("answers over the staged rules as they are typed", async () => {
     const { table } = await openRouting();
     const tester = screen.getByRole("region", { name: "Destination tester" });
-    expect(tester).toHaveTextContent("how would this host/port be routed? (literal rules only — geo not evaluated locally)");
-    const input = within(tester).getByLabelText("how would this host/port be routed? (literal rules only — geo not evaluated locally)");
+    expect(tester).toHaveTextContent("how would this host/port be routed? (literal rules only, geo is not evaluated locally)");
+    const input = within(tester).getByLabelText("how would this host/port be routed? (literal rules only, geo is not evaluated locally)");
     expect(input).toHaveAttribute("placeholder", "example.com  |  1.2.3.4  |  1.2.3.4:443");
     await userEvent.type(input, "mail.example.com:25");
     expect(within(tester).getByRole("status")).toHaveTextContent('→ block (matched port "25" · no SMTP)');
@@ -322,7 +322,7 @@ describe("Routing › destination tester (R8)", () => {
     expect(within(tester).getByRole("status")).toHaveTextContent("→ direct (private range, always matched first)");
     await userEvent.clear(input);
     await userEvent.type(input, "2a00:1450:4010::65");
-    expect(within(tester).getByRole("status")).toHaveTextContent("IPv6 preview is not evaluated locally — Validate/Save uses Xray's matcher.");
+    expect(within(tester).getByRole("status")).toHaveTextContent("IPv6 preview is not evaluated locally. Validate/Save uses Xray's matcher.");
   });
 
   it("A5: the live answer comes from the running tunnel, and both are shown when they differ", async () => {
@@ -339,7 +339,7 @@ describe("Routing › destination tester (R8)", () => {
 
     await waitFor(() => expect(api$.testRoute).toHaveBeenCalledWith("doubleclick.net", "tcp", ""));
     expect(await within(tester).findByText(/live · doubleclick.net:443 tcp/)).toBeInTheDocument();
-    expect(tester).toHaveTextContent("the live answer differs from the staged one — these edits are not applied yet");
+    expect(tester).toHaveTextContent("the live answer differs from the staged one; these edits are not applied yet");
   });
 
   it("A5: a live answer the gateway cannot give is shown as the reason, not as a route", async () => {

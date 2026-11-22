@@ -58,12 +58,12 @@ function ClientPresetField({ headers, storedHeaders, onPick }: {
           <option value={CUSTOM_PRESET} disabled>Custom</option>
         </Select>
       </FieldShell>
-      <p className="px-1 text-[11px] leading-relaxed text-t3">
-        {preset ? preset.note : "Edited by hand — no preset matches these headers."}{" "}
+      <p className="px-1 text-caption leading-relaxed text-t3">
+        {preset ? preset.note : "Edited by hand. No preset matches these headers."}{" "}
         Only the HTTP request is imitated; the TLS handshake is still the gateway's own.
       </p>
       {deviceChanged ? (
-        <p role="alert" className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-[11.5px] leading-relaxed text-t1">
+        <p role="alert" className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-caption leading-relaxed text-t1">
           {DEVICE_CHANGE_WARNING}
         </p>
       ) : null}
@@ -169,7 +169,7 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
               <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-glass px-3 py-2">
                 <div>
                   <p className="text-sm font-semibold text-t1">Enabled</p>
-                  <p className="text-[11px] text-t3">auto + refresh all</p>
+                  <p className="text-caption text-t3">auto + refresh all</p>
                 </div>
                 <Controller
                   control={control}
@@ -194,13 +194,13 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
             onPick={(id) => setValue("headers", presetHeaders(id), { shouldDirty: true })}
           />
           <KeyValueRowsEditor name="headers" control={control} register={register} legend="Headers" item="Header" addLabel="Add header" keyPlaceholder="header" empty="No headers" />
-          <p className="-mt-1.5 px-1 text-[11px] text-t3">Detailed device fingerprint placeholders are opt-in; the default sends only coarse OS data.</p>
+          <p className="-mt-1.5 px-1 text-caption text-t3">Detailed device fingerprint placeholders are opt-in; the default sends only coarse OS data.</p>
           <KeyValueRowsEditor name="queries" control={control} register={register} legend="Query params" item="Query param" addLabel="Add param" keyPlaceholder="key" empty="No query params" />
 
           <div className="flex flex-wrap items-center gap-2">
             <Button disabled={preview.busy} onClick={() => void runPreview()}>{preview.busy ? "Previewing…" : "Preview request"}</Button>
             <Button disabled={dryRun.busy} onClick={() => void runDryRun()}>{dryRun.busy ? "Parsing… (up to 20 s)" : "Dry-run parse"}</Button>
-            <span className="text-[11px] text-t3">preview doesn't fetch · dry-run does</span>
+            <span className="text-caption text-t3">preview doesn't fetch · dry-run does</span>
           </div>
           {/* An answer — result or failure — is about the input it ran on; once the form moves past it, it is marked. */}
           {preview.data || preview.error ? (
@@ -215,7 +215,7 @@ export function SubscriptionFormSheet({ sub, onClose }: { sub?: Subscription; on
           ) : null}
 
           <div className="sticky bottom-0 -mx-5 -mb-5 flex items-center justify-end gap-2 border-t border-line bg-solid px-5 py-3">
-            <span className="mr-auto text-[11px] text-t3">Nothing is saved until {edit ? "Save" : "Add subscription"}</span>
+            <span className="mr-auto text-caption text-t3">Nothing is saved until {edit ? "Save" : "Add subscription"}</span>
             <Button onClick={() => void closeGuarded(dirty, onClose)}>Cancel</Button>
             <Button type="submit" variant="primary" disabled={save.isPending}>{save.isPending ? "Saving…" : edit ? "Save" : "Add subscription"}</Button>
           </div>

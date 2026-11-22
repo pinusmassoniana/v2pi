@@ -39,8 +39,7 @@ const SESSION_NOTE =
   "Signs you out after this long with no activity. An open, visible tab keeps polling, so this measures time with the " +
   "panel closed or in the background.";
 const SESSION_HINT =
-  "Changing it ends nobody's session now — it only decides when a future idle period bites. 0 turns it off; any whole " +
-  "number of minutes from 1 is accepted.";
+  "Changing it does not end current sessions. 0 turns it off.";
 
 /**
  * The strength hint as a bar plus its word — the word is real visible text, not only the bar.
@@ -63,7 +62,7 @@ export function StrengthMeter({ password }: { password: string }) {
           <span key={step} className={cn("h-1 w-4 rounded-full", step <= filled ? tone : "bg-glass-2")} />
         ))}
       </span>
-      <span className="text-[11px] text-t3">{word}</span>
+      <span className="text-caption text-t3">{word}</span>
     </span>
   );
 }
@@ -183,7 +182,7 @@ export function PasswordCard({ password, tokenCount }: { password: ReturnType<ty
           label="Confirm new password" type={type} autoComplete="new-password" disabled={password.busy}
           error={errors.confirm?.message} {...register("confirm")}
         />
-        <p className="text-[11px] leading-relaxed text-t3">{passwordNote(tokenCount)}</p>
+        <p className="text-caption leading-relaxed text-t3">{passwordNote(tokenCount)}</p>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
         <ResultLine result={result ?? (errors.confirm?.message === MISMATCH ? { ok: false, text: "passwords do not match" } : null)} className="min-w-0 flex-1" />
@@ -268,11 +267,11 @@ export function SessionCard({ timeout, settings, phone = false }: {
         value={timeout.value}
         onChange={(event) => timeout.change(event.target.value)}
         onBlur={timeout.commit}
-        onKeyDown={(event) => { if (event.key === "Enter") timeout.commit(); }}
+        onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) timeout.commit(); }}
       />
-      {settings ? <ReadError query={settings} message="Settings did not load — the saved idle timeout is unknown" className="mt-1" /> : null}
-      <p className="mt-2 text-[11px] leading-relaxed text-t2">{SESSION_NOTE}</p>
-      <p className="mt-2 text-[11px] leading-relaxed text-t3">{SESSION_HINT}</p>
+      {settings ? <ReadError query={settings} message="Settings did not load. The saved idle timeout is unknown" className="mt-1" /> : null}
+      <p className="mt-2 text-caption leading-relaxed text-t2">{SESSION_NOTE}</p>
+      <p className="mt-2 text-caption leading-relaxed text-t3">{SESSION_HINT}</p>
     </GlassCard>
   );
 }

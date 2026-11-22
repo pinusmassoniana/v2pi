@@ -91,11 +91,11 @@ export interface ScopeCopy {
 export const SCOPE_COPY: readonly ScopeCopy[] = [
   {
     scope: "monitor", label: "monitor", lead: "Status and traffic history only.",
-    body: "/api/status, /api/traffic/history, /api/node-health, /api/network — every other path answers 403. For a dashboard or an uptime check. Refused on every screen in System.",
+    body: "/api/status, /api/traffic/history, /api/node-health, /api/network. Every other path answers 403. For a dashboard or an uptime check. Refused on every screen in System.",
   },
   {
     scope: "read", label: "read", lead: "Every GET, including the backup.",
-    body: "It can pull the whole configuration — subscription URLs, node uuids, Reality keys. Not a “safe” scope.",
+    body: "It can pull the whole configuration: subscription URLs, node uuids, Reality keys. Not a “safe” scope.",
   },
   {
     scope: "readwrite", label: "read/write", lead: "Every GET plus every mutation, with no CSRF header.",

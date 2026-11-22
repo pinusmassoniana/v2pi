@@ -5,7 +5,7 @@ import type { NoiseSpec, ProfileIn, ProfilePreset, TuningProfile } from "../../a
 
 export const FINGERPRINTS = ["chrome", "firefox", "safari", "ios", "android", "edge", "random", "randomized", "randomizednoalpn", ""] as const;
 export type Fingerprint = (typeof FINGERPRINTS)[number];
-export const NO_MIMICRY = "(no mimicry — not recommended)";
+export const NO_MIMICRY = "(no mimicry, not recommended)";
 export const NOISE_TYPES = ["rand", "str", "base64", "hex"] as const;
 export type NoiseType = (typeof NOISE_TYPES)[number];
 export const QUIC_MODES = ["allow", "drop", "proxy"] as const;
@@ -28,7 +28,7 @@ export const HEADER_HINT =
 export const DISCARD_PROFILE_CONFIRM = "Discard unsaved profile changes?";
 export const NO_ACTIVE_NODE = "No active node";
 /** Said when another node became active while the Apply-to-active question was open, so nothing was sent. */
-export const ACTIVE_NODE_CHANGED = "the active node changed — ask again";
+export const ACTIVE_NODE_CHANGED = "the active node changed, ask again";
 
 export interface NoiseRow {
   type: NoiseType;
@@ -227,7 +227,7 @@ export function profileSavedMessage(saved: Pick<TuningProfile, "is_active">): st
 
 /** T4: said once a preset is in the editor. */
 export function presetStagedMessage(name: string): string {
-  return `preset "${name}" staged into the editor — Create/Save to apply`;
+  return `preset "${name}" staged into the editor, Create/Save to apply`;
 }
 
 /** The collapsible editor sections, in contract order ("profile" — name and fingerprint — never collapses). */

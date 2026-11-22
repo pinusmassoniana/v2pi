@@ -40,7 +40,7 @@ describe("Remote access › clients (A6)", () => {
     await openClients();
     expect(card()).toHaveTextContent("one per device");
     expect(card()).toHaveTextContent("3 / 16");
-    expect(card()).toHaveTextContent("Suspend revokes a device now and keeps its uuid — for a lost phone, where Remove would mean reissuing everything.");
+    expect(card()).toHaveTextContent("Suspend revokes a device now and keeps its uuid. Use it for a lost phone, where Remove would mean reissuing everything.");
     expect(within(table()).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Name", "Status", "UUID", "Actions"]);
     expect(row("iphone-anna")).toHaveTextContent("active");
     expect(row("ipad")).toHaveTextContent("suspended");
@@ -109,7 +109,7 @@ describe("Remote access › clients (A6)", () => {
     api$.addRwClient.mockRejectedValueOnce(new ApiError(502, "xray -test failed"));
     await userEvent.clear(input);
     await userEvent.type(input, "tablet{Enter}");
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not added — applying to the tunnel failed: xray -test failed", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not added, but applying to the tunnel failed: xray -test failed", { duration: 20000 }));
   });
 
   it("Add and Resume ask before starting a stopped tunnel; Cancel sends nothing", async () => {
@@ -133,12 +133,12 @@ describe("Remote access › clients (A6)", () => {
     const success = vi.spyOn(toast, "success");
     const error = vi.spyOn(toast, "error");
     await userEvent.click(within(table()).getByRole("button", { name: "Suspend iphone-anna" }));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("client suspended — its uuid is kept — live tunnel rebuilt without it", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("client suspended; its uuid is kept; live tunnel rebuilt without it", { duration: 8000 }));
     expect(await within(table()).findByRole("button", { name: "Resume iphone-anna" })).toBeInTheDocument();
 
     api$.setRwClientEnabled.mockResolvedValueOnce({ ...RW, clients: RW_CLIENTS.map((c) => ({ ...c, enabled: false })), revocation: "stopped" });
     await userEvent.click(within(table()).getByRole("button", { name: "Suspend laptop-work" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("client suspended — its uuid is kept — xray stopped — remote access is down for everyone until you reconnect", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("client suspended; its uuid is kept; xray stopped; remote access is down for everyone until you reconnect", { duration: 20000 }));
   });
 
   it("Resume says so; a failed re-apply resumed nothing; a client gone meanwhile is re-read", async () => {
@@ -147,7 +147,7 @@ describe("Remote access › clients (A6)", () => {
     const error = vi.spyOn(toast, "error");
     api$.setRwClientEnabled.mockRejectedValueOnce(new ApiError(502, "xray -test failed"));
     await userEvent.click(within(table()).getByRole("button", { name: "Resume ipad" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not resumed — applying to the tunnel failed: xray -test failed", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not resumed, but applying to the tunnel failed: xray -test failed", { duration: 20000 }));
     await waitFor(() => expect(within(table()).getByRole("button", { name: "Resume ipad" })).toBeEnabled());
 
     await userEvent.click(within(table()).getByRole("button", { name: "Resume ipad" }));
@@ -179,7 +179,7 @@ describe("Remote access › clients (A6)", () => {
     await userEvent.click(within(table()).getByRole("button", { name: "Remove ipad" }));
     await answer("Remove");
     await waitFor(() => expect(api$.deleteRwClient).toHaveBeenCalledWith(RW_CLIENTS[1]!.id));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("removed ipad — live tunnel rebuilt without it", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("removed ipad; live tunnel rebuilt without it", { duration: 8000 }));
     await waitFor(() => expect(within(table()).getByRole("button", { name: "Suspend laptop-work" })).toHaveFocus());
     expect(within(table()).queryByRole("row", { name: /^ipad/ })).toBeNull();
   });
@@ -191,7 +191,7 @@ describe("Remote access › clients (A6)", () => {
     await userEvent.click(within(table()).getByRole("button", { name: "Remove laptop-work" }));
     await answer("Remove");
     await waitFor(() => expect(error).toHaveBeenCalledWith(
-      "removed laptop-work — SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.",
+      "removed laptop-work; SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.",
       { duration: 20000 },
     ));
     expect(await screen.findByRole("alert", { name: "SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect." })).toBeInTheDocument();
@@ -233,7 +233,7 @@ describe("Remote access › clients (A6)", () => {
     const clicked: string[] = [];
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function click(this: HTMLAnchorElement) { clicked.push(this.download); });
     await userEvent.click(within(table()).getByRole("button", { name: "Download .conf for iphone-anna" }));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("iphone-anna.conf downloaded — import it in Shadowrocket", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("iphone-anna.conf downloaded, import it in Shadowrocket", { duration: 8000 }));
     expect(api$.rwClientConfig).toHaveBeenCalledWith(RW_CLIENTS[0]!.id);
     expect(clicked).toEqual(["iphone-anna.conf"]);
     expect(await blobs[0]!.text()).toContain("[Proxy]\niphone-anna = vless, vpn.example.net, 8443");

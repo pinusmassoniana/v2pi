@@ -52,10 +52,10 @@ export function auditKey(row: AuditEntry, index: number): string {
 }
 
 /** The card's own description. The route's docstring says "successful mutations" and is wrong — every attempt is recorded. */
-export const AUDIT_DESCRIPTION = "Every mutation attempt made through the panel or the API — who, what, and how it ended.";
-export const AUDIT_FOOTER = "Newest first, one shot of at most 100 rows — nothing polls this and nothing refreshes it after a write.";
+export const AUDIT_DESCRIPTION = "Every change attempted through the panel or the API: who, what, and how it ended.";
+export const AUDIT_FOOTER = "Newest first, up to 100 rows. Press Show again to refresh.";
 export const AUDIT_EMPTY = "No recorded changes yet.";
 export const AUDIT_LOADING = "Loading audit log…";
-export const AUDIT_NOT_LOADED = "Nothing is fetched until Show is pressed — and a write never yanks the list while you are reading it.";
+export const AUDIT_NOT_LOADED = "Press Show to load the log.";
 /** How many rows one read asks for; the gateway clamps `limit` to 1…2000 and the table holds at most 2000. */
 export const AUDIT_LIMIT = 100;

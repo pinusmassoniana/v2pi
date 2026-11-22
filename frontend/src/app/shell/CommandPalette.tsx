@@ -18,11 +18,11 @@ const ITEM =
   "flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2 text-sm text-t1 data-[selected=true]:bg-glass-2 " +
   "data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-50";
 /** Said when ⌘K is asked for a ping or a subscription refresh while one already runs (here or on a screen). */
-const PING_BUSY = "A ping is still running — try again when it finishes";
-const REFRESH_BUSY = "A subscription refresh is still running — try again when it finishes";
+const PING_BUSY = "A ping is still running. Try again when it finishes";
+const REFRESH_BUSY = "A subscription refresh is still running. Try again when it finishes";
 
 const GROUP =
-  "px-1 pb-2 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] " +
+  "px-1 pb-2 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-2xs " +
   "[&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[.1em] [&_[cmdk-group-heading]]:text-t3";
 
 export function CommandPalette() {
@@ -135,7 +135,7 @@ export function CommandPalette() {
           {nodes.isError && nodes.data === undefined ? (
             // Said whatever is typed — never left to read as "No matches." — and picking it tries again.
             <Command.Item forceMount value="__nodes-did-not-load" onSelect={() => void nodes.refetch()}>
-              Nodes did not load — Retry
+              Nodes did not load. Retry
             </Command.Item>
           ) : null}
           {nodes.data?.map((n) => (
@@ -149,7 +149,7 @@ export function CommandPalette() {
               className={ITEM}
             >
               <span className="truncate">{n.name}</span>
-              <span className="ml-auto font-mono text-[11px] text-t3">{n.address}</span>
+              <span className="ml-auto font-mono text-caption text-t3">{n.address}</span>
             </Command.Item>
           ))}
         </Command.Group>
@@ -159,7 +159,7 @@ export function CommandPalette() {
               {SECTIONS.flatMap((section) => section.tabs.map((tab) => (
                 <Command.Item key={tab.to} value={`go ${section.label} ${tab.label}`} onSelect={() => go(tab.to)} className={ITEM}>
                   {tab.label}
-                  <span className="ml-auto text-[11px] text-t3">{section.label}</span>
+                  <span className="ml-auto text-caption text-t3">{section.label}</span>
                 </Command.Item>
               )))}
             </Command.Group>

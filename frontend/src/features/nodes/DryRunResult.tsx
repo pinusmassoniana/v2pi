@@ -12,20 +12,20 @@ export function DryRunResult({ result, url }: { result: PreviewNodes; url: strin
   const unsupported = skippedTotal(result.skipped);
   return (
     <section aria-label="Dry-run result" className="flex flex-col gap-2 rounded-xl border border-line bg-glass p-3">
-      <p className="truncate font-mono text-[10.5px] text-t3" title={url}>{url}</p>
+      <p className="truncate font-mono text-2xs text-t3" title={url}>{url}</p>
       <p className="text-sm font-semibold text-t1">Dry-run: {result.count} node(s) · <span className="font-normal text-t2">{result.format}</span></p>
       {result.truncated ? <p className="text-xs text-warn">Showing first {result.returned_count} of {result.count} nodes.</p> : null}
       {unsupported > 0 ? (
         <p className="text-xs text-t2">
-          {unsupported} unsupported {unsupported === 1 ? "entry" : "entries"} left out ({skippedText(result.skipped)}) — this panel connects VLESS servers only.
+          {unsupported} unsupported {unsupported === 1 ? "entry" : "entries"} left out ({skippedText(result.skipped)}), this panel connects VLESS servers only.
         </p>
       ) : null}
       {result.count === 0 ? (
-        <p className="text-xs text-t2">No nodes parsed — check the URL, token, or format.</p>
+        <p className="text-xs text-t2">No nodes parsed. Check the URL, token, or format.</p>
       ) : (
         <div className="max-h-56 overflow-auto">
-          <table className="w-full text-left text-[11.5px]">
-            <thead className="text-[9.5px] uppercase tracking-[.07em] text-t3">
+          <table className="w-full text-left text-caption">
+            <thead className="text-2xs uppercase tracking-[.07em] text-t3">
               <tr>
                 <th scope="col" className="py-1 pr-2 font-semibold">name</th>
                 <th scope="col" className="py-1 pr-2 font-semibold">address</th>

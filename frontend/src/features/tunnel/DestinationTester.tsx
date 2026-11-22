@@ -116,12 +116,12 @@ export const DestinationTester = memo(function DestinationTester({ state, device
         </p>
       ) : null}
       {live?.ok && result?.action && live.outbound !== result.action ? (
-        <p className="text-[11px] text-warn">{LIVE_DISAGREES}</p>
+        <p className="text-caption text-warn">{LIVE_DISAGREES}</p>
       ) : null}
 
       {addable && onAddRule ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] text-t3">Add a rule for {addable.value}:</span>
+          <span className="text-caption text-t3">Add a rule for {addable.value}:</span>
           {(["direct", "proxy", "block"] as const).map((action) => (
             <Button key={action} size="sm" variant="ghost" className={ACTION_TEXT[action]}
               onClick={() => onAddRule(addable.type, addable.value, action)}>

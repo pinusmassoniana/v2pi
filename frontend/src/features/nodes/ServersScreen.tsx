@@ -182,7 +182,7 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
   let body: ReactNode;
   if (failed) body = cardFallback([nodes, subs], "Servers did not load");
   else if (!ready) body = <LoadingRows />;
-  else if (shown.length === 0) body = <EmptyState title={group === SERVERS ? "No servers here — add one with Add server." : "No servers here"} />;
+  else if (shown.length === 0) body = <EmptyState title={group === SERVERS ? "No servers here. Add one with Add server." : "No servers here"} />;
   else {
     const common = {
       rows, health: healthMap, activeId, activeSince, connection: connectedState(status, statusError), dense, menu: dialogs.menu, reorder,
@@ -235,10 +235,10 @@ export function ServersView({ search, groupOverride, hidden, children }: Servers
               <Button size="sm" onClick={dialogs.openImport}><Upload size={14} aria-hidden />Import</Button>
               <Button size="sm" variant="primary" onClick={dialogs.openAdd}><Plus size={14} aria-hidden />Add server</Button>
             </>
-          ) : <span className="text-[11px] text-t3">Add server and Import live in the Servers group</span>) : undefined}
+          ) : <span className="text-caption text-t3">Add server and Import live in the Servers group</span>) : undefined}
         />
         <FailoverNote armed={status?.failoverEnabled} lastFailoverAt={status?.lastFailoverAt ?? null} className="px-1" />
-        {statusError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT} — connecting is unavailable until it answers.</p> : null}
+        {statusError ? <p className="px-1 text-xs font-semibold text-bad">{OFFLINE_HINT}. Connecting is unavailable until it answers.</p> : null}
         {ready ? staleNotice([nodes, health, subs], "Servers did not refresh") : null}
         {/* The rows still show, but every probe cell would read as never probed: say the health is what's missing. */}
         {ready && health.isError && health.data === undefined ? <ErrorState message={HEALTH_FAILED} onRetry={() => void health.refetch()} /> : null}

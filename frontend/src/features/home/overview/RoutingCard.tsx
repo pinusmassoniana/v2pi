@@ -13,13 +13,13 @@ const BADGE: Record<RouteBadge, string> = {
 };
 
 function Badge({ badge }: { badge: RouteBadge }) {
-  return <span data-badge={badge} className={cn("w-[50px] shrink-0 rounded-md py-0.5 text-center text-[10.5px] font-bold", BADGE[badge])}>{badge}</span>;
+  return <span data-badge={badge} className={cn("w-[50px] shrink-0 rounded-md py-0.5 text-center text-2xs font-bold", BADGE[badge])}>{badge}</span>;
 }
 
 /** O9: the first four enabled rules and where everything else goes. */
 export function RoutingCard({ routing, activeLabel, className }: { routing: CardQuery & { data: Routing | undefined }; activeLabel: string; className?: string }) {
   const fallback = cardFallback([routing], "Routing did not load", "h-40");
-  const link = <Link to="/tunnel/routing" className="text-[11.5px] text-t2 hover:text-t1">Tunnel › Routing <span className="text-t3">→</span></Link>;
+  const link = <Link to="/tunnel/routing" className="text-caption text-t2 hover:text-t1">Tunnel › Routing</Link>;
   if (fallback || !routing.data) {
     return (
       <GlassCard aria-label="Routing" aria-busy={!routing.isError || undefined} className={className}>

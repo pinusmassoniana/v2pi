@@ -77,7 +77,7 @@ export function Alerts({ status, subs, subsFailed = false, onRetrySubs, activeLa
           tone="warn"
           icon="◷"
           title="Subscriptions"
-          text="· did not load — expiry and data-cap warnings are unknown"
+          text="did not load, so expiry and data-cap warnings are unknown"
           action={onRetrySubs ? { label: "Retry", onClick: onRetrySubs } : undefined}
         />
       ) : null}

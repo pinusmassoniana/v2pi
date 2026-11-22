@@ -68,7 +68,7 @@ function PinnedRow({ device, devices, network }: { device: Reservation; devices:
   const named = deviceLabel(device, network.status.clients);
   const label = named === device.ip ? "—" : named;
   return (
-    <li data-device-ip={device.ip} className="flex flex-wrap items-center gap-2 py-2 text-[13px] first:pt-0">
+    <li data-device-ip={device.ip} className="flex flex-wrap items-center gap-2 py-2 text-body first:pt-0">
       <span className="w-32 shrink-0 font-mono font-semibold text-t1">{device.ip}</span>
       {editing === null ? (
         <span className="min-w-0 flex-1 truncate text-t2">{label}</span>
@@ -91,7 +91,7 @@ function PinnedRow({ device, devices, network }: { device: Reservation; devices:
           </Button>
         </span>
       )}
-      <span className="shrink-0 text-[11px] text-t3">{usageText(device)}</span>
+      <span className="shrink-0 text-caption text-t3">{usageText(device)}</span>
       {device.online ? <Chip tone="ok">online</Chip> : <Chip plain tone="neutral">offline</Chip>}
       {editing === null ? (
         <span className="flex shrink-0 gap-1">
@@ -105,7 +105,7 @@ function PinnedRow({ device, devices, network }: { device: Reservation; devices:
           </Button>
         </span>
       ) : null}
-      {problem ? <p className="w-full text-[11px] text-bad">{problem}</p> : null}
+      {problem ? <p className="w-full text-caption text-bad">{problem}</p> : null}
     </li>
   );
 }
@@ -127,7 +127,7 @@ export function DevicesCard({ network, devices, className }: {
       {cardFallback([devices.query as CardQuery], "devices unavailable", "h-32") ?? (
         <>
           {pinned.length === 0 ? (
-            <p className="text-sm text-t3">Nothing pinned yet — pin a lease below to name it, route it and count it.</p>
+            <p className="text-sm text-t3">Nothing pinned yet. Pin a lease below to name it, route it and count it.</p>
           ) : (
             <ul aria-label="Pinned devices" className="flex flex-col divide-y divide-line">
               {pinned.map((device) => (
@@ -137,10 +137,10 @@ export function DevicesCard({ network, devices, className }: {
           )}
           {candidates.length ? (
             <div className="mt-3 border-t border-line pt-2.5">
-              <p className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">Not pinned</p>
+              <p className="mb-1.5 text-2xs font-semibold uppercase tracking-[.07em] text-t3">Not pinned</p>
               <ul aria-label="Unpinned leases" className="flex flex-col divide-y divide-line">
                 {candidates.map((lease) => (
-                  <li key={`${lease.mac}|${lease.ip}`} className="flex items-center gap-2 py-2 text-[13px] first:pt-0">
+                  <li key={`${lease.mac}|${lease.ip}`} className="flex items-center gap-2 py-2 text-body first:pt-0">
                     <span className="w-32 shrink-0 font-mono text-t2">{lease.ip}</span>
                     <span className="min-w-0 flex-1 truncate text-t3">{lease.hostname || "—"}</span>
                     <Button size="sm" disabled={devices.busy || full}
@@ -153,7 +153,7 @@ export function DevicesCard({ network, devices, className }: {
               </ul>
             </div>
           ) : null}
-          <p className="mt-2 text-[11px] leading-relaxed text-t3">{full ? `At most ${data!.max_reservations} devices can be pinned. ` : ""}{PIN_HINT}</p>
+          <p className="mt-2 text-caption leading-relaxed text-t3">{full ? `At most ${data!.max_reservations} devices can be pinned. ` : ""}{PIN_HINT}</p>
         </>
       )}
     </GlassCard>

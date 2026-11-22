@@ -25,7 +25,7 @@ export function KeyValueRowsEditor({ name, control, register, legend, item, addL
   const { fields, append, remove } = useFieldArray({ control, name });
   return (
     <fieldset className="flex flex-col gap-2 rounded-2xl border border-line bg-glass p-3">
-      <legend className="px-1 text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{legend}</legend>
+      <legend className="px-1 text-2xs font-semibold uppercase tracking-[.07em] text-t3">{legend}</legend>
       {fields.length === 0 ? <p className="text-xs text-t3">{empty}</p> : null}
       {fields.map((field, index) => (
         <div key={field.id} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.25rem] gap-1.5">

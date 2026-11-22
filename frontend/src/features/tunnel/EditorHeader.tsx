@@ -25,16 +25,16 @@ export function EditorHeader({ editing, profile, dirty, onNew, onBack }: EditorH
         </Button>
       ) : null}
       <div className="min-w-0 flex-1 basis-52">
-        <h2 className="text-[15px] font-bold text-t1">{existing ? `Editing profile · id ${editing}` : "New profile"}</h2>
+        <h2 className="text-title font-bold text-t1">{existing ? `Editing profile · id ${editing}` : "New profile"}</h2>
         {existing && profile ? (
-          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-t3">
+          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-caption text-t3">
             <span className="font-semibold text-t2">{profile.name}</span>
             {profile.is_active ? <ActiveBadge /> : null}
             <span>used by {profile.node_count} node{profile.node_count === 1 ? "" : "s"}</span>
           </p>
         ) : null}
       </div>
-      {dirty ? <span className="rounded-full bg-warn/12 px-2 py-0.5 text-[11px] font-semibold text-warn">● unsaved changes</span> : null}
+      {dirty ? <span className="rounded-full bg-warn/12 px-2 py-0.5 text-caption font-semibold text-warn">● unsaved changes</span> : null}
       {existing ? (
         <Button size="sm" onClick={onNew}><Plus size={14} aria-hidden />New</Button>
       ) : null}

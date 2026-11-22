@@ -3,12 +3,12 @@
 import type { Diagnosis } from "../../api/client";
 
 export const DIAGNOSE_HINT =
-  "Measures this node's connection in phases — TCP, the TLS handshake, the first byte back, then a bounded "
+  "Measures this node's connection in phases: TCP, the TLS handshake, the first byte back, then a bounded "
   + "transfer. Nothing is scheduled: it runs when you press it, and it keeps no result.";
 
 /** The one claim the card must never make is "you are being throttled". */
 export const DIAGNOSE_NOTE =
-  "A heuristic, not proof. A stalled transfer is what throttling looks like from here — and also what a busy "
+  "A heuristic, not proof. A stalled transfer is what throttling looks like from here, and also what a busy "
   + "server or a lossy uplink looks like. Compare two nodes before concluding anything about one.";
 
 export const RUNNING_ELSEWHERE = "a diagnosis is already running";

@@ -136,7 +136,7 @@ describe("Tunnel mutation keys", () => {
     await release();
     expect(isProfileBusy(client)).toBe(false);
     await waitFor(() => expect(result.current).toEqual({ connection: false, profile: false }));
-    expect(PROFILE_BUSY).toBe("Another profile change is still running — try again when it finishes");
+    expect(PROFILE_BUSY).toBe("Another profile change is still running. Try again when it finishes");
   });
 });
 
@@ -225,7 +225,7 @@ describe("settings writes that re-apply the tunnel", () => {
     await release();
     expect(isSettingsBusy(client)).toBe(false);
     await waitFor(() => expect(result.current).toEqual({ settings: false, connection: false }));
-    expect(SETTINGS_BUSY).toBe("Another settings change is still running — try again when it finishes");
+    expect(SETTINGS_BUSY).toBe("Another settings change is still running. Try again when it finishes");
   });
 });
 
@@ -260,7 +260,7 @@ describe("System writes", () => {
     await waitFor(() => expect(result.current).toEqual({ connection: false, token: false, password: true }));
     await release();
     await waitFor(() => expect(result.current).toEqual({ connection: false, token: false, password: false }));
-    expect(TOKEN_BUSY).toBe("Another token change is still running — try again when it finishes");
+    expect(TOKEN_BUSY).toBe("Another token change is still running. Try again when it finishes");
   });
 
   it("every System settings patch is classified by the keys it carries, and a reset never through settingsWriteKey", () => {

@@ -121,7 +121,7 @@ export function SubsSettingsCard({ className }: { className?: string }) {
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-t1">{row.label}</p>
                 <p className="text-xs text-t2">{row.text}</p>
-                <p className="text-[11px] text-t3">{row.note}</p>
+                <p className="text-caption text-t3">{row.note}</p>
               </div>
               <Toggle
                 label={row.label}

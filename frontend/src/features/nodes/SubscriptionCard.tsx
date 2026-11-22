@@ -65,11 +65,11 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
       className={cn("glass flex flex-col gap-2.5 p-3.5 transition-opacity duration-150", !sub.enabled && "opacity-60")}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="truncate text-[15px] font-bold tracking-tight text-t1">{sub.name}</h2>
-        <span className="font-mono text-[11px] text-t3">#{sub.id}</span>
+        <h2 className="truncate text-title font-bold tracking-tight text-t1">{sub.name}</h2>
+        <span className="font-mono text-caption text-t3">#{sub.id}</span>
         {!sub.enabled ? <Chip plain tone="neutral" className="text-t2">paused</Chip> : null}
         <Link to="/nodes" search={{ group: sub.id }} className="ml-auto text-xs font-semibold text-t1 hover:underline">
-          {sub.node_count} nodes →
+          {sub.node_count} nodes
         </Link>
       </div>
 
@@ -80,13 +80,13 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
             aria-expanded={skippedOpen}
             aria-label={`Unsupported entries in ${sub.name}`}
             onClick={() => setSkippedOpen(!skippedOpen)}
-            className="text-[11px] font-semibold text-t2 underline decoration-dotted underline-offset-2 hover:text-t1"
+            className="text-caption font-semibold text-t2 underline decoration-dotted underline-offset-2 hover:text-t1"
           >
             {unsupported} unsupported {unsupported === 1 ? "entry" : "entries"}
           </button>
           {skippedOpen ? (
-            <p className="mt-0.5 text-[11px] text-t3">
-              {skippedText(sub.last_skipped)} — this panel connects VLESS servers only, so the feed's other entries were left out.
+            <p className="mt-0.5 text-caption text-t3">
+              {skippedText(sub.last_skipped)}, this panel connects VLESS servers only, so the feed's other entries were left out.
             </p>
           ) : null}
         </div>
@@ -98,14 +98,14 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
         aria-label={`URL of ${sub.name}`}
         title={sub.url}
         onClick={() => setUrlOpen(!urlOpen)}
-        className={cn("text-left font-mono text-[11.5px] text-t2 hover:text-t1", urlOpen ? "break-all" : "truncate")}
+        className={cn("text-left font-mono text-caption text-t2 hover:text-t1", urlOpen ? "break-all" : "truncate")}
       >
         {sub.url}
       </button>
 
       <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
         <div className="min-w-0">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">Data</p>
+          <p className="text-2xs font-semibold uppercase tracking-[.07em] text-t3">Data</p>
           {fraction !== null ? (
             <div
               role="meter"
@@ -121,11 +121,11 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
           <p className="mt-1 truncate text-t2">{quota || "—"}</p>
         </div>
         <div className="min-w-0">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">Auto-update</p>
+          <p className="text-2xs font-semibold uppercase tracking-[.07em] text-t3">Auto-update</p>
           <p className="mt-1 text-t2">{intervalText(sub.interval_sec)}</p>
         </div>
         <div className="min-w-0">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">Last refresh</p>
+          <p className="text-2xs font-semibold uppercase tracking-[.07em] text-t3">Last refresh</p>
           <p className="mt-1 flex min-w-0 items-center gap-1 text-t2">
             {sub.last_error ? (
               <button
@@ -141,8 +141,8 @@ export const SubscriptionCard = memo(function SubscriptionCard({ sub, onEdit }: 
             ) : null}
             <span className="truncate">{sub.last_status ?? "—"}{sub.last_path ? ` (${sub.last_path})` : ""}</span>
           </p>
-          {errorOpen && sub.last_error ? <p className="mt-0.5 break-words text-[11px] text-bad">{sub.last_error}</p> : null}
-          <p className="text-[11px] text-t3">{sub.last_fetched ? <>fetched <Ago at={sub.last_fetched} /></> : "never fetched"}</p>
+          {errorOpen && sub.last_error ? <p className="mt-0.5 break-words text-caption text-bad">{sub.last_error}</p> : null}
+          <p className="text-caption text-t3">{sub.last_fetched ? <>fetched <Ago at={sub.last_fetched} /></> : "never fetched"}</p>
         </div>
       </div>
 

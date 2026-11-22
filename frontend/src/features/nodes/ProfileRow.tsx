@@ -19,7 +19,7 @@ import { nodeMutationMessage } from "./nodeForm";
  */
 export const PROFILE_SCOPE: Record<string, string> = {
   trojan: "XHTTP padding and xmux do not apply to a Trojan node; fragmentation, noise, mux, DoH and QUIC do.",
-  shadowsocks: "Only fragmentation, noise, DoH and QUIC apply to a Shadowsocks node — it has no TLS layer to "
+  shadowsocks: "Only fragmentation, noise, DoH and QUIC apply to a Shadowsocks node. It has no TLS layer to "
     + "fingerprint and xray's mux does not ride it.",
 };
 
@@ -62,7 +62,7 @@ export function ProfileRow({ node, active }: { node: Node; active: boolean }) {
   return (
     <section aria-label="Tuning profile" className="glass flex flex-wrap items-center gap-2.5 p-3.5">
       <div className="min-w-0 flex-1">
-        <h3 className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">Tuning profile</h3>
+        <h3 className="text-2xs font-semibold uppercase tracking-[.07em] text-t3">Tuning profile</h3>
         {editing ? (
           <ProfileSelect
             aria-label="Tuning profile"
@@ -79,19 +79,19 @@ export function ProfileRow({ node, active }: { node: Node; active: boolean }) {
             className="mt-1 w-full"
           />
         ) : (
-          <p className="mt-0.5 truncate text-[13px] font-semibold text-t1">{label}</p>
+          <p className="mt-0.5 truncate text-body font-semibold text-t1">{label}</p>
         )}
-        {editing ? <ReadError query={profiles} message="Profiles did not load — only the global default can be picked" className="mt-1" /> : null}
+        {editing ? <ReadError query={profiles} message="Profiles did not load. Only the global default can be picked" className="mt-1" /> : null}
       </div>
       <div className="flex flex-col items-end">
         <div className="flex gap-1.5">
           <Button size="sm" disabled={change.isPending || (active && !editing)} onClick={toggle}>{editing ? "Cancel" : "Change"}</Button>
           {editing ? <Button size="sm" variant="primary" disabled={locked} onClick={save}>{change.isPending ? "Saving…" : "Save"}</Button> : null}
         </div>
-        {active ? <span className="mt-0.5 text-[11px] text-t3">{DISCONNECT_FIRST}</span> : null}
+        {active ? <span className="mt-0.5 text-caption text-t3">{DISCONNECT_FIRST}</span> : null}
       </div>
       {PROFILE_SCOPE[node.protocol] ? (
-        <p className="w-full text-[11px] leading-relaxed text-t3">{PROFILE_SCOPE[node.protocol]}</p>
+        <p className="w-full text-caption leading-relaxed text-t3">{PROFILE_SCOPE[node.protocol]}</p>
       ) : null}
     </section>
   );

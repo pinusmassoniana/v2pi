@@ -11,7 +11,7 @@ import type { NetworkFormState } from "./useNetworkForm";
 
 /** Help under a field; its error replaces it. */
 export function Help({ children }: { children: ReactNode }) {
-  return <p className="-mt-0.5 text-[11px] text-t3">{children}</p>;
+  return <p className="-mt-0.5 text-caption text-t3">{children}</p>;
 }
 
 /** A switch with its visible label and text, the switch named by the label. */
@@ -61,7 +61,7 @@ export function SegmentFields({ state, disabled }: { state: NetworkFormState; di
         <TextField label="DHCP range end" inputMode="decimal" autoComplete="off" className="font-mono" disabled={disabled} error={errors.dhcpEnd?.message} {...register("dhcpEnd")} {...(errors.dhcpEnd ? {} : poolProps)} />
         {error(errors.dhcpEnd?.message, "IPv4 address")}
       </div>
-      {pool ? <p id={poolId} className="text-[11px] text-bad sm:col-span-2">{pool}</p> : null}
+      {pool ? <p id={poolId} className="text-caption text-bad sm:col-span-2">{pool}</p> : null}
       <div className="flex flex-col gap-1">
         <TextField label="Client DNS" inputMode="decimal" autoComplete="off" className="font-mono" disabled={disabled} error={errors.clientDns?.message} {...register("clientDns")} />
         {error(errors.clientDns?.message, clientDns.trim() !== "" && clientDns.trim() === ip.trim() ? "= the gateway IP" : "IPv4 address")}
@@ -127,7 +127,7 @@ export function LanIpv6Fields({ state, network, disabled, desktop }: { state: Ne
               </div>
             ) : null}
           </div>
-          <p className="text-[11px] text-t3">static, auto for DHCPv6-PD, blank = ULA</p>
+          <p className="text-caption text-t3">static, auto for DHCPv6-PD, blank = ULA</p>
           <div className="flex flex-col gap-1">
             <TextField label="Client DNS (v6)" placeholder="2606:4700:4700::1111" autoComplete="off" spellCheck={false} className="font-mono" disabled={disabled} error={errors.clientDns6?.message} {...register("clientDns6")} />
             {errors.clientDns6 ? null : <Help>IPv6 address</Help>}
@@ -165,7 +165,7 @@ export function KillSwitchToggle({ state, disabled, applyHint }: { state: Networ
       render={({ field }) => (
         <SwitchRow
           label="Fail-closed kill-switch"
-          text={<>When armed, any client traffic that can't reach a healthy upstream is dropped at nftables — no plaintext leak around the tunnel.{applyHint && state.dirty ? <b className="text-t1"> Apply to host to take effect.</b> : null}</>}
+          text={<>When armed, any client traffic that can't reach a healthy upstream is dropped at nftables, so nothing leaks around the tunnel.{applyHint && state.dirty ? <b className="text-t1"> Apply to host to take effect.</b> : null}</>}
           checked={field.value}
           disabled={disabled}
           onChange={(on) => void change(on)}

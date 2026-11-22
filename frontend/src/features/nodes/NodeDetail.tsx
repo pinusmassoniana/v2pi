@@ -24,7 +24,7 @@ function WithHint({ hint, children }: { hint: string | null; children: ReactNode
   return (
     <div className="flex flex-col gap-0.5">
       {children}
-      {hint ? <span className="text-[11px] text-t3">{hint}</span> : null}
+      {hint ? <span className="text-caption text-t3">{hint}</span> : null}
     </div>
   );
 }
@@ -130,7 +130,7 @@ export function NodeDetailBody({ nodeId, showName, menu = NO_MENU_CALLBACKS }: N
     <div className="flex flex-col gap-3">
       <header className="flex flex-col gap-1.5">
         {showName ? <h2 className="truncate text-lg font-bold tracking-tight text-t1">{flag ? `${flag} ` : ""}{node.name}</h2> : null}
-        <div className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-t2">
+        <div className="flex flex-wrap items-center gap-1.5 text-caption text-t2">
           <Link to="/nodes" search={toSearch({ group, q: "", sort: "pos", dir: "asc" })} className="rounded-full border border-line px-2 py-0.5 font-semibold text-t1 hover:bg-glass-2">
             {groupName}
           </Link>

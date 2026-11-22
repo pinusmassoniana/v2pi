@@ -29,13 +29,13 @@ const RuleCard = memo(function RuleCard({ row, index, onOpen, onUpdate }: CardPr
       <div className={cn("pointer-events-none relative min-w-0 flex-1", !row.enabled && "opacity-60")}>
         <p className="flex min-w-0 items-center gap-2">
           <TypeChip>{row.type}</TypeChip>
-          <span className={cn("truncate font-mono text-[13px]", row.value ? "text-t1" : "text-t3")}>{row.value || "no value"}</span>
+          <span className={cn("truncate font-mono text-body", row.value ? "text-t1" : "text-t3")}>{row.value || "no value"}</span>
         </p>
-        <p className="mt-1.5 flex min-w-0 items-center gap-2 text-[11.5px]">
+        <p className="mt-1.5 flex min-w-0 items-center gap-2 text-caption">
           <ActionPill action={row.action} />
           <span className={cn("truncate", row.label ? "text-t2" : "text-t3")}>{row.label || "no label"}</span>
         </p>
-        {problem ? <p className="mt-1 text-[11px] text-bad">{problem}</p> : null}
+        {problem ? <p className="mt-1 text-caption text-bad">{problem}</p> : null}
       </div>
       <div className="relative">
         <Toggle label={`Rule ${n} enabled`} checked={row.enabled} onCheckedChange={(enabled) => onUpdate(row.key, { enabled })} />
@@ -50,11 +50,11 @@ function AnchorCard({ which, type, value, action, note }: { which: "first" | "la
     <li data-anchor={which} className="flex items-center gap-3 rounded-[18px] border border-dashed border-line px-3 py-2.5">
       <Lock size={13} aria-hidden className="w-5 shrink-0 text-t3" />
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 text-[13px] text-t2">
-          <span className="rounded-full bg-glass-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-t3">fixed</span>
+        <p className="flex items-center gap-2 text-body text-t2">
+          <span className="rounded-full bg-glass-2 px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide text-t3">fixed</span>
           <TypeChip>{type}</TypeChip>{value}
         </p>
-        <p className="mt-1.5 flex items-center gap-2 text-[11.5px] text-t3"><ActionPill action={action} />{note}</p>
+        <p className="mt-1.5 flex items-center gap-2 text-caption text-t3"><ActionPill action={action} />{note}</p>
       </div>
     </li>
   );
@@ -82,7 +82,7 @@ export function RuleCards({ rows, defaultAction, onOpen, onUpdate, onAdd }: Rule
         <Button size="sm" variant="ghost" className="border border-dashed border-line" disabled={rows.length >= MAX_RULES} onClick={onAdd}>
           <Plus size={14} aria-hidden />Add rule
         </Button>
-        <span className="text-[11px] text-t3">{rows.length} / {MAX_RULES} rules</span>
+        <span className="text-caption text-t3">{rows.length} / {MAX_RULES} rules</span>
       </div>
     </div>
   );

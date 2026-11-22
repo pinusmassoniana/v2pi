@@ -99,7 +99,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       // Only a session that is already gone (401) is safe to forget here. Any other failure means the gateway may
       // never have heard it: the browser's session cookie stays valid, so showing the login form would be a lie.
       if (!(error instanceof ApiError && error.status === 401)) {
-        notifyError(null, "Log out did not reach the gateway — this browser is still logged in. Try again.");
+        notifyError(null, "Log out did not reach the gateway. This browser is still logged in. Try again.");
         return;
       }
     }

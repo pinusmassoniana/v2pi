@@ -46,7 +46,7 @@ export function Subscriptions() {
       <div className="flex flex-wrap items-center gap-2.5 px-1">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-t1">{list ? `${list.length} subscription${list.length === 1 ? "" : "s"}` : "Subscriptions"}</p>
-          <p className="text-[11px] text-t3">Refresh all skips paused subscriptions; a manual Refresh still works.</p>
+          <p className="text-caption text-t3">Refresh all skips paused subscriptions; a manual Refresh still works.</p>
         </div>
         <Button size="sm" disabled={!anyEnabled || refreshing} onClick={() => refreshAll.mutate()}>
           <RefreshCw size={14} aria-hidden className={refreshAll.isPending ? "animate-spin" : undefined} />
@@ -59,7 +59,7 @@ export function Subscriptions() {
       {outcome ? <RefreshAllPanel outcome={outcome} onDismiss={() => setOutcome(null)} /> : null}
       {list ? staleNotice([subs], "Subscriptions did not refresh") : null}
       {fallback ?? (list && list.length === 0 ? (
-        <EmptyState title="No subscriptions yet — add one" />
+        <EmptyState title="No subscriptions yet. Add one" />
       ) : (
         <div className="flex flex-col gap-3">
           {list?.map((sub) => <SubscriptionCard key={sub.id} sub={sub} onEdit={setForm} />)}

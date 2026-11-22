@@ -15,7 +15,7 @@ import type { RoutingEditor } from "./useRoutingEditor";
 
 /** R6 Save's message: whether the tunnel took it now, and how many duplicate rows were left out. */
 export function routingSavedMessage(applied: boolean, dropped: number): string {
-  return `${applied ? "saved & applied" : "saved — applies on next Connect"}${dropped > 0 ? ` · ${dropped} duplicate row(s) dropped` : ""}`;
+  return `${applied ? "saved & applied" : "saved, applies on next Connect"}${dropped > 0 ? ` · ${dropped} duplicate row(s) dropped` : ""}`;
 }
 
 interface SaveVariables {
@@ -130,7 +130,7 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
     try {
       replace(applyPreset(await api.routingPreset(name)));
       setSaveError(null);
-      notifyOk(`preset "${name}" staged — review and Save`);
+      notifyOk(`preset "${name}" staged, review and Save`);
     } catch (error) {
       notifyError(error, "preset failed");
     } finally {
@@ -152,7 +152,7 @@ export function useRoutingActions(editor: RoutingEditor): RoutingActions {
     if (staged && !(await confirm(DISCARD_STAGED_CONFIRM, { confirmLabel: "Discard" }))) return false;
     replace(next);
     setSaveError(null);
-    notifyOk("imported — review and Save");
+    notifyOk("imported, review and Save");
     return true;
   }
 

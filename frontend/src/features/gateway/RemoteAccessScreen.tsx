@@ -24,7 +24,7 @@ import { useRwClientActions, type RwClientActions } from "./useRwClientActions";
 import { useRwForm, type RwFormState } from "./useRwForm";
 import { useRwSave, type RwSave } from "./useRwSave";
 
-export const RW_GATEWAY_CHANGED = "Changed on the gateway since you started editing — Discard to load it";
+export const RW_GATEWAY_CHANGED = "Changed on the gateway since you started editing. Discard to load it";
 
 const RW_KEYS = [keys.rw] as const;
 
@@ -53,8 +53,8 @@ export function RwToolbar({ state, save, className }: { state: RwFormState; save
   return (
     <div className={className}>
       <div className="flex flex-wrap items-center gap-2">
-        <p className="min-w-0 flex-1 text-[11.5px] text-t3">Save sends the whole form — settings, LAN hosts and routed subnets</p>
-        {dirty ? <span className="text-[11px] font-semibold text-warn">● unsaved changes</span> : null}
+        <p className="min-w-0 flex-1 text-caption text-t3">Save sends the whole form: settings, LAN hosts and routed subnets</p>
+        {dirty ? <span className="text-caption font-semibold text-warn">● unsaved changes</span> : null}
         <Button size="sm" disabled={!dirty || writing} onClick={discard}>Discard</Button>
         <Button size="sm" variant="primary" disabled={!dirty || writing || connectionBusy} onClick={() => void save.save()}>{save.saving ? "Saving…" : "Save"}</Button>
       </div>
@@ -118,19 +118,19 @@ function RwDesktop({ rw, state, save, clientActions, locked, filledHosts }: RwPa
         </GlassCard>
         <div className="flex min-w-0 flex-col gap-3">
           <GlassCard aria-label="LAN hosts by name" className="flex flex-col gap-2.5">
-            <CardHeader title="LAN hosts by name" detail="the collision-free way in" aside={<span className="font-mono text-[11px] text-t3">{filledHosts} / {MAX_HOSTS}</span>} className="mb-0" />
+            <CardHeader title="LAN hosts by name" detail="the collision-free way in" aside={<span className="font-mono text-caption text-t3">{filledHosts} / {MAX_HOSTS}</span>} className="mb-0" />
             <p className="text-xs leading-relaxed text-t2"><WithCode text={HOSTS_NOTE} /></p>
             <HostRows state={state} disabled={locked} />
           </GlassCard>
           <GlassCard aria-label="Routed subnets" className="flex flex-col gap-2.5">
-            <CardHeader title="Routed subnets" aside={<span className="text-[11px] text-t3">management /24 + segment /24</span>} className="mb-0" />
+            <CardHeader title="Routed subnets" aside={<span className="text-caption text-t3">management /24 + segment /24</span>} className="mb-0" />
             <SubnetFields rw={rw} state={state} disabled={locked} />
           </GlassCard>
         </div>
       </div>
       <div className="grid items-start gap-3 md:grid-cols-[minmax(0,8fr)_minmax(0,4fr)]">
         <GlassCard aria-label="Clients" className="flex min-w-0 flex-col gap-2.5">
-          <CardHeader title="Clients" detail="one per device" aside={<span className="font-mono text-[11px] text-t3">{rw.clients.length} / {MAX_CLIENTS}</span>} className="mb-0" />
+          <CardHeader title="Clients" detail="one per device" aside={<span className="font-mono text-caption text-t3">{rw.clients.length} / {MAX_CLIENTS}</span>} className="mb-0" />
           <p className="text-xs leading-relaxed text-t2">{CLIENTS_NOTE}</p>
           <ClientsTable clients={rw.clients} actions={clientActions} />
           <AddClientForm actions={clientActions} count={rw.clients.length} />
@@ -169,8 +169,8 @@ function RwPhone({ rw, state, save, clientActions, locked, filledHosts }: RwPart
       </GlassCard>
       <section aria-label="Clients" className="flex flex-col gap-2">
         <div className="flex items-center gap-2 px-1">
-          <h2 className="text-[15px] font-bold text-t1">Clients</h2>
-          <span className="font-mono text-[11px] text-t3">{rw.clients.length} / {MAX_CLIENTS}</span>
+          <h2 className="text-title font-bold text-t1">Clients</h2>
+          <span className="font-mono text-caption text-t3">{rw.clients.length} / {MAX_CLIENTS}</span>
           <Button size="sm" data-add-client className="ml-auto" disabled={locked || rw.clients.length >= MAX_CLIENTS} onClick={() => setAdding(true)}><Plus size={14} aria-hidden />Add client</Button>
         </div>
         <ClientCards clients={rw.clients} actions={clientActions} />
@@ -194,7 +194,7 @@ function RwPhone({ rw, state, save, clientActions, locked, filledHosts }: RwPart
       <div className={state.dirty ? "glass sticky bottom-24 z-20 bg-solid p-2.5" : "contents"}>
         {state.dirty ? (
           <div className="flex items-center justify-end gap-2">
-            <span className="mr-auto text-[11px] font-semibold text-warn">● unsaved changes</span>
+            <span className="mr-auto text-caption font-semibold text-warn">● unsaved changes</span>
             <Button size="sm" disabled={locked} onClick={state.discard}>Discard</Button>
             <PhoneSave save={save} />
           </div>

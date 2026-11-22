@@ -163,7 +163,7 @@ describe("Preview and dry-run (U8, U9)", () => {
     const { api$, sheet } = await openForm("work");
     api$.previewSubNodes.mockResolvedValueOnce({ format: "unknown", count: 0, returned_count: 0, truncated: false, nodes: [], skipped: {} });
     await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
-    expect(await within(sheet).findByText("No nodes parsed — check the URL, token, or format.")).toBeInTheDocument();
+    expect(await within(sheet).findByText("No nodes parsed. Check the URL, token, or format.")).toBeInTheDocument();
     api$.previewSubNodes.mockRejectedValueOnce(new ApiError(502, "fetch failed: timeout"));
     await userEvent.click(within(sheet).getByRole("button", { name: "Dry-run parse" }));
     expect(await within(sheet).findByRole("alert")).toHaveTextContent("fetch failed: timeout");
@@ -181,7 +181,7 @@ describe("Preview and dry-run (U8, U9)", () => {
     await within(sheet).findByRole("region", { name: "Dry-run result" });
     await userEvent.type(within(sheet).getByLabelText("URL"), "&extra=1");
     expect(within(sheet).queryByRole("region", { name: "Dry-run result" })).toBeNull();
-    expect(within(sheet).getByText("Form changed since this run — run it again.")).toBeInTheDocument();
+    expect(within(sheet).getByText("Form changed since this run. Run it again.")).toBeInTheDocument();
   });
 
   it("an old preview does not linger next to a validation error", async () => {
@@ -258,7 +258,7 @@ describe("Pose as client (header presets)", () => {
     expect(await within(sheet).findByRole("alert")).toHaveTextContent("fetch failed: timeout");
     await userEvent.type(within(sheet).getByLabelText("URL"), "&extra=1");
     expect(within(sheet).queryByText("fetch failed: timeout")).toBeNull();
-    expect(within(sheet).getByText("Form changed since this run — run it again.")).toBeInTheDocument();
+    expect(within(sheet).getByText("Form changed since this run. Run it again.")).toBeInTheDocument();
   });
 
   it("a preview failure no longer matching the form is marked, not left looking current", async () => {
@@ -268,7 +268,7 @@ describe("Pose as client (header presets)", () => {
     expect(await within(sheet).findByRole("alert")).toHaveTextContent("url: not a valid http(s) URL");
     await userEvent.type(within(sheet).getByLabelText("URL"), "&extra=1");
     expect(within(sheet).queryByText("url: not a valid http(s) URL")).toBeNull();
-    expect(within(sheet).getByText("Form changed since this run — run it again.")).toBeInTheDocument();
+    expect(within(sheet).getByText("Form changed since this run. Run it again.")).toBeInTheDocument();
   });
 });
 

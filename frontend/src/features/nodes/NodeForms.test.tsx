@@ -289,7 +289,7 @@ describe("Edit node (N13, T6)", () => {
     expect(ask).toHaveTextContent("Disconnect from de-fra-01?");
     await userEvent.click(within(ask).getByRole("button", { name: "Disconnect" }));
     await waitFor(() => expect(api$.disconnect).toHaveBeenCalledWith(2));
-    await waitFor(() => expect(banner).toHaveTextContent("Disconnected — Save again"));
+    await waitFor(() => expect(banner).toHaveTextContent("Disconnected. Save again"));
     expect(within(banner).queryByRole("button", { name: /Disconnect/ })).toBeNull();
     api$.updateNode.mockImplementation(async (id, patch) => ({ ...ALL_NODES[1]!, ...patch, id }));
     await userEvent.click(within(sheet).getByRole("button", { name: "Save" }));
@@ -455,7 +455,7 @@ describe("Forms › an answer stays tied to the input it was for", () => {
     await userEvent.click(within(sheet).getByRole("button", { name: "Validate" }));
     await waitFor(() => expect(within(sheet).getByRole("status")).toHaveTextContent("✓ config valid"));
     await userEvent.type(within(sheet).getByLabelText("Address"), "9");
-    expect(within(sheet).getByRole("status")).toHaveTextContent("Form changed since this run — run it again.");
+    expect(within(sheet).getByRole("status")).toHaveTextContent("Form changed since this run. Run it again.");
   });
 
   it("the pasted text is locked while its import runs, so what the sheet shows is what was sent", async () => {

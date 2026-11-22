@@ -132,7 +132,7 @@ describe("Overview › status block", () => {
   it("O4: tunnel, node with its flag and endpoint, xray, kill-switch, clients of the pool, ticking uptime", async () => {
     const { api$, block } = await openOverview();
     api$.emitTraffic(TRAFFIC_FRAME);
-    expect(within(block).getByRole("img", { name: "42 ms · ONLINE" })).toBeInTheDocument();
+    expect(within(block).getByRole("img", { name: "42 ms" })).toBeInTheDocument();
     expect(within(block).getByText("Tunnel ONLINE")).toBeInTheDocument();
     expect(within(block).getByText("🇳🇱 nl-ams-03")).toBeInTheDocument();
     expect(within(block).getByText("VLESS · Reality · nl-ams-03.example.org:443")).toBeInTheDocument();
@@ -146,14 +146,14 @@ describe("Overview › status block", () => {
   it("O4: a live latency above 150 ms turns the orb amber with the word slow, as on the connection path; exactly 150 ms is not slow", async () => {
     const { api$, block } = await openOverview();
     api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, latency_ms: 831 } });
-    const slow = within(block).getByRole("img", { name: "831 ms · ONLINE · slow" });
+    const slow = within(block).getByRole("img", { name: "831 ms · slow" });
     expect(slow).toHaveAttribute("data-tone", "warn");
     expect(within(slow).getByText("slow")).toBeInTheDocument();
     expect(within(block).getByText("Tunnel ONLINE")).toBeInTheDocument();   // slow is still online
     expect(within(screen.getByRole("region", { name: "Connection path" }).querySelector("[data-live]") as HTMLElement).getByText("slow")).toBeInTheDocument();
 
     api$.emitTraffic({ ...TRAFFIC_FRAME, active: { ...TRAFFIC_FRAME.active!, latency_ms: 150 } });
-    const ok = within(block).getByRole("img", { name: "150 ms · ONLINE" });
+    const ok = within(block).getByRole("img", { name: "150 ms" });
     expect(ok).toHaveAttribute("data-tone", "ok");
     expect(within(ok).queryByText("slow")).toBeNull();
   });
@@ -265,7 +265,7 @@ describe("Overview › roll back and disconnect", () => {
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     act(() => { client.setQueryData<Status>(["status"], (old) => ({ ...old!, ...change })); });
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed — try again", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("The rollback target changed. Try again", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
   });
 
@@ -278,7 +278,7 @@ describe("Overview › roll back and disconnect", () => {
     let dialog = await screen.findByRole("dialog", { name: "Confirm" });
     const release = holdConnectionWrite(client);
     await userEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running. Try again when it finishes", { duration: 20000 }));
     expect(rollback).not.toHaveBeenCalled();
     await release();
 
@@ -395,7 +395,7 @@ describe("Overview › KPIs", () => {
     api$.emitTraffic(TRAFFIC_FRAME);
     expect(within(sessionDown).getByText("live")).toHaveAttribute("data-tone", "ok");
     for (const kpi of kpis) expect(kpi).not.toHaveAttribute("data-dim");
-    const orb = within(screen.getByRole("region", { name: "Status" })).getByRole("img", { name: "42 ms · ONLINE" });
+    const orb = within(screen.getByRole("region", { name: "Status" })).getByRole("img", { name: "42 ms" });
     const path = screen.getByRole("region", { name: "Connection path" });
     const live = path.querySelector("[data-live]")!;
     expect(orb).not.toHaveAttribute("data-dim");

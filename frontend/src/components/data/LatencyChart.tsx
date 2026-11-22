@@ -25,7 +25,7 @@ export function LatencyChart({ values, failed, dim, height = 120 }: LatencyChart
   return (
     <div data-dim={dim || undefined} className={cn("transition-opacity duration-200", dim && "opacity-45")}>
       <div className="flex gap-2">
-        <div aria-hidden className="flex flex-col justify-between text-right text-[9.5px] leading-none text-t3" style={{ height }}>
+        <div aria-hidden className="flex flex-col justify-between text-right text-2xs leading-none text-t3" style={{ height }}>
           {g.yTicks.map((tick) => <span key={tick}>{tick}</span>)}
         </div>
         <div className="relative min-w-0 flex-1">
@@ -57,7 +57,7 @@ export function LatencyChart({ values, failed, dim, height = 120 }: LatencyChart
           ) : null}
         </div>
       </div>
-      <p aria-hidden className="mt-2 flex flex-wrap gap-3.5 text-[11px] text-t2">
+      <p aria-hidden className="mt-2 flex flex-wrap gap-3.5 text-caption text-t2">
         <span className="inline-flex items-center gap-1.5"><i className="h-0.5 w-3 rounded-full bg-g1" />latency</span>
         <span className="inline-flex items-center gap-1.5"><i className="h-px w-3 bg-g1/50" />avg {avg} ms</span>
         <span className="inline-flex items-center gap-1.5"><i className="size-2 rounded-full border-2 border-warn" />degraded</span>

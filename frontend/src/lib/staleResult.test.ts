@@ -16,7 +16,7 @@ describe("stale peek results", () => {
   });
 
   it("says the form changed in the words the subscription dry-run already used", () => {
-    expect(FORM_CHANGED).toBe("Form changed since this run — run it again.");
+    expect(FORM_CHANGED).toBe("Form changed since this run. Run it again.");
   });
 
   it("turns a validate reply into its result line", () => {

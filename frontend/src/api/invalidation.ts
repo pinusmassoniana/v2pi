@@ -233,16 +233,16 @@ export function usePasswordBusy(): boolean {
 }
 
 /** Said when another connection write started while a confirmation was open, so nothing was sent. */
-export const CONNECTION_BUSY = "Another connection change is still running — try again when it finishes";
+export const CONNECTION_BUSY = "Another connection change is still running. Try again when it finishes";
 
 /** Said when another profile write started while a question was open, so nothing was sent. */
-export const PROFILE_BUSY = "Another profile change is still running — try again when it finishes";
+export const PROFILE_BUSY = "Another profile change is still running. Try again when it finishes";
 
 /** Said when another settings write started while a question was open, so nothing was sent. */
-export const SETTINGS_BUSY = "Another settings change is still running — try again when it finishes";
+export const SETTINGS_BUSY = "Another settings change is still running. Try again when it finishes";
 
 /** Said when a token write started while a question was open, so nothing was sent. */
-export const TOKEN_BUSY = "Another token change is still running — try again when it finishes";
+export const TOKEN_BUSY = "Another token change is still running. Try again when it finishes";
 
 /**
  * A 502 on a connection write: the write and its re-apply run in one store transaction (spec §13.2), so a failed
@@ -252,7 +252,7 @@ export const TOKEN_BUSY = "Another token change is still running — try again w
  * ("not applied", "default not changed", "not deleted").
  */
 export function saveRefusedMessage(error: ApiError, outcome = "not saved"): string {
-  return `${outcome} — applying to the tunnel failed: ${error.message}`;
+  return `${outcome}, but applying to the tunnel failed: ${error.message}`;
 }
 
 /** A connection write is running right now (for code that awaited something first, as isWriting). */

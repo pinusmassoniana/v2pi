@@ -186,7 +186,7 @@ describe("presets", () => {
   });
 
   it("says what it staged", () => {
-    expect(presetStagedMessage("ru-hardened")).toBe('preset "ru-hardened" staged into the editor — Create/Save to apply');
+    expect(presetStagedMessage("ru-hardened")).toBe('preset "ru-hardened" staged into the editor, Create/Save to apply');
   });
 });
 

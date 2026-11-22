@@ -72,11 +72,11 @@ describe("statsPatch", () => {
     expect(statsSavedMessage({ stats_enabled: false }, true)).toBe("traffic stats off · applied to the live tunnel");
     expect(statsSavedMessage({ stats_api_port: 10086 }, true)).toBe("saved · applied to the live tunnel");
     for (const patch of [{ stats_enabled: true }, { traffic_sample_ms: 2000 }, {}]) {
-      expect(statsSavedMessage(patch, false)).toBe("saved — applies on next Connect");
+      expect(statsSavedMessage(patch, false)).toBe("saved, applies on next Connect");
     }
     // Review fix round 1: traffic_sample_ms is not in _SETTINGS_CONFIG_KEYS (routes.py:1417), so put_settings
     // never runs _reapply_or_502 for it — a node being active does not make an interval-only save a live apply.
-    expect(statsSavedMessage({ traffic_sample_ms: 2000 }, true)).toBe("saved — applies on next Connect");
+    expect(statsSavedMessage({ traffic_sample_ms: 2000 }, true)).toBe("saved, applies on next Connect");
   });
 });
 
@@ -233,6 +233,6 @@ describe("the reset", () => {
 
   it("says whether it reached the live tunnel", () => {
     expect(resetMessage(true)).toBe("settings reset to defaults · applied to the live tunnel");
-    expect(resetMessage(false)).toBe("settings reset to defaults — applies on next Connect");
+    expect(resetMessage(false)).toBe("settings reset to defaults, applies on next Connect");
   });
 });

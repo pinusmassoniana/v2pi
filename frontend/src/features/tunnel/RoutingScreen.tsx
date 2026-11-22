@@ -67,7 +67,7 @@ export function Routing() {
       ...state,
       rows: [{ key: newRowKey(), id: null, type, value, action, enabled: true, label: "", dataset: "" as const }, ...state.rows],
     }));
-    notifyOk(`${type} ${value} → ${action} staged at the top — review and Save`);
+    notifyOk(`${type} ${value} → ${action} staged at the top, review and Save`);
   }, [edit]);
   const onDefaultAction = useCallback((defaultAction: RuleAction) => edit((state) => ({ ...state, defaultAction })), [edit]);
   const onDomainStrategy = useCallback((domainStrategy: DomainStrategy) => edit((state) => ({ ...state, domainStrategy })), [edit]);
@@ -85,7 +85,7 @@ export function Routing() {
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2 px-1">
         <div className="min-w-0 flex-1">
-          <h2 className="text-[15px] font-bold text-t1">Ruleset</h2>
+          <h2 className="text-title font-bold text-t1">Ruleset</h2>
           <p className="text-xs text-t3">{current ? `${count} rule${count === 1 ? "" : "s"} · ` : ""}checked top to bottom, first match wins</p>
         </div>
         {current && desktop ? (
@@ -110,7 +110,7 @@ export function Routing() {
         // The result line stays mounted (empty, taking no space) so Validate's first answer lands in a live region.
         <div className={actions.check ? "flex min-w-0 items-center gap-2 px-1" : "contents"}>
           <CheckLine result={actions.check} liveKey={liveKey} />
-          {actions.check ? <span className="shrink-0 text-[11.5px] text-t3">· Validate never saves</span> : null}
+          {actions.check ? <span className="shrink-0 text-caption text-t3">· Validate never saves</span> : null}
         </div>
       ) : null}
       {current ? staleNotice([routing], "Routing did not refresh") : null}
@@ -144,7 +144,7 @@ export function Routing() {
             <div className="glass sticky bottom-24 z-20 flex items-center gap-2 bg-solid p-2.5">
               <div className="min-w-0 flex-1">
                 <CheckLine result={actions.check} liveKey={liveKey} />
-                {actions.check ? null : <p className="text-[11px] text-t3">Validate never saves</p>}
+                {actions.check ? null : <p className="text-caption text-t3">Validate never saves</p>}
               </div>
               <Button size="sm" disabled={actions.validating} onClick={() => void actions.validate()}>{actions.validating ? "Validating…" : "Validate"}</Button>
               <Button size="sm" variant="primary" disabled={saveDisabled} onClick={() => void actions.save()}>{actions.saving ? "Saving…" : "Save"}</Button>

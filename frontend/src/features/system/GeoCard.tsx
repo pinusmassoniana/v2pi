@@ -16,8 +16,8 @@ import { fmtBytes } from "../../lib/format";
 
 /** A3. The two datasets, in the order the card shows them. */
 export const DATASETS = [
-  { key: "stock", title: "Stock lists", detail: "geoip: / geosite: — v2fly, what the image ships" },
-  { key: "ru", title: "RU lists", detail: "ext:geosite_ru.dat: — runetfreedom, blocked in Russia" },
+  { key: "stock", title: "Stock lists", detail: "geoip: and geosite: from v2fly, shipped with the image" },
+  { key: "ru", title: "RU lists", detail: "ext:geosite_ru.dat: from runetfreedom, blocked in Russia" },
 ] as const;
 
 export const GEO_NOTE =
@@ -25,7 +25,7 @@ export const GEO_NOTE =
   + "The new files are checked against the running config first, and the previous ones are kept.";
 
 export const UPDATE_CONFIRM =
-  "Update this geo data now? The tunnel restarts once the new files pass their check — devices drop briefly.";
+  "Update this geo data now? The tunnel restarts once the new files pass their check. Devices drop briefly.";
 export const REVERT_CONFIRM = "Put the previous copy of this geo data back? The tunnel restarts.";
 
 /** What a finished update says: what changed, or why nothing did. */
@@ -51,13 +51,13 @@ function DatasetRow({ dataset, files, busy, onUpdate, onRevert }: {
   return (
     <div data-geo-dataset={dataset.key} className="border-t border-line py-2.5 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-[13px] font-bold text-t1">{dataset.title}</h3>
+        <h3 className="text-body font-bold text-t1">{dataset.title}</h3>
         {present.length === 0 ? <Chip tone="warn">not installed</Chip> : <Chip plain tone="neutral">{fmtBytes(bytes)}</Chip>}
-        <span className="ml-auto text-[11px] text-t3">
+        <span className="ml-auto text-caption text-t3">
           {newest ? `updated ${agoLabel(newest, nowSec)}` : "never updated here"}
         </span>
       </div>
-      <p className="mt-0.5 font-mono text-[11px] text-t3">{dataset.detail}</p>
+      <p className="mt-0.5 font-mono text-caption text-t3">{dataset.detail}</p>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <Button size="sm" disabled={busy} onClick={onUpdate}>
           <RefreshCw size={13} aria-hidden />
@@ -122,8 +122,8 @@ export function GeoCard() {
               />
             ))}
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-t3">{GEO_NOTE}</p>
-          <p className="mt-1 truncate font-mono text-[11px] text-t3">
+          <p className="mt-2 text-caption leading-relaxed text-t3">{GEO_NOTE}</p>
+          <p className="mt-1 truncate font-mono text-caption text-t3">
             {geo.data!.asset_dir} · {fmtBytes(geo.data!.disk_free_bytes)} free
           </p>
         </>

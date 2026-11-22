@@ -42,7 +42,7 @@ describe("System › Panel — geo data (A3)", () => {
 
     await userEvent.click(within(card()).getByRole("button", { name: "Update ru lists" }));
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
-    expect(dialog).toHaveTextContent("devices drop briefly");
+    expect(dialog).toHaveTextContent("Devices drop briefly");
     await userEvent.click(within(dialog).getByRole("button", { name: "Update" }));
 
     await waitFor(() => expect(api$.updateGeo).toHaveBeenCalledWith("ru"));

@@ -60,10 +60,10 @@ export function strength(password: string): string {
  */
 export function passwordConfirm(count: number | undefined): string {
   const head = "Change the password? Every other signed-in session is signed out";
-  const tail = "anything using them stops working until you issue new ones.";
-  if (count === undefined) return `${head}, and every API token is deleted — ${tail}`;
+  const tail = "Anything using them stops working until you issue new ones.";
+  if (count === undefined) return `${head}, and every API token is deleted. ${tail}`;
   if (count === 0) return `${head}.`;
-  return `${head}, and all ${count} API token${count === 1 ? "" : "s"} are deleted — ${tail}`;
+  return `${head}, and all ${count} API token${count === 1 ? "" : "s"} are deleted. ${tail}`;
 }
 
 /** Said afterwards. This session survives — the handler adopts the new epoch — and the screen says which ones did not. */
@@ -77,9 +77,9 @@ export function passwordChangedMessage(count: number | undefined): string {
 /** The card's own warning, with the count the confirm will repeat. */
 export function passwordNote(count: number | undefined): string {
   const rules = "Minimum 8 characters; strength is a hint, not a rule.";
-  if (count === 0) return `Changing it signs out every other session — this browser stays signed in. ${rules}`;
+  if (count === 0) return `Changing it signs out every other session. This browser stays signed in. ${rules}`;
   const tokens = count === undefined ? "every API token" : `all ${count} API token${count === 1 ? "" : "s"}`;
-  return `Changing it signs out every other session and deletes ${tokens} — this browser stays signed in. ${rules}`;
+  return `Changing it signs out every other session and deletes ${tokens}, this browser stays signed in. ${rules}`;
 }
 
 // --- the idle timeout, the other half of this screen's settings ---

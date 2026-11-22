@@ -32,14 +32,14 @@ export function Kpi({ label, value, unit, sub, spark, sparkSeries = "down", asid
       className={cn("glass flex min-w-0 flex-col gap-1 p-3.5 transition-opacity duration-200", dim && "opacity-60", className)}
     >
       <div className="flex items-center justify-between gap-2">
-        <Heading className="truncate text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{label}</Heading>
+        <Heading className="truncate text-2xs font-semibold uppercase tracking-[.07em] text-t3">{label}</Heading>
         {aside}
       </div>
-      <p className={cn("truncate text-[26px] font-bold leading-tight tracking-tight tabular-nums", VALUE[tone])}>
+      <p className={cn("truncate text-kpi font-bold leading-tight tracking-tight tabular-nums", VALUE[tone])}>
         {value}
-        {unit ? <span className="ml-1 text-[11px] font-semibold tracking-normal text-t3">{unit}</span> : null}
+        {unit ? <span className="ml-1 text-caption font-semibold tracking-normal text-t3">{unit}</span> : null}
       </p>
-      {sub ? <div className="truncate text-[11.5px] text-t3">{sub}</div> : null}
+      {sub ? <div className="truncate text-caption text-t3">{sub}</div> : null}
       {spark && spark.length > 1 ? <Sparkline values={spark} series={sparkSeries} className="mt-auto" /> : null}
     </section>
   );

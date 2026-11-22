@@ -157,7 +157,7 @@ describe("validateRuleRow (inline hints)", () => {
     for (const bad of ["0", "65536", "2000-1000", "1-", "-5", "abc", "80;443", "123456", "1-65536"]) {
       expect(check("port", bad)).toMatch(/^bad port "/);
     }
-    expect(check("port", "80,0")).toBe('bad port "0" — use 443, 1000-2000 or 80,443 within 1–65535');
+    expect(check("port", "80,0")).toBe('bad port "0", use 443, 1000-2000 or 80,443 within 1–65535');
   });
 
   it("ip: an IPv4 or IPv6 address or CIDR", () => {
@@ -172,11 +172,11 @@ describe("validateRuleRow (inline hints)", () => {
   });
 
   it("a private range sent anywhere but direct is shadowed by the built-in private → direct rule", () => {
-    expect(check("ip", "8.8.8.8, 10.1.0.0/16", "proxy")).toBe('"10.1.0.0/16" is a private range — the built-in private → direct rule is matched first, so only direct works');
+    expect(check("ip", "8.8.8.8, 10.1.0.0/16", "proxy")).toBe('"10.1.0.0/16" is a private range, the built-in private → direct rule is matched first, so only direct works');
     expect(check("ip", "10.1.0.0/16", "direct")).toBeNull();
     expect(check("ip", "203.0.113.0/24", "block")).toMatch(/private range/);
     expect(check("ip", "100.64.0.0/10", "proxy")).toBeNull();
-    expect(check("geoip", "ru, PRIVATE", "block")).toBe("geoip:private — the built-in private → direct rule is matched first, so only direct works");
+    expect(check("geoip", "ru, PRIVATE", "block")).toBe("geoip:private, the built-in private → direct rule is matched first, so only direct works");
     expect(check("geoip", "private", "direct")).toBeNull();
     expect(check("geosite", "private", "proxy")).toBeNull();
   });
@@ -256,7 +256,7 @@ describe("testDestination (R8)", () => {
 
   it("nothing for an empty input; IPv6 is not evaluated locally", () => {
     expect(testDestination("   ", state)).toBeNull();
-    expect(testDestination("2a00:1450:4010::65", state)).toEqual({ action: null, detail: "IPv6 preview is not evaluated locally — Validate/Save uses Xray's matcher." });
+    expect(testDestination("2a00:1450:4010::65", state)).toEqual({ action: null, detail: "IPv6 preview is not evaluated locally. Validate/Save uses Xray's matcher." });
     expect(testDestination("[2a00:1450:4010::65]:443", state)?.action).toBeNull();
   });
 

@@ -70,7 +70,7 @@ describe("Routing on a phone", () => {
     await userEvent.click(within(sheet).getByRole("switch", { name: "Enabled" }));
     await userEvent.click(within(sheet).getByRole("radio", { name: "port" }));
     expect(within(sheet).queryByRole("group", { name: "Geo suggestions" })).toBeNull();
-    expect(within(sheet).getByLabelText("Value")).toHaveAccessibleDescription('bad port "cn" — use 443, 1000-2000 or 80,443 within 1–65535');
+    expect(within(sheet).getByLabelText("Value")).toHaveAccessibleDescription('bad port "cn", use 443, 1000-2000 or 80,443 within 1–65535');
     await userEvent.click(within(sheet).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(open).toHaveFocus();
@@ -126,11 +126,11 @@ describe("Routing on a phone", () => {
     await userEvent.click(within(menu).getByRole("menuitem", { name: "Reset" }));
     const ask = await screen.findByRole("dialog", { name: "Confirm" });
     await userEvent.click(within(ask).getByRole("button", { name: "Reset" }));
-    await waitFor(() => expect(within(list).getByText("no rules — all traffic follows the default action")).toBeInTheDocument());
+    await waitFor(() => expect(within(list).getByText("no rules, all traffic follows the default action")).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api$.putRouting).toHaveBeenCalledWith({ rules: [], default_action: "proxy", domain_strategy: "IPIfNonMatch" }));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("saved, applies on next Connect", { duration: 8000 }));
 
     await userEvent.click(screen.getByRole("button", { name: "More routing actions" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Import JSON" }));
@@ -185,6 +185,6 @@ describe("Routing on a phone", () => {
     await screen.findByRole("list", { name: "Routing rules" });
     await userEvent.click(screen.getByRole("button", { name: "More routing actions" }));
     const menu = await screen.findByRole("menu");
-    expect(await within(menu).findByRole("menuitem", { name: "Routing presets did not load — Retry" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(await within(menu).findByRole("menuitem", { name: "Routing presets did not load. Retry" }, { timeout: 3000 })).toBeInTheDocument();
   });
 });

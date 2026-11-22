@@ -55,7 +55,7 @@ export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, 
       <p className="grid place-items-center text-sm text-t3" style={{ height }}>Waiting for traffic…</p>
     ) : (
       <div data-stale={stale || undefined} className={cn("flex gap-2 transition-[opacity,filter] duration-200", stale && "opacity-40 saturate-[.2]")}>
-        <div aria-hidden className="flex flex-col justify-between pb-5 text-right text-[9.5px] leading-none text-t3" style={{ height: height + 20 }}>
+        <div aria-hidden className="flex flex-col justify-between pb-5 text-right text-2xs leading-none text-t3" style={{ height: height + 20 }}>
           {g.yTicks.map((tick, i) => <span key={i}>{tick}</span>)}
         </div>
         <div className="min-w-0 flex-1">
@@ -91,7 +91,7 @@ export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, 
                 <span
                   data-peak
                   className={cn(
-                    "absolute -translate-y-1/2 whitespace-nowrap rounded-md border border-line bg-solid px-2 py-0.5 text-[10.5px] font-semibold text-t1",
+                    "absolute -translate-y-1/2 whitespace-nowrap rounded-md border border-line bg-solid px-2 py-0.5 text-2xs font-semibold text-t1",
                     g.peak.left > 50 ? "-translate-x-[calc(100%+12px)]" : "translate-x-3",
                   )}
                   style={{ left: `${g.peak.left}%`, top: `${Math.max(8, g.peak.top)}%` }}
@@ -101,7 +101,7 @@ export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, 
               </>
             ) : null}
           </div>
-          <div aria-hidden className="mt-1.5 flex justify-between font-mono text-[9.5px] leading-none text-t3">
+          <div aria-hidden className="mt-1.5 flex justify-between font-mono text-2xs leading-none text-t3">
             {g.xTicks.map((tick, i) => <span key={i}>{tick}</span>)}
           </div>
         </div>
@@ -112,7 +112,7 @@ export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div aria-hidden className="flex items-center gap-3 text-[11px] text-t2">
+        <div aria-hidden className="flex items-center gap-3 text-caption text-t2">
           <span className="inline-flex items-center gap-1.5"><i className="h-0.5 w-3.5 rounded-full bg-linear-to-r from-g1 to-g2" />down</span>
           <span className="inline-flex items-center gap-1.5"><i className="h-0.5 w-3.5 rounded-full bg-series-up" />up</span>
         </div>
@@ -124,7 +124,7 @@ export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, 
               aria-pressed={w.sec === windowSec}
               onClick={() => onWindowChange(w.sec)}
               className={cn(
-                "rounded-[7px] px-2.5 py-1 text-[10.5px] font-semibold text-t3 transition-colors hover:text-t1 focus-visible:outline-2 focus-visible:outline-g2",
+                "rounded-[7px] px-2.5 py-1 text-2xs font-semibold text-t3 transition-colors hover:text-t1 focus-visible:outline-2 focus-visible:outline-g2",
                 w.sec === windowSec && "bg-brand text-bg hover:text-bg",
               )}
             >
@@ -135,9 +135,9 @@ export function TrafficChart({ samples, windowSec, onWindowChange, peak, stale, 
       </div>
       {plot}
       {stale && !body ? (
-        <p role="status" className="flex items-center gap-2 text-[11.5px] text-warn">
-          <span aria-hidden className="grid size-5 place-items-center rounded-md bg-warn/20 text-[11px] font-extrabold">!</span>
-          Tunnel health is stale — rates are not proof of a healthy tunnel
+        <p role="status" className="flex items-center gap-2 text-caption text-warn">
+          <span aria-hidden className="grid size-5 place-items-center rounded-md bg-warn/20 text-caption font-extrabold">!</span>
+          Tunnel health is stale. Rates are not proof of a healthy tunnel
         </p>
       ) : null}
     </div>

@@ -89,7 +89,7 @@ describe("TrafficChart", () => {
   it("dims a stale plot and says why", () => {
     const { container } = render(<TrafficChart samples={series(10)} windowSec={60} onWindowChange={() => {}} peak={null} stale />);
     expect(container.querySelector("[data-stale]")).not.toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Tunnel health is stale — rates are not proof of a healthy tunnel");
+    expect(screen.getByRole("status")).toHaveTextContent("Tunnel health is stale. Rates are not proof of a healthy tunnel");
     expect(screen.getByRole("img")).toHaveAccessibleName("Throughput over the last 1m; tunnel health is stale");
   });
 

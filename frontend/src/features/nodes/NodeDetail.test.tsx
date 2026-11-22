@@ -82,7 +82,7 @@ describe("Node detail › health and config (N5)", () => {
     expect(terms(health)).toEqual(["TCP", "HTTP", "Real", "Failures", "Egress"]);
     expect(value(health, "TCP")).toHaveTextContent("31 ms");
     expect(value(health, "Egress")).toHaveTextContent("🇳🇱 185.107.56.21🇳🇱 2a0b:4d07::21");
-    expect(health).toHaveTextContent("Latency trend · last 2 samples");
+    expect(health).toHaveTextContent("Last 2 samples");
     // Scoped to the page's own header: the hidden list underneath shows the same active row's "connected" text.
     const header = (await screen.findByRole("heading", { level: 2, name: "🇳🇱 nl-ams-03" })).closest("header")!;
     expect(within(header).getByText(/^connected/)).toHaveTextContent("connected · 1m");
@@ -115,7 +115,7 @@ describe("Node detail › health and config (N5)", () => {
     await openDetail("/nodes/5", { phone: true });
     const health = await screen.findByRole("region", { name: "Health" });
     expect(health).toHaveTextContent("not probed");
-    expect(health).toHaveTextContent("Not probed yet — Test runs TCP, HTTP and a real request through this node.");
+    expect(health).toHaveTextContent("Not probed yet. Test runs TCP, HTTP and a real request through this node.");
     expect(terms(health)).not.toContain("Failures");
   });
 
@@ -247,7 +247,7 @@ describe("Node detail › profile and actions (N6, N7, N15, T6)", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled());
 
     const release = holdConnectionWrite(client);
-    expect(await screen.findByText("Another connection change is still running — try again when it finishes")).toBeInTheDocument();
+    expect(await screen.findByText("Another connection change is still running. Try again when it finishes")).toBeInTheDocument();
     await release();
     api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
@@ -438,7 +438,7 @@ describe("Node detail › one node's state stays with that node", () => {
     renderApp("/nodes/2");
     const row = await screen.findByRole("region", { name: "Tuning profile" });
     await userEvent.click(within(row).getByRole("button", { name: "Change" }));
-    expect(await within(row).findByText("Profiles did not load — only the global default can be picked", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(await within(row).findByText("Profiles did not load. Only the global default can be picked", {}, { timeout: 3000 })).toBeInTheDocument();
 
     api$.listProfiles.mockResolvedValue(PROFILES);
     await userEvent.click(within(row).getByRole("button", { name: "Retry" }));

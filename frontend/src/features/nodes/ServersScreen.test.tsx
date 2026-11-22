@@ -122,7 +122,7 @@ describe("Servers › states (N19, N20)", () => {
     expect(await screen.findByText("No servers here")).toBeInTheDocument();
     api$.listNodes.mockResolvedValue([]);
     await userEvent.click(chips().getByRole("link", { name: "Servers 0" }));
-    expect(await screen.findByText("No servers here — add one with Add server.")).toBeInTheDocument();
+    expect(await screen.findByText("No servers here. Add one with Add server.")).toBeInTheDocument();
   });
 
   it("a list that failed to load is an error with Retry; a failed refresh keeps the rows with a notice", async () => {
@@ -136,7 +136,7 @@ describe("Servers › states (N19, N20)", () => {
     await waitFor(() => expect(rowNames()).toHaveLength(6));
     api$.listNodes.mockRejectedValue(new ApiError(500, "boom"));
     await act(() => client.refetchQueries({ queryKey: ["nodes"] }).catch(() => undefined));
-    expect(await screen.findByText("Servers did not refresh — showing the last data")).toBeInTheDocument();
+    expect(await screen.findByText("Servers did not refresh, showing the last data")).toBeInTheDocument();
     expect(rowNames()).toHaveLength(6);
   });
 

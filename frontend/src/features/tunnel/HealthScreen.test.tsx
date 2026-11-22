@@ -82,12 +82,12 @@ describe("Health & failover › form (G3, G4)", () => {
   it("shows the stored settings with the contract's words; Save is off until something changed", async () => {
     await openHealth();
     expect(within(monitoring()).getByRole("switch", { name: "Health checks" })).toHaveAttribute("aria-checked", "true");
-    expect(monitoring()).toHaveTextContent("master switch — off stops both checks below");
+    expect(monitoring()).toHaveTextContent("master switch, off stops both checks below");
     expect(monitoring()).toHaveTextContent("TCP + direct HTTPS across the whole pool");
     expect(within(monitoring()).getByLabelText("Server sweep interval")).toHaveValue(10);
     expect(within(monitoring()).getByLabelText("Active-server check interval")).toHaveValue(30);
     expect(within(monitoring()).getByLabelText("Probe URL")).toHaveValue("https://www.gstatic.com/generate_204");
-    expect(monitoring()).toHaveTextContent("A real request through the connected server, via a throwaway xray so your live connection is untouched. Auto-failover reads this check, not the sweep — so you can turn the sweep off and keep failover working.");
+    expect(monitoring()).toHaveTextContent("A real request through the connected server, on a separate xray, so the live connection is untouched. Auto-failover uses this check, not the sweep. Turning the sweep off keeps failover working.");
     expect(within(failover()).getByLabelText("Hysteresis")).toHaveValue(3);
     expect(failover()).toHaveTextContent("consecutive failed real checks before switching");
     expect(within(failover()).getByLabelText("Cooldown")).toHaveValue(300);
@@ -138,7 +138,7 @@ describe("Health & failover › form (G3, G4)", () => {
     expect(within(monitoring()).getByLabelText("Server sweep interval")).toBeDisabled();
     expect(within(monitoring()).getByLabelText("Server sweep interval")).toHaveValue(10);
     expect(within(monitoring()).getByLabelText("Active-server check interval")).toBeDisabled();
-    expect(failover()).toHaveTextContent("health checks are off — failover can never fire");
+    expect(failover()).toHaveTextContent("health checks are off, so failover can never fire");
     await userEvent.click(saveButton());
     await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ health_enabled: false }));
   });

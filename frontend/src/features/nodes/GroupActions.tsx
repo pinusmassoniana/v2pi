@@ -64,7 +64,7 @@ function useTestAll(shown: readonly Node[]) {
       }
     },
     onSuccess: ({ total, failed, lastError }) => {
-      if (failed > 0) notifyError(null, `Test all: ${failed} of ${total} probes failed — ${errText(lastError, "probe failed")}`);
+      if (failed > 0) notifyError(null, `Test all: ${failed} of ${total} probes failed, ${errText(lastError, "probe failed")}`);
     },
   });
   // `remaining` answers within the same render as a click this instance made; `running` (the shared cache) is

@@ -79,7 +79,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
   // A slow node reads amber here as on the connection path, with the word, not the colour alone.
   const slow = latency !== null && latency > SLOW_LATENCY_MS;
   const orb = online
-    ? { value: latency === null ? "—" : String(latency), caption: latency === null ? "ONLINE" : "ms · ONLINE", tone: slow ? "warn" as const : "ok" as const, note: slow ? "slow" : undefined }
+    ? { value: latency === null ? "—" : String(latency), caption: latency === null ? "ONLINE" : "ms", tone: slow ? "warn" as const : "ok" as const, note: slow ? "slow" : undefined }
     : tunnel.label === "UNKNOWN"
       ? { value: "—", caption: "UNKNOWN", tone: "neutral" as const }
       : { value: "×", caption: "OFFLINE", tone: "bad" as const };
@@ -106,9 +106,9 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <Pill tone={tunnel.tone} dot>Tunnel {tunnel.label}</Pill>
-            <span className="text-[11.5px] text-t3">uptime <Uptime since={status.active_since} running={online} className="text-t1" /></span>
+            <span className="text-caption text-t3">uptime <Uptime since={status.active_since} running={online} className="text-t1" /></span>
           </div>
-          <p className="mt-1.5 truncate text-[19px] font-bold tracking-tight md:text-[21px]">
+          <p className="mt-1.5 truncate text-heading font-bold tracking-tight">
             {flag ? `${flag} ` : ""}{named.name}
           </p>
           {active ? <p className="truncate text-xs text-t2">{nodeEndpoint(active)}</p> : null}
@@ -122,7 +122,7 @@ export function StatusBlock({ status, statusError, network, nodes, className }: 
       </div>
       <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-line pt-3 md:flex">
         <Button variant="primary" className="col-span-2" onClick={() => openPalette("nodes")}>
-          Switch node <kbd aria-hidden className="hidden rounded-md bg-bg/20 px-1.5 text-[10.5px] md:inline">⌘K</kbd>
+          Switch node <kbd aria-hidden className="hidden rounded-md bg-bg/20 px-1.5 text-2xs md:inline">⌘K</kbd>
         </Button>
         {prevName !== null ? (
           <Button disabled={busy} onClick={() => void onRollback(prevName, prevId)}>

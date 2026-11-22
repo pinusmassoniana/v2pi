@@ -154,9 +154,9 @@ export function restartConfirmNeeded(saved: Network, form: NetworkFormValues, st
 export const RESTART_CONFIRM = "Apply and restart the tunnel? Devices may drop briefly.";
 
 export const DISARM_CONFIRM =
-  "Disarm the fail-closed kill-switch?\nIf the tunnel goes down, client traffic will no longer be dropped — it can leak around the tunnel instead.";
+  "Disarm the fail-closed kill-switch?\nIf the tunnel goes down, client traffic will no longer be dropped. It can leak around the tunnel instead.";
 
-export const NO_ANSWER = "no answer yet — the gateway may still be applying; reloading";
+export const NO_ANSWER = "no answer yet, the gateway may still be applying; reloading";
 
 /** Apply's success. "· tunnel restarted for IPv6" only when IPv6 was flipped while the tunnel ran. */
 export function appliedMessage(ipv6Restarted: boolean): string {
@@ -169,7 +169,7 @@ export function appliedMessage(ipv6Restarted: boolean): string {
  */
 export function applyRefusedMessage(detail: string): { text: string; sticky: boolean } {
   if (detail.includes("recovery:")) return { text: `not applied, and restoring the previous state reported problems: ${detail}`, sticky: true };
-  return { text: `not applied — the gateway kept its previous network settings: ${detail}`, sticky: false };
+  return { text: `not applied, the gateway kept its previous network settings: ${detail}`, sticky: false };
 }
 
 export interface NetworkWarning {
@@ -186,7 +186,7 @@ export function networkWarnings(network: Network): NetworkWarning[] {
   const { status } = network;
   const warnings: NetworkWarning[] = [];
   if (status.wan_blocked === true) {
-    warnings.push({ key: "wan-blocked", tone: "warn", title: "WAN blocked", text: "— kill-switch holding traffic (tunnel down). No leak." });
+    warnings.push({ key: "wan-blocked", tone: "warn", title: "WAN blocked", text: "Kill-switch is holding traffic while the tunnel is down. No leak." });
   }
   const enforcement = status.enforcement_status ?? "unknown";
   if (enforcement !== "ok") {
@@ -196,12 +196,12 @@ export function networkWarnings(network: Network): NetworkWarning[] {
     });
   }
   if (status.enforcement_warning) {
-    warnings.push({ key: "apply-warning", tone: "warn", title: "Applied with a warning", text: `— ${status.enforcement_warning}` });
+    warnings.push({ key: "apply-warning", tone: "warn", title: "Applied with a warning", text: status.enforcement_warning });
   }
   if (status.foreign_ra === true) {
     warnings.push({
       key: "foreign-ra", tone: "bad", title: "Another router is advertising IPv6 on the client VLAN",
-      text: "— clients will leak. Disable RA for this VLAN on your router.",
+      text: "Clients will leak. Disable RA for this VLAN on your router.",
     });
   }
   return warnings;

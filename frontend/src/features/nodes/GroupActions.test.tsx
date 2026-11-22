@@ -92,7 +92,7 @@ describe("Servers › group actions (N8–N10)", () => {
     await waitFor(() => expect(api$.probeNode.mock.calls.map(([id]) => id)).toEqual([3, 5]));
     await act(async () => pending.shift()!(NODE_HEALTH[0]!));
     await waitFor(() => expect(toolbar().getByRole("button", { name: "Test all (real)" })).toBeEnabled());
-    expect(error).toHaveBeenCalledWith("Test all: 1 of 2 probes failed — probe failed", { duration: 20000 });
+    expect(error).toHaveBeenCalledWith("Test all: 1 of 2 probes failed, probe failed", { duration: 20000 });
   });
 
   it("Test all stops scheduling when the screen goes away", async () => {

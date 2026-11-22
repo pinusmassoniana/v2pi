@@ -76,13 +76,13 @@ const NodeCard = memo(function NodeCard({ node, health, active, activeSince, con
             {node.stale ? <StaleBadge /> : null}
             {failCount > 0 ? <FailBadge count={failCount} /> : null}
           </p>
-          {active && connection ? <ActiveLine state={connection} since={activeSince} className="text-[11px]" /> : null}
+          {active && connection ? <ActiveLine state={connection} since={activeSince} className="text-caption" /> : null}
           <div className="mt-1.5 flex flex-wrap gap-1">
             <ProbePill label="TCP" ok={health?.last_tcp_ok} ms={health?.last_tcp_ms} />
             <ProbePill label="HTTP" ok={health?.last_http_ok} ms={health?.last_http_ms} />
             {active ? <ActiveRealPill label="real" nodeId={node.id} health={health} /> : <ProbePill label="real" ok={health?.last_real_ok} ms={health?.last_real_ms} />}
           </div>
-          <p className="mt-1 truncate text-[11px] text-t3">{readingLine(health)}</p>
+          <p className="mt-1 truncate text-caption text-t3">{readingLine(health)}</p>
         </div>
         {selected === null ? <NodeRowActions node={node} active={active} withMenu={false} className="pointer-events-auto" /> : null}
       </div>

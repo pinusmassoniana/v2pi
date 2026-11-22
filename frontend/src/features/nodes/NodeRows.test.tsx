@@ -190,7 +190,7 @@ describe("Servers › row actions (N6, N7, N15)", () => {
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     const release = holdConnectionWrite(client);
     await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Another connection change is still running. Try again when it finishes", { duration: 20000 }));
     expect(api$.disconnect).not.toHaveBeenCalled();
     await release();
   });
@@ -199,7 +199,7 @@ describe("Servers › row actions (N6, N7, N15)", () => {
     const { api$, client } = await openList();
     const release = holdConnectionWrite(client);
     await waitFor(() => expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toBeDisabled());
-    expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toHaveAttribute("title", "Another connection change is still running — try again when it finishes");
+    expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toHaveAttribute("title", "Another connection change is still running. Try again when it finishes");
     await release();
     await waitFor(() => expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toBeEnabled());
 
@@ -207,7 +207,7 @@ describe("Servers › row actions (N6, N7, N15)", () => {
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
     await waitFor(() => expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toHaveAttribute("title", "Gateway unreachable"));
     expect(within(row("de-fra-01")).getByRole("button", { name: "Connect de-fra-01" })).toBeDisabled();
-    expect(screen.getByText("Gateway unreachable — connecting is unavailable until it answers.")).toBeInTheDocument();
+    expect(screen.getByText("Gateway unreachable. Connecting is unavailable until it answers.")).toBeInTheDocument();
   });
 
   it("Test probes one node, busy meanwhile, and its result lands in the row", async () => {

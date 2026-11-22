@@ -85,7 +85,7 @@ describe("Access — password (P4)", () => {
     await userEvent.click(changeButton());
     const dialog = await screen.findByRole("dialog", { name: "Confirm" });
     expect(dialog).toHaveTextContent(
-      `Change the password? Every other signed-in session is signed out, and all ${TOKENS.length} API tokens are deleted — anything using them stops working until you issue new ones.`,
+      `Change the password? Every other signed-in session is signed out, and all ${TOKENS.length} API tokens are deleted. Anything using them stops working until you issue new ones.`,
     );
     await answer("Cancel");
 
@@ -98,7 +98,7 @@ describe("Access — password (P4)", () => {
     api$.listTokens.mockResolvedValue([]);
     renderApp("/system/access");
     await screen.findByRole("region", { name: "Password" });
-    await waitFor(() => expect(screen.getByText(/Changing it signs out every other session — this browser stays signed in/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Changing it signs out every other session. This browser stays signed in/)).toBeInTheDocument());
     await fillPasswords();
 
     await userEvent.click(changeButton());
@@ -118,7 +118,7 @@ describe("Access — password (P4)", () => {
     await userEvent.click(changeButton());
 
     expect(await screen.findByRole("dialog", { name: "Confirm" })).toHaveTextContent(
-      "Change the password? Every other signed-in session is signed out, and every API token is deleted — anything using them stops working until you issue new ones.",
+      "Change the password? Every other signed-in session is signed out, and every API token is deleted. Anything using them stops working until you issue new ones.",
     );
   });
 
@@ -172,7 +172,7 @@ describe("Access — password (P4)", () => {
     await userEvent.click(changeButton());
     await answer("Change password");
 
-    const toast = await screen.findByText("no answer yet — the gateway may still be applying; reloading");
+    const toast = await screen.findByText("no answer yet, the gateway may still be applying; reloading");
     expect(toast.closest("[data-sonner-toast]")).toHaveAttribute("data-type", "warning");
     expect(field("Current password")).toHaveValue("old-password");
     await waitFor(() => expect(invalidate.mock.calls.some(([filters]) => filters?.queryKey === keys.tokens)).toBe(true));
@@ -184,14 +184,14 @@ describe("Access — password (P4)", () => {
     await userEvent.click(changeButton());
     let release = holdWrite(client, TOKEN_WRITE);
     await answer("Change password");
-    await screen.findByText("Another token change is still running — try again when it finishes");
+    await screen.findByText("Another token change is still running. Try again when it finishes");
     expect(api$.changePassword).not.toHaveBeenCalled();
     await release();
 
     await userEvent.click(changeButton());
     release = holdWrite(client, SETTINGS_WRITE);
     await answer("Change password");
-    await screen.findByText("Another settings change is still running — try again when it finishes");
+    await screen.findByText("Another settings change is still running. Try again when it finishes");
     expect(api$.changePassword).not.toHaveBeenCalled();
     await release();
   });
@@ -271,7 +271,7 @@ describe("Access — idle timeout (G5)", () => {
     await openAccess();
     const card = screen.getByRole("region", { name: "Session" });
     expect(card).toHaveTextContent("An open, visible tab keeps polling, so this measures time with the panel closed or in the background.");
-    expect(card).toHaveTextContent("Changing it ends nobody's session now");
+    expect(card).toHaveTextContent("Changing it does not end current sessions");
     expect(within(card).getByText("saved as soon as you change it")).toBeInTheDocument();
   });
 
@@ -281,7 +281,7 @@ describe("Access — idle timeout (G5)", () => {
     renderApp("/system/access");
     await screen.findByRole("region", { name: "Password" });
     const session = screen.getByRole("region", { name: "Session" });
-    expect(await within(session).findByText("Settings did not load — the saved idle timeout is unknown", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(await within(session).findByText("Settings did not load. The saved idle timeout is unknown", {}, { timeout: 3000 })).toBeInTheDocument();
     api$.getSettings.mockResolvedValue(SETTINGS);
     await userEvent.click(within(session).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(field("Idle timeout")).toHaveValue(SETTINGS.session_timeout_min));

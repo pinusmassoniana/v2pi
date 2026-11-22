@@ -57,7 +57,7 @@ describe("Access — tokens (G7)", () => {
     await openAccess();
     const scopes = region("Scopes");
     expect(scopes).toHaveTextContent("Status and traffic history only.");
-    expect(scopes).toHaveTextContent("/api/status, /api/traffic/history, /api/node-health, /api/network — every other path answers 403.");
+    expect(scopes).toHaveTextContent("/api/status, /api/traffic/history, /api/node-health, /api/network. Every other path answers 403.");
     expect(scopes).toHaveTextContent("Every GET, including the backup.");
     expect(scopes).toHaveTextContent("Not a “safe” scope.");
     expect(scopes).toHaveTextContent("Every GET plus every mutation, with no CSRF header.");
@@ -105,7 +105,7 @@ describe("Access — tokens (G7)", () => {
 
     const panel = await screen.findByRole("group", { name: "New token home-assistant" });
     expect(within(panel).getByText(TOKEN_CREATED.token)).toBeInTheDocument();
-    expect(within(panel).getByText("Copy it now, it is shown only once. The gateway keeps only its hash — if you lose it, revoke this token and issue another.")).toBeInTheDocument();
+    expect(within(panel).getByText("Copy it now, it is shown only once. The gateway keeps only its hash. If you lose it, revoke this token and issue another.")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Leaving this screen loses the secret." })).toBeInTheDocument();
     // not in either cache, not in a toast, not in an attribute
     expect(cached()).not.toContain(TOKEN_CREATED.token);
@@ -210,7 +210,7 @@ describe("Access — tokens (G7)", () => {
     const release = holdWrite(client, TOKEN_WRITE);
     await answer("Revoke");
 
-    await screen.findByText("Another token change is still running — try again when it finishes");
+    await screen.findByText("Another token change is still running. Try again when it finishes");
     expect(api$.deleteToken).not.toHaveBeenCalled();
     await release();
   });
@@ -244,7 +244,7 @@ describe("Access — audit log (G8)", () => {
     const audit = region("Audit log");
     expect(api$.listAudit).not.toHaveBeenCalled();
     expect(within(audit).getByText("not loaded")).toBeInTheDocument();
-    expect(audit).toHaveTextContent("Nothing is fetched until Show is pressed");
+    expect(audit).toHaveTextContent("Press Show to load the log.");
 
     await userEvent.click(within(audit).getByRole("button", { name: "Show" }));
 
@@ -252,7 +252,7 @@ describe("Access — audit log (G8)", () => {
     expect(api$.listAudit).toHaveBeenCalledTimes(1);
     expect(within(audit).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(within(audit).getByText("last 100")).toBeInTheDocument();
-    expect(audit).toHaveTextContent("Newest first, one shot of at most 100 rows — nothing polls this and nothing refreshes it after a write.");
+    expect(audit).toHaveTextContent("Newest first, up to 100 rows. Press Show again to refresh.");
   });
 
   it("renders every row's method, path and outcome, and colours the outcome by its class", async () => {

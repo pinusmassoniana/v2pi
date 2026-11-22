@@ -29,7 +29,7 @@ export function FilePicker({ label, changeLabel = "Change…", accept = "applica
       <label
         htmlFor={id}
         className={cn(
-          "inline-flex h-9 shrink-0 cursor-pointer items-center rounded-xl border border-line bg-glass-2 px-3.5 text-[13px] font-semibold text-t1",
+          "inline-flex h-9 shrink-0 cursor-pointer items-center rounded-xl border border-line bg-glass-2 px-3.5 text-body font-semibold text-t1",
           "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-g2",
           disabled ? "cursor-not-allowed opacity-50" : "hover:bg-glass",
         )}
@@ -47,8 +47,8 @@ export function FilePicker({ label, changeLabel = "Change…", accept = "applica
       </label>
       {file ? (
         <>
-          <span className="min-w-0 truncate font-mono text-[12px] text-t1">{file.name}</span>
-          <span className="shrink-0 text-[11px] text-t3">{fmtBytes(file.size)}</span>
+          <span className="min-w-0 truncate font-mono text-caption text-t1">{file.name}</span>
+          <span className="shrink-0 text-caption text-t3">{fmtBytes(file.size)}</span>
         </>
       ) : null}
     </div>

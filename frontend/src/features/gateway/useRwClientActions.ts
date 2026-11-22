@@ -148,7 +148,7 @@ export function useRwClientActions({ onRemoved }: { onRemoved?: (client: RwClien
     try {
       const { filename, config } = await api.rwClientConfig(client.id);
       downloadText(filename, config);
-      notifyOk(`${filename} downloaded — import it in Shadowrocket`);
+      notifyOk(`${filename} downloaded, import it in Shadowrocket`);
     } catch (error) {
       notifyError(error, "download failed");
     }

@@ -37,14 +37,14 @@ export interface NodeFormSheetProps {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section aria-label={title} className="flex flex-col gap-2.5 rounded-2xl border border-line bg-glass p-3">
-      <h3 className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{title}</h3>
+      <h3 className="text-2xs font-semibold uppercase tracking-[.07em] text-t3">{title}</h3>
       {children}
     </section>
   );
 }
 
 /** Said in place of the active-node banner once the node is no longer the active one. */
-export const DISCONNECTED_SAVE_AGAIN = "Disconnected — Save again";
+export const DISCONNECTED_SAVE_AGAIN = "Disconnected. Save again";
 
 /**
  * N13: the edit refused because the node is active — say so, and offer the Disconnect that unblocks it. Whether the
@@ -163,7 +163,7 @@ export function NodeFormSheet({ mode, node, onClose }: NodeFormSheetProps) {
 
           <Section title="Endpoint">
             <SegmentedField legend="Protocol" options={PROTOCOLS} radio={register("protocol")} />
-            {PROTOCOL_NOTE[protocol] ? <p className="text-[11px] leading-relaxed text-t3">{PROTOCOL_NOTE[protocol]}</p> : null}
+            {PROTOCOL_NOTE[protocol] ? <p className="text-caption leading-relaxed text-t3">{PROTOCOL_NOTE[protocol]}</p> : null}
             <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2.5">
               <TextField label="Address" required error={errors.address?.message} autoComplete="off" className="font-mono" {...register("address")} />
               <TextField label="Port" required hint="1–65535" type="number" inputMode="numeric" error={errors.port?.message} {...register("port")} />

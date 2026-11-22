@@ -168,10 +168,10 @@ export const IMPORT_NOTE =
   "Only the fields the file contains are changed; the rest stay as they are. One unknown field refuses the whole file, not just that key.";
 
 export const IMPORT_UNKNOWN_HINT =
-  "Remove them, or export a fresh file from this panel — one unknown key refuses the whole import.";
+  "Remove them, or export a fresh file from this panel. One unknown key refuses the whole import.";
 
 export const EXPORT_INTRO =
-  "Export writes what the panel already has — no request to the gateway. The routing default action is never in the " +
+  "Exports the settings this panel has loaded. The routing default action is never in the " +
   "file: Routing owns it, and a stored change there would not reach the live tunnel.";
 
 export function exportedMessage(): string {
@@ -208,13 +208,13 @@ export function resetConfirm(startsTunnel: boolean): string {
   const text =
     "Reset panel settings to their defaults? This also turns subscription auto-switch and tunnelled subscription " +
     "fetch back on, turns gateway DNS over DoH off, turns the idle timeout off, turns daily auto-backup off, and " +
-    "rebuilds the live tunnel — devices may drop briefly. Nodes, subscriptions, anti-DPI profiles and routing " +
+    "rebuilds the live tunnel, so devices may drop briefly. Nodes, subscriptions, anti-DPI profiles and routing " +
     "rules are kept.";
   return startsTunnel ? `${text}\n\n${STOPPED_XRAY_CLAUSE}` : text;
 }
 
 export function resetMessage(active: boolean): string {
-  return active ? "settings reset to defaults · applied to the live tunnel" : "settings reset to defaults — applies on next Connect";
+  return active ? "settings reset to defaults · applied to the live tunnel" : "settings reset to defaults, applies on next Connect";
 }
 
 export const DANGER_ZONE_HINT =

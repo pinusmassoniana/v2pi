@@ -62,12 +62,12 @@ describe("Routing › rules table (R1)", () => {
     const port = within(table).getByLabelText("Rule 5 value");
     await userEvent.clear(port);
     await userEvent.type(port, "70000");
-    expect(port).toHaveAccessibleDescription('bad port "70000" — use 443, 1000-2000 or 80,443 within 1–65535');
+    expect(port).toHaveAccessibleDescription('bad port "70000", use 443, 1000-2000 or 80,443 within 1–65535');
     expect(port).toHaveAttribute("aria-invalid", "true");
     const ip = within(table).getByLabelText("Rule 4 value");
     await userEvent.clear(ip);
     await userEvent.type(ip, "10.0.0.0/8");
-    expect(ip).toHaveAccessibleDescription('"10.0.0.0/8" is a private range — the built-in private → direct rule is matched first, so only direct works');
+    expect(ip).toHaveAccessibleDescription('"10.0.0.0/8" is a private range, the built-in private → direct rule is matched first, so only direct works');
     await userEvent.selectOptions(within(table).getByRole("combobox", { name: "Rule 4 action" }), "direct");
     expect(ip).not.toHaveAccessibleDescription();
   });
@@ -77,7 +77,7 @@ describe("Routing › rules table (R1)", () => {
     api$.getRouting.mockResolvedValue({ rules: [], default_action: "direct", domain_strategy: "AsIs" });
     renderApp("/tunnel/routing");
     const table = await screen.findByRole("table", { name: "Routing rules" });
-    expect(within(table).getByText("no rules — all traffic follows the default action")).toBeInTheDocument();
+    expect(within(table).getByText("no rules, all traffic follows the default action")).toBeInTheDocument();
     expect(bodyRows(table).at(-1)).toHaveTextContent("everything elsedirect");
   });
 
@@ -87,7 +87,7 @@ describe("Routing › rules table (R1)", () => {
     api$.getRouting.mockImplementation(() => new Promise((resolve) => { finish = () => resolve(TUNNEL_ROUTING); }));
     renderApp("/tunnel/routing");
     expect(await screen.findByRole("region", { name: "Rules" })).toHaveAttribute("aria-busy", "true");
-    expect(screen.queryByText("no rules — all traffic follows the default action")).toBeNull();
+    expect(screen.queryByText("no rules, all traffic follows the default action")).toBeNull();
     await act(async () => finish());
     expect(await screen.findByRole("table", { name: "Routing rules" })).toBeInTheDocument();
   });
@@ -113,7 +113,7 @@ describe("Routing › staging (R2, R3, R5)", () => {
     const status = within(banner()!).getByRole("status");
     // The live region was there, empty, before anything was staged — so the first STAGED sentence is announced.
     expect(before).toContain(status);
-    expect(status).toHaveTextContent("STAGED · 1 change — not yet applied to the live config.");
+    expect(status).toHaveTextContent("STAGED · 1 change, not yet applied to the live config.");
     await userEvent.clear(label);
     expect(banner()).toBeNull();
     expect(status).toBeInTheDocument();
@@ -177,7 +177,7 @@ describe("Routing › staging (R2, R3, R5)", () => {
     api$.getRouting.mockResolvedValue(TUNNEL_ROUTING);
     await act(() => client.invalidateQueries({ queryKey: keys.routing }));
     // Said in the staged live region, which was there before the gateway moved, so the notice is announced too.
-    expect(await within(status).findByText("The ruleset changed on the gateway since you started editing — Discard to load it")).toBeInTheDocument();
+    expect(await within(status).findByText("The ruleset changed on the gateway since you started editing. Discard to load it")).toBeInTheDocument();
     expect(within(banner()!).getByRole("status")).toBe(status);
     expect(within(table).getByRole("textbox", { name: "Rule 1 label" })).toHaveValue("RU off tunnel — mine");
     expect(within(table).queryByLabelText("Rule 6 value")).toBeNull();

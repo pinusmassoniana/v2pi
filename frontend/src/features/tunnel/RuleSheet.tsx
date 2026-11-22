@@ -72,7 +72,7 @@ export function RuleSheet({ row, index, count, disabled = false, onUpdate, onMov
               onChange={(event) => onUpdate(row.key, { value: event.target.value })}
               className="font-mono text-xs"
             />
-            {row.type === "device" ? <p className="-mt-1.5 text-[11px] text-t3">{DEVICE_ORDER_NOTE}</p> : null}
+            {row.type === "device" ? <p className="-mt-1.5 text-caption text-t3">{DEVICE_ORDER_NOTE}</p> : null}
             {isGeo(row.type) ? (
               <div role="group" aria-label="Geo suggestions" className="-mt-1.5 flex flex-wrap gap-1.5">
                 {(row.dataset === "ru" ? GEO_TOKENS_RU : GEO_TOKENS).map((token) => {
@@ -84,7 +84,7 @@ export function RuleSheet({ row, index, count, disabled = false, onUpdate, onMov
                       aria-pressed={on}
                       onClick={() => toggleToken(token)}
                       className={cn(
-                        "min-h-8 rounded-full border px-2.5 font-mono text-[11.5px] transition-colors duration-150",
+                        "min-h-8 rounded-full border px-2.5 font-mono text-caption transition-colors duration-150",
                         on ? "border-g2/50 bg-g2/15 text-t1" : "border-line bg-glass-2 text-t2",
                       )}
                     >

@@ -206,10 +206,10 @@ export function ProfileEditor({ editor, desktop }: { editor: ProfileEditorState;
           <Controller control={control} name="noise_enabled" render={({ field }) => <Toggle label="UDP noise" checked={field.value} onCheckedChange={field.onChange} />} />
         </SwitchRow>
         {noiseEnabled ? <NoiseRows control={control} register={register} errors={errors} /> : null}
-        {errors.noises?.root?.message ? <p className="text-[11px] text-bad">{errors.noises.root.message}</p> : null}
+        {errors.noises?.root?.message ? <p className="text-caption text-bad">{errors.noises.root.message}</p> : null}
       </EditorSection>
 
-      <EditorSection title="Mux" note="xhttp nodes only — ignored on Vision" {...section("mux")}>
+      <EditorSection title="Mux" note="xhttp nodes only, ignored on Vision" {...section("mux")}>
         <SwitchRow label="Mux" text="Multiplex connections">
           <Controller control={control} name="mux_enabled" render={({ field }) => <Toggle label="Mux" checked={field.value} onCheckedChange={field.onChange} />} />
         </SwitchRow>
@@ -247,7 +247,7 @@ export function ProfileEditor({ editor, desktop }: { editor: ProfileEditorState;
         </SwitchRow>
         {dohEnabled ? (
           <TextField label="DoH URL" hint="https:// only, blank = default" placeholder="(default)" className="font-mono text-xs" error={errors.doh_url?.message} {...register("doh_url")} />
-        ) : errors.doh_url ? <p className="text-[11px] text-bad">{errors.doh_url.message}</p> : null}
+        ) : errors.doh_url ? <p className="text-caption text-bad">{errors.doh_url.message}</p> : null}
         <SegmentedField legend="QUIC" options={QUIC_OPTIONS} radio={register("quic")} />
       </EditorSection>
 

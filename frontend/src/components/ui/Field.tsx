@@ -22,10 +22,10 @@ export function FieldShell({ id, label, required = false, hint, error, className
         <label htmlFor={id} className={cn("text-xs font-semibold text-t2", required && "after:ml-1 after:text-t3 after:content-['*']")}>
           {label}
         </label>
-        {hint ? <span className="text-[11px] text-t3">{hint}</span> : null}
+        {hint ? <span className="text-caption text-t3">{hint}</span> : null}
       </div>
       {children}
-      {error ? <p id={`${id}-error`} className="text-[11px] text-bad">{error}</p> : null}
+      {error ? <p id={`${id}-error`} className="text-caption text-bad">{error}</p> : null}
     </div>
   );
 }
@@ -98,7 +98,7 @@ export function SegmentedField({ legend, options, radio, value, onValueChange, n
             <label
               key={option.value}
               className={cn(
-                "shrink-0 cursor-pointer whitespace-nowrap rounded-[10px] px-3.5 py-1.5 text-[13px] font-semibold text-t3 transition-colors duration-150",
+                "shrink-0 cursor-pointer whitespace-nowrap rounded-[10px] px-3.5 py-1.5 text-body font-semibold text-t3 transition-colors duration-150",
                 "has-[:checked]:bg-glass-2 has-[:checked]:text-t1 has-[:checked]:shadow-[inset_0_0_0_1px_var(--line)]",
                 "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-g2 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
                 option.className,

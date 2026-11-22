@@ -76,6 +76,17 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
+/* Type ramp: every font size in component code is one of these (or a Tailwind default). */
+@theme {
+  --text-2xs: 10.5px;
+  --text-caption: 11.5px;
+  --text-body: 13px;
+  --text-title: 15px;
+  --text-heading: 19px;
+  --text-kpi: 26px;
+  --text-display: 34px;
+}
+
 @utility bg-brand {
   background-image: linear-gradient(135deg, var(--g1), var(--g2) 55%, var(--g3));
 }

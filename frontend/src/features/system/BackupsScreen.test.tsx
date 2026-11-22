@@ -81,7 +81,7 @@ describe("Backups — create (P1)", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Create backup" }));
 
-    await screen.findByText("backup failed — stored state is not restorable: node 31 refers to a profile that no longer exists");
+    await screen.findByText("backup failed, stored state is not restorable: node 31 refers to a profile that no longer exists");
   });
 
   it("waits while a connection write runs", async () => {
@@ -153,7 +153,7 @@ describe("Backups — restore (P2)", () => {
     expect(dialog).toHaveTextContent("v2pi-backup-2026-09-14.json · 214 KB");
     await answer("Restore");
 
-    await screen.findByText("restored 24 nodes, 3 subscriptions, 6 profiles, 11 routing rules — the gateway is disconnected; Connect a node when you are ready");
+    await screen.findByText("restored 24 nodes, 3 subscriptions, 6 profiles, 11 routing rules. The gateway is disconnected; connect a node when you are ready");
     expect(api$.restore).toHaveBeenCalledWith(BACKUP_DOC);
     // the outcome stays on screen as a card, with the snapshot path and the way back to Home
     const last = await screen.findByRole("region", { name: "Last restore" });
@@ -203,7 +203,7 @@ describe("Backups — restore (P2)", () => {
     const release = holdConnectionWrite(client);
     await answer("Restore");
 
-    await screen.findByText("Another connection change is still running — try again when it finishes");
+    await screen.findByText("Another connection change is still running. Try again when it finishes");
     expect(api$.restore).not.toHaveBeenCalled();
     await release();
   });
@@ -236,12 +236,12 @@ describe("Backups — restore (P2)", () => {
     await pick(backupFile("b.json"));
     await userEvent.click(restoreButton());
     await answer("Restore");
-    await screen.findByText("not restored — the gateway segment in this file overlaps the network you are connected from");
+    await screen.findByText("not restored, the gateway segment in this file overlaps the network you are connected from");
 
     api$.restore.mockRejectedValueOnce(new ApiError(400, "invalid backup: settings.health_interval: Input should be a valid integer"));
     await userEvent.click(restoreButton());
     await answer("Restore");
-    await screen.findByText("not restored — settings.health_interval: Input should be a valid integer");
+    await screen.findByText("not restored, settings.health_interval: Input should be a valid integer");
   });
 
   it("a 502 that names a recovery stays until it is dismissed", async () => {
@@ -251,7 +251,7 @@ describe("Backups — restore (P2)", () => {
     await userEvent.click(restoreButton());
     await answer("Restore");
 
-    const text = await screen.findByText(/^not restored — the gateway could not apply it: host provisioning failed/);
+    const text = await screen.findByText(/^not restored, the gateway could not apply it: host provisioning failed/);
     expect(within(text.closest("[data-sonner-toast]")!).getByRole("button", { name: /close/i })).toBeInTheDocument();
   });
 
@@ -263,7 +263,7 @@ describe("Backups — restore (P2)", () => {
     await userEvent.click(restoreButton());
     await answer("Restore");
 
-    const toast = await screen.findByText("no answer yet — the gateway may still be applying; reloading");
+    const toast = await screen.findByText("no answer yet, the gateway may still be applying; reloading");
     expect(toast.closest("[data-sonner-toast]")).toHaveAttribute("data-type", "warning");
     // it may still have replaced everything, so everything is re-read
     await waitFor(() => expect(invalidate.mock.calls.some(([filters]) => filters === undefined)).toBe(true));
@@ -443,7 +443,7 @@ describe("Backups — what the gateway already holds (A8)", () => {
     await userEvent.click(within(stored()).getByRole("button", { name: "Undo last restore" }));
     await answer("Undo restore");
 
-    expect(await screen.findByText("not restored — nothing to restore")).toBeInTheDocument();
+    expect(await screen.findByText("not restored, nothing to restore")).toBeInTheDocument();
   });
 
   it("a restore that finishes after logout leaves no restore card for the next session", async () => {

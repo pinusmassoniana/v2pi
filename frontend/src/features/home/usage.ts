@@ -4,7 +4,7 @@ import type { TrafficUsage } from "../../api/client";
 import { compactBytes } from "../../lib/format";
 
 export const USAGE_NOTE =
-  "Tunnelled traffic only, counted on the gateway's own clock — a day ends at its midnight, not yours.";
+  "Tunnelled traffic only, counted on the gateway's own clock. A day ends at its midnight, not yours.";
 
 export const CAP_NOTE =
   "The cap is a figure to watch, not a limit: nothing is throttled or disconnected when it is passed.";

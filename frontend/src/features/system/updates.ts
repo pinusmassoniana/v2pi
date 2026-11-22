@@ -9,7 +9,7 @@ export const UPDATE_HINT = "Deploying is still yours: re-pin V2PI_IMAGE on the g
 
 /** What the Check button says afterwards: what is available, or that everything is current. */
 export function updateOutcome(data: Diagnostics): string {
-  if (data.update_error) return `release check failed — ${data.update_error}`;
+  if (data.update_error) return `release check failed, ${data.update_error}`;
   const behind = [
     data.app_update_available ? `panel ${data.latest_app_version}` : "",
     data.xray_update_available ? `xray ${data.latest_xray_version}` : "",

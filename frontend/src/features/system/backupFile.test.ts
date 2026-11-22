@@ -24,7 +24,7 @@ describe("backupPreChecks", () => {
     const checks = backupPreChecks(DOC, 214_000);
     expect(checks.map((check) => check.ok)).toEqual([true, true, true, true]);
     expect(checks.map((check) => check.label)).toEqual([
-      "parses as JSON", "an object, not an array", "carries a schema_version", "214 KB — under the 2 MB the gateway accepts",
+      "parses as JSON", "an object, not an array", "carries a schema_version", "214 KB, under the 2 MB the gateway accepts",
     ]);
     expect(checksPass(checks)).toBe(true);
   });
@@ -51,17 +51,17 @@ describe("backupPreChecks", () => {
     expect(backupPreChecks(DOC, MAX_RESTORE_BYTES)[3]!.ok).toBe(true);
     const over = backupPreChecks(DOC, MAX_RESTORE_BYTES + 1)[3]!;
     expect(over.ok).toBe(false);
-    expect(over.label).toBe("2.1 MB — over the 2 MB the gateway accepts");
+    expect(over.label).toBe("2.1 MB, over the 2 MB the gateway accepts");
   });
 
   it("the phone's three lines answer the same four questions", () => {
     expect(condensedBackupChecks(DOC, 214_000)).toEqual([
       { ok: true, label: "parses as JSON, and is an object" },
       { ok: true, label: "carries a schema_version" },
-      { ok: true, label: "214 KB — under the 2 MB limit" },
+      { ok: true, label: "214 KB, under the 2 MB limit" },
     ]);
     expect(condensedBackupChecks("[1]", 214_000)[0]).toEqual({ ok: false, label: "parses as JSON, and is an object" });
-    expect(condensedBackupChecks(DOC, MAX_RESTORE_BYTES + 1)[2]!.label).toBe("2.1 MB — over the 2 MB limit");
+    expect(condensedBackupChecks(DOC, MAX_RESTORE_BYTES + 1)[2]!.label).toBe("2.1 MB, over the 2 MB limit");
   });
 });
 
@@ -89,7 +89,7 @@ describe("restoreConfirm", () => {
 describe("restoredMessage", () => {
   it("counts what came back and says the gateway is down, which is the normal outcome", () => {
     expect(restoredMessage(RESTORE_RESULT)).toEqual({
-      message: "restored 24 nodes, 3 subscriptions, 6 profiles, 11 routing rules — the gateway is disconnected; Connect a node when you are ready",
+      message: "restored 24 nodes, 3 subscriptions, 6 profiles, 11 routing rules. The gateway is disconnected; connect a node when you are ready",
       tone: "ok",
     });
   });
@@ -113,7 +113,7 @@ describe("restoreRefusedMessage", () => {
     // from a model validator, whose `loc` is empty — hence the bare ": Value error, ".
     const error = new ApiError(400, "invalid backup: : Value error, the gateway segment in this file overlaps the network you are connected from");
     expect(restoreRefusedMessage(error)).toEqual({
-      message: "not restored — the gateway segment in this file overlaps the network you are connected from",
+      message: "not restored, the gateway segment in this file overlaps the network you are connected from",
       sticky: false,
     });
   });
@@ -123,31 +123,31 @@ describe("restoreRefusedMessage", () => {
     // non-empty ("subscriptions.0") — "Value error, " lands after that loc, not at the very start.
     const error = new ApiError(400, "invalid backup: subscriptions.0: Value error, subscription injection is too large");
     expect(restoreRefusedMessage(error)).toEqual({
-      message: "not restored — subscriptions.0: subscription injection is too large",
+      message: "not restored, subscriptions.0: subscription injection is too large",
       sticky: false,
     });
   });
 
   it("a field refusal keeps its field", () => {
     expect(restoreRefusedMessage(new ApiError(400, "invalid backup: settings.health_interval: Input should be a valid integer"))).toEqual({
-      message: "not restored — settings.health_interval: Input should be a valid integer",
+      message: "not restored, settings.health_interval: Input should be a valid integer",
       sticky: false,
     });
   });
 
   it("a body that is not a backup at all keeps the handler's own sentence", () => {
-    expect(restoreRefusedMessage(new ApiError(400, "not a valid backup file")).message).toBe("not restored — not a valid backup file");
+    expect(restoreRefusedMessage(new ApiError(400, "not a valid backup file")).message).toBe("not restored, not a valid backup file");
   });
 
   it("a 502 says the apply failed, and stays on screen when it names a recovery", () => {
     const plain = restoreRefusedMessage(new ApiError(502, "host provisioning failed: nft: no such file or directory"));
     expect(plain).toEqual({
-      message: "not restored — the gateway could not apply it: host provisioning failed: nft: no such file or directory",
+      message: "not restored, the gateway could not apply it: host provisioning failed: nft: no such file or directory",
       sticky: false,
     });
     const recovered = restoreRefusedMessage(new ApiError(502, "host provisioning failed: nft missing; recovery: the previous configuration was put back and the guard reinstalled"));
     expect(recovered.sticky).toBe(true);
-    expect(recovered.message.startsWith("not restored — the gateway could not apply it: ")).toBe(true);
+    expect(recovered.message.startsWith("not restored, the gateway could not apply it: ")).toBe(true);
   });
 });
 

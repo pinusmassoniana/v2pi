@@ -30,16 +30,16 @@ export function RoutingDefaults({ defaultAction, domainStrategy, onDefaultAction
         >
           {RULE_ACTIONS.map((action) => <option key={action} value={action}>{action}</option>)}
         </Select>
-        <p className="text-[11px] text-t3">direct · proxy · block — used by the catch-all row</p>
+        <p className="text-caption text-t3">direct, proxy or block, used by the catch-all row</p>
       </FieldShell>
       <FieldShell id={`${id}-strategy`} label="Domain strategy">
         <Select id={`${id}-strategy`} value={domainStrategy} onChange={(event) => onDomainStrategy(event.target.value as DomainStrategy)}>
           {DOMAIN_STRATEGIES.map((strategy) => <option key={strategy} value={strategy}>{strategy}</option>)}
         </Select>
-        <p className="text-[11px] text-t3">IPIfNonMatch (default) · AsIs · IPOnDemand</p>
+        <p className="text-caption text-t3">IPIfNonMatch (default) · AsIs · IPOnDemand</p>
       </FieldShell>
-      <p className="flex items-center gap-2 text-[11.5px] text-t3">
-        <span aria-hidden className="grid size-5 shrink-0 place-items-center rounded-full bg-warn/15 text-[11px] font-bold text-warn">!</span>
+      <p className="flex items-center gap-2 text-caption text-t3">
+        <span aria-hidden className="grid size-5 shrink-0 place-items-center rounded-full bg-warn/15 text-caption font-bold text-warn">!</span>
         Saving with default = block asks to confirm first.
       </p>
     </GlassCard>

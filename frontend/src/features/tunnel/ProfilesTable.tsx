@@ -48,7 +48,7 @@ export function ProfilesTable({ profiles, editingId, actions, busy, connectionBu
   return (
     <div className="overflow-x-auto">
       <table aria-label="Profiles" className="w-full min-w-[640px] text-left text-sm">
-        <thead className="text-[10px] uppercase tracking-[.07em] text-t3">
+        <thead className="text-2xs uppercase tracking-[.07em] text-t3">
           <tr>
             <th scope="col" className="py-2.5 pl-3 pr-2 font-semibold">Name</th>
             <th scope="col" className="px-2 font-semibold">Used by</th>

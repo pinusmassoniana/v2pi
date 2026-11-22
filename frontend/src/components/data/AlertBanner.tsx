@@ -45,9 +45,9 @@ export function AlertBanner({ tone, title, text, icon = "!", children, action, o
       role="group"
       aria-label={title}
       data-tone={tone}
-      className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border px-3 py-2.5 text-[12.5px] text-t1 backdrop-blur-md", SURFACE[tone], className)}
+      className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border px-3 py-2.5 text-body text-t1 backdrop-blur-md", SURFACE[tone], className)}
     >
-      <span aria-hidden className={cn("grid size-6 shrink-0 place-items-center rounded-lg text-[13px] font-extrabold", ICON[tone])}>{icon}</span>
+      <span aria-hidden className={cn("grid size-6 shrink-0 place-items-center rounded-lg text-body font-extrabold", ICON[tone])}>{icon}</span>
       <div className="min-w-0 flex-1">
         <p>
           <b role={tone === "bad" ? "alert" : "status"} aria-label={title} className="font-bold">{title}</b>

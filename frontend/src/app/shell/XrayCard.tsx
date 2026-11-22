@@ -33,7 +33,7 @@ export function XrayCard({ status, className }: { status?: Status; className?: s
     <div className={cn("glass flex items-center gap-3 rounded-2xl p-3", className)}>
       <div className="min-w-0">
         <p className="text-xs font-semibold text-t1">xray-core</p>
-        <p className={cn("text-[11px] font-semibold tracking-wide", TEXT[xray.tone])}>{xray.label}</p>
+        <p className={cn("text-caption font-semibold tracking-wide", TEXT[xray.tone])}>{xray.label}</p>
       </div>
       <div className="ml-auto">
         <Toggle label="xray-core" checked={running} disabled={!status || busy} onCheckedChange={(on) => toggle.mutate(on)} />

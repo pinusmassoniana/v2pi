@@ -22,10 +22,10 @@ import { poolIssue, type NetworkField } from "./networkForm";
 import { useNetworkApply, type NetworkApply } from "./useNetworkApply";
 import { useNetworkForm, type NetworkFormState } from "./useNetworkForm";
 
-export const GATEWAY_CHANGED = "Changed on the gateway since you started editing — Discard to load it";
+export const GATEWAY_CHANGED = "Changed on the gateway since you started editing. Discard to load it";
 
 function UnsavedChip({ dirty }: { dirty: boolean }) {
-  return dirty ? <span className="text-[11px] font-semibold text-warn">● unsaved changes</span> : null;
+  return dirty ? <span className="text-caption font-semibold text-warn">● unsaved changes</span> : null;
 }
 
 /** Apply is possible: something changed, nothing is invalid, the pool fits, and no connection write runs. */
@@ -52,7 +52,7 @@ export function ApplyStatus({ state, apply }: { state: NetworkFormState; apply: 
   const [ip, dhcpStart, dhcpEnd] = useWatch({ control: state.form.control, name: ["ip", "dhcpStart", "dhcpEnd"] });
   const pool = poolIssue({ ip, dhcpStart, dhcpEnd });
   return (
-    <div role="status" className="flex min-w-0 flex-1 items-center gap-2 text-[11.5px]">
+    <div role="status" className="flex min-w-0 flex-1 items-center gap-2 text-caption">
       {apply.applying ? (
         <>
           <span role="progressbar" aria-label="Applying to host" className="relative h-1 min-w-16 flex-1 overflow-hidden rounded-full bg-glass-2">
@@ -118,7 +118,7 @@ function NetworkDesktop({ network, state, apply, canApply, dns, devices, locked 
             </div>
           </GlassCard>
           <GlassCard aria-label="LAN access & IPv6" className="flex flex-col gap-3">
-            <CardHeader title="LAN access & IPv6" aside={<span className="text-[11px] text-t3">staged — saved by Apply to host</span>} className="mb-0" />
+            <CardHeader title="LAN access & IPv6" aside={<span className="text-caption text-t3">staged, saved by Apply to host</span>} className="mb-0" />
             <LanIpv6Fields state={state} network={network} disabled={locked} desktop />
           </GlassCard>
         </div>
@@ -188,7 +188,7 @@ function NetworkPhone({ network, state, apply, canApply, dns, devices, locked }:
         </EditorSection>
         <EditorSection
           title="LAN access & IPv6"
-          note="staged — saved by Apply to host"
+          note="staged, saved by Apply to host"
           summary={`LAN ${lanAccess ? "on" : "off"} · IPv6 ${ipv6 ? `on · ${mode}` : "off"}`}
           {...section("ipv6")}
         >
@@ -204,7 +204,7 @@ function NetworkPhone({ network, state, apply, canApply, dns, devices, locked }:
           {cardFallback([dns.settings], "Gateway DNS did not load", "h-12") ?? <ClientDnsHint network={network} desktop={false} />}
         </EditorSection>
         <EditorSection title="Router checklist" note="the one box v2pi never touches" summary={`${steps} step${steps === 1 ? "" : "s"}`} {...section("checklist")}>
-          <p className="text-[11px] text-t3">from the saved plan · changes after Apply</p>
+          <p className="text-caption text-t3">from the saved plan · changes after Apply</p>
           <Checklist network={network} collapsible />
         </EditorSection>
       </GlassCard>

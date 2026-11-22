@@ -170,8 +170,8 @@ export function changesDeviceId(before: readonly KeyValue[], after: readonly Key
 }
 
 export const DEVICE_CHANGE_WARNING =
-  "This changes the device ID the provider sees. A provider that limits devices counts it as a new one — "
-  + "it can use up a slot, or push one of your other devices out.";
+  "This changes the device ID the provider sees. A provider that limits devices counts it as a new one. "
+  + "It can use up a slot, or push one of your other devices out.";
 
 const rows = z.array(z.object({ key: z.string(), value: z.string() }));
 
@@ -301,7 +301,7 @@ export function refreshAllMessage(result: RefreshAllResult): Outcome {
   const results = Array.isArray(result.results) ? result.results : Object.values(result.results ?? {});
   const failures = results.filter((item) => item.error || item.ok === false);
   const details = failures.slice(0, 3).map((item) => `${item.name ?? `#${item.id ?? "?"}`}: ${item.error ?? item.status ?? "failed"}`).join(" · ");
-  const failed = result.failed > 0 ? ` · ${result.failed} failed${details ? ` — ${details}` : ""}` : "";
+  const failed = result.failed > 0 ? ` · ${result.failed} failed${details ? `: ${details}` : ""}` : "";
   return { text: `${result.succeeded}/${result.attempted} refreshed${failed}`, error: result.failed > 0 };
 }
 

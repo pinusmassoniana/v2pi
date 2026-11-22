@@ -10,7 +10,7 @@ import { poolSize } from "../derive";
 /** O10: the client segment, its DHCP pool, the DNS handed out, and where IPv6 comes from. */
 export function NetworkCard({ network, className }: { network: CardQuery & { data: Network | undefined }; className?: string }) {
   const fallback = cardFallback([network], "Network settings did not load", "h-32");
-  const header = <CardHeader title="Network" aside={<Link to="/gateway/network" className="text-[11.5px] text-t2 hover:text-t1">Gateway › Network <span className="text-t3">→</span></Link>} />;
+  const header = <CardHeader title="Network" aside={<Link to="/gateway/network" className="text-caption text-t2 hover:text-t1">Gateway › Network</Link>} />;
   if (fallback || !network.data) {
     return <GlassCard aria-label="Network" aria-busy={!network.isError || undefined} className={className}>{header}{fallback}</GlassCard>;
   }

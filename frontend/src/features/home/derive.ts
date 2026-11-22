@@ -82,7 +82,7 @@ export function nodeEndpoint(node: Node): string {
 }
 
 /** Said when a confirmed rollback no longer matches what the gateway offers. */
-export const ROLLBACK_TARGET_CHANGED = "The rollback target changed — try again";
+export const ROLLBACK_TARGET_CHANGED = "The rollback target changed. Try again";
 
 /**
  * O12 (§12.5): the gateway says a rollback would work, and it would still go back to `prevId` — the node the user
@@ -339,7 +339,7 @@ export function failoverHistory(events: readonly ConnEvent[], lastFailoverAt: nu
   const matching = events.filter((event) => FAILOVER_KIND.test(event.kind));
   if (matching.length > 0) return newestFirst(matching).slice(0, limit);
   return typeof lastFailoverAt === "number" && lastFailoverAt > 0
-    ? [{ ts: lastFailoverAt, kind: "failover", detail: "Auto-failover — the gateway switched node" }]
+    ? [{ ts: lastFailoverAt, kind: "failover", detail: "Auto-failover switched node" }]
     : [];
 }
 

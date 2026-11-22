@@ -18,7 +18,7 @@ export function NetworkAlerts({ network }: { network: Network }) {
     <div className="flex flex-col gap-2">
       {warnings.map((warning) => (
         <AlertBanner key={warning.key} tone={warning.tone} title={warning.title} text={warning.text}>
-          {warning.detail ? <p aria-live="off" className="mt-0.5 font-mono text-[11.5px] text-t2">{warning.detail}</p> : null}
+          {warning.detail ? <p aria-live="off" className="mt-0.5 font-mono text-caption text-t2">{warning.detail}</p> : null}
         </AlertBanner>
       ))}
     </div>
@@ -52,7 +52,7 @@ export function LeasesList({ network, cards = false }: { network: Network; cards
       {leases.map((lease) => (
         <li
           key={leaseKey(lease)}
-          className={cards ? "glass flex items-center gap-3 bg-solid px-3 py-2.5 text-[13px]" : "flex items-center gap-3 py-2 text-[13px] first:pt-0 last:pb-0"}
+          className={cards ? "glass flex items-center gap-3 bg-solid px-3 py-2.5 text-body" : "flex items-center gap-3 py-2 text-body first:pt-0 last:pb-0"}
         >
           <span className="w-32 shrink-0 font-mono font-semibold text-t1">{lease.ip}</span>
           <span className="min-w-0 flex-1 truncate text-t2">{lease.hostname || "—"}</span>
@@ -87,7 +87,7 @@ export function Checklist({ network, collapsible = false }: { network: Network; 
 export function ChecklistCard({ network }: { network: Network }) {
   return (
     <GlassCard aria-label="Router checklist">
-      <CardHeader title="Router checklist" detail="the one box v2pi never touches" aside={<span className="text-[11px] text-t3">from the saved plan · changes after Apply</span>} />
+      <CardHeader title="Router checklist" detail="the one box v2pi never touches" aside={<span className="text-caption text-t3">from the saved plan · changes after Apply</span>} />
       <Checklist network={network} />
     </GlassCard>
   );

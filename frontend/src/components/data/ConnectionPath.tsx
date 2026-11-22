@@ -55,14 +55,14 @@ const ALARM = "origin-center [transform-box:fill-box] animate-[path-alarm_1.8s_e
 // Stats under each point: a wide card sets a key beside its value, a narrow one on its own line above it. At the
 // narrowest card (a phone's: from md the card takes the full row) a value that cannot fit wraps where it may, or truncates with a title.
 const COLUMN = "flex min-w-0 flex-col items-center gap-px px-[3px] @max-md:px-px";
-const TITLE = "max-w-full truncate text-[12.5px] font-semibold text-t1 @max-md:text-[10.5px]";
-const BIG = "flex max-w-full flex-wrap items-baseline justify-center gap-x-[3px] text-[15px] font-bold leading-tight tracking-tight @max-md:text-[13px]";
-const BIG_MONO = "max-w-full truncate font-mono text-[13px] font-semibold leading-tight @max-md:text-[11px] @max-3xs:text-[10px]";
-const SMALL = "max-w-full truncate text-[11px] leading-snug text-t2 @max-md:text-[10px]";
-const SMALL_WRAP = "max-w-full text-[11px] leading-snug text-t2 @max-md:text-[10px]";
-const SMALL_MONO = "max-w-full truncate font-mono text-[11px] leading-snug text-t2 @max-md:text-[9.5px]";
-const KEY = "text-[10px] leading-tight text-t3";
-const INLINE_KEY = "@max-md:block @max-md:text-[10px] @max-md:leading-tight @max-md:text-t3";
+const TITLE = "max-w-full truncate text-body font-semibold text-t1 @max-md:text-2xs";
+const BIG = "flex max-w-full flex-wrap items-baseline justify-center gap-x-[3px] text-title font-bold leading-tight tracking-tight @max-md:text-body";
+const BIG_MONO = "max-w-full truncate font-mono text-body font-semibold leading-tight @max-md:text-caption @max-3xs:text-2xs";
+const SMALL = "max-w-full truncate text-caption leading-snug text-t2 @max-md:text-2xs";
+const SMALL_WRAP = "max-w-full text-caption leading-snug text-t2 @max-md:text-2xs";
+const SMALL_MONO = "max-w-full truncate font-mono text-caption leading-snug text-t2 @max-md:text-2xs";
+const KEY = "text-2xs leading-tight text-t3";
+const INLINE_KEY = "@max-md:block @max-md:text-2xs @max-md:leading-tight @max-md:text-t3";
 
 type SegmentLook = "glow" | "faded" | "warn" | "bad" | "off";
 
@@ -300,7 +300,7 @@ export function ConnectionPath(props: ConnectionPathProps) {
         <div className={COLUMN}>
           <div className={TITLE}>Devices</div>
           <div className={BIG}>
-            {clients ?? "—"}<span className="text-[11px] font-semibold tracking-normal text-t3">clients</span>
+            {clients ?? "—"}<span className="text-caption font-semibold tracking-normal text-t3">clients</span>
           </div>
           <div className={SMALL}>pool {poolSize ?? "—"}</div>
         </div>
@@ -309,18 +309,18 @@ export function ConnectionPath(props: ConnectionPathProps) {
           <div className={BIG_MONO} title={gatewayIp ?? undefined}>{gatewayIp ?? "—"}</div>
           <div className={SMALL_MONO}>{gatewayIface ?? "—"}</div>
           <div className={SMALL}>
-            <span className={INLINE_KEY}>kill-switch</span> <b className={cn("text-[10.5px] font-bold tracking-wide @max-3xs:text-[9px] @max-3xs:tracking-normal", TONE_TEXT[killSwitch.tone])}>{killSwitch.label}</b>
+            <span className={INLINE_KEY}>kill-switch</span> <b className={cn("text-2xs font-bold tracking-wide @max-3xs:text-[9px] @max-3xs:tracking-normal", TONE_TEXT[killSwitch.tone])}>{killSwitch.label}</b>
           </div>
         </div>
         <div data-live data-dim={dim || undefined} className={COLUMN}>
           <div className={TITLE} title={nodeName}>{nodeName}</div>
           <Pill tone={node.tone} className={cn(
               "max-w-full flex-wrap justify-center gap-x-1 gap-y-0 whitespace-normal rounded-[9px] px-2 py-px text-center",
-              "@max-md:gap-x-[3px] @max-md:px-1.5 @max-md:text-[10.5px] @max-3xs:px-1",
+              "@max-md:gap-x-[3px] @max-md:px-1.5 @max-md:text-2xs @max-3xs:px-1",
               live,
             )}>
             {node.text}
-            {node.note ? <small className="text-[9.5px] font-semibold">{node.note}</small> : null}
+            {node.note ? <small className="text-2xs font-semibold">{node.note}</small> : null}
           </Pill>
           <div className={SMALL}>
             <span className={INLINE_KEY}>connected</span> <ConnectedFor since={connectedSince} />

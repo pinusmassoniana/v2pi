@@ -22,11 +22,11 @@ const ProfileCard = memo(function ProfileCard({ profile, actions, busy, connecti
             {profile.is_active ? <ActiveBadge /> : null}
             {profile.is_default ? <DefaultBadge /> : null}
           </p>
-          <p className="mt-0.5 text-[11.5px] text-t3">used by {usedBy(profile)} · {profile.fingerprint || NO_MIMICRY}</p>
+          <p className="mt-0.5 text-caption text-t3">used by {usedBy(profile)} · {profile.fingerprint || NO_MIMICRY}</p>
         </div>
         <ProfileCardActions profile={profile} actions={actions} busy={busy} connectionBusy={connectionBusy} hasActiveNode={hasActiveNode} />
       </div>
-      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px] text-t2">
+      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-caption text-t2">
         {FEATURES.map(([label, field]) => (
           <span key={field} className="inline-flex items-center gap-1.5"><OnOff on={profile[field]} label={label} /><span aria-hidden>{label}</span></span>
         ))}

@@ -25,7 +25,7 @@ describe("Home › Traffic — usage (A7)", () => {
     expect(within(usage).getByRole("meter", { name: "Monthly cap" })).toHaveAttribute("aria-valuenow", "18");
     expect(within(usage).getAllByRole("listitem")).toHaveLength(TRAFFIC_USAGE.days.length);
     expect(usage).toHaveTextContent("90 days kept");
-    expect(usage).toHaveTextContent("a day ends at its midnight, not yours");
+    expect(usage).toHaveTextContent("A day ends at its midnight, not yours");
   });
 
   it("without a cap it says so and draws no meter", async () => {

@@ -53,7 +53,7 @@ describe("Remote access on a phone", () => {
     await userEvent.click(within(card("iphone-anna")).getByRole("button", { name: "More actions for iphone-anna" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Suspend" }));
     await waitFor(() => expect(api$.setRwClientEnabled).toHaveBeenCalledWith(RW_CLIENTS[0]!.id, false));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("client suspended — its uuid is kept — live tunnel rebuilt without it", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("client suspended; its uuid is kept; live tunnel rebuilt without it", { duration: 8000 }));
 
     const trigger = within(card("laptop-work")).getByRole("button", { name: "More actions for laptop-work" });
     await waitFor(() => expect(trigger).toBeEnabled());

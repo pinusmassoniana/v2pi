@@ -2,11 +2,11 @@ import type { TuningProfile } from "../../api/client";
 import { cn } from "../../lib/cn";
 
 export function ActiveBadge() {
-  return <span className="whitespace-nowrap rounded-full bg-ok/12 px-2 py-0.5 text-[10.5px] font-bold text-ok">● active</span>;
+  return <span className="whitespace-nowrap rounded-full bg-ok/12 px-2 py-0.5 text-2xs font-bold text-ok">● active</span>;
 }
 
 export function DefaultBadge() {
-  return <span className="whitespace-nowrap rounded-full border border-line bg-glass-2 px-2 py-0.5 text-[10.5px] font-semibold text-t2">default</span>;
+  return <span className="whitespace-nowrap rounded-full border border-line bg-glass-2 px-2 py-0.5 text-2xs font-semibold text-t2">default</span>;
 }
 
 /** A feature's on/off as a dot, with the word for screen readers (and as a tooltip). */

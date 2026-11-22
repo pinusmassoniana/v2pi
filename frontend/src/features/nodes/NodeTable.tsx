@@ -107,14 +107,14 @@ const NodeRow = memo(function NodeRow({ node, first, last, health, active, activ
           ) : null}
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <Link to="/nodes/$nodeId" params={{ nodeId: String(node.id) }} search={detailLinkSearch} className="truncate text-[13px] font-semibold text-t1 hover:underline">
+              <Link to="/nodes/$nodeId" params={{ nodeId: String(node.id) }} search={detailLinkSearch} className="truncate text-body font-semibold text-t1 hover:underline">
                 {node.name}
               </Link>
               {node.stale ? <StaleBadge /> : null}
               {failCount > 0 ? <FailBadge count={failCount} /> : null}
             </div>
-            {active && connection ? <ActiveLine state={connection} since={activeSince} className="text-[11px]" /> : null}
-            <p className="truncate text-[11px] text-t3">
+            {active && connection ? <ActiveLine state={connection} since={activeSince} className="text-caption" /> : null}
+            <p className="truncate text-caption text-t3">
               <span className="font-mono">#{node.id}</span>
               <span className="min-[1281px]:hidden"> · {node.port} · {node.transport} · {node.security}</span>
               {node.note ? <span className="text-t2"> · {node.note}</span> : null}
@@ -122,8 +122,8 @@ const NodeRow = memo(function NodeRow({ node, first, last, health, active, activ
           </div>
         </div>
       </td>
-      <td className={cn(cell, "max-w-56 truncate font-mono text-[11.5px] text-t2")} title={node.address}>{node.address}</td>
-      <td className={cn(cell, WIDE, "font-mono text-[11.5px] tabular-nums text-t2")}>{node.port}</td>
+      <td className={cn(cell, "max-w-56 truncate font-mono text-caption text-t2")} title={node.address}>{node.address}</td>
+      <td className={cn(cell, WIDE, "font-mono text-caption tabular-nums text-t2")}>{node.port}</td>
       <td className={cn(cell, WIDE, "whitespace-nowrap text-t2")}>{node.transport} · {node.security}</td>
       <td className={cell}><ProbePill ok={health?.last_tcp_ok} ms={health?.last_tcp_ms} /></td>
       <td className={cell}><ProbePill ok={health?.last_http_ok} ms={health?.last_http_ms} /></td>
@@ -160,7 +160,7 @@ export function NodeTable({ rows, health, activeId, activeSince, connection, den
   return (
     <div className="glass overflow-x-auto">
       <table aria-label="Nodes" data-dense={dense || undefined} className="w-full text-left text-xs">
-        <thead className="text-[9.5px] text-t3">
+        <thead className="text-2xs text-t3">
           <tr>
             {selection ? (
               <th scope="col" className="w-px px-2.5 py-2">

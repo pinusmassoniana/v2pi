@@ -62,11 +62,11 @@ export function RoutingMenu({ actions, onImportJson }: Pick<RoutingToolbarProps,
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent onCloseAutoFocus={onCloseAutoFocus} className="min-w-72">
-        <p className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">Import preset</p>
+        <p className="px-2.5 pb-1 pt-1.5 text-2xs font-semibold uppercase tracking-[.07em] text-t3">Import preset</p>
         {actions.presetsQuery.isError && actions.presetsQuery.data === undefined ? (
           // Said where the presets would be, never an empty heading; kept open so they appear once the retry lands.
           <DropdownMenuItem onSelect={(event) => { event.preventDefault(); void actions.presetsQuery.refetch(); }}>
-            Routing presets did not load — Retry
+            Routing presets did not load. Retry
           </DropdownMenuItem>
         ) : null}
         {actions.presets?.map((preset) => (

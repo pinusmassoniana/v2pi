@@ -19,7 +19,7 @@ export const DATASET_LABELS: Readonly<Record<RuleDataset, string>> = { "": "stoc
 export const SLOW_CATEGORIES: ReadonlySet<string> = new Set(["ru-blocked-all", "refilter"]);
 /** A device rule decides by WHO is asking, so its position is the whole of its meaning. */
 export const DEVICE_ORDER_NOTE =
-  "matches this device whatever the destination — the rules above it are still tried first";
+  "matches this device whatever the destination; the rules above it are still tried first";
 export const SLOW_CATEGORY_NOTE =
   "this category is big: it adds about a second to every save and every tunnel restart";
 export type DomainStrategy = (typeof DOMAIN_STRATEGIES)[number];
@@ -43,17 +43,17 @@ export const VALUE_PLACEHOLDERS: Readonly<Record<RuleType, string>> = {
 };
 
 export const RULES_FOOTNOTE = "DNS / QUIC / stats rules are injected automatically when those features are enabled.";
-export const NO_RULES = "no rules — all traffic follows the default action";
-export const BLOCK_DEFAULT_CONFIRM = "Default action is BLOCK — all non-matching traffic from the segment will be dropped. Continue?";
+export const NO_RULES = "no rules, all traffic follows the default action";
+export const BLOCK_DEFAULT_CONFIRM = "Default action is BLOCK. All non-matching traffic from the segment will be dropped. Continue?";
 export const RESET_CONFIRM = "Reset to the default ruleset (no rules, default = proxy)?";
 export const DISCARD_STAGED_CONFIRM = "Discard staged rules?";
-export const TESTER_SUBTITLE = "how would this host/port be routed? (literal rules only — geo not evaluated locally)";
+export const TESTER_SUBTITLE = "how would this host/port be routed? (literal rules only, geo is not evaluated locally)";
 /** A5: the card now has two answers, and the header says which is which. */
 export const LIVE_SUBTITLE = "staged rules · or ask the running tunnel";
 export const LIVE_DISAGREES =
-  "the live answer differs from the staged one — these edits are not applied yet";
+  "the live answer differs from the staged one; these edits are not applied yet";
 export const TESTER_PLACEHOLDER = "example.com  |  1.2.3.4  |  1.2.3.4:443";
-export const IPV6_NOT_EVALUATED = "IPv6 preview is not evaluated locally — Validate/Save uses Xray's matcher.";
+export const IPV6_NOT_EVALUATED = "IPv6 preview is not evaluated locally. Validate/Save uses Xray's matcher.";
 
 /** One editable rule. `key` is the client's stable row key; `id` the server's, null until the row is saved. */
 export interface RuleRow {
@@ -282,7 +282,7 @@ export function validateRuleRow(row: Pick<RuleRow, "type" | "value" | "action">)
       const match = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(token);
       const low = match ? Number(match[1]) : 0;
       const high = match?.[2] !== undefined ? Number(match[2]) : low;
-      if (!match || low < 1 || high > 65535 || low > high) return `bad port "${token}" — use 443, 1000-2000 or 80,443 within 1–65535`;
+      if (!match || low < 1 || high > 65535 || low > high) return `bad port "${token}", use 443, 1000-2000 or 80,443 within 1–65535`;
     }
   }
   if (row.type === "ip") {
@@ -295,16 +295,16 @@ export function validateRuleRow(row: Pick<RuleRow, "type" | "value" | "action">)
       // A client's IPv6 address is SLAAC/privacy — it rotates by itself, so a rule on one would
       // match until the device changed it and then quietly stop. The gateway refuses it too.
       if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(token) || ipv4Span(token) === null) {
-        return `"${token}" is not an IPv4 address — a device rule matches the client's IPv4 only`;
+        return `"${token}" is not an IPv4 address, a device rule matches the client's IPv4 only`;
       }
     }
   }
   if (row.action !== "direct") {
     if (row.type === "ip") {
       const privateToken = tokens.find((token) => isPrivateIPv4(token));
-      if (privateToken) return `"${privateToken}" is a private range — ${SHADOWED_BY_PRIVATE}`;
+      if (privateToken) return `"${privateToken}" is a private range, ${SHADOWED_BY_PRIVATE}`;
     }
-    if (row.type === "geoip" && tokens.some((token) => token.toLowerCase() === "private")) return `geoip:private — ${SHADOWED_BY_PRIVATE}`;
+    if (row.type === "geoip" && tokens.some((token) => token.toLowerCase() === "private")) return `geoip:private, ${SHADOWED_BY_PRIVATE}`;
   }
   return null;
 }

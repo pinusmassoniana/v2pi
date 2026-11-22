@@ -96,7 +96,7 @@ describe("Anti-DPI › row actions (T2)", () => {
     await screen.findByRole("dialog", { name: "Confirm" });
     const release = holdConnectionWrite(client);
     await answer("Apply mux-heavy", "Apply");
-    expect(error).toHaveBeenCalledWith("Another connection change is still running — try again when it finishes", { duration: 20000 });
+    expect(error).toHaveBeenCalledWith("Another connection change is still running. Try again when it finishes", { duration: 20000 });
     expect(api$.applyProfileActive).not.toHaveBeenCalled();
     expect(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" })).toBeDisabled();
     expect(within(row("mux-heavy")).getByRole("button", { name: "Edit mux-heavy" })).toBeEnabled();
@@ -118,7 +118,7 @@ describe("Anti-DPI › row actions (T2)", () => {
     api$.getStatus.mockResolvedValue({ ...STATUS, active_node_id: 2 });
     act(() => { client.setQueryData<Status>(keys.status, (old) => ({ ...old!, active_node_id: 2 })); });
     await answer("Apply mux-heavy to nl-ams-03", "Apply");
-    expect(error).toHaveBeenCalledWith("the active node changed — ask again", { duration: 20000 });
+    expect(error).toHaveBeenCalledWith("the active node changed, ask again", { duration: 20000 });
     expect(api$.applyProfileActive).not.toHaveBeenCalled();
 
     await userEvent.click(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" }));
@@ -133,7 +133,7 @@ describe("Anti-DPI › row actions (T2)", () => {
   it("with no active node, ⚡ is off and says why", async () => {
     await openAntiDpi({ status: { active_node_id: null } });
     await waitFor(() => expect(within(row("mux-heavy")).getByRole("button", { name: "Apply mux-heavy to the active node" })).toBeDisabled());
-    expect(screen.getByText("⚡ No active node — connect one to apply a profile live.")).toBeInTheDocument();
+    expect(screen.getByText("⚡ No active node. Connect one to apply a profile live.")).toBeInTheDocument();
   });
 
   it("Make default is a connection write with its message", async () => {
@@ -169,7 +169,7 @@ describe("Anti-DPI › row actions (T2)", () => {
     const invalidate = vi.spyOn(client, "invalidateQueries");
     const refused = new ApiError(502, "xray -test failed: bad config");
     async function expectRefused(message: string) {
-      await waitFor(() => expect(error).toHaveBeenCalledWith(`${message} — applying to the tunnel failed: xray -test failed: bad config`, { duration: 20000 }));
+      await waitFor(() => expect(error).toHaveBeenCalledWith(`${message}, but applying to the tunnel failed: xray -test failed: bad config`, { duration: 20000 }));
       // The store rolled the write back; the profiles, and the nodes, status and network a failed re-apply can move, are read again.
       expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(expect.arrayContaining([keys.profiles, keys.nodes, keys.status, keys.network]));
       invalidate.mockClear();

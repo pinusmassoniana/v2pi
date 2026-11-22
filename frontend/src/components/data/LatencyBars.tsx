@@ -17,7 +17,7 @@ export interface LatencyBarsProps {
   thresholdLine?: boolean;
 }
 
-const WIDE = "col-span-2 text-left text-[11.5px]";
+const WIDE = "col-span-2 text-left text-caption";
 
 function BarRow({ row, scaleMs, warnMs, thresholdLine }: { row: LatencyRowData; scaleMs: number; warnMs: number; thresholdLine: boolean }) {
   const slow = row.ms !== null && row.ms > warnMs;
@@ -55,17 +55,17 @@ function BarRow({ row, scaleMs, warnMs, thresholdLine }: { row: LatencyRowData; 
       {row.state === "live" ? (
         <>
           <span className={cn("text-right font-semibold tabular-nums", row.dim && "opacity-45")}>{row.ms} ms</span>
-          <span className={cn("text-[11px] text-ok", row.dim && "opacity-45")}>live</span>
+          <span className={cn("text-caption text-ok", row.dim && "opacity-45")}>live</span>
         </>
       ) : row.state === "measured" ? (
         <>
           <span className={cn("text-right font-semibold tabular-nums", slow && "text-warn", row.dim && "opacity-45")}>{row.ms} ms</span>
-          <span className={cn("whitespace-nowrap text-[11px] text-t3", row.dim && "opacity-45")}>· {row.age}</span>
+          <span className={cn("whitespace-nowrap text-caption text-t3", row.dim && "opacity-45")}>· {row.age}</span>
         </>
       ) : row.state === "failed" && !row.active ? (
         <>
-          <span className="text-right text-[11px] font-semibold text-bad">failed</span>
-          <span className={cn("whitespace-nowrap text-[11px] text-t3", row.dim && "opacity-45")}>{row.age ? `· ${row.age}` : ""}</span>
+          <span className="text-right text-caption font-semibold text-bad">failed</span>
+          <span className={cn("whitespace-nowrap text-caption text-t3", row.dim && "opacity-45")}>{row.age ? `· ${row.age}` : ""}</span>
         </>
       ) : row.state === "failed" ? (
         <span className={cn(WIDE, "font-semibold text-bad")}>probe failed</span>
@@ -86,7 +86,7 @@ export function LatencyBars({ rows, label, scaleMs = 250, warnMs = SLOW_LATENCY_
         {rows.map((row) => <BarRow key={row.id} row={row} scaleMs={scaleMs} warnMs={warnMs} thresholdLine={thresholdLine} />)}
       </ul>
       {ticks.length > 0 ? (
-        <div aria-hidden className="mt-1 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)_7rem] gap-2.5 text-[9.5px] text-t3">
+        <div aria-hidden className="mt-1 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)_7rem] gap-2.5 text-2xs text-t3">
           <span />
           <span className="flex justify-between tabular-nums">{ticks.map((tick) => <span key={tick}>{tick}</span>)}</span>
           <span>ms</span>

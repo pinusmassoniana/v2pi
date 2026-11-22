@@ -83,7 +83,7 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
             aria-label={`Rule ${n} geo data`}
             value={row.dataset}
             onChange={(event) => onUpdate(row.key, { dataset: event.target.value as RuleRow["dataset"] })}
-            className="mt-1 h-8 w-full text-[11px]"
+            className="mt-1 h-8 w-full text-caption"
           >
             {RULE_DATASETS.map((dataset) => <option key={dataset || "stock"} value={dataset}>{DATASET_LABELS[dataset]}</option>)}
           </Select>
@@ -103,9 +103,9 @@ const RuleTableRow = memo(function RuleTableRow({ row, index, first, last, geoLi
           onChange={(event) => onUpdate(row.key, { value: event.target.value })}
           className={cn("h-9 font-mono text-xs", problem && row.value.trim() && "border-bad/60")}
         />
-        {problem ? <p id={errorId} className={cn("mt-1 text-[11px]", row.value.trim() ? "text-bad" : "text-t3")}>{problem}</p> : null}
-        {slowCategoryNote(row) ? <p className="mt-1 text-[11px] text-warn">{slowCategoryNote(row)}</p> : null}
-        {row.type === "device" ? <p className="mt-1 text-[11px] text-t3">{DEVICE_ORDER_NOTE}</p> : null}
+        {problem ? <p id={errorId} className={cn("mt-1 text-caption", row.value.trim() ? "text-bad" : "text-t3")}>{problem}</p> : null}
+        {slowCategoryNote(row) ? <p className="mt-1 text-caption text-warn">{slowCategoryNote(row)}</p> : null}
+        {row.type === "device" ? <p className="mt-1 text-caption text-t3">{DEVICE_ORDER_NOTE}</p> : null}
       </td>
       <td className={cn("px-1.5 py-2", !row.enabled && "opacity-60")}>
         <Select
@@ -150,7 +150,7 @@ function AnchorRow({ which, type, value, action, note }: { which: "first" | "las
     <tr data-anchor={which} className="border-t border-line bg-glass">
       <td className="py-3 pl-3 pr-1 text-center text-t3"><Lock size={13} aria-hidden className="mx-auto" /></td>
       <td className="px-1.5 py-3">
-        <span className="rounded-full bg-glass-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-t3">fixed</span>
+        <span className="rounded-full bg-glass-2 px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide text-t3">fixed</span>
       </td>
       <td className="px-1.5 py-3"><TypeChip>{type}</TypeChip></td>
       <td className="px-1.5 py-3 text-sm text-t2">{value}</td>
@@ -186,7 +186,7 @@ export function RulesTable({ rows, defaultAction, onAdd, onUpdate, onMove, onRem
             <col className="w-36" />
             <col className="w-28" />
           </colgroup>
-          <thead className="text-[10px] uppercase tracking-[.07em] text-t3">
+          <thead className="text-2xs uppercase tracking-[.07em] text-t3">
             <tr>
               <th scope="col" className="py-2.5 pl-3 pr-1 text-center font-semibold">#</th>
               <th scope="col" className="px-1.5 font-semibold">On</th>
@@ -223,7 +223,7 @@ export function RulesTable({ rows, defaultAction, onAdd, onUpdate, onMove, onRem
                   <Button size="sm" variant="ghost" className="border border-dashed border-line" disabled={rows.length >= MAX_RULES} onClick={onAdd}>
                     <Plus size={14} aria-hidden />Add rule
                   </Button>
-                  <span className="text-[11px] text-t3">{rows.length} / {MAX_RULES} rules</span>
+                  <span className="text-caption text-t3">{rows.length} / {MAX_RULES} rules</span>
                 </div>
               </td>
             </tr>

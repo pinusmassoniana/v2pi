@@ -13,7 +13,7 @@ export const MAX_PROBE_URL = 2048;
 
 export const SAVED_MESSAGE = "Health settings saved";
 export const ACTIVE_CHECK_EXPLAINER =
-  "A real request through the connected server, via a throwaway xray so your live connection is untouched. Auto-failover reads this check, not the sweep — so you can turn the sweep off and keep failover working.";
+  "A real request through the connected server, on a separate xray, so the live connection is untouched. Auto-failover uses this check, not the sweep. Turning the sweep off keeps failover working.";
 export const DEMOTION_NOTE = "A node that was just failed away from isn't picked again for 10 minutes.";
 export const NO_REAPPLY_NOTE = "Health and failover changes don't re-apply the tunnel.";
 

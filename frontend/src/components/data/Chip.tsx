@@ -28,8 +28,8 @@ export function Chip({ tone = "neutral", plain = false, className, children, ...
     <span
       data-tone={tone}
       className={cn(
-        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-glass-2 px-2.5 py-0.5 text-[11px] text-t2",
-        "[&_b]:text-[10.5px] [&_b]:font-bold [&_b]:tracking-wide [&_b]:text-t1",
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-glass-2 px-2.5 py-0.5 text-caption text-t2",
+        "[&_b]:text-2xs [&_b]:font-bold [&_b]:tracking-wide [&_b]:text-t1",
         plain ? TINT[tone] : cn("before:size-1.5 before:shrink-0 before:rounded-full before:content-['']", DOT[tone]),
         className,
       )}

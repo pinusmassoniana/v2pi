@@ -14,8 +14,8 @@ import type { RwClientActions, RwClientCallbacks } from "./useRwClientActions";
 
 export const CLIENTS_NOTE = (
   <>
-    <b className="text-t1">Suspend</b> revokes a device now and keeps its uuid — for a lost phone, where Remove would mean reissuing everything.{" "}
-    <b className="text-t1">.conf</b> is the full Shadowrocket config — routing rules included, so LAN access works without hand-editing anything. Download it
+    <b className="text-t1">Suspend</b> revokes a device now and keeps its uuid. Use it for a lost phone, where Remove would mean reissuing everything.{" "}
+    <b className="text-t1">.conf</b> is the full Shadowrocket config, routing rules included, so LAN access works without hand-editing anything. Download it
     while you are on this network; there is deliberately no public subscription URL. <b className="text-t1">Copy link</b> is the plain{" "}
     <code className="font-mono text-t1">vless://</code> fallback for any other client.
   </>
@@ -38,7 +38,7 @@ export function MaskedUuid({ client }: { client: RwClient }) {
           <span className="sr-only">uuid hidden</span>
         </span>
       )}
-      <Button size="sm" variant="ghost" aria-label={`Reveal uuid of ${client.email}`} aria-pressed={revealed} className="h-6 px-1.5 text-[11px]" onClick={() => setRevealed((value) => !value)}>
+      <Button size="sm" variant="ghost" aria-label={`Reveal uuid of ${client.email}`} aria-pressed={revealed} className="h-6 px-1.5 text-caption" onClick={() => setRevealed((value) => !value)}>
         {revealed ? <EyeOff size={12} aria-hidden /> : <Eye size={12} aria-hidden />}
         {revealed ? "Hide" : "Reveal"}
       </Button>
@@ -60,7 +60,7 @@ export function useClientBusy() {
 const ClientRow = memo(function ClientRow({ client, actions, reads, writes }: { client: RwClient; actions: RwClientCallbacks; reads: boolean; writes: boolean }) {
   return (
     <tr data-client={client.email} className="border-t border-line">
-      <td className="py-2 pr-3 text-[13px] font-semibold text-t1">{client.email}</td>
+      <td className="py-2 pr-3 text-body font-semibold text-t1">{client.email}</td>
       <td className="py-2 pr-3"><ClientStatus client={client} /></td>
       <td className="py-2 pr-3"><MaskedUuid client={client} /></td>
       <td className="py-2">
@@ -87,7 +87,7 @@ export function ClientsTable({ clients, actions }: { clients: readonly RwClient[
     <div className="overflow-x-auto">
       <table aria-label="Clients" className="w-full text-left">
         <thead>
-          <tr className="text-[10.5px] font-semibold uppercase tracking-wide text-t3">
+          <tr className="text-2xs font-semibold uppercase tracking-wide text-t3">
             <th scope="col" className="pb-1.5 pr-3 font-semibold">Name</th>
             <th scope="col" className="pb-1.5 pr-3 font-semibold">Status</th>
             <th scope="col" className="pb-1.5 pr-3 font-semibold">UUID</th>
@@ -187,7 +187,7 @@ export function AddClientForm({ actions, count, onAdded, className }: { actions:
         />
         <Button type="submit" size="md" disabled={busy.writes || count >= MAX_CLIENTS}><Plus size={14} aria-hidden />Add</Button>
       </div>
-      {error ? <p id={`${id}-error`} className="text-[11px] text-bad">{error}</p> : <p className="text-[11px] text-t3">Enter submits · 1–40 letters, digits, dot, dash or underscore</p>}
+      {error ? <p id={`${id}-error`} className="text-caption text-bad">{error}</p> : <p className="text-caption text-t3">Enter submits · 1–40 letters, digits, dot, dash or underscore</p>}
     </form>
   );
 }

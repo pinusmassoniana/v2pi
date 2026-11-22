@@ -12,7 +12,7 @@ function StepBody({ step, index, collapsible }: { step: Step; index: number; col
   const id = useId();
   const [open, setOpen] = useState(false);
   const number = (
-    <span aria-hidden className="grid size-5 shrink-0 place-items-center rounded-md bg-glass-2 font-mono text-[11px] font-semibold text-t2">{index + 1}</span>
+    <span aria-hidden className="grid size-5 shrink-0 place-items-center rounded-md bg-glass-2 font-mono text-caption font-semibold text-t2">{index + 1}</span>
   );
   if (collapsible) {
     return (
@@ -22,7 +22,7 @@ function StepBody({ step, index, collapsible }: { step: Step; index: number; col
           aria-expanded={open}
           aria-controls={id}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-h-9 w-full items-center gap-2.5 text-left text-[13px] font-semibold text-t1 focus-visible:outline-2 focus-visible:outline-g2"
+          className="flex min-h-9 w-full items-center gap-2.5 text-left text-body font-semibold text-t1 focus-visible:outline-2 focus-visible:outline-g2"
         >
           {number}
           <span className="min-w-0 flex-1">{step.title}</span>
@@ -35,7 +35,7 @@ function StepBody({ step, index, collapsible }: { step: Step; index: number; col
     <li className="flex min-w-0 gap-2.5">
       {number}
       <div className="min-w-0">
-        <p className="text-[13px] font-semibold text-t1">{step.title}</p>
+        <p className="text-body font-semibold text-t1">{step.title}</p>
         {step.detail ? <div className="mt-0.5 text-xs leading-relaxed text-t2">{step.detail}</div> : null}
       </div>
     </li>

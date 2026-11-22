@@ -108,10 +108,10 @@ describe("subscription words", () => {
   });
 
   it("refresh all: counts, and at most three failures by name", () => {
-    expect(refreshAllMessage(REFRESH_ALL)).toEqual({ text: "1/2 refreshed · 1 failed — home: fetch failed: timeout", error: true });
+    expect(refreshAllMessage(REFRESH_ALL)).toEqual({ text: "1/2 refreshed · 1 failed: home: fetch failed: timeout", error: true });
     expect(refreshAllMessage({ attempted: 2, succeeded: 2, failed: 0, results: [] })).toEqual({ text: "2/2 refreshed", error: false });
     const many = { attempted: 5, succeeded: 0, failed: 5, results: Object.fromEntries([1, 2, 3, 4, 5].map((id) => [String(id), { id, ok: false, status: "error" }])) };
-    expect(refreshAllMessage(many).text).toBe("0/5 refreshed · 5 failed — #1: error · #2: error · #3: error");
+    expect(refreshAllMessage(many).text).toBe("0/5 refreshed · 5 failed: #1: error · #2: error · #3: error");
     expect(refreshAllMessage({ attempted: 1, succeeded: 0, failed: 1, results: [] }).text).toBe("0/1 refreshed · 1 failed");
   });
 

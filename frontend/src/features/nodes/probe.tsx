@@ -31,7 +31,7 @@ export function ProbePill({ ok, ms, label, live = false, className }: ProbePillP
       data-state={state}
       data-live={live || undefined}
       title={live ? "live probe" : undefined}
-      className={cn("gap-1 px-2 py-0.5 text-[11px] tabular-nums", className)}
+      className={cn("gap-1 px-2 py-0.5 text-caption tabular-nums", className)}
     >
       {label ? <span className="font-normal text-t3">{label}</span> : null}
       {text}
@@ -73,7 +73,7 @@ export function Egress({ health, className }: { health: NodeHealth | undefined; 
   const flag4 = flagEmoji(health?.egress_cc);
   const flag6 = flagEmoji(health?.egress_cc6);
   return (
-    <span className={cn("block min-w-0 font-mono text-[11px] text-t2", className)}>
+    <span className={cn("block min-w-0 font-mono text-caption text-t2", className)}>
       <span className="block truncate" title={health?.egress_cc ?? undefined}>{flag4 ? `${flag4} ` : ""}{health?.egress_ip ?? "—"}</span>
       {health?.egress_ip6 ? <span className="block truncate text-t3" title={health.egress_cc6 ?? undefined}>{flag6 ? `${flag6} ` : ""}{health.egress_ip6}</span> : null}
     </span>
@@ -85,7 +85,7 @@ export function StaleBadge() {
   return (
     <span
       title="Vanished from its subscription; kept because it was active or for history"
-      className="shrink-0 rounded-full border border-line bg-glass-2 px-1.5 text-[10px] font-bold uppercase tracking-wide text-t3"
+      className="shrink-0 rounded-full border border-line bg-glass-2 px-1.5 text-2xs font-bold uppercase tracking-wide text-t3"
     >
       stale
     </span>
@@ -95,7 +95,7 @@ export function StaleBadge() {
 /** "fail N": the active node's consecutive real-request failures. */
 export function FailBadge({ count }: { count: number }) {
   return (
-    <span title="Consecutive real-request failures (auto-failover counter)" className="shrink-0 rounded-full bg-bad/12 px-1.5 text-[10px] font-bold text-bad">
+    <span title="Consecutive real-request failures (auto-failover counter)" className="shrink-0 rounded-full bg-bad/12 px-1.5 text-2xs font-bold text-bad">
       fail {count}
     </span>
   );

@@ -29,7 +29,7 @@ describe("Subscriptions › list (U1)", () => {
     expect(within(work).getByRole("meter", { name: "Data used by work" })).toHaveAttribute("aria-valuenow", "20");
     expect(work).toHaveTextContent(`20 GB / 100 GB · exp ${new Date((NOW_SEC + 2 * 86_400) * 1000).toISOString().slice(0, 10)}`);
     expect(within(work).getByRole("button", { name: "URL of work" })).toHaveAttribute("title", SUBS[0]!.url);
-    expect(within(work).getByRole("link", { name: "6 nodes →" })).toHaveAttribute("href", "/nodes?group=1");
+    expect(within(work).getByRole("link", { name: "6 nodes" })).toHaveAttribute("href", "/nodes?group=1");
     expect(work).toHaveTextContent("every 60 min");
     expect(work).toHaveTextContent("ok: +0 ~6 -0 (5 unsupported) (tunnel)");
     expect(work).toHaveTextContent("fetched 4 min ago");
@@ -86,7 +86,7 @@ describe("Subscriptions › list (U1)", () => {
     const api$ = mockApi();
     api$.listSubs.mockResolvedValue([]);
     renderApp("/nodes/subscriptions");
-    expect(await screen.findByText("No subscriptions yet — add one")).toBeInTheDocument();
+    expect(await screen.findByText("No subscriptions yet. Add one")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh all" })).toBeDisabled();
   });
 
@@ -202,7 +202,7 @@ describe("Subscriptions › fetch settings that re-apply the tunnel", () => {
     const reads = { settings: api$.getSettings.mock.calls.length, status: api$.getStatus.mock.calls.length };
     api$.putSettings.mockRejectedValue(new ApiError(502, "xray -test failed: bad outbound"));
     await userEvent.click(tunnel);
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad outbound", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved, but applying to the tunnel failed: xray -test failed: bad outbound", { duration: 20000 }));
     expect(tunnel).toBeChecked();
     await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(reads.settings));
     expect(api$.getStatus.mock.calls.length).toBeGreaterThan(reads.status);
@@ -297,7 +297,7 @@ describe("Subscriptions › actions (U2–U4, U6)", () => {
     const invalidate = vi.spyOn(client, "invalidateQueries");
     await userEvent.click(screen.getByRole("button", { name: "Refresh all" }));
     const panel = await screen.findByRole("status", { name: "Refresh all result" });
-    expect(panel).toHaveTextContent("1/2 refreshed · 1 failed — home: fetch failed: timeout");
+    expect(panel).toHaveTextContent("1/2 refreshed · 1 failed: home: fetch failed: timeout");
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["status"] });
     api$.refreshAllSubs.mockResolvedValue({ attempted: 2, succeeded: 2, failed: 0, results: [] } satisfies RefreshAllResult);
     await userEvent.click(screen.getByRole("button", { name: "Refresh all" }));

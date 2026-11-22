@@ -26,7 +26,7 @@ export function EventFeed({ items, empty = "No recent events.", label = "Recent 
       {items.map((item) => (
         <li key={item.key} className="grid grid-cols-[4rem_2.75rem_minmax(0,1fr)] items-center gap-2.5 border-t border-line py-1.5 text-xs text-t2 first:border-t-0">
           <time className="font-mono text-t3">{item.time}</time>
-          <span data-level={item.level} className={cn("rounded-md py-0.5 text-center text-[9.5px] font-bold uppercase tracking-wider", LEVEL[item.level])}>
+          <span data-level={item.level} className={cn("rounded-md py-0.5 text-center text-2xs font-bold uppercase tracking-wider", LEVEL[item.level])}>
             {item.level}
           </span>
           <span className="truncate"><b className="font-semibold text-t1">{item.kind}</b> · {item.detail}</span>

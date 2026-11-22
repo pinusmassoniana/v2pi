@@ -128,7 +128,7 @@ describe("shell", () => {
     await screen.findByText("Tunnel online");
     api$.getStatus.mockRejectedValue(new ApiError(0, "network error"));
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
-    expect(await screen.findByText(/Can't reach the panel — showing data from/)).toBeInTheDocument();
+    expect(await screen.findByText(/Can't reach the panel, showing data from/)).toBeInTheDocument();
     expect(screen.getByText("Tunnel unknown")).toHaveClass("text-t2");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Overview");
   });
@@ -151,7 +151,7 @@ describe("shell", () => {
 
     // A fresh failure after the write settled is a different matter.
     await act(() => client.refetchQueries({ queryKey: ["status"] }));
-    expect(await screen.findByText(/Can't reach the panel — showing data from/)).toBeInTheDocument();
+    expect(await screen.findByText(/Can't reach the panel, showing data from/)).toBeInTheDocument();
     expect(screen.getByText("Tunnel unknown")).toBeInTheDocument();
   });
 

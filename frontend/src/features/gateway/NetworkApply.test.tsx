@@ -201,7 +201,7 @@ describe("Network › Apply to host (W4)", () => {
     await waitFor(() => expect(segmentApply()).toBeEnabled());
     const reads = { network: api$.getNetwork.mock.calls.length, status: api$.getStatus.mock.calls.length };
     await userEvent.click(segmentApply());
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not applied — the gateway kept its previous network settings: host provisioning failed: ip link: no such device", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not applied, the gateway kept its previous network settings: host provisioning failed: ip link: no such device", { duration: 20000 }));
     expect(field("Segment interface")).toHaveValue("eth9");
     await waitFor(() => expect(api$.getNetwork.mock.calls.length).toBeGreaterThan(reads.network));
     expect(api$.getStatus.mock.calls.length).toBeGreaterThan(reads.status);
@@ -229,7 +229,7 @@ describe("Network › Apply to host (W4)", () => {
     await waitFor(() => expect(segmentApply()).toBeEnabled());
     const reads = api$.getNetwork.mock.calls.length;
     await userEvent.click(segmentApply());
-    await waitFor(() => expect(warning).toHaveBeenCalledWith("no answer yet — the gateway may still be applying; reloading", { duration: 20000 }));
+    await waitFor(() => expect(warning).toHaveBeenCalledWith("no answer yet, the gateway may still be applying; reloading", { duration: 20000 }));
     await waitFor(() => expect(api$.getNetwork.mock.calls.length).toBeGreaterThan(reads));
     expect(field("DHCP lease")).toHaveValue("24h");
   });
@@ -258,7 +258,7 @@ describe("Network › Gateway DNS (G1)", () => {
     expect(dns()).not.toBeChecked();
     expect(region("Gateway DNS")).toHaveTextContent("applies live when a node is connected");
     expect(region("Gateway DNS")).toHaveTextContent("Resolve segment DNS in the gateway over DoHfor nodes that don't relay UDP · saved as soon as you flip it");
-    expect(region("Gateway DNS")).toHaveTextContent("Client DNS is the gateway itself (192.168.50.1), a private destination — the intercept does not see client DNS.");
+    expect(region("Gateway DNS")).toHaveTextContent("Client DNS is the gateway itself (192.168.50.1), a private destination. The intercept does not see client DNS.");
   });
 
   it("no hint while client DNS is elsewhere", async () => {
@@ -291,7 +291,7 @@ describe("Network › Gateway DNS (G1)", () => {
     await act(() => client.refetchQueries({ queryKey: keys.status }));
     await waitFor(() => expect(dns()).toBeEnabled());
     await userEvent.click(dns());
-    await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("saved, applies on next Connect", { duration: 8000 }));
   });
 
   it("while the status poll is failing it does not claim the flip reached the live tunnel", async () => {
@@ -304,7 +304,7 @@ describe("Network › Gateway DNS (G1)", () => {
     await userEvent.click(dns());
     await answer("Continue");   // a status that is not known counts as stopped, so it asks first
     await waitFor(() => expect(api$.putSettings).toHaveBeenCalledWith({ dns_intercept: true }));
-    await waitFor(() => expect(success).toHaveBeenCalledWith("saved — applies on next Connect", { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("saved, applies on next Connect", { duration: 8000 }));
   });
 
   it("a 502 puts the switch back and says nothing was saved; no answer warns and re-reads", async () => {
@@ -314,7 +314,7 @@ describe("Network › Gateway DNS (G1)", () => {
     await waitFor(() => expect(dns()).toBeEnabled());
     api$.putSettings.mockRejectedValueOnce(new ApiError(502, "doh url must be https"));
     await userEvent.click(dns());
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: doh url must be https", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved, but applying to the tunnel failed: doh url must be https", { duration: 20000 }));
     expect(dns()).not.toBeChecked();
 
     const reads = api$.getSettings.mock.calls.length;
@@ -322,7 +322,7 @@ describe("Network › Gateway DNS (G1)", () => {
     api$.getSettings.mockResolvedValue({ ...SETTINGS, dns_intercept: true });   // it landed after all
     await waitFor(() => expect(dns()).toBeEnabled());
     await userEvent.click(dns());
-    await waitFor(() => expect(warning).toHaveBeenCalledWith("no answer yet — the gateway may still be applying; reloading", { duration: 20000 }));
+    await waitFor(() => expect(warning).toHaveBeenCalledWith("no answer yet, the gateway may still be applying; reloading", { duration: 20000 }));
     await waitFor(() => expect(api$.getSettings.mock.calls.length).toBeGreaterThan(reads));
     await waitFor(() => expect(dns()).toBeChecked());
   });

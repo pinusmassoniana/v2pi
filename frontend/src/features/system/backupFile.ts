@@ -42,7 +42,7 @@ export function backupPreChecks(text: string, size: number): PreCheck[] {
     { ok: value !== undefined, label: "parses as JSON" },
     { ok: isObject, label: "an object, not an array" },
     { ok: isObject && "schema_version" in (value as object), label: "carries a schema_version" },
-    { ok: underCap, label: `${fmtBytes(size)} — ${underCap ? "under" : "over"} the 2 MB the gateway accepts` },
+    { ok: underCap, label: `${fmtBytes(size)}, ${underCap ? "under" : "over"} the 2 MB the gateway accepts` },
   ];
 }
 
@@ -52,7 +52,7 @@ export function condensedBackupChecks(text: string, size: number): PreCheck[] {
   return [
     { ok: json.ok && object.ok, label: "parses as JSON, and is an object" },
     schema,
-    { ok: cap.ok, label: `${fmtBytes(size)} — ${cap.ok ? "under" : "over"} the 2 MB limit` },
+    { ok: cap.ok, label: `${fmtBytes(size)}, ${cap.ok ? "under" : "over"} the 2 MB limit` },
   ];
 }
 
@@ -89,8 +89,8 @@ export interface RestoredMessage {
 export function restoredMessage(result: RestoreResult): RestoredMessage {
   const { nodes, subscriptions, profiles, routing_rules: rules, rw_disabled: disabled } = result.restored;
   const message =
-    `restored ${nodes} nodes, ${subscriptions} subscriptions, ${profiles} profiles, ${rules} routing rules — ` +
-    "the gateway is disconnected; Connect a node when you are ready";
+    `restored ${nodes} nodes, ${subscriptions} subscriptions, ${profiles} profiles, ${rules} routing rules. ` +
+    "The gateway is disconnected; connect a node when you are ready";
   if (!disabled) return { message, tone: "ok" };
   return { message: `${message} · remote access was turned off: ${disabled}`, tone: "warn" };
 }
@@ -106,7 +106,7 @@ export function snapshotNote(result: RestoreResult): string {
  */
 export function backupFailedMessage(error: unknown): string {
   const detail = error instanceof Error ? error.message : "";
-  return detail ? `backup failed — ${detail}` : "backup failed";
+  return detail ? `backup failed, ${detail}` : "backup failed";
 }
 
 /**
@@ -138,11 +138,11 @@ export interface RestoreRefusal {
 export function restoreRefusedMessage(error: ApiError): RestoreRefusal {
   if (error.status === 502) {
     return {
-      message: `not restored — the gateway could not apply it: ${error.message}`,
+      message: `not restored, the gateway could not apply it: ${error.message}`,
       sticky: error.message.includes("recovery:"),
     };
   }
-  return { message: `not restored — ${refusalDetail(error.message)}`, sticky: false };
+  return { message: `not restored, ${refusalDetail(error.message)}`, sticky: false };
 }
 
 
@@ -152,8 +152,8 @@ export function restoreRefusedMessage(error: ApiError): RestoreRefusal {
 export const KIND_LABEL = { auto: "daily copy", "pre-restore": "taken before a restore" } as const;
 
 export const STORED_NOTE =
-  "The gateway keeps the newest 7 daily copies and the newest 10 pre-restore snapshots. They live on the box — "
-  + "download one to have a copy that survives it.";
+  "The gateway keeps the newest 7 daily copies and the newest 10 pre-restore snapshots. They live on the box. "
+  + "Download one to have a copy that survives it.";
 
 export const NO_STORED =
   "Nothing yet. A copy lands here when the daily job runs or when a restore saves what it is replacing.";

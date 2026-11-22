@@ -100,12 +100,12 @@ describe("remote-access rules, in the backend's words", () => {
 
   it("keys: 43 base64 characters decoding to 32 bytes; the value is never echoed", () => {
     for (const key of [RW_PUBLIC_KEY, `${RW_PUBLIC_KEY}=`, RW_PUBLIC_KEY.replace(/-/g, "+").replace(/_/g, "/"), ""]) expect(keyIssue(key, "public")).toBeNull();
-    const shape = "the Reality private key must be a base64 x25519 key — 43 characters, exactly as `xray x25519` prints it";
+    const shape = "the Reality private key must be a base64 x25519 key, 43 characters, exactly as `xray x25519` prints it";
     expect(keyIssue("PRIV", "private")).toBe(shape);
     expect(keyIssue(`${RW_PRIVATE_KEY}A`, "private")).toBe(shape);
     expect(keyIssue(`${RW_PRIVATE_KEY.slice(0, 42)}!`, "private")).toBe(shape);
     expect(issues({ privateKey: "not-a-key", publicKey: "short" })).toEqual({
-      privateKey: shape, publicKey: "the Reality public key must be a base64 x25519 key — 43 characters, exactly as `xray x25519` prints it",
+      privateKey: shape, publicKey: "the Reality public key must be a base64 x25519 key, 43 characters, exactly as `xray x25519` prints it",
     });
     expect(issues({ privateKey: "not-a-key" }).privateKey).not.toContain("not-a-key");
   });
@@ -118,7 +118,7 @@ describe("remote-access rules, in the backend's words", () => {
     expect(hostRowIssue(row("", "192.168.1.10"), [])).toEqual({ field: "name", message: 'host "192.168.1.10" needs both a name and an IP' });
     expect(hostRowIssue(row("nas"), [])).toEqual({ field: "name", message: "invalid host name 'nas' (need a dotted name, e.g. nas.v2pi)" });
     expect(hostRowIssue(row("nas.local"), [])).toEqual({
-      field: "name", message: "'nas.local': the .local suffix is captured by mDNS on iOS/macOS and never reaches the tunnel — use another suffix (e.g. .v2pi)",
+      field: "name", message: "'nas.local': the .local suffix is captured by mDNS on iOS/macOS and never reaches the tunnel; use another suffix (e.g. .v2pi)",
     });
     expect(hostRowIssue(row(`${"a".repeat(36)}.v2pi`), [])).toEqual({ field: "name", message: `host name '${"a".repeat(36)}.v2pi' is longer than 40 characters` });
     expect(hostRowIssue(row("nas.v2pi", "2001:db8::10"), [])).toEqual({ field: "ip", message: "host 'nas.v2pi' must map to an IPv4 address, got '2001:db8::10'" });
@@ -205,7 +205,7 @@ describe("remote-access warnings (A1)", () => {
     expect(warnings[0]).toEqual({ key: "revocation-pending", tone: "bad", badge: "revocation pending", title: PENDING_TITLE, text: PENDING_TEXT });
     expect(`${warnings[0]!.title} ${warnings[0]!.text}`).toBe("SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.");
     expect(`${warnings[1]!.title} ${warnings[1]!.text}`).toBe("Stored settings are malformed and were ignored: rw_port must be an integer, got 'x'. Save this form to overwrite them.");
-    expect(`${warnings[2]!.title} ${warnings[2]!.text}`).toBe("Server name does not match dest. Reality needs the SNI to be what the dest host actually serves — a mismatch fails at handshake time with no useful error.");
+    expect(`${warnings[2]!.title} ${warnings[2]!.text}`).toBe("Server name does not match dest. Reality needs the SNI to be what the dest host actually serves. A mismatch fails at handshake time with no useful error.");
     expect(rwWarnings({ ...RW, revocation_pending: true }, FORM, true)).toEqual([]);
   });
 
@@ -219,8 +219,8 @@ describe("remote-access warnings (A1)", () => {
       rwWarnings({ ...RW, has_private_key: false }, FORM, false)[0]!, rwWarnings({ ...RW, clients: [] }, FORM, false)[0]!, rwWarnings({ ...RW, live: false }, FORM, false)[0]!,
     ];
     expect(`${noKey.title} ${noKey.text}`).toBe("Enabled, but no private key is stored (keys are not restored from backups)");
-    expect(`${noClients.title} ${noClients.text}`).toBe("Enabled with no clients — nothing is listening. xray will not start on an inbound with an empty client list, so none is emitted until you add a client.");
-    expect(`${notLive.title} ${notLive.text}`).toBe("Stored, but not in the running config yet — either there is no active node to rebuild it from, or xray itself is not running. Connect a node (or bring xray back up) and the inbound comes up with it.");
+    expect(`${noClients.title} ${noClients.text}`).toBe("Enabled with no clients Nothing is listening. xray will not start on an inbound with an empty client list, so none is emitted until you add a client.");
+    expect(`${notLive.title} ${notLive.text}`).toBe("Stored, but not in the running config yet Either there is no active node to rebuild it from, or xray itself is not running. Connect a node (or bring xray back up) and the inbound comes up with it.");
     expect([noKey.tone, noClients.tone, notLive.tone]).toEqual(["warn", "warn", "warn"]);
   });
 });

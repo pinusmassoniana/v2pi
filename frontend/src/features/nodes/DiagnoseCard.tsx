@@ -39,16 +39,16 @@ export function DiagnoseCard({ node }: { node: Node }) {
         detail="on demand"
         aside={result ? <Chip tone={VERDICT_TONE[result.verdict]}>{VERDICT_LABEL[result.verdict]}</Chip> : null}
       />
-      <p className="text-[11.5px] leading-relaxed text-t2">{DIAGNOSE_HINT}</p>
+      <p className="text-caption leading-relaxed text-t2">{DIAGNOSE_HINT}</p>
       {result ? (
         <>
-          <p className="mt-2 text-[13px] leading-relaxed text-t1">{result.detail}</p>
+          <p className="mt-2 text-body leading-relaxed text-t1">{result.detail}</p>
           <KeyValueRows className="mt-2 sm:grid-cols-4" rows={phaseRows(result)} />
-          {result.error ? <p className="mt-2 break-all font-mono text-[11px] text-t3">{result.error}</p> : null}
+          {result.error ? <p className="mt-2 break-all font-mono text-caption text-t3">{result.error}</p> : null}
         </>
       ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-        <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-t3">{result ? DIAGNOSE_NOTE : "Takes up to half a minute."}</p>
+        <p className="min-w-0 flex-1 text-caption leading-relaxed text-t3">{result ? DIAGNOSE_NOTE : "Takes up to half a minute."}</p>
         <Button variant="primary" disabled={run.isPending} onClick={() => run.mutate()}>
           {run.isPending ? "Measuring…" : result ? "Run again" : "Diagnose"}
         </Button>

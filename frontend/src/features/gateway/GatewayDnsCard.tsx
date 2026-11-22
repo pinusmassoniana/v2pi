@@ -19,7 +19,7 @@ interface Flip {
 
 /** G1's toast once the gateway took the change. */
 export function dnsSavedMessage({ on, active }: Flip): string {
-  return active ? `gateway DNS ${on ? "on" : "off"} · applied to the live tunnel` : "saved — applies on next Connect";
+  return active ? `gateway DNS ${on ? "on" : "off"} · applied to the live tunnel` : "saved, applies on next Connect";
 }
 
 /**
@@ -88,7 +88,7 @@ export function ClientDnsHint({ network, desktop }: { network: Network; desktop:
   return (
     <p className="rounded-xl border border-line bg-glass px-3 py-2 text-xs leading-relaxed text-t2">
       {desktop
-        ? <>Client DNS is the gateway itself (<span className="font-mono">{ip}</span>), a private destination — the intercept does not see client DNS.</>
+        ? <>Client DNS is the gateway itself (<span className="font-mono">{ip}</span>), a private destination. The intercept does not see client DNS.</>
         : "Resolve segment DNS in the gateway over DoH · the intercept does not see client DNS while it points at the gateway."}
     </p>
   );

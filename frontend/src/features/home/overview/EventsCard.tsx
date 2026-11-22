@@ -12,7 +12,7 @@ export function EventsCard({ network, className }: { network: CardQuery & { data
   const header = (
     <CardHeader
       title="Events"
-      aside={<Link to="/system/logs" className="text-[11.5px] text-t2 hover:text-t1">View all <span className="text-t3">→ System › Logs</span></Link>}
+      aside={<Link to="/system/logs" className="text-caption text-t2 hover:text-t1">All logs</Link>}
     />
   );
   if (fallback || !network.data) {

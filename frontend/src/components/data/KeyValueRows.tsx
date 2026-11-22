@@ -13,9 +13,9 @@ export function KeyValueRows({ rows, className }: { rows: readonly KeyValueRow[]
     <dl className={cn("grid grid-cols-2 gap-2", className)}>
       {rows.map((row) => (
         <div key={row.key} className="min-w-0 rounded-xl border border-line bg-glass px-3 py-2">
-          <dt className="text-[10.5px] font-semibold tracking-wide text-t3">{row.key}</dt>
-          <dd className="mt-0.5 truncate text-[13px] font-semibold text-t1">{row.value}</dd>
-          {row.sub ? <dd className="truncate text-[11px] text-t3">{row.sub}</dd> : null}
+          <dt className="text-2xs font-semibold tracking-wide text-t3">{row.key}</dt>
+          <dd className="mt-0.5 truncate text-body font-semibold text-t1">{row.value}</dd>
+          {row.sub ? <dd className="truncate text-caption text-t3">{row.sub}</dd> : null}
         </div>
       ))}
     </dl>

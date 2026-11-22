@@ -16,7 +16,7 @@ export function BottomTabBar({ pathname, className }: { pathname: string; classN
             key={section.id}
             to={section.tabs[0].to}
             aria-current={on ? "page" : undefined}
-            className={cn("flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold text-t3", on && "text-t1")}
+            className={cn("flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 text-2xs font-semibold text-t3", on && "text-t1")}
           >
             <Icon size={18} aria-hidden className={on ? "text-g2" : undefined} />
             {section.label}

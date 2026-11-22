@@ -12,8 +12,8 @@ export function CardHeader({ title, detail, aside, level = 2, className }: {
   return (
     <div className={cn("mb-2 flex min-h-6 items-center justify-between gap-2.5", className)}>
       <div className="flex min-w-0 items-baseline gap-2">
-        <Heading className="truncate text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{title}</Heading>
-        {detail ? <span className="truncate text-[11px] text-t3">{detail}</span> : null}
+        <Heading className="truncate text-2xs font-semibold uppercase tracking-[.07em] text-t3">{title}</Heading>
+        {detail ? <span className="truncate text-caption text-t3">{detail}</span> : null}
       </div>
       {aside ? <div className="flex shrink-0 items-center gap-2">{aside}</div> : null}
     </div>

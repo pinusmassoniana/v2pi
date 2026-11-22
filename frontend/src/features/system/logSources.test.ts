@@ -95,11 +95,11 @@ describe("empty and truncation copy", () => {
     expect(emptyMessage("xray-error")).toBe(EMPTY_BY_CONFIG);
     expect(emptyMessage("xray-access")).toBe(EMPTY_BY_CONFIG);
     // logs.tail answers [] for a missing file, an unreadable one and an empty one alike.
-    expect(emptyMessage("app")).toBe("Nothing to show — this log is empty, or the gateway has no file for it yet.");
+    expect(emptyMessage("app")).toBe("Nothing to show. This log is empty, or the gateway has no file for it yet.");
     // xray-stderr is the supervisor's in-memory tail, reset on every start — an empty pane here means
     // xray has not printed anything since it last started, not that a file is missing or unreadable.
     expect(emptyMessage("xray-stderr")).toBe(
-      "Nothing to show — xray has not written anything yet, typically because it has not run since the panel started.",
+      "Nothing to show. Xray has not written anything yet, typically because it has not run since the panel started.",
     );
   });
 

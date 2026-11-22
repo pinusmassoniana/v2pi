@@ -10,18 +10,18 @@ describe("revocation outcomes", () => {
     expect(OUTCOMES.map((how) => revocationNote(how, "client"))).toEqual([
       "live tunnel rebuilt without it",
       "previous config rebuilt and reloaded",
-      "xray was down — the stored config was rewritten without it, so it cannot come back on the next start",
-      "xray stopped — remote access is down for everyone until you reconnect",
+      "xray was down; the stored config was rewritten without it, so it cannot come back on the next start",
+      "xray stopped; remote access is down for everyone until you reconnect",
       "SECURITY WARNING: xray's stop could not be confirmed, so the revoked device may still be able to connect. The panel keeps retrying; reboot the gateway if this does not clear.",
-      "nothing was serving the inbound — no live access to cut",
+      "nothing was serving the inbound, no live access to cut",
     ]);
     expect(OUTCOMES.map((how) => revocationNote(how, "save"))).toEqual([
       "live tunnel rebuilt with the narrowed settings",
       "previous config rebuilt and reloaded with the narrowed settings",
-      "xray was down — the stored config was rewritten with the narrowed settings, so the old ones cannot come back on the next start",
-      "xray stopped — remote access is down for everyone until you reconnect",
+      "xray was down; the stored config was rewritten with the narrowed settings, so the old ones cannot come back on the next start",
+      "xray stopped; remote access is down for everyone until you reconnect",
       "SECURITY WARNING: xray's stop could not be confirmed, so the settings you just narrowed may still be live. The panel keeps retrying; reboot the gateway if this does not clear.",
-      "nothing was serving the inbound — nothing live to narrow",
+      "nothing was serving the inbound, nothing live to narrow",
     ]);
     expect(revocationNote("", "client")).toBe("");
   });
@@ -49,10 +49,10 @@ describe("write messages", () => {
   });
 
   it("Suspend and Remove: the device and how its revocation went", () => {
-    expect(suspendedMessage({ ...RW, revocation: "rebuilt" })).toEqual({ text: "client suspended — its uuid is kept — previous config rebuilt and reloaded", error: false });
-    expect(suspendedMessage({ ...RW, revocation: "stopped" })).toEqual({ text: "client suspended — its uuid is kept — xray stopped — remote access is down for everyone until you reconnect", error: true });
-    expect(suspendedMessage(RW).text).toBe("client suspended — its uuid is kept");
-    expect(removedMessage("ipad", { ...RW, revocation: "not-live" })).toEqual({ text: "removed ipad — nothing was serving the inbound — no live access to cut", error: false });
+    expect(suspendedMessage({ ...RW, revocation: "rebuilt" })).toEqual({ text: "client suspended; its uuid is kept; previous config rebuilt and reloaded", error: false });
+    expect(suspendedMessage({ ...RW, revocation: "stopped" })).toEqual({ text: "client suspended; its uuid is kept; xray stopped; remote access is down for everyone until you reconnect", error: true });
+    expect(suspendedMessage(RW).text).toBe("client suspended; its uuid is kept");
+    expect(removedMessage("ipad", { ...RW, revocation: "not-live" })).toEqual({ text: "removed ipad; nothing was serving the inbound, no live access to cut", error: false });
     expect(removedMessage("ipad", { ...RW, revocation: "stop-failed" }).error).toBe(true);
     expect(removedMessage("ipad", RW).text).toBe("removed ipad");
   });

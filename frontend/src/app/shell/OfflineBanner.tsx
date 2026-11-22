@@ -53,7 +53,7 @@ export function OfflineBanner() {
   return (
     <div role="status" aria-live="polite" className="flex items-center gap-2 border-b border-bad/40 bg-bad/15 px-4 py-2 text-xs font-medium text-t1 md:px-5">
       <span aria-hidden className="size-2 rounded-full bg-bad" />
-      Can't reach the panel — {since ? `showing data from ${since}` : "no data loaded yet"}. Retrying…
+      Can't reach the panel, {since ? `showing data from ${since}` : "no data loaded yet"}. Retrying…
     </div>
   );
 }

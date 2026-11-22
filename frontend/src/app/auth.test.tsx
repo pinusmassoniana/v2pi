@@ -150,7 +150,7 @@ describe("AuthGate", () => {
     renderGate();
     await userEvent.click(await screen.findByRole("button", { name: "Log out" }));
     await waitFor(() => expect(failed).toHaveBeenCalledWith(
-      "Log out did not reach the gateway — this browser is still logged in. Try again.", expect.anything()));
+      "Log out did not reach the gateway. This browser is still logged in. Try again.", expect.anything()));
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Log in" })).toBeNull();
   });

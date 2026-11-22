@@ -26,10 +26,10 @@ export function StatusOrb({ value, caption, tone, note, dim = false, className }
       data-dim={dim || undefined}
       className={cn("orb size-[94px] transition-opacity duration-200 md:size-[120px]", dim && "opacity-60", className)}
     >
-      <b className={cn("text-center text-[27px] font-bold leading-none tracking-tight md:text-[34px]", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "neutral" && "text-t2")}>
+      <b className={cn("text-center text-kpi font-bold leading-none tracking-tight md:text-display", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "neutral" && "text-t2")}>
         {value}
-        <small className="mt-1 block text-[10px] font-semibold tracking-wide text-t3">{caption}</small>
-        {note ? <small className={cn("mt-0.5 block text-[10px] font-semibold tracking-wide", NOTE_TONE[tone])}>{note}</small> : null}
+        <small className="mt-1 block text-2xs font-semibold tracking-wide text-t3">{caption}</small>
+        {note ? <small className={cn("mt-0.5 block text-2xs font-semibold tracking-wide", NOTE_TONE[tone])}>{note}</small> : null}
       </b>
     </div>
   );

@@ -105,9 +105,9 @@ export const EMPTY_BY_CONFIG =
 export function emptyMessage(source: string): string {
   if (logSource(source)?.emptyByConfig) return EMPTY_BY_CONFIG;
   if (source === "xray-stderr") {
-    return "Nothing to show — xray has not written anything yet, typically because it has not run since the panel started.";
+    return "Nothing to show. Xray has not written anything yet, typically because it has not run since the panel started.";
   }
-  return "Nothing to show — this log is empty, or the gateway has no file for it yet.";
+  return "Nothing to show. This log is empty, or the gateway has no file for it yet.";
 }
 
 /** Only `xray-stderr` is a character-capped tail, so only it can start mid-line. */
@@ -117,7 +117,7 @@ export function truncationNote(source: string): string | null {
 }
 
 export const LOGS_EXPLAINER =
-  "xray output is the panel's own redacted copy of what xray printed — the only place xray's errors live. xray error " +
+  "xray output is the panel's own redacted copy of what xray printed, and the only place xray's errors live. xray error " +
   "file and xray access file are files xray is not configured to write, so they answer empty until that changes.";
 
 export const LOGS_REDACTION_NOTE =
@@ -125,8 +125,7 @@ export const LOGS_REDACTION_NOTE =
 
 /** Design §2's "Logs · auto-refresh copy" — pinned word for word, rendered under the toolbar next to Auto-refresh. */
 export function autoRefreshNote(): string {
-  return "While it is on, this screen is the only thing polling — every 5 s for the current source and line count. " +
-    "Changing either starts a new read and drops the old one; leaving the screen switches it off.";
+  return "Reloads every 5 s while on. Leaving the screen turns it off.";
 }
 
 /** Before Load: the screen reads nothing on its own, and says what pressing it will do. */

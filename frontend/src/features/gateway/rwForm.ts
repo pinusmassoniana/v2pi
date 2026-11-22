@@ -160,7 +160,7 @@ export function keyIssue(raw: string, which: "public" | "private"): string | nul
   const key = raw.trim();
   if (key === "") return null;
   const what = `the Reality ${which} key`;
-  if (!B64_KEY.test(key)) return `${what} must be a base64 x25519 key — 43 characters, exactly as \`xray x25519\` prints it`;
+  if (!B64_KEY.test(key)) return `${what} must be a base64 x25519 key, 43 characters, exactly as \`xray x25519\` prints it`;
   const bytes = atob(`${key.replace(/=$/, "").replace(/-/g, "+").replace(/_/g, "/")}=`).length;
   return bytes === 32 ? null : `${what} must decode to 32 bytes, got ${bytes}`;
 }
@@ -183,7 +183,7 @@ export function hostRowIssue(row: HostRow, earlier: readonly HostRow[]): { field
   if (name.length > MAX_HOST_NAME) return { field: "name", message: `host name ${pyRepr(name)} is longer than ${MAX_HOST_NAME} characters` };
   if (!DOTTED_HOSTNAME.test(name)) return { field: "name", message: `invalid host name ${pyRepr(name)} (need a dotted name, e.g. nas.v2pi)` };
   if (name.endsWith(".local")) {
-    return { field: "name", message: `${pyRepr(name)}: the .local suffix is captured by mDNS on iOS/macOS and never reaches the tunnel — use another suffix (e.g. .v2pi)` };
+    return { field: "name", message: `${pyRepr(name)}: the .local suffix is captured by mDNS on iOS/macOS and never reaches the tunnel; use another suffix (e.g. .v2pi)` };
   }
   if (ipv4Number(ip) === null) return { field: "ip", message: `host ${pyRepr(name)} must map to an IPv4 address, got ${pyRepr(ip)}` };
   if (earlier.some((other) => filledRow(other) && normalizeHostName(other.name) === name)) return { field: "name", message: `host ${name} is listed twice` };
@@ -328,18 +328,18 @@ export function rwWarnings(rw: Rw, form: Pick<RwFormValues, "dest" | "serverName
   } else if (rw.enabled && !rw.clients.some((client) => client.enabled)) {
     warnings.push({
       key: "no-clients", tone: "warn", title: "Enabled with no clients",
-      text: "— nothing is listening. xray will not start on an inbound with an empty client list, so none is emitted until you add a client.",
+      text: "Nothing is listening. xray will not start on an inbound with an empty client list, so none is emitted until you add a client.",
     });
   } else if (rw.enabled && !rw.live) {
     warnings.push({
       key: "not-live", tone: "warn", title: "Stored, but not in the running config yet",
-      text: "— either there is no active node to rebuild it from, or xray itself is not running. Connect a node (or bring xray back up) and the inbound comes up with it.",
+      text: "Either there is no active node to rebuild it from, or xray itself is not running. Connect a node (or bring xray back up) and the inbound comes up with it.",
     });
   }
   if (sniMismatch(form)) {
     warnings.push({
       key: "sni", tone: "warn", title: "Server name does not match dest.",
-      text: "Reality needs the SNI to be what the dest host actually serves — a mismatch fails at handshake time with no useful error.",
+      text: "Reality needs the SNI to be what the dest host actually serves. A mismatch fails at handshake time with no useful error.",
     });
   }
   return warnings;

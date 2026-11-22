@@ -17,7 +17,7 @@ export const WINDOWS = [
 
 export const NO_INCIDENTS = "No drops in this window.";
 export const INCIDENTS_NOTE =
-  "A drop is the gap between the tunnel going down — disconnected, stopped, or out of nodes to fail over to — "
+  "A drop is the gap between the tunnel going down (disconnected, stopped, or out of nodes to fail over to) "
   + "and something bringing it back. Kept for 30 days.";
 
 /** "4 m 12 s" / "1 h 06 m" / "12 s": short enough for a row, exact enough to compare two. */
@@ -41,7 +41,7 @@ export function uptimeShare(downtimeSec: number, windowSec: number): string {
 function IncidentRow({ incident }: { incident: Incident }) {
   const started = new Date(incident.started * 1000);
   return (
-    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5 text-[13px]">
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5 text-body">
       <span className="w-36 shrink-0 font-mono text-xs text-t2">
         {started.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
       </span>
@@ -75,13 +75,13 @@ export function IncidentsCard({ className }: { className?: string }) {
       {cardFallback([events as CardQuery], "incidents did not load", "h-32") ?? (
         <>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-            <p className="text-[15px] font-bold tracking-tight text-t1">
+            <p className="text-title font-bold tracking-tight text-t1">
               {downtimeText(data!.downtime_sec)}
-              <span className="ml-1.5 text-[11px] font-normal text-t3">total</span>
+              <span className="ml-1.5 text-caption font-normal text-t3">total</span>
             </p>
-            <p className="text-[15px] font-bold tracking-tight text-t1">
+            <p className="text-title font-bold tracking-tight text-t1">
               {uptimeShare(data!.downtime_sec, data!.window_sec)}
-              <span className="ml-1.5 text-[11px] font-normal text-t3">up</span>
+              <span className="ml-1.5 text-caption font-normal text-t3">up</span>
             </p>
             {data!.incidents.some((incident) => incident.ongoing) ? <Chip tone="bad">down now</Chip> : null}
           </div>
@@ -94,7 +94,7 @@ export function IncidentsCard({ className }: { className?: string }) {
               ))}
             </ul>
           )}
-          <p className="mt-2 text-[11px] leading-relaxed text-t3">{INCIDENTS_NOTE}</p>
+          <p className="mt-2 text-caption leading-relaxed text-t3">{INCIDENTS_NOTE}</p>
         </>
       )}
     </GlassCard>

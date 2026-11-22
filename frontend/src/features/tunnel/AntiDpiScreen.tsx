@@ -53,7 +53,7 @@ export function AntiDpi() {
       {showList ? (
         <section aria-label="Anti-DPI profiles" className="flex min-w-0 flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2 px-1">
-            <h2 className="text-[15px] font-bold text-t1">{list ? `${list.length} profile${list.length === 1 ? "" : "s"}` : "Profiles"}</h2>
+            <h2 className="text-title font-bold text-t1">{list ? `${list.length} profile${list.length === 1 ? "" : "s"}` : "Profiles"}</h2>
             <span className="text-xs text-t3">· ⟳ live-apply</span>
             {!desktop ? (
               <Button size="sm" variant="primary" className="ml-auto" onClick={() => editor.reset(true)}>

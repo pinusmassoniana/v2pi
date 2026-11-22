@@ -244,7 +244,7 @@ describe("Traffic › failover history", () => {
     api$.getStatus.mockResolvedValue({ ...STATUS, last_failover_at: NOW_SEC - 700 });
     const { client } = renderApp("/traffic");
     const card = await screen.findByRole("region", { name: "Failover history" });
-    expect(await within(card).findByRole("table")).toHaveTextContent("Auto-failover — the gateway switched node");
+    expect(await within(card).findByRole("table")).toHaveTextContent("Auto-failover switched node");
 
     api$.getStatus.mockResolvedValue({ ...STATUS, last_failover_at: null });
     await act(() => client.refetchQueries({ queryKey: ["status"] }));

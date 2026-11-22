@@ -27,7 +27,7 @@ describe("CheckLine", () => {
   it("once the form moved past what it checked, it says so instead of the result", () => {
     render(<CheckLine result={{ ok: true, text: "✓ ruleset valid", key }} liveKey={runKey({ rules: [{ value: "ru" }] })} />);
     const line = screen.getByRole("status");
-    expect(line).toHaveTextContent("Form changed since this run — run it again.");
+    expect(line).toHaveTextContent("Form changed since this run. Run it again.");
     expect(line).toHaveAttribute("data-stale", "true");
     expect(line).toHaveClass("text-t3");
   });

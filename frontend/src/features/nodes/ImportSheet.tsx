@@ -14,11 +14,11 @@ import { importedMessage } from "./subForm";
 export const IMPORT_MAX_BYTES = 512 * 1024;
 
 const PLACEHOLDER = `vless://uuid@host:443?type=tcp&security=reality…
-— or —
+or
 proxies:
   - name: …
     type: vless
-— or —
+or
 [ { "name": …, "address": … } ]`;
 
 /** N17: paste vless / base64 lines, a Clash proxies: list or a JSON node list; they become manual servers. */
@@ -50,7 +50,7 @@ export function ImportSheet({ onClose }: { onClose: () => void }) {
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between gap-2">
             <label htmlFor={id} className="text-xs font-semibold text-t2">Nodes to import</label>
-            <span className="text-[11px] text-t3">≤ 512 KiB</span>
+            <span className="text-caption text-t3">≤ 512 KiB</span>
           </div>
           <textarea
             id={id}
@@ -67,7 +67,7 @@ export function ImportSheet({ onClose }: { onClose: () => void }) {
             className="w-full resize-y rounded-xl border border-line bg-glass-2 p-3 font-mono text-xs text-t1 placeholder:text-t3 focus-visible:outline-2 focus-visible:outline-g2"
           />
           <p className="text-xs text-t2">
-            base64 / vless lines, a Clash <code className="font-mono">proxies:</code> YAML, or a JSON node list — duplicates of manual servers are skipped.
+            base64 / vless lines, a Clash <code className="font-mono">proxies:</code> YAML, or a JSON node list. Duplicates of manual servers are skipped.
             Up to 500 nodes, all or nothing: one bad entry rejects the whole import.
           </p>
           {tooBig ? <p role="alert" className="text-xs text-bad">The list is larger than 512 KiB.</p> : null}

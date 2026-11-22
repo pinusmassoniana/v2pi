@@ -7,7 +7,7 @@ export function runKey(input: unknown): string {
 }
 
 /** Shown in place of a result the form has moved past. */
-export const FORM_CHANGED = "Form changed since this run — run it again.";
+export const FORM_CHANGED = "Form changed since this run. Run it again.";
 
 /** Whether a result that ran on `ranKey` no longer describes the form, whose input is `liveKey` now. No result is never stale. */
 export function isStaleRun(ranKey: string | null | undefined, liveKey: string): boolean {

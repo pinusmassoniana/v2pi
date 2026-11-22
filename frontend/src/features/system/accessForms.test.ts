@@ -41,14 +41,14 @@ describe("passwordForm", () => {
 
   it("the confirm names the tokens it will delete — and never invents a number it does not have", () => {
     expect(passwordConfirm(3)).toBe(
-      "Change the password? Every other signed-in session is signed out, and all 3 API tokens are deleted — anything using them stops working until you issue new ones.",
+      "Change the password? Every other signed-in session is signed out, and all 3 API tokens are deleted. Anything using them stops working until you issue new ones.",
     );
     expect(passwordConfirm(1)).toContain("all 1 API token are deleted");
     // Nothing to lose: the clause goes, rather than saying "0 API tokens".
     expect(passwordConfirm(0)).toBe("Change the password? Every other signed-in session is signed out.");
     // The list failed or has not loaded. "not known" is not 0, and this action has no undo.
     expect(passwordConfirm(undefined)).toBe(
-      "Change the password? Every other signed-in session is signed out, and every API token is deleted — anything using them stops working until you issue new ones.",
+      "Change the password? Every other signed-in session is signed out, and every API token is deleted. Anything using them stops working until you issue new ones.",
     );
   });
 
@@ -61,10 +61,10 @@ describe("passwordForm", () => {
 
   it("the card's own note carries the same count", () => {
     expect(passwordNote(3)).toBe(
-      "Changing it signs out every other session and deletes all 3 API tokens — this browser stays signed in. Minimum 8 characters; strength is a hint, not a rule.",
+      "Changing it signs out every other session and deletes all 3 API tokens, this browser stays signed in. Minimum 8 characters; strength is a hint, not a rule.",
     );
     expect(passwordNote(0)).toBe(
-      "Changing it signs out every other session — this browser stays signed in. Minimum 8 characters; strength is a hint, not a rule.",
+      "Changing it signs out every other session. This browser stays signed in. Minimum 8 characters; strength is a hint, not a rule.",
     );
     expect(passwordNote(undefined)).toContain("deletes every API token");
   });
@@ -127,7 +127,7 @@ describe("tokenForm", () => {
 
   it("says what each scope can actually do, and asks before a revocation", () => {
     expect(SCOPE_COPY.map((row) => row.scope)).toEqual(["monitor", "read", "readwrite"]);
-    expect(SCOPE_COPY[0]!.body).toContain("every other path answers 403");
+    expect(SCOPE_COPY[0]!.body).toContain("Every other path answers 403");
     expect(SCOPE_COPY[1]!.body).toContain("Not a “safe” scope.");
     expect(SCOPE_COPY[2]!.lead).toBe("Every GET plus every mutation, with no CSRF header.");
     expect(revokeConfirm({ name: "ci-deploy" })).toBe("Revoke token “ci-deploy”? Anything using it stops working immediately.");

@@ -37,7 +37,7 @@ describe("Logs (G9)", () => {
     ]);
     expect(within(group).getByRole("radio", { name: "xray output" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Logs" })).toHaveTextContent(
-      "xray output is the panel's own redacted copy of what xray printed — the only place xray's errors live.",
+      "xray output is the panel's own redacted copy of what xray printed, and the only place xray's errors live.",
     );
   });
 
@@ -45,8 +45,7 @@ describe("Logs (G9)", () => {
     await openLogs();
 
     expect(screen.getByRole("region", { name: "Logs" })).toHaveTextContent(
-      "While it is on, this screen is the only thing polling — every 5 s for the current source and line count. " +
-        "Changing either starts a new read and drops the old one; leaving the screen switches it off.",
+      "Reloads every 5 s while on. Leaving the screen turns it off.",
     );
   });
 
@@ -187,7 +186,7 @@ describe("Logs (G9)", () => {
     // generic file wording — see integration-notes.md "Task 4 fix round 1 → Task 10".
     expect(
       await within(pane()).findByText(
-        "Nothing to show — xray has not written anything yet, typically because it has not run since the panel started.",
+        "Nothing to show. Xray has not written anything yet, typically because it has not run since the panel started.",
       ),
     ).toBeInTheDocument();
     // only the in-memory tail can start mid-line
@@ -202,7 +201,7 @@ describe("Logs (G9)", () => {
     await userEvent.click(load());
 
     const alert = await screen.findByRole("alert", {}, { timeout: 3000 });
-    expect(alert).toHaveTextContent("Could not read the log — unknown log source");
+    expect(alert).toHaveTextContent("Could not read the log. unknown log source");
     expect(pane()).not.toHaveTextContent("unknown log source");
     expect(pane().textContent).toBe("");
   });

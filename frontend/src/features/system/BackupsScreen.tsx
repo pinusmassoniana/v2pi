@@ -39,29 +39,28 @@ import { lastRestoreSession, recordLastRestore, useLastRestore } from "./lastRes
 
 const CREATE_HELPER = "the file is built and handed straight to the browser, never kept";
 const RESTORE_HELPER =
-  "Checked here only so an obvious mistake gets a sentence instead of a refusal. A file with no nodes at all is valid " +
-  "and is sent. Everything else — references, setting bounds, the DHCP range and the lockout guard — is refused by the " +
-  "gateway while it is still serving.";
+  "A file with no nodes at all is valid. The gateway checks references, setting bounds, the DHCP range and the " +
+  "lockout guard before it stops serving, and refuses the file if any fail.";
 const RESTORE_PROGRESS_HINT =
   "It refuses everything it can while the gateway is still serving, then stops xray, installs the fail-closed guard " +
   "and re-provisions the host. The request waits up to 180 s, and Connect stays blocked everywhere until it answers.";
 const BACKUP_NOTE =
   "One JSON file with every node, subscription, anti-DPI profile, routing rule and panel setting. The Reality private " +
-  "key and the remote-access client list are deliberately left out — paste the key again after restoring onto a new host.";
+  "key and the remote-access client list are deliberately left out. Paste the key again after restoring onto a new host.";
 /** The tail of `AUTO_BACKUP_TEXT`, kept apart so the phone's collapsed-section body can share it word for word. */
-const AUTO_BACKUP_STAYS_NOTE = "They stay on the box \u2014 download one from \u201cOn the gateway\u201d to take a copy off it.";
+const AUTO_BACKUP_STAYS_NOTE = "They stay on the box. Download one from \u201cOn the gateway\u201d to take a copy off it.";
 const AUTO_BACKUP_TEXT = `Keep a daily copy on the gateway (data/backups, the newest 7). ${AUTO_BACKUP_STAYS_NOTE}`;
 const AUTO_BACKUP_ON_NOTE = "The first copy lands at the next daily run, not now.";
 const FILE_HOLDS_NOTE =
   "It carries subscription URLs (which can embed a token), every node uuid, the Reality public key and short id, and " +
   "the LAN host map. Keep the file somewhere you would keep a password. It does not carry the panel password, the " +
   "session secret or any API token.";
-const FILE_HOLDS_HINT = 'A hand-taken backup has no "taken at" stamp — only the daily job and the pre-restore snapshot write one.';
+const FILE_HOLDS_HINT = 'A hand-taken backup has no "taken at" stamp. Only the daily job and the pre-restore snapshot write one.';
 
 /** One pre-check, drawn like a CheckLine but never a live region: these change as the file is picked, not as work runs. */
 export function CheckRow({ check }: { check: PreCheck }) {
   return (
-    <li className="flex items-start gap-2 text-[12px] leading-relaxed">
+    <li className="flex items-start gap-2 text-caption leading-relaxed">
       <span aria-hidden className={cn("mt-px font-bold", check.ok ? "text-ok" : "text-bad")}>{check.ok ? "✓" : "✕"}</span>
       <span className={check.ok ? "text-t2" : "text-bad"}>
         <span className="sr-only">{check.ok ? "passed: " : "failed: "}</span>
@@ -188,7 +187,7 @@ export function useRestore() {
     try {
       doc = JSON.parse(picked.text) as Record<string, unknown>;
     } catch {
-      return void notifyError(null, "not restored — not a valid backup file");
+      return void notifyError(null, "not restored, not a valid backup file");
     }
     pendingDoc.current = doc;
     mutation.mutate({ filename: picked.file.name });
@@ -262,7 +261,7 @@ export function BackupCard({ create }: { create: ReturnType<typeof useCreateBack
         <Button variant="primary" disabled={create.preparing || connectionBusy} onClick={() => void create.create(filename)}>
           {create.preparing ? "Preparing…" : "Create backup"}
         </Button>
-        <p className="min-w-0 text-[11px] text-t3">
+        <p className="min-w-0 text-caption text-t3">
           named <span className="font-mono text-t2">{filename}</span> · {CREATE_HELPER}
         </p>
       </div>
@@ -278,7 +277,7 @@ function RestoreProgress({ submittedAt }: { submittedAt: number }) {
       <div role="progressbar" aria-label="Restoring" className="h-1 min-w-24 flex-1 overflow-hidden rounded-full bg-glass-2">
         <span className="block h-full w-1/3 animate-pulse rounded-full bg-brand" />
       </div>
-      <span className="font-mono text-[11px] text-t2"><Elapsed since={submittedAt} format="clock" /></span>
+      <span className="font-mono text-caption text-t2"><Elapsed since={submittedAt} format="clock" /></span>
     </>
   );
 }
@@ -297,14 +296,14 @@ export function RestoreCard({ restore }: { restore: RestoreState }) {
           <ul className="mt-3 flex flex-col gap-1">
             {checks.map((check) => <CheckRow key={check.label} check={check} />)}
           </ul>
-          <p className="mt-2 text-[11px] leading-relaxed text-t3">{RESTORE_HELPER}</p>
+          <p className="mt-2 text-caption leading-relaxed text-t3">{RESTORE_HELPER}</p>
         </>
       ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
         {running ? (
           <RestoreProgress submittedAt={mutation.submittedAt} />
         ) : (
-          <p className="min-w-0 flex-1 text-[11px] text-t3">nothing is written until you confirm</p>
+          <p className="min-w-0 flex-1 text-caption text-t3">nothing is written until you confirm</p>
         )}
         <Button disabled={!picked || restore.busy} onClick={restore.clear}>Clear</Button>
         <Button
@@ -315,7 +314,7 @@ export function RestoreCard({ restore }: { restore: RestoreState }) {
           {running ? "Restoring…" : "Restore"}
         </Button>
       </div>
-      {running ? <p className="mt-2 text-[11px] leading-relaxed text-t3">{RESTORE_PROGRESS_HINT}</p> : null}
+      {running ? <p className="mt-2 text-caption leading-relaxed text-t3">{RESTORE_PROGRESS_HINT}</p> : null}
     </GlassCard>
   );
 }
@@ -344,9 +343,9 @@ export function LastRestoreCard({ phone = false }: { phone?: boolean }) {
       {restored.rw_disabled ? (
         <AlertBanner tone="warn" className="mt-3" title="Remote access was turned off" text={restored.rw_disabled} />
       ) : null}
-      <p className="mt-3 break-all text-[11px] leading-relaxed text-t3">{snapshotNote(last.result)}</p>
+      <p className="mt-3 break-all text-caption leading-relaxed text-t3">{snapshotNote(last.result)}</p>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-        <p className="min-w-0 text-[11px] text-t3">The gateway is disconnected — Connect a node when you are ready.</p>
+        <p className="min-w-0 text-caption text-t3">The gateway is disconnected. Connect a node when you are ready.</p>
         <Button asChild variant="primary"><Link to="/">{phone ? "Go to Home and connect" : "Go to Home"}</Link></Button>
       </div>
     </GlassCard>
@@ -366,11 +365,11 @@ export function AutoBackupCard({ auto }: { auto: ReturnType<typeof useAutoBackup
             </div>
             <div className="min-w-0">
               <p className="text-sm font-semibold text-t1">Daily auto-backup</p>
-              <p className="text-[11.5px] leading-relaxed text-t3">{AUTO_BACKUP_TEXT}</p>
+              <p className="text-caption leading-relaxed text-t3">{AUTO_BACKUP_TEXT}</p>
             </div>
           </div>
           {auto.on ? (
-            <p className="mt-3 rounded-xl border border-line bg-glass px-3 py-2 text-[11.5px] text-t2">{AUTO_BACKUP_ON_NOTE}</p>
+            <p className="mt-3 rounded-xl border border-line bg-glass px-3 py-2 text-caption text-t2">{AUTO_BACKUP_ON_NOTE}</p>
           ) : null}
         </>
       )}
@@ -439,11 +438,11 @@ export type StoredBackupsState = ReturnType<typeof useStoredBackups>;
 
 function StoredRow({ file, stored }: { file: BackupFile; stored: StoredBackupsState }) {
   return (
-    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5 text-[13px]">
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5 text-body">
       <span className="w-32 shrink-0 text-t2">{backupWhen(file.created_at)}</span>
       <span className="min-w-0 flex-1 truncate text-t3">{KIND_LABEL[file.kind]} · {fmtBytes(file.bytes)}</span>
       <Button
-        className="h-7 px-2 text-[11px]"
+        className="h-7 px-2 text-caption"
         disabled={stored.downloading !== ""}
         onClick={() => void stored.download(file)}
       >
@@ -474,15 +473,15 @@ export function StoredBackupsCard({ stored }: { stored: StoredBackupsState }) {
       )}
       {newest ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-          <p className="min-w-0 flex-1 text-[11px] text-t3">
-            The last restore saved what it replaced — it can be put back.
+          <p className="min-w-0 flex-1 text-caption text-t3">
+            The last restore saved what it replaced. It can be put back.
           </p>
           <Button variant="danger" disabled={stored.busy} onClick={() => void stored.askUndo(newest)}>
             {stored.undo.isPending ? "Undoing…" : "Undo last restore"}
           </Button>
         </div>
       ) : null}
-      <p className="mt-2 text-[11px] leading-relaxed text-t3">{STORED_NOTE}</p>
+      <p className="mt-2 text-caption leading-relaxed text-t3">{STORED_NOTE}</p>
     </GlassCard>
   );
 }
@@ -508,8 +507,8 @@ export function FileHoldsCard() {
           { key: "settings", value: "every panel setting", sub: `at most ${BACKUP_CAPS.settings} keys` },
         ]}
       />
-      <p className="mt-3 text-[11px] leading-relaxed text-t2">{FILE_HOLDS_NOTE}</p>
-      <p className="mt-2 text-[11px] leading-relaxed text-t3">{FILE_HOLDS_HINT}</p>
+      <p className="mt-3 text-caption leading-relaxed text-t2">{FILE_HOLDS_NOTE}</p>
+      <p className="mt-2 text-caption leading-relaxed text-t3">{FILE_HOLDS_HINT}</p>
     </GlassCard>
   );
 }
@@ -545,8 +544,8 @@ export function RestoreSheet({ restore, open, onOpenChange }: { restore: Restore
           <ul className="flex flex-col gap-1">
             {restore.condensed.map((check) => <CheckRow key={check.label} check={check} />)}
           </ul>
-          <p className="text-[11.5px] leading-relaxed text-t2">{RESTORE_SENTENCE} Continue?</p>
-          <p className="text-[11px] leading-relaxed text-t3">
+          <p className="text-caption leading-relaxed text-t2">{RESTORE_SENTENCE} Continue?</p>
+          <p className="text-caption leading-relaxed text-t3">
             A copy of what this replaces is saved on the gateway first. It can take up to three minutes, and Connect
             stays blocked everywhere until it answers.
           </p>
@@ -618,7 +617,7 @@ function BackupsPhone({ create, restore, auto, stored }: { create: ReturnType<ty
           aside={<AutoBackupSwitch auto={auto} />}
         >
           <ReadError query={auto.settings} message="Settings did not load" className="mb-2" />
-          <p className="text-[11.5px] leading-relaxed text-t3">
+          <p className="text-caption leading-relaxed text-t3">
             {AUTO_BACKUP_STAYS_NOTE} {AUTO_BACKUP_ON_NOTE}
           </p>
         </EditorSection>

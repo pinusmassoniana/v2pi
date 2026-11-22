@@ -47,7 +47,7 @@ import {
 
 const SAMPLE_HELPER = "the traffic socket's tick · plain save, no rebuild";
 const PORT_HELPER = "1–65535 · 52345 and 10808 are taken by the gateway";
-const STATS_FOOTER = "only the changed field is sent — the interval alone does not rebuild the tunnel";
+const STATS_FOOTER = "only the changed field is sent, the interval alone does not rebuild the tunnel";
 const DIAGNOSTICS_HINT = "Uptime is the panel process, not the host and not the tunnel.";
 const XRAY_STATES = new Set(["unavailable", "unknown"]);
 /**
@@ -143,12 +143,12 @@ export function SystemCard({ phone = false, settings }: { phone?: boolean; setti
               label="Daily check"
             />
           </div>
-          <p className="mt-1.5 text-[11px] text-t3">{updateCheckLine(data!, nowSec)}</p>
+          <p className="mt-1.5 text-caption text-t3">{updateCheckLine(data!, nowSec)}</p>
           {data!.app_update_available || data!.xray_update_available ? (
-            <p className="mt-1 text-[11px] text-t2">{UPDATE_HINT}</p>
+            <p className="mt-1 text-caption text-t2">{UPDATE_HINT}</p>
           ) : null}
-          <p className="mt-3 text-[11px] text-t3">{DIAGNOSTICS_HINT}</p>
-          <p className="mt-1 truncate font-mono text-[11px] text-t3">{data!.db_path}</p>
+          <p className="mt-3 text-caption text-t3">{DIAGNOSTICS_HINT}</p>
+          <p className="mt-1 truncate font-mono text-caption text-t3">{data!.db_path}</p>
         </>
       )}
     </GlassCard>
@@ -238,20 +238,20 @@ export function TrafficStatsFields({ stats }: { stats: StatsState }) {
         </div>
         <div className="min-w-0">
           <p className="text-sm font-semibold text-t1">Collect traffic stats</p>
-          <p className="text-[11.5px] leading-relaxed text-t3">{STATS_NOTE}</p>
-          <p className="mt-1 inline-flex rounded-full bg-glass-2 px-2 py-0.5 text-[10.5px] font-semibold text-t3">applies live when a node is connected</p>
+          <p className="text-caption leading-relaxed text-t3">{STATS_NOTE}</p>
+          <p className="mt-1 inline-flex rounded-full bg-glass-2 px-2 py-0.5 text-2xs font-semibold text-t3">applies live when a node is connected</p>
         </div>
       </div>
       <TextField
         label="Sample interval" hint="(ms, 500–60000)" type="number" inputMode="numeric" disabled={stats.busy}
         error={errors.traffic_sample_ms?.message} {...register("traffic_sample_ms")}
       />
-      <p className="-mt-1 text-[11px] text-t3">{SAMPLE_HELPER}</p>
+      <p className="-mt-1 text-caption text-t3">{SAMPLE_HELPER}</p>
       <TextField
         label="Xray API port" type="number" inputMode="numeric" disabled={stats.busy}
         error={errors.stats_api_port?.message} {...register("stats_api_port")}
       />
-      <p className="-mt-1 text-[11px] text-t3">{PORT_HELPER}</p>
+      <p className="-mt-1 text-caption text-t3">{PORT_HELPER}</p>
     </>
   );
 }
@@ -265,7 +265,7 @@ export function CollectorHealth({ stats }: { stats: StatsState }) {
   const ok = collectorOkLabel(diagnostics);
   if (!ok) return null;
   return (
-    <p className="text-[11px] text-t3">
+    <p className="text-caption text-t3">
       <span className="font-semibold text-ok">COLLECTOR OK</span> · {ok}
     </p>
   );
@@ -293,7 +293,7 @@ export function TrafficStatsCard({ stats, settings }: { stats: StatsState; setti
               {stats.saving ? "Saving…" : "Save"}
             </Button>
           </div>
-          <p className="text-[11px] text-t3">{STATS_FOOTER}</p>
+          <p className="text-caption text-t3">{STATS_FOOTER}</p>
         </div>
       )}
     </GlassCard>
@@ -324,7 +324,7 @@ export function useSettingsFile(settings: Settings | undefined) {
         for (const key of [keys.settings, keys.status, keys.network]) void queryClient.invalidateQueries({ queryKey: key });
         return;
       }
-      notifyError(null, `not applied — ${error instanceof ApiError ? error.message : "the file was refused"}`);
+      notifyError(null, `not applied, ${error instanceof ApiError ? error.message : "the file was refused"}`);
     },
   });
 
@@ -374,10 +374,10 @@ export function SettingsFileBody({ file, settings }: { file: SettingsFileState; 
   const unknown = file.parsed?.unknown ?? [];
   return (
     <>
-      <p className="text-[11.5px] leading-relaxed text-t2">{EXPORT_INTRO}</p>
+      <p className="text-caption leading-relaxed text-t2">{EXPORT_INTRO}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button disabled={!settings} onClick={file.exportFile}>Export settings</Button>
-        <p className="min-w-0 text-[11px] text-t3">
+        <p className="min-w-0 text-caption text-t3">
           <span className="font-mono text-t2">{SETTINGS_FILENAME}</span> · 16 keys
         </p>
       </div>
@@ -390,7 +390,7 @@ export function SettingsFileBody({ file, settings }: { file: SettingsFileState; 
             <ul className="mt-3 flex flex-col gap-1">
               {file.parsed.checks.map((check) => <CheckRow key={check.label} check={check} />)}
             </ul>
-            {unknown.length ? <p className="mt-2 text-[11px] leading-relaxed text-t3">{IMPORT_UNKNOWN_HINT}</p> : null}
+            {unknown.length ? <p className="mt-2 text-caption leading-relaxed text-t3">{IMPORT_UNKNOWN_HINT}</p> : null}
           </>
         ) : null}
         <div className="mt-3 flex justify-end">
@@ -399,7 +399,7 @@ export function SettingsFileBody({ file, settings }: { file: SettingsFileState; 
           </Button>
         </div>
       </div>
-      <p className="mt-3 rounded-xl border border-line bg-glass px-3 py-2 text-[11.5px] leading-relaxed text-t2">{IMPORT_NOTE}</p>
+      <p className="mt-3 rounded-xl border border-line bg-glass px-3 py-2 text-caption leading-relaxed text-t2">{IMPORT_NOTE}</p>
     </>
   );
 }
@@ -454,10 +454,10 @@ export function DangerZoneBody({ danger, condensed = false }: { danger: ReturnTy
   return (
     <>
       <p className="text-sm font-semibold text-t1">Reset panel settings to defaults</p>
-      <p className="mt-1 text-[11.5px] leading-relaxed text-t3">{DANGER_ZONE_HINT}</p>
+      <p className="mt-1 text-caption leading-relaxed text-t3">{DANGER_ZONE_HINT}</p>
       <ul className="mt-3 flex flex-wrap gap-1">
         {chips.map(([key, value]) => (
-          <li key={key} className="rounded-full border border-line bg-glass px-2 py-0.5 font-mono text-[10.5px] text-t3">
+          <li key={key} className="rounded-full border border-line bg-glass px-2 py-0.5 font-mono text-2xs text-t3">
             {key} {key === "health_probe_url" ? "…ipify.org" : value}
           </li>
         ))}
@@ -528,7 +528,7 @@ function PanelPhone({ stats, file, danger, settings }: {
       </GlassCard>
       {stats.dirty ? (
         <div className="glass sticky bottom-24 z-20 flex flex-col gap-2 bg-solid p-2.5">
-          <p className="text-[11px] text-t3">{STATS_FOOTER}</p>
+          <p className="text-caption text-t3">{STATS_FOOTER}</p>
           <div className="flex gap-2">
             <Button className="flex-1" disabled={stats.busy} onClick={stats.discard}>Discard</Button>
             <Button variant="primary" className="flex-1" disabled={stats.errorCount > 0 || stats.busy} onClick={() => void stats.submit()}>

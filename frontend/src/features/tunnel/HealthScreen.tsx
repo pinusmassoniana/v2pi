@@ -28,7 +28,7 @@ function SwitchRow({ title, text, children, className }: { title: string; text: 
     <div className={cn("flex items-center justify-between gap-3 rounded-xl border border-line bg-glass px-3 py-2.5", className)}>
       <div className="min-w-0">
         <p className="text-sm font-semibold text-t1">{title}</p>
-        <p className="text-[11.5px] text-t3">{text}</p>
+        <p className="text-caption text-t3">{text}</p>
       </div>
       {children}
     </div>
@@ -36,7 +36,7 @@ function SwitchRow({ title, text, children, className }: { title: string; text: 
 }
 
 function Help({ children }: { children: ReactNode }) {
-  return <p className="-mt-1 text-[11px] text-t3">{children}</p>;
+  return <p className="-mt-1 text-caption text-t3">{children}</p>;
 }
 
 /**
@@ -99,7 +99,7 @@ function HealthForm({ settings }: { settings: Settings }) {
       <div className="grid items-start gap-3 md:grid-cols-2">
         <GlassCard aria-label="Health monitoring" className="flex flex-col gap-3">
           <CardHeader title="Health monitoring" className="mb-0" />
-          <SwitchRow title="Health checks" text="master switch — off stops both checks below">
+          <SwitchRow title="Health checks" text="master switch, off stops both checks below">
             <Controller control={control} name="health_enabled" render={({ field }) => <Toggle label="Health checks" checked={field.value} onCheckedChange={field.onChange} />} />
           </SwitchRow>
           <SwitchRow title="Server sweep" text="TCP + direct HTTPS across the whole pool" className={cn("ml-3", !master && "opacity-60")}>
@@ -142,20 +142,20 @@ function HealthForm({ settings }: { settings: Settings }) {
           <SwitchRow title="Auto-failover" text="switch to a healthy standby when the active node fails">
             <Controller control={control} name="failover_enabled" render={({ field }) => <Toggle label="Auto-failover" checked={field.value} onCheckedChange={field.onChange} />} />
           </SwitchRow>
-          {!master ? <p className="text-xs text-warn">health checks are off — failover can never fire</p> : null}
+          {!master ? <p className="text-xs text-warn">health checks are off, so failover can never fire</p> : null}
           <TextField label="Hysteresis" hint="checks" type="number" inputMode="numeric" min={1} error={errors.hysteresis?.message} {...register("hysteresis")} />
           <Help>consecutive failed real checks before switching</Help>
           <TextField label="Cooldown" hint="seconds" type="number" inputMode="numeric" min={0} error={errors.cooldown_seconds?.message} {...register("cooldown_seconds")} />
           <Help>minimum time between automatic switches</Help>
           <p className="flex flex-wrap items-center gap-2 text-xs text-t2">
             {DEMOTION_NOTE}
-            <span className="rounded-full bg-glass-2 px-2 py-0.5 text-[10.5px] font-semibold text-t3">fixed · not a setting</span>
+            <span className="rounded-full bg-glass-2 px-2 py-0.5 text-2xs font-semibold text-t3">fixed · not a setting</span>
           </p>
         </GlassCard>
       </div>
 
       <div className="glass flex items-center gap-3 bg-solid p-2.5 max-md:sticky max-md:bottom-24 max-md:z-20">
-        <p className="min-w-0 flex-1 text-[11.5px] text-t3">{isDirty ? <span className="font-semibold text-warn">● unsaved changes · </span> : null}{NO_REAPPLY_NOTE}</p>
+        <p className="min-w-0 flex-1 text-caption text-t3">{isDirty ? <span className="font-semibold text-warn">● unsaved changes · </span> : null}{NO_REAPPLY_NOTE}</p>
         <Button variant="primary" disabled={!isDirty || invalid || saving} onClick={() => void submit()}>{save.isPending ? "Saving…" : "Save"}</Button>
       </div>
     </div>

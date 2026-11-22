@@ -3,7 +3,7 @@ import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
 import { changesLabel } from "./rules";
 
-export const GATEWAY_CHANGED = "The ruleset changed on the gateway since you started editing — Discard to load it";
+export const GATEWAY_CHANGED = "The ruleset changed on the gateway since you started editing. Discard to load it";
 
 export interface StagedBannerProps {
   /** Something is staged: show the banner. While nothing is, only its empty live region stays mounted. */
@@ -33,8 +33,8 @@ export function StagedBanner({ staged, changes, gatewayChanged, onDiscard, child
         {staged ? (
           <>
             <p className="text-sm text-t1">
-              <b className="rounded-md bg-warn/15 px-1.5 py-0.5 text-[10.5px] font-bold tracking-wide text-warn">STAGED</b>
-              {` · ${changesLabel(changes)} — not yet applied to the live config.`}
+              <b className="rounded-md bg-warn/15 px-1.5 py-0.5 text-2xs font-bold tracking-wide text-warn">STAGED</b>
+              {` · ${changesLabel(changes)}, not yet applied to the live config.`}
             </p>
             {gatewayChanged ? <p className="mt-1 text-xs text-warn">{GATEWAY_CHANGED}</p> : null}
           </>

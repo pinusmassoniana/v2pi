@@ -18,7 +18,7 @@ export interface PillProps extends ComponentProps<"span"> {
 export function Pill({ tone = "neutral", dot = false, className, children, ...props }: PillProps) {
   return (
     <span
-      className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11.5px] font-semibold", TONES[tone], className)}
+      className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-caption font-semibold", TONES[tone], className)}
       {...props}
     >
       {dot ? <span aria-hidden className="size-1.5 rounded-full bg-current shadow-[0_0_8px_currentColor]" /> : null}

@@ -51,7 +51,7 @@ export function DropdownMenuItem({ className, hint, children, ...props }: Compon
       )}
     >
       <span className="flex items-center gap-2">{children}</span>
-      {hint ? <span className="text-[11px] text-t3">{hint}</span> : null}
+      {hint ? <span className="text-caption text-t3">{hint}</span> : null}
     </Primitive.Item>
   );
 }

@@ -76,7 +76,7 @@ export function statsPatchReapplies(patch: Partial<Pick<Settings, StatsSettingKe
  * node connected must still read as "applies on next Connect", not as a live apply that did not happen.
  */
 export function statsSavedMessage(patch: Partial<Pick<Settings, StatsSettingKey>>, active: boolean): string {
-  if (!active || !statsPatchReapplies(patch)) return "saved — applies on next Connect";
+  if (!active || !statsPatchReapplies(patch)) return "saved, applies on next Connect";
   if ("stats_enabled" in patch) return `traffic stats ${patch.stats_enabled ? "on" : "off"} · applied to the live tunnel`;
   return "saved · applied to the live tunnel";
 }

@@ -39,7 +39,7 @@ function CopyBlock({ label, name, text, rows }: { label: string; name: string; t
         value={text}
         rows={rows}
         spellCheck={false}
-        className="w-full resize-y rounded-xl border border-line bg-glass-2 p-3 font-mono text-[11.5px] text-t1"
+        className="w-full resize-y rounded-xl border border-line bg-glass-2 p-3 font-mono text-caption text-t1"
       />
     </div>
   );
@@ -55,7 +55,7 @@ export function ExportDialog({ node, onClose }: { node: Node; onClose: () => voi
         <div className="flex flex-col gap-3">
           <CopyBlock label="vless:// link" name="link" text={vlessUri(node)} rows={4} />
           <CopyBlock label="JSON · full node" name="JSON" text={nodeJson(node)} rows={10} />
-          <p className="text-[11px] text-t3">flow only for vision · pbk / sid only for reality · path / host / mode only for xhttp · IPv6 hosts are bracketed</p>
+          <p className="text-caption text-t3">flow only for vision · pbk / sid only for reality · path / host / mode only for xhttp · IPv6 hosts are bracketed</p>
         </div>
       </DialogContent>
     </Dialog>

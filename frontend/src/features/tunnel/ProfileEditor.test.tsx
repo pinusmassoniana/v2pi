@@ -37,12 +37,12 @@ describe("Anti-DPI › editor fields (T3)", () => {
     await openEditor();
     const legends = [...editor().querySelectorAll("fieldset > legend")].map((legend) => legend.textContent);
     expect(legends).toEqual([
-      "Profile", "TLS fragmentation", "UDP noisedecoy packets vs DPI / active probing", "Muxxhttp nodes only — ignored on Vision",
+      "Profile", "TLS fragmentation", "UDP noisedecoy packets vs DPI / active probing", "Muxxhttp nodes only, ignored on Vision",
       "XHTTP transportxhttp nodes only", "TLStls-mode nodes", "DNS & QUIC", "QUIC",
     ]);
     expect(within(editor()).getByLabelText("Name")).toHaveValue("");
     expect(within(editor()).getByLabelText("Fingerprint")).toHaveValue("chrome");
-    expect(within(within(editor()).getByLabelText("Fingerprint")).getAllByRole("option").at(-1)).toHaveTextContent("(no mimicry — not recommended)");
+    expect(within(within(editor()).getByLabelText("Fingerprint")).getAllByRole("option").at(-1)).toHaveTextContent("(no mimicry, not recommended)");
     expect(within(editor()).getByRole("switch", { name: "TLS fragmentation" })).toHaveAttribute("aria-checked", "false");
     expect(within(editor()).queryByLabelText("Length")).toBeNull();
     expect(within(editor()).queryByLabelText("Concurrency")).toBeNull();
@@ -127,7 +127,7 @@ describe("Anti-DPI › Validate, Create / Save, New (T5)", () => {
     expect(api$.validateProfile).toHaveBeenCalledWith(formToProfileIn(profileToForm(TUNNEL_PROFILES[2]!)));
     expect(api$.validateProfile.mock.calls[0]![0]).toMatchObject({ name: "mux-heavy", mux_concurrency: "8", tls_max: "1.3", doh_url: "https://1.1.1.1/dns-query" });
     await userEvent.type(within(editor()).getByLabelText("ALPN"), ",h3");
-    expect(within(editor()).getByRole("status")).toHaveTextContent("Form changed since this run — run it again.");
+    expect(within(editor()).getByRole("status")).toHaveTextContent("Form changed since this run. Run it again.");
     api$.validateProfile.mockResolvedValueOnce(PROFILE_INVALID);
     await userEvent.click(within(editor()).getByRole("button", { name: "Validate" }));
     expect(await within(editor()).findByText("✗ bad fragment length '0-5'")).toHaveClass("text-bad");
@@ -172,7 +172,7 @@ describe("Anti-DPI › Validate, Create / Save, New (T5)", () => {
     const expectedBody = { ...formToProfileIn(profileToForm(TUNNEL_PROFILES[1]!)), frag_length: "80-160" };
     await userEvent.click(within(editor()).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api$.updateProfile).toHaveBeenCalledWith(2, expectedBody));
-    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved — applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("not saved, but applying to the tunnel failed: xray -test failed: bad config", { duration: 20000 }));
     expect(success).not.toHaveBeenCalled();
     expect(within(editor()).getByLabelText("Length")).toHaveValue("80-160");
     expect(within(editor()).getByRole("heading", { name: "Editing profile · id 2" })).toBeInTheDocument();
@@ -192,7 +192,7 @@ describe("Anti-DPI › Validate, Create / Save, New (T5)", () => {
       "ru-hardenedRU-hardened — fragment + noise + QUIC drop", "stealth-latencyStealth (min latency) — fingerprint only, QUIC allowed", "cdn-xhttpCDN / XHTTP — padding + xmux",
     ]);
     await userEvent.click(items[0]!);
-    await waitFor(() => expect(success).toHaveBeenCalledWith('preset "ru-hardened" staged into the editor — Create/Save to apply', { duration: 8000 }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith('preset "ru-hardened" staged into the editor, Create/Save to apply', { duration: 8000 }));
     expect(within(editor()).getByLabelText("Name")).toHaveValue("ru-hardened");
     expect(within(editor()).getByRole("switch", { name: "TLS fragmentation" })).toHaveAttribute("aria-checked", "true");
     expect(within(section("UDP noise")).getByLabelText("Noise 1 packet")).toHaveValue("50-150");
@@ -290,7 +290,7 @@ describe("Anti-DPI › phone editor (T3)", () => {
     const page = await screen.findByRole("region", { name: "Profile editor" });
     const frag = within(page).getByRole("button", { name: "TLS fragmentation" });
     expect(frag).toHaveAttribute("aria-expanded", "true");
-    const mux = within(page).getByRole("button", { name: /^Muxxhttp nodes only — ignored on Vision/ });
+    const mux = within(page).getByRole("button", { name: /^Muxxhttp nodes only, ignored on Vision/ });
     expect(mux).toHaveAttribute("aria-expanded", "false");
     expect(mux).toHaveTextContent("off");
     expect(within(page).queryByRole("switch", { name: "Mux" })).toBeNull();

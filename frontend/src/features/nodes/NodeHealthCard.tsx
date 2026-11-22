@@ -17,7 +17,7 @@ export function NodeHealthCard({ node, health, active }: { node: Node; health: N
     { key: "Real", value: active ? <ActiveRealPill nodeId={node.id} health={health} /> : <ProbePill ok={health?.last_real_ok} ms={health?.last_real_ms} /> },
   ];
   if (active) rows.push({ key: "Failures", value: String(health?.fail_count ?? 0), sub: "auto-failover counter" });
-  rows.push({ key: "Egress", value: <Egress health={health} className="text-[12px]" /> });
+  rows.push({ key: "Egress", value: <Egress health={health} className="text-caption" /> });
   return (
     <GlassCard aria-label="Health">
       <CardHeader
@@ -25,11 +25,11 @@ export function NodeHealthCard({ node, health, active }: { node: Node; health: N
         level={3}
         detail={probed ? <>checked <Ago at={health?.checked_at} /></> : "not probed"}
       />
-      {!probed ? <p className="mb-2 text-xs text-t3">Not probed yet — Test runs TCP, HTTP and a real request through this node.</p> : null}
+      {!probed ? <p className="mb-2 text-xs text-t3">Not probed yet. Test runs TCP, HTTP and a real request through this node.</p> : null}
       <KeyValueRows rows={rows} />
       {history.length > 1 ? (
         <div className="mt-2 rounded-xl border border-line bg-glass px-3 py-2">
-          <p className="text-[10.5px] font-semibold tracking-wide text-t3">Latency trend · last {history.length} samples</p>
+          <p className="text-2xs font-semibold tracking-wide text-t3">Last {history.length} samples</p>
           <Sparkline values={history} className="mt-1" />
         </div>
       ) : null}

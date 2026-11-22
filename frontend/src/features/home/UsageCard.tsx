@@ -35,8 +35,8 @@ export function UsageCard({ className }: { className?: string }) {
           <dl className="grid grid-cols-2 gap-2 md:grid-cols-4">
             {usageRows(data!).map((row) => (
               <div key={row.key} className="min-w-0">
-                <dt className="text-[10.5px] font-semibold uppercase tracking-[.07em] text-t3">{row.label}</dt>
-                <dd className={cn("mt-0.5 truncate text-[15px] font-bold tracking-tight", row.key === "month" && tone ? TONE_TEXT[tone] : "text-t1")}>
+                <dt className="text-2xs font-semibold uppercase tracking-[.07em] text-t3">{row.label}</dt>
+                <dd className={cn("mt-0.5 truncate text-title font-bold tracking-tight", row.key === "month" && tone ? TONE_TEXT[tone] : "text-t1")}>
                   {row.value}
                 </dd>
               </div>
@@ -70,13 +70,13 @@ export function UsageCard({ className }: { className?: string }) {
             </ul>
           ) : null}
           {days.length ? (
-            <p className="mt-1 flex justify-between text-[10.5px] text-t3">
+            <p className="mt-1 flex justify-between text-2xs text-t3">
               <span>{days[0]!.label}</span>
               <span>{days.at(-1)!.label}</span>
             </p>
           ) : null}
 
-          <p className="mt-2 text-[11px] leading-relaxed text-t3">{USAGE_NOTE} {data!.cap_bytes > 0 ? CAP_NOTE : ""}</p>
+          <p className="mt-2 text-caption leading-relaxed text-t3">{USAGE_NOTE} {data!.cap_bytes > 0 ? CAP_NOTE : ""}</p>
         </>
       )}
     </GlassCard>
