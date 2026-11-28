@@ -19,6 +19,7 @@ import {
   type HealthFormValues,
 } from "./healthForm";
 import { HealthStateStrip } from "./HealthStateStrip";
+import { useLiveSettingSwitch, type LiveSwitchKey } from "../gateway/GatewayDnsCard";
 import { IncidentsCard } from "./IncidentsCard";
 
 type HealthPatch = ReturnType<typeof healthFormToPatch>;
@@ -162,6 +163,38 @@ function HealthForm({ settings }: { settings: Settings }) {
   );
 }
 
+interface TrafficSwitch { key: LiveSwitchKey; title: string; text: string }
+
+/** The switches on the traffic-exceptions card. Each is its own live write, outside the form: unlike the form, they re-apply the tunnel. */
+const TRAFFIC_SWITCHES: readonly TrafficSwitch[] = [
+  { key: "cf_tunnel_keep_ip", title: "Cloudflare Tunnel", text: "Keep the edge address cloudflared picked instead of re-resolving its name. Turn off only if a tunnel misbehaves." },
+];
+
+function useTrafficSwitch({ key, title }: TrafficSwitch) {
+  return useLiveSettingSwitch(key, title,
+    ({ on, active }) => (active ? `${title} ${on ? "on" : "off"} · applied to the live tunnel` : "saved, applies on next Connect"));
+}
+
+function TrafficSwitchRow({ spec }: { spec: TrafficSwitch }) {
+  const sw = useTrafficSwitch(spec);
+  return (
+    <SwitchRow title={spec.title} text={spec.text}>
+      <Toggle label={spec.title} checked={sw.settings.data?.[spec.key] ?? false} disabled={sw.busy || !sw.settings.data} onCheckedChange={(on) => void sw.flip(on)} />
+    </SwitchRow>
+  );
+}
+
+/** Traffic exceptions: per-service switches, saved as soon as they are flipped. */
+function TrafficExceptionsCard() {
+  return (
+    <GlassCard aria-label="Traffic exceptions" className="flex flex-col gap-3">
+      <CardHeader title="Traffic exceptions" className="mb-0" />
+      {TRAFFIC_SWITCHES.map((spec) => <TrafficSwitchRow key={spec.key} spec={spec} />)}
+      <p className="text-caption text-t3">saved as soon as you flip it · re-applies the live tunnel</p>
+    </GlassCard>
+  );
+}
+
 /** Tunnel › Health & failover (G3, G4): settings read once (refetched after writes), the state strip from the status poll. */
 export function Health() {
   const settings = useQuery(queries.settings());
@@ -179,6 +212,8 @@ export function Health() {
           <Skeleton className="h-96" />
         </div>
       )}
+      {/* mounted with the screen, so its switches share the one settings read */}
+      <TrafficExceptionsCard />
     </div>
   );
 }

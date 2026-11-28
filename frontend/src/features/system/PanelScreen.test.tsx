@@ -364,10 +364,10 @@ describe("Panel — settings file (G6)", () => {
 });
 
 describe("Panel — danger zone (P5)", () => {
-  it("lists the sixteen keys it writes, with their defaults", async () => {
+  it("lists the seventeen keys it writes, with their defaults", async () => {
     await openPanel();
     const zone = region("Danger zone");
-    expect(within(zone).getAllByRole("listitem")).toHaveLength(16);
+    expect(within(zone).getAllByRole("listitem")).toHaveLength(17);
     expect(within(zone).getByText("tunneled_fetch 1")).toBeInTheDocument();
     expect(within(zone).getByText("stats_api_port 10085")).toBeInTheDocument();
     expect(within(zone).getByText("auto_backup_enabled 0")).toBeInTheDocument();

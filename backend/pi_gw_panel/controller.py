@@ -23,6 +23,11 @@ def _tunneled_fetch(store) -> bool:
     return (store.get_setting("tunneled_fetch") or "1") == "1"
 
 
+def _cf_tunnel_keep_ip(store) -> bool:
+    """The `cf_tunnel_keep_ip` setting (default ON) — leave Cloudflare Tunnel SNI unsniffed."""
+    return (store.get_setting("cf_tunnel_keep_ip") or "1") == "1"
+
+
 def _dns_intercept(store) -> bool:
     """The `dns_intercept` setting (default OFF) — gateway resolves segment DNS over DoH."""
     return (store.get_setting("dns_intercept") or "0") == "1"
@@ -445,18 +450,20 @@ def build_node_config(node: Node, settings: Settings, store=None) -> dict:
         tunneled = _tunneled_fetch(store)
         stats = _resolve_stats(store)
         dns_intercept = _dns_intercept(store)
+        cf_keep = _cf_tunnel_keep_ip(store)
         ipv6 = _ipv6_enabled(store)
         rw = _rw_inbound(store)
         domain_strategy = store.get_setting("routing_domain_strategy") or "IPIfNonMatch"
     else:
         profile, routing, tunneled, stats, dns_intercept, ipv6 = None, None, False, None, False, False
+        cf_keep = True
         explicit = False
         rw = None
         domain_strategy = "IPIfNonMatch"
     return build_config(node, settings, profile=profile, routing=routing,
                         tunneled_fetch=tunneled, stats=stats, dns_intercept=dns_intercept,
                         domain_strategy=domain_strategy, ipv6_tproxy=ipv6, profile_explicit=explicit,
-                        rw_inbound=rw)
+                        rw_inbound=rw, cf_tunnel_keep_ip=cf_keep)
 
 
 # The durable record that a committed narrowing of remote access has not yet reached the running

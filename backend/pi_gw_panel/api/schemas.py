@@ -376,6 +376,7 @@ class SettingsOut(BaseModel):
     stats_api_port: int
     traffic_sample_ms: int
     dns_intercept: bool
+    cf_tunnel_keep_ip: bool
     session_timeout_min: int
     auto_backup_enabled: bool
     update_check_enabled: bool
@@ -401,6 +402,7 @@ class SettingsIn(NonNullPatch):
     stats_api_port: int | None = None
     traffic_sample_ms: int | None = None
     dns_intercept: bool | None = None
+    cf_tunnel_keep_ip: bool | None = None
     session_timeout_min: int | None = None
     auto_backup_enabled: bool | None = None
     update_check_enabled: bool | None = None

@@ -29,6 +29,9 @@ LOOPBACK_NETS = [
     "::/128", "::1/128", "fe80::/10",
 ]
 
+# Cloudflare Tunnel sends SNI-only names after selecting the edge IP via DNS.
+_CLOUDFLARE_TUNNEL_SNI = ("full:cftunnel.com", "full:h2.cftunnel.com", "full:quic.cftunnel.com")
+
 RW_TAG = "rw-in"
 # The LAN-by-name outbound. Emitted ONLY by the remote-access feature and named by exactly one
 # routing rule, which is what lets a revocation identify both as its own and take them away.
@@ -179,11 +182,20 @@ def security_choices(node: Node) -> tuple[str, ...]:
     return ("none",) if node.protocol == "shadowsocks" else ("reality", "tls")
 
 
+def _sniffing(cf_tunnel_keep_ip: bool) -> dict:
+    """tproxy sniffing. With `cf_tunnel_keep_ip` the Cloudflare Tunnel names are left unsniffed, so
+    cloudflared keeps the edge IP it chose instead of xray re-resolving the bare SNI elsewhere."""
+    sniff: dict = {"enabled": True, "destOverride": ["http", "tls", "quic"]}
+    if cf_tunnel_keep_ip:
+        sniff["domainsExcluded"] = list(_CLOUDFLARE_TUNNEL_SNI)
+    return sniff
+
+
 def build_config(node: Node, settings: Settings, profile: TuningProfile | None = None,
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
                  dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch",
                  ipv6_tproxy: bool = False, profile_explicit: bool = False,
-                 rw_inbound: dict | None = None) -> dict:
+                 rw_inbound: dict | None = None, cf_tunnel_keep_ip: bool = True) -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -295,7 +307,7 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
                 "protocol": "dokodemo-door",
                 "port": settings.tproxy_port,
                 "settings": {"network": "tcp,udp", "followRedirect": True},
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+                "sniffing": _sniffing(cf_tunnel_keep_ip),
                 "streamSettings": {"sockopt": {"tproxy": "tproxy", "mark": settings.egress_mark}},
             }
         ],
@@ -331,7 +343,7 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
             "listen": "::",
             "port": settings.tproxy_port6,
             "settings": {"network": "tcp,udp", "followRedirect": True},
-            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+            "sniffing": _sniffing(cf_tunnel_keep_ip),
             "streamSettings": {"sockopt": {"tproxy": "tproxy", "mark": settings.egress_mark}},
         })
 

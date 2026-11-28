@@ -28,6 +28,14 @@ export function dnsSavedMessage({ on, active }: Flip): string {
  * revert; a 502 rolled it back. It waits while any settings write or connection write runs.
  */
 export function useGatewayDns() {
+  return useLiveSettingSwitch("dns_intercept", "gateway DNS", dnsSavedMessage);
+}
+
+/** Boolean settings baked into the xray config, each flipped by a live switch. */
+export type LiveSwitchKey = "dns_intercept" | "cf_tunnel_keep_ip";
+
+/** A boolean setting baked into the xray config: saved on flip, re-applying the live tunnel (see useGatewayDns). */
+export function useLiveSettingSwitch(key: LiveSwitchKey, name: string, savedMessage: (flip: Flip) => string) {
   const queryClient = useQueryClient();
   const settings = useQuery(queries.settings());   // read once; refetched after writes
   const putSettings = useApiWrite("putSettings");
@@ -36,17 +44,17 @@ export function useGatewayDns() {
   const busy = settingsBusy || connectionBusy;
   const mutation = useMutation({
     mutationKey: SETTINGS_CONNECTION_WRITE,
-    mutationFn: ({ on }: Flip) => putSettings({ dns_intercept: on }),
+    mutationFn: ({ on }: Flip) => putSettings({ [key]: on }),
     onMutate: ({ on }) => {
-      const before = queryClient.getQueryData<Settings>(keys.settings)?.dns_intercept;
-      queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, dns_intercept: on } : old));
+      const before = queryClient.getQueryData<Settings>(keys.settings)?.[key];
+      queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: on } : old));
       return { before };
     },
-    onSuccess: (_saved, flip) => notifyOk(dnsSavedMessage(flip)),
+    onSuccess: (_saved, flip) => notifyOk(savedMessage(flip)),
     onError: (error, _flip, context) => {
       if (context?.before !== undefined) {
         const before = context.before;
-        queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, dns_intercept: before } : old));
+        queryClient.setQueryData<Settings>(keys.settings, (old) => (old ? { ...old, [key]: before } : old));
       }
       if (error instanceof ApiError && error.status === 502) {
         notifyError(null, saveRefusedMessage(error));
@@ -55,7 +63,7 @@ export function useGatewayDns() {
         notifyWarn(NO_ANSWER);
         void invalidateRefused(queryClient, keys.settings);
       } else {
-        notifyError(error, "gateway DNS was not saved");
+        notifyError(error, `${name} was not saved`);
         void queryClient.invalidateQueries({ queryKey: keys.settings });
       }
     },

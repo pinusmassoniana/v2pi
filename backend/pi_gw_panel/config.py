@@ -214,6 +214,8 @@ SETTINGS_DEFAULTS = {
     "traffic_sample_ms": "1000",
     # opt-in: resolve segment DNS inside the gateway over DoH (for nodes that don't relay UDP)
     "dns_intercept": "0",
+    # leave Cloudflare Tunnel (cloudflared) names unsniffed so it keeps the edge IP it picked
+    "cf_tunnel_keep_ip": "1",
     # xray routing domainStrategy (AsIs | IPIfNonMatch | IPOnDemand) — how domain rules resolve
     "routing_domain_strategy": "IPIfNonMatch",
     # session idle timeout in minutes (0 = none) and daily auto-backup to data_dir/backups

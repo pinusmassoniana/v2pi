@@ -121,7 +121,7 @@ describe("exportSettings", () => {
     const exported = exportSettings(SETTINGS);
     expect(exported).not.toHaveProperty(EXPORT_EXCLUDED);
     expect(Object.keys(exported).sort()).toEqual(SETTINGS_KEYS.filter((key) => key !== EXPORT_EXCLUDED).sort());
-    expect(Object.keys(exported)).toHaveLength(21);
+    expect(Object.keys(exported)).toHaveLength(22);
     for (const key of Object.keys(exported)) expect(exported[key as keyof typeof exported]).toBe(SETTINGS[key as keyof typeof SETTINGS]);
     expect(JSON.parse(exportedText(SETTINGS))).toEqual(exported);
   });
@@ -133,8 +133,8 @@ describe("importChecks", () => {
   it("passes a file this panel exported, and names which keys would rebuild the tunnel", () => {
     const result = importChecks(good);
     expect(result.checks.map((check) => check.ok)).toEqual([true, true, true, true]);
-    expect(result.checks[1]!.label).toBe("21 fields, all known settings keys");
-    expect(result.checks[3]!.label).toBe("4 of them rebuild the live tunnel: tunneled_fetch, dns_intercept, stats_enabled, stats_api_port");
+    expect(result.checks[1]!.label).toBe("22 fields, all known settings keys");
+    expect(result.checks[3]!.label).toBe("5 of them rebuild the live tunnel: tunneled_fetch, dns_intercept, cf_tunnel_keep_ip, stats_enabled, stats_api_port");
     expect(result.patch).not.toBeNull();
     expect(result.patch).not.toHaveProperty(EXPORT_EXCLUDED);
     expect(settingsWriteKey(result.patch!)).toBe(SETTINGS_CONNECTION_WRITE);
@@ -204,10 +204,10 @@ describe("importChecks", () => {
 });
 
 describe("the reset", () => {
-  it("is the sixteen keys the route writes, in its order, with their defaults", () => {
-    expect(RESET_KEYS).toHaveLength(16);
+  it("is the seventeen keys the route writes, in its order, with their defaults", () => {
+    expect(RESET_KEYS).toHaveLength(17);
     expect(RESET_KEYS.map(([key]) => key)).toEqual([
-      "tunneled_fetch", "subs_auto_switch", "dns_intercept", "health_enabled", "health_sweep_enabled",
+      "tunneled_fetch", "subs_auto_switch", "dns_intercept", "cf_tunnel_keep_ip", "health_enabled", "health_sweep_enabled",
       "health_interval", "health_active_interval", "health_hysteresis", "health_probe_url", "failover_enabled",
       "failover_cooldown", "stats_enabled", "stats_api_port", "traffic_sample_ms", "session_timeout_min", "auto_backup_enabled",
     ]);

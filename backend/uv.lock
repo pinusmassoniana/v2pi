@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 
 [[package]]
@@ -293,7 +293,7 @@ wheels = [
 
 [[package]]
 name = "pi-gw-panel"
-version = "2.4.4.0.1"
+version = "2.4.5"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

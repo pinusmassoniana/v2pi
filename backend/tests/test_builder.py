@@ -37,6 +37,21 @@ def test_tproxy_inbound_present():
     assert set(inb["sniffing"]["destOverride"]) >= {"http", "tls"}
 
 
+def test_tproxy_keeps_cloudflare_tunnel_destination_ips():
+    cfg = build_config(_node(), Settings(), ipv6_tproxy=True)
+    inbounds = {inbound["tag"]: inbound for inbound in cfg["inbounds"]}
+    for tag in ("tproxy-in", "tproxy-in6"):
+        sniffing = inbounds[tag]["sniffing"]
+        assert sniffing["domainsExcluded"] == [
+            "full:cftunnel.com",
+            "full:h2.cftunnel.com",
+            "full:quic.cftunnel.com",
+        ]
+        assert sniffing["destOverride"] == ["http", "tls", "quic"]
+    off = build_config(_node(), Settings(), ipv6_tproxy=True, cf_tunnel_keep_ip=False)
+    assert all("domainsExcluded" not in i.get("sniffing", {}) for i in off["inbounds"])
+
+
 def test_proxy_outbound_is_vless_reality_vision():
     cfg = build_config(_node(), Settings())
     proxy = next(o for o in cfg["outbounds"] if o["tag"] == "proxy")
