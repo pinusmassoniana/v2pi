@@ -167,6 +167,7 @@ interface TrafficSwitch { key: LiveSwitchKey; title: string; text: string }
 
 /** The switches on the traffic-exceptions card. Each is its own live write, outside the form: unlike the form, they re-apply the tunnel. */
 const TRAFFIC_SWITCHES: readonly TrafficSwitch[] = [
+  { key: "tailnet_failopen", title: "Tailscale direct when the node is down", text: "Tailscale goes through the tunnel; only while the node is unreachable does it go direct, so the tailnet stays up. Nothing else leaves the tunnel." },
   { key: "cf_tunnel_keep_ip", title: "Cloudflare Tunnel", text: "Keep the edge address cloudflared picked instead of re-resolving its name. Turn off only if a tunnel misbehaves." },
 ];
 

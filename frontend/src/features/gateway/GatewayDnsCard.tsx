@@ -32,7 +32,7 @@ export function useGatewayDns() {
 }
 
 /** Boolean settings baked into the xray config, each flipped by a live switch. */
-export type LiveSwitchKey = "dns_intercept" | "cf_tunnel_keep_ip";
+export type LiveSwitchKey = "dns_intercept" | "cf_tunnel_keep_ip" | "tailnet_failopen";
 
 /** A boolean setting baked into the xray config: saved on flip, re-applying the live tunnel (see useGatewayDns). */
 export function useLiveSettingSwitch(key: LiveSwitchKey, name: string, savedMessage: (flip: Flip) => string) {

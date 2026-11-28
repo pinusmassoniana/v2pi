@@ -165,7 +165,7 @@ export const SETTINGS: Settings = {
   health_hysteresis: 3, health_probe_url: "https://www.gstatic.com/generate_204",
   failover_enabled: true, failover_cooldown: 300,
   stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000,
-  dns_intercept: false, cf_tunnel_keep_ip: true, session_timeout_min: 60, auto_backup_enabled: true, update_check_enabled: true,
+  dns_intercept: false, cf_tunnel_keep_ip: true, tailnet_failopen: false, session_timeout_min: 60, auto_backup_enabled: true, update_check_enabled: true,
   traffic_cap_gb: 0, traffic_cap_reset_day: 1,
   diag_url: "https://speed.cloudflare.com/__down?bytes=1048576", diag_bytes: 262_144,
 };

@@ -14,7 +14,7 @@ export const SETTINGS_FILENAME = "v2pi-settings.json";
 export const SETTINGS_KEYS = [
   "tunneled_fetch", "subs_auto_switch", "routing_default_action", "health_enabled", "health_sweep_enabled",
   "health_interval", "health_active_interval", "health_hysteresis", "health_probe_url", "failover_enabled",
-  "failover_cooldown", "stats_enabled", "stats_api_port", "traffic_sample_ms", "dns_intercept", "cf_tunnel_keep_ip",
+  "failover_cooldown", "stats_enabled", "stats_api_port", "traffic_sample_ms", "dns_intercept", "cf_tunnel_keep_ip", "tailnet_failopen",
   "session_timeout_min", "auto_backup_enabled", "update_check_enabled", "traffic_cap_gb", "traffic_cap_reset_day",
   "diag_url", "diag_bytes",
 ] as const satisfies readonly (keyof Settings)[];
@@ -41,7 +41,7 @@ export function exportedText(settings: Settings): string {
 
 const BOOLEAN_KEYS = new Set<string>([
   "tunneled_fetch", "subs_auto_switch", "health_enabled", "health_sweep_enabled", "failover_enabled",
-  "stats_enabled", "dns_intercept", "cf_tunnel_keep_ip", "auto_backup_enabled", "update_check_enabled",
+  "stats_enabled", "dns_intercept", "cf_tunnel_keep_ip", "tailnet_failopen", "auto_backup_enabled", "update_check_enabled",
 ]);
 
 /** The int floors the gateway enforces (config.py SETTINGS_INT_BOUNDS), with its own messages. */
@@ -187,7 +187,7 @@ export const IMPORTED_MESSAGE = "settings applied from file";
  * network / remote-access key are untouched, which is why three of these belong to other sections.
  */
 export const RESET_KEYS: readonly (readonly [key: string, value: string])[] = [
-  ["tunneled_fetch", "1"], ["subs_auto_switch", "1"], ["dns_intercept", "0"], ["cf_tunnel_keep_ip", "1"],
+  ["tunneled_fetch", "1"], ["subs_auto_switch", "1"], ["dns_intercept", "0"], ["cf_tunnel_keep_ip", "1"], ["tailnet_failopen", "0"],
   ["health_enabled", "1"],
   ["health_sweep_enabled", "1"], ["health_interval", "1800"], ["health_active_interval", "60"],
   ["health_hysteresis", "3"], ["health_probe_url", "https://api.ipify.org?format=json"], ["failover_enabled", "1"],

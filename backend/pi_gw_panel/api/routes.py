@@ -220,6 +220,7 @@ def _settings_out(state) -> SettingsOut:
         traffic_sample_ms=num("traffic_sample_ms"),
         dns_intercept=val("dns_intercept") == "1",
         cf_tunnel_keep_ip=val("cf_tunnel_keep_ip") == "1",
+        tailnet_failopen=val("tailnet_failopen") == "1",
         session_timeout_min=num("session_timeout_min"),
         auto_backup_enabled=val("auto_backup_enabled") == "1",
         update_check_enabled=val("update_check_enabled") == "1",
@@ -1694,11 +1695,11 @@ def get_settings(request: Request, _: None = Depends(require_auth)) -> SettingsO
 
 
 # Settings that are baked into the xray config → changing them needs a live re-apply.
-_SETTINGS_CONFIG_KEYS = {"tunneled_fetch", "dns_intercept", "cf_tunnel_keep_ip", "stats_enabled",
-                         "stats_api_port"}
+_SETTINGS_CONFIG_KEYS = {"tunneled_fetch", "dns_intercept", "cf_tunnel_keep_ip", "tailnet_failopen",
+                         "stats_enabled", "stats_api_port"}
 # Settings the Settings screen owns (reset target — excludes routing-owned keys).
 _SETTINGS_RESET_KEYS = ("tunneled_fetch", "subs_auto_switch", "dns_intercept", "cf_tunnel_keep_ip",
-                        "health_enabled",
+                        "tailnet_failopen", "health_enabled",
                         "health_sweep_enabled", "health_interval", "health_active_interval",
                         "health_hysteresis", "health_probe_url", "failover_enabled",
                         "failover_cooldown", "stats_enabled", "stats_api_port",

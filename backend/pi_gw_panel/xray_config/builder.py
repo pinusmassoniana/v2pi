@@ -32,6 +32,17 @@ LOOPBACK_NETS = [
 # Cloudflare Tunnel sends SNI-only names after selecting the edge IP via DNS.
 _CLOUDFLARE_TUNNEL_SNI = ("full:cftunnel.com", "full:h2.cftunnel.com", "full:quic.cftunnel.com")
 
+# Tailnet fail-open: Tailscale control plane, DERP relays (TLS/HTTP, sniffed by name), STUN and the
+# default WireGuard port. Routed through a balancer whose only member is `proxy`; when xray's own
+# observatory sees `proxy` dead, the balancer falls back to `direct`, and back once it answers again.
+# ponytail: peers on random UDP ports aren't matched; with the node down they fall back to DERP,
+# which is. Add an IP list if direct peer paths ever matter during an outage.
+TAILNET_TAG = "tailnet"
+TAILNET_DOMAINS = ["domain:tailscale.com", "domain:tailscale.io", "domain:ts.net"]
+TAILNET_UDP_PORTS = "3478,41641"
+TAILNET_PROBE_URL = "https://www.gstatic.com/generate_204"
+TAILNET_PROBE_INTERVAL = "15s"
+
 RW_TAG = "rw-in"
 # The LAN-by-name outbound. Emitted ONLY by the remote-access feature and named by exactly one
 # routing rule, which is what lets a revocation identify both as its own and take them away.
@@ -195,7 +206,8 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
                  routing=None, tunneled_fetch: bool = False, stats: dict | None = None,
                  dns_intercept: bool = False, domain_strategy: str = "IPIfNonMatch",
                  ipv6_tproxy: bool = False, profile_explicit: bool = False,
-                 rw_inbound: dict | None = None, cf_tunnel_keep_ip: bool = True) -> dict:
+                 rw_inbound: dict | None = None, cf_tunnel_keep_ip: bool = True,
+                 tailnet_failopen: bool = False) -> dict:
     """Build xray config.json.
 
     With ``profile=None, routing=None, tunneled_fetch=False, stats=None`` this is
@@ -393,6 +405,24 @@ def build_config(node: Node, settings: Settings, profile: TuningProfile | None =
                              0)
         rlist.insert(after_private,
                      {"type": "field", "protocol": ["quic"], "outboundTag": tag})
+
+    # Tailnet fail-open (toggle): Tailscale normally rides the tunnel; only while the node is dead
+    # does it go direct. Placed right after private→direct, ahead of QUIC and every user rule, so
+    # it covers ALL tailnet traffic whatever the ruleset says.
+    if tailnet_failopen:
+        cfg["observatory"] = {"subjectSelector": ["proxy"], "probeUrl": TAILNET_PROBE_URL,
+                              "probeInterval": TAILNET_PROBE_INTERVAL}
+        cfg["routing"]["balancers"] = [{"tag": TAILNET_TAG, "selector": ["proxy"],
+                                        "strategy": {"type": "leastPing"}, "fallbackTag": "direct"}]
+        rlist = cfg["routing"]["rules"]
+        after_private = next((i + 1 for i, r in enumerate(rlist)
+                              if r.get("ip") == ["geoip:private"] and r.get("outboundTag") == "direct"),
+                             0)
+        rlist[after_private:after_private] = [
+            {"type": "field", "domain": list(TAILNET_DOMAINS), "balancerTag": TAILNET_TAG},
+            {"type": "field", "network": "udp", "port": TAILNET_UDP_PORTS, "balancerTag": TAILNET_TAG},
+            {"type": "field", "network": "udp", "sourcePort": "41641", "balancerTag": TAILNET_TAG},
+        ]
 
     # Gateway DNS (toggle): resolve segment clients' DNS inside xray over DoH/TCP through the
     # tunnel instead of proxying their raw UDP — so it works even on nodes that don't relay UDP

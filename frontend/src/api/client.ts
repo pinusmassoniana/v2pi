@@ -67,7 +67,7 @@ export interface Settings {
   health_hysteresis: number; health_probe_url: string;
   failover_enabled: boolean; failover_cooldown: number;
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
-  dns_intercept: boolean; cf_tunnel_keep_ip: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
+  dns_intercept: boolean; cf_tunnel_keep_ip: boolean; tailnet_failopen: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
   /** B2: the daily release check. Off means the gateway never calls GitHub on its own. */
   update_check_enabled: boolean;
   /** A7: monthly cap in GB (0 = none) and the day of the month the period restarts. */
@@ -101,7 +101,7 @@ export interface Diagnosis {
  * The settings PUT /settings re-applies the live tunnel for (routes.py _SETTINGS_CONFIG_KEYS), inside the same
  * transaction: a patch holding one waits on a rebuild, `xray -test` and a reload, and a 502 rolls the whole patch back.
  */
-export const SETTINGS_REAPPLY_KEYS = ["tunneled_fetch", "dns_intercept", "cf_tunnel_keep_ip", "stats_enabled", "stats_api_port"] as const satisfies readonly (keyof Settings)[];
+export const SETTINGS_REAPPLY_KEYS = ["tunneled_fetch", "dns_intercept", "cf_tunnel_keep_ip", "tailnet_failopen", "stats_enabled", "stats_api_port"] as const satisfies readonly (keyof Settings)[];
 export interface Diagnostics {
   app_version: string; xray_version: string; uptime_sec: number;
   db_path: string; db_bytes: number; disk_free_bytes: number; disk_total_bytes: number;

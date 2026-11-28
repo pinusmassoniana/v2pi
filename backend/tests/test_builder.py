@@ -113,3 +113,21 @@ def test_xray_access_log_is_disabled_and_errors_use_captured_stderr():
 
     assert cfg["log"]["access"] == "none"
     assert "error" not in cfg["log"]
+
+
+def test_tailnet_failopen_routes_tailscale_via_proxy_with_direct_fallback():
+    off = build_config(_node(), Settings())
+    assert "observatory" not in off and "balancers" not in off["routing"]
+
+    cfg = build_config(_node(), Settings(), tailnet_failopen=True)
+    assert cfg["observatory"]["subjectSelector"] == ["proxy"]
+    (bal,) = cfg["routing"]["balancers"]
+    assert bal == {"tag": "tailnet", "selector": ["proxy"],
+                   "strategy": {"type": "leastPing"}, "fallbackTag": "direct"}
+    rules = cfg["routing"]["rules"]
+    private = next(i for i, r in enumerate(rules) if r.get("ip") == ["geoip:private"])
+    tail = [i for i, r in enumerate(rules) if r.get("balancerTag") == "tailnet"]
+    # right after private→direct: ahead of the catch-all and any user rule
+    assert tail == [private + 1, private + 2, private + 3]
+    assert "domain:tailscale.com" in rules[tail[0]]["domain"]
+    assert rules[-1]["outboundTag"] == "proxy"

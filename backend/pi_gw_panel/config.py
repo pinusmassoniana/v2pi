@@ -216,6 +216,8 @@ SETTINGS_DEFAULTS = {
     "dns_intercept": "0",
     # leave Cloudflare Tunnel (cloudflared) names unsniffed so it keeps the edge IP it picked
     "cf_tunnel_keep_ip": "1",
+    # opt-in: while the node is dead, let Tailscale traffic (and only it) go direct
+    "tailnet_failopen": "0",
     # xray routing domainStrategy (AsIs | IPIfNonMatch | IPOnDemand) — how domain rules resolve
     "routing_domain_strategy": "IPIfNonMatch",
     # session idle timeout in minutes (0 = none) and daily auto-backup to data_dir/backups
