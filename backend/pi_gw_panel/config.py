@@ -218,6 +218,12 @@ SETTINGS_DEFAULTS = {
     "cf_tunnel_keep_ip": "1",
     # opt-in: while the node is dead, let Tailscale traffic (and only it) go direct
     "tailnet_failopen": "0",
+    # priority failover list: minutes a higher node must stay healthy before switching back to it,
+    # and how often every list node gets a real check (a throwaway xray each)
+    "failback_minutes": "20",
+    "failover_real_interval": "60",
+    # at most this many list nodes are checked per liveness tick (20 s), longest-waiting first
+    "failover_probe_batch": "3",
     # xray routing domainStrategy (AsIs | IPIfNonMatch | IPOnDemand) — how domain rules resolve
     "routing_domain_strategy": "IPIfNonMatch",
     # session idle timeout in minutes (0 = none) and daily auto-backup to data_dir/backups
@@ -428,6 +434,9 @@ SETTINGS_INT_BOUNDS: dict[str, tuple[int, int | None]] = {
     "health_active_interval": (10, None),
     "health_hysteresis": (1, None),
     "failover_cooldown": (0, None),
+    "failback_minutes": (1, 1440),
+    "failover_real_interval": (10, 3600),
+    "failover_probe_batch": (1, 20),
     "session_timeout_min": (0, None),
     "traffic_sample_ms": (500, 60_000),
     "stats_api_port": (1, 65535),

@@ -163,7 +163,7 @@ export const SETTINGS: Settings = {
   tunneled_fetch: true, subs_auto_switch: true, routing_default_action: "proxy",
   health_enabled: true, health_sweep_enabled: true, health_interval: 600, health_active_interval: 30,
   health_hysteresis: 3, health_probe_url: "https://www.gstatic.com/generate_204",
-  failover_enabled: true, failover_cooldown: 300,
+  failover_enabled: true, failover_cooldown: 300, failback_minutes: 20, failover_real_interval: 60, failover_probe_batch: 3,
   stats_enabled: true, stats_api_port: 10085, traffic_sample_ms: 1000,
   dns_intercept: false, cf_tunnel_keep_ip: true, tailnet_failopen: false, session_timeout_min: 60, auto_backup_enabled: true, update_check_enabled: true,
   traffic_cap_gb: 0, traffic_cap_reset_day: 1,
@@ -616,6 +616,8 @@ export function mockApi() {
     listProfiles: vi.spyOn(api, "listProfiles").mockResolvedValue(PROFILES),
     getSettings: vi.spyOn(api, "getSettings").mockResolvedValue(SETTINGS),
     putSettings: vi.spyOn(api, "putSettings").mockImplementation(async (patch: Partial<Settings>) => ({ ...SETTINGS, ...patch })),
+    getFailover: vi.spyOn(api, "getFailover").mockResolvedValue({ order: [], ok_since: {} }),
+    putFailoverOrder: vi.spyOn(api, "putFailoverOrder").mockImplementation(async (order: number[]) => ({ order, ok_since: {} })),
     // Writes answer like the gateway, so a screen test never reaches the network by accident.
     apply: vi.spyOn(api, "apply").mockResolvedValue({ ok: true }),
     disconnect: vi.spyOn(api, "disconnect").mockResolvedValue({ ok: true }),

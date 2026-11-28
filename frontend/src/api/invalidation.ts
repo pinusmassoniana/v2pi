@@ -45,6 +45,7 @@ export const INVALIDATES = {
   putNetwork: [keys.network, keys.status, keys.rw],
   putRw: RW, addRwClient: RW, setRwClientEnabled: RW, deleteRwClient: RW,
   putSettings: [keys.settings, keys.status, keys.network],
+  putFailoverOrder: [keys.failover],
   checkUpdates: [keys.diagnostics],
   // A question, not a change: it reads the live router and writes nothing.
   testRoute: [],

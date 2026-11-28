@@ -11,14 +11,14 @@ import { KpiGrid } from "./overview/KpiGrid";
 import { NetworkCard } from "./overview/NetworkCard";
 import { RoutingCard } from "./overview/RoutingCard";
 import { StatusBlock } from "./overview/StatusBlock";
-import { UpstreamHealthCard } from "./overview/UpstreamHealthCard";
+import { FailoverCard } from "./overview/FailoverCard";
 import { OverviewThroughput } from "./ThroughputCard";
 import { useRefreshOnSwitch } from "./useRefreshOnSwitch";
 
 /**
  * Home › Overview. This page is the one polling owner of every read it shows except `status`, which the
  * shell polls. On a phone the grid collapses to one column in DOM order: alerts, status, KPIs, traffic,
- * upstream health, connection path, events, routing, network, and the xray-core switch last.
+ * failover list (upstream health while it is empty), connection path, events, routing, network, and the xray-core switch last.
  */
 export function Overview() {
   const status = useQuery(queries.status());
@@ -27,6 +27,7 @@ export function Overview() {
   const health = usePolledQuery(queries.nodeHealth(), SLOW_POLL_MS);
   const subs = usePolledQuery(queries.subs(), SLOW_POLL_MS);
   const routing = usePolledQuery(queries.routing(), SLOW_POLL_MS);
+  const failover = usePolledQuery(queries.failover(), SLOW_POLL_MS);
   useRefreshOnSwitch(status.data);
   const activeLabel = activeNodeLabel(status.data, nodes.data);
 
@@ -43,7 +44,7 @@ export function Overview() {
       <StatusBlock status={status.data} statusError={status.isError} network={network.data} nodes={nodes.data} className="md:col-span-2 xl:col-span-5" />
       <KpiGrid className="md:col-span-2 xl:col-span-7" />
       <OverviewThroughput className="md:col-span-2 xl:col-span-8" />
-      <UpstreamHealthCard status={status.data} statusError={status.isError} nodes={nodes} health={health} className="md:col-span-2 xl:col-span-4" />
+      <FailoverCard status={status.data} statusError={status.isError} failover={failover} nodes={nodes} health={health} subs={subs} className="md:col-span-2 xl:col-span-4" />
       <ConnectionCard status={status.data} statusError={status.isError} network={network} nodes={nodes.data} className="md:col-span-2 xl:col-span-6" />
       <EventsCard network={network} className="md:col-span-2 xl:col-span-6" />
       <RoutingCard routing={routing} activeLabel={activeLabel} className="xl:col-span-6" />

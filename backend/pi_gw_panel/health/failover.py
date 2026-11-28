@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 
 from pi_gw_panel.controller import apply_node, apply_lock
-from pi_gw_panel.health import probe
+from pi_gw_panel.health import priority, probe
 from pi_gw_panel.health.selection import (
     DEFAULT_FRESHNESS_TTL, active_freshness_ttl, best_node, health_fresh, ranked_nodes,
     standby_freshness_ttl,
@@ -111,6 +111,9 @@ def run(state, now: float, apply_fn=apply_node, real_through=probe.real_through_
     store = state.store
     if (store.get_setting("failover_enabled") or "1") != "1":
         return None
+    # A failover list replaces "healthiest node anywhere" with its own order.
+    if priority.live_order(store):
+        return priority.run(state, now, apply_fn, apply_lock)
     hysteresis = int(store.get_setting("health_hysteresis") or DEFAULT_HYSTERESIS)
     cooldown = float(store.get_setting("failover_cooldown") or DEFAULT_COOLDOWN)
     nodes = store.list_nodes()

@@ -1,7 +1,7 @@
 export type AppPath =
   | "/" | "/traffic"
   | "/nodes" | "/nodes/subscriptions"
-  | "/tunnel/routing" | "/tunnel/anti-dpi" | "/tunnel/health"
+  | "/tunnel/routing" | "/tunnel/anti-dpi" | "/tunnel/health" | "/tunnel/failover"
   | "/gateway/network" | "/gateway/remote-access"
   | "/system/backups" | "/system/access" | "/system/logs" | "/system/panel";
 
@@ -15,7 +15,7 @@ export const SECTIONS: readonly Section[] = [
   { id: "nodes", label: "Nodes", tabs: [{ label: "Servers", to: "/nodes" }, { label: "Subscriptions", to: "/nodes/subscriptions" }] },
   {
     id: "tunnel", label: "Tunnel",
-    tabs: [{ label: "Routing", to: "/tunnel/routing" }, { label: "Anti-DPI", to: "/tunnel/anti-dpi" }, { label: "Health & failover", to: "/tunnel/health" }],
+    tabs: [{ label: "Routing", to: "/tunnel/routing" }, { label: "Anti-DPI", to: "/tunnel/anti-dpi" }, { label: "Health & failover", to: "/tunnel/health" }, { label: "Failover list", to: "/tunnel/failover" }],
   },
   { id: "gateway", label: "Gateway", tabs: [{ label: "Network", to: "/gateway/network" }, { label: "Remote access", to: "/gateway/remote-access" }] },
   {

@@ -14,10 +14,10 @@ function renderAt(path: string) {
 const TABS = SECTIONS.flatMap((s) => s.tabs.map((t) => [s.label, t.label, t.to] as const));
 
 describe("navigation model", () => {
-  it("has 13 uniquely named tabs in the five approved sections", () => {
+  it("has 14 uniquely named tabs in the five approved sections", () => {
     expect(SECTIONS.map((s) => s.label)).toEqual(["Home", "Nodes", "Tunnel", "Gateway", "System"]);
-    expect(TABS).toHaveLength(13);
-    expect(new Set(TABS.map(([, label]) => label)).size).toBe(13);
+    expect(TABS).toHaveLength(14);
+    expect(new Set(TABS.map(([, label]) => label)).size).toBe(14);
   });
 
   it("treats a node detail as the Servers tab of Nodes, and titles every tab", () => {
@@ -33,7 +33,7 @@ describe("navigation model", () => {
 // Rebuilt screens show a card of their own instead of the placeholder.
 const BUILT: Readonly<Record<string, string>> = {
   "/": "Status", "/traffic": "Failover history", "/nodes": "Servers toolbar", "/nodes/subscriptions": "Subscription fetching",
-  "/tunnel/routing": "Rules", "/tunnel/anti-dpi": "Anti-DPI profiles", "/tunnel/health": "Current state", "/gateway/network": "Gateway Segment",
+  "/tunnel/routing": "Rules", "/tunnel/anti-dpi": "Anti-DPI profiles", "/tunnel/health": "Current state", "/tunnel/failover": "Switching rules", "/gateway/network": "Gateway Segment",
   "/gateway/remote-access": "Remote Access Inbound", "/system/backups": "Backup & restore", "/system/access": "Password", "/system/logs": "Logs", "/system/panel": "Traffic stats",
 };
 

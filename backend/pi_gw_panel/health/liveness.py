@@ -23,7 +23,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
-from pi_gw_panel.health import probe, failover
+from pi_gw_panel.health import probe, failover, priority
 from pi_gw_panel.health.monitor import DEFAULT_PROBE_URL, LoopErrorReporter
 from pi_gw_panel.controller import RW_PENDING_KEY, apply_lock
 from pi_gw_panel.net_control import events
@@ -76,6 +76,7 @@ class LivenessLoop:
         self._now = now or time.time
         self._now_iso = now_iso or (lambda: datetime.now(timezone.utc).isoformat())
         self._last_probe = 0.0
+        self._list_probed: dict[int, float] = {}
         self._task: asyncio.Task | None = None
         self._executor: ThreadPoolExecutor | None = None
         self._future: Future | None = None
@@ -270,6 +271,7 @@ class LivenessLoop:
                     aid, real_ok=real_ok, real_ms=real_ms, egress_ip=egress,
                     egress_ip6=egress6, checked_at=self._now_iso(),
                 )
+                priority.note_real(store, aid, real_ok, self._now())
         if real_ok and real_ms is not None:
             with apply_lock:
                 with self._write_lock:
@@ -278,6 +280,26 @@ class LivenessLoop:
                     cur = store.get_setting("active_node_id")
                     if (int(cur) if cur else None) == aid:
                         store.record_latency(aid, real_ms)
+
+    # --- priority failover list: keep every standby on the list real-checked ---
+    def _probe_list(self, stop_event: threading.Event | None = None) -> None:
+        st = self._state
+        store = st.store
+        if ((stop_event is not None and stop_event.is_set()) or
+                (store.get_setting("health_enabled") or "1") != "1" or
+                not priority.live_order(store)):
+            return
+        now = self._now()
+
+        def commit(write) -> None:
+            with apply_lock:
+                with self._write_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    write()
+
+        priority.probe_list(st, now, self._now_iso(), self._real_through, commit=commit,
+                            last_probed=self._list_probed)
 
     def _tick(self, stop_event: threading.Event | None = None) -> None:
         # BEFORE the watchdog: with xray down, finishing the revocation rewrites the config it
@@ -303,6 +325,10 @@ class LivenessLoop:
                 self._probe_active(stop_event)
             except Exception:
                 log.debug("liveness probe failed", exc_info=True)
+        try:
+            self._probe_list(stop_event)
+        except Exception:
+            log.warning("liveness: failover-list probe failed", exc_info=True)
         try:
             if stop_event is not None and stop_event.is_set():
                 return

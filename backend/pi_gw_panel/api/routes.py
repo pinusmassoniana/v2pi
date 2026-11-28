@@ -29,7 +29,7 @@ from pi_gw_panel.api.schemas import (
     ConnEventOut, TrafficHistoryOut,
     TokenCreateIn, TokenOut, TokenCreatedOut, AuditEntryOut, BackupFileOut,
     RwOut, RwIn, RwClientIn, RwClientPatch, RwClientOut, RwLinkOut, RwConfigOut, RwShortIdOut,
-    check_credential,
+    FailoverOrderIn, FailoverOut, check_credential,
 )
 from pi_gw_panel.api.deps import get_state, require_auth, require_csrf
 from pi_gw_panel.auth.auth import (
@@ -47,7 +47,7 @@ from pi_gw_panel.net_control.plan import NetPlan, net24
 from pi_gw_panel.net_control.render import render_dnsmasq, reservation_issue
 from pi_gw_panel import rw_inbound as rw_mod
 from pi_gw_panel.stats.history import bounded_interval_ms
-from pi_gw_panel.health import probe, geo
+from pi_gw_panel.health import priority, probe, geo
 from pi_gw_panel.health.selection import best_node
 from pi_gw_panel.health.snapshot import health_status
 from pi_gw_panel import backup as backup_mod
@@ -215,6 +215,9 @@ def _settings_out(state) -> SettingsOut:
         health_probe_url=val("health_probe_url"),
         failover_enabled=val("failover_enabled") == "1",
         failover_cooldown=num("failover_cooldown"),
+        failback_minutes=num("failback_minutes"),
+        failover_real_interval=num("failover_real_interval"),
+        failover_probe_batch=num("failover_probe_batch"),
         stats_enabled=val("stats_enabled") == "1",
         stats_api_port=num("stats_api_port"),
         traffic_sample_ms=num("traffic_sample_ms"),
@@ -1702,7 +1705,8 @@ _SETTINGS_RESET_KEYS = ("tunneled_fetch", "subs_auto_switch", "dns_intercept", "
                         "tailnet_failopen", "health_enabled",
                         "health_sweep_enabled", "health_interval", "health_active_interval",
                         "health_hysteresis", "health_probe_url", "failover_enabled",
-                        "failover_cooldown", "stats_enabled", "stats_api_port",
+                        "failover_cooldown", "failback_minutes", "failover_real_interval",
+                        "failover_probe_batch", "stats_enabled", "stats_api_port",
                         "traffic_sample_ms", "session_timeout_min", "auto_backup_enabled")
 
 
@@ -1718,6 +1722,26 @@ def _validate_settings(state, data: dict) -> None:
             data, reserved_ports=(state.settings.tproxy_port, state.settings.local_proxy_port))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/failover", response_model=FailoverOut)
+def get_failover(request: Request, _: None = Depends(require_auth)) -> FailoverOut:
+    store = get_state(request).store
+    return FailoverOut(order=priority.live_order(store), ok_since=priority.ok_since(store))
+
+
+@router.put("/failover/order", response_model=FailoverOut)
+def put_failover_order(body: FailoverOrderIn, request: Request,
+                       _: None = Depends(require_auth), __: None = Depends(require_csrf)) -> FailoverOut:
+    store = get_state(request).store
+    if len(set(body.order)) != len(body.order):
+        raise HTTPException(422, "a node can appear in the failover list only once")
+    missing = [i for i in body.order if store.get_node(i) is None]
+    if missing:
+        raise HTTPException(422, f"no such node: {', '.join(map(str, missing))}")
+    with apply_lock:
+        priority.set_order(store, body.order)
+    return FailoverOut(order=priority.live_order(store), ok_since=priority.ok_since(store))
 
 
 @router.put("/settings", response_model=SettingsOut)

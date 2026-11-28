@@ -66,6 +66,7 @@ export interface Settings {
   health_active_interval: number;   // active-node real-check cadence (s)
   health_hysteresis: number; health_probe_url: string;
   failover_enabled: boolean; failover_cooldown: number;
+  failback_minutes: number; failover_real_interval: number; failover_probe_batch: number;
   stats_enabled: boolean; stats_api_port: number; traffic_sample_ms: number;
   dns_intercept: boolean; cf_tunnel_keep_ip: boolean; tailnet_failopen: boolean; session_timeout_min: number; auto_backup_enabled: boolean;
   /** B2: the daily release check. Off means the gateway never calls GitHub on its own. */
@@ -209,6 +210,9 @@ export interface Geo { files: GeoFile[]; asset_dir: string; disk_free_bytes: num
 export interface GeoUpdate { ok: boolean; dataset: string; files: string[]; reloaded: boolean; error: string; geo: Geo; }
 
 // --- Wave 2: per-node health ---
+/** GET /failover: the priority list, and since when (epoch s) each node has passed every real check. */
+export interface FailoverState { order: number[]; ok_since: Record<string, number> }
+
 export interface NodeHealth {
   node_id: number; last_tcp_ok: boolean | null; last_tcp_ms: number | null;
   last_http_ok: boolean | null; last_http_ms: number | null;
@@ -502,6 +506,8 @@ export const api = {
   importNodes(text: string): Promise<{ added: number; total: number; format: string; skipped: SkippedEntries }> { return mutate("POST", "/nodes/import", { text }); },
 
   getSettings(): Promise<Settings> { return req("/settings"); },
+  getFailover(): Promise<FailoverState> { return req("/failover"); },
+  putFailoverOrder(order: number[]): Promise<FailoverState> { return mutate("PUT", "/failover/order", { order }); },
   putSettings(patch: Partial<Settings>): Promise<Settings> { return mutate("PUT", "/settings", patch, reappliesTunnel(patch) ? REAPPLY_TIMEOUT_MS : undefined).then(announceCapabilityChange); },
   // A reset writes every re-apply key back to its default, so it always re-applies.
   resetSettings(): Promise<Settings> { return mutate("POST", "/settings/reset", undefined, REAPPLY_TIMEOUT_MS).then(announceCapabilityChange); },

@@ -14,7 +14,7 @@ export const SETTINGS_FILENAME = "v2pi-settings.json";
 export const SETTINGS_KEYS = [
   "tunneled_fetch", "subs_auto_switch", "routing_default_action", "health_enabled", "health_sweep_enabled",
   "health_interval", "health_active_interval", "health_hysteresis", "health_probe_url", "failover_enabled",
-  "failover_cooldown", "stats_enabled", "stats_api_port", "traffic_sample_ms", "dns_intercept", "cf_tunnel_keep_ip", "tailnet_failopen",
+  "failover_cooldown", "failback_minutes", "failover_real_interval", "failover_probe_batch", "stats_enabled", "stats_api_port", "traffic_sample_ms", "dns_intercept", "cf_tunnel_keep_ip", "tailnet_failopen",
   "session_timeout_min", "auto_backup_enabled", "update_check_enabled", "traffic_cap_gb", "traffic_cap_reset_day",
   "diag_url", "diag_bytes",
 ] as const satisfies readonly (keyof Settings)[];
@@ -49,7 +49,7 @@ const INT_BOUNDS: Record<string, [low: number, high: number | null]> = {
   traffic_cap_gb: [0, 1_000_000],
   traffic_cap_reset_day: [1, 28],
   health_interval: [60, null], health_active_interval: [10, null], health_hysteresis: [1, null],
-  failover_cooldown: [0, null], session_timeout_min: [0, null], traffic_sample_ms: [500, 60_000], stats_api_port: [1, 65535],
+  failover_cooldown: [0, null], failback_minutes: [1, 1440], failover_real_interval: [10, 3600], failover_probe_batch: [1, 20], session_timeout_min: [0, null], traffic_sample_ms: [500, 60_000], stats_api_port: [1, 65535],
 };
 
 /**
@@ -191,7 +191,8 @@ export const RESET_KEYS: readonly (readonly [key: string, value: string])[] = [
   ["health_enabled", "1"],
   ["health_sweep_enabled", "1"], ["health_interval", "1800"], ["health_active_interval", "60"],
   ["health_hysteresis", "3"], ["health_probe_url", "https://api.ipify.org?format=json"], ["failover_enabled", "1"],
-  ["failover_cooldown", "120"], ["stats_enabled", "1"], ["stats_api_port", "10085"],
+  ["failover_cooldown", "120"], ["failback_minutes", "20"], ["failover_real_interval", "60"],
+  ["failover_probe_batch", "3"], ["stats_enabled", "1"], ["stats_api_port", "10085"],
   ["traffic_sample_ms", "1000"], ["session_timeout_min", "0"], ["auto_backup_enabled", "0"],
 ];
 

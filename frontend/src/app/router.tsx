@@ -34,6 +34,7 @@ const nodeDetailRoute = createRoute({
 const routingRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/routing", component: lazyRouteComponent(tunnel, "Routing") });
 const antiDpiRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/anti-dpi", component: lazyRouteComponent(tunnel, "AntiDpi") });
 const healthRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/health", component: lazyRouteComponent(tunnel, "Health") });
+const failoverRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tunnel/failover", component: lazyRouteComponent(tunnel, "Failover") });
 const networkRoute = createRoute({ getParentRoute: () => rootRoute, path: "/gateway/network", component: lazyRouteComponent(gateway, "Network") });
 const remoteAccessRoute = createRoute({ getParentRoute: () => rootRoute, path: "/gateway/remote-access", component: lazyRouteComponent(gateway, "RemoteAccess") });
 const backupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/system/backups", component: lazyRouteComponent(system, "Backups") });
@@ -52,7 +53,7 @@ const fallbackRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   homeRoute, trafficRoute, nodesRoute.addChildren([nodesIndexRoute, nodeDetailRoute]), subscriptionsRoute,
-  routingRoute, antiDpiRoute, healthRoute, networkRoute, remoteAccessRoute,
+  routingRoute, antiDpiRoute, healthRoute, failoverRoute, networkRoute, remoteAccessRoute,
   backupsRoute, accessRoute, logsRoute, panelRoute, fallbackRoute,
 ]);
 

@@ -2,3 +2,4 @@
 export { AntiDpi } from "./AntiDpiScreen";
 export { Health } from "./HealthScreen";
 export { Routing } from "./RoutingScreen";
+export { Failover } from "./FailoverScreen";

@@ -372,6 +372,9 @@ class SettingsOut(BaseModel):
     health_probe_url: str
     failover_enabled: bool
     failover_cooldown: int
+    failback_minutes: int
+    failover_real_interval: int
+    failover_probe_batch: int
     stats_enabled: bool
     stats_api_port: int
     traffic_sample_ms: int
@@ -399,6 +402,9 @@ class SettingsIn(NonNullPatch):
     health_probe_url: str | None = Field(default=None, max_length=_MAX_URL)
     failover_enabled: bool | None = None
     failover_cooldown: int | None = None
+    failback_minutes: int | None = None
+    failover_real_interval: int | None = None
+    failover_probe_batch: int | None = None
     stats_enabled: bool | None = None
     stats_api_port: int | None = None
     traffic_sample_ms: int | None = None
@@ -990,3 +996,13 @@ class RwLinkOut(BaseModel):
 class RwConfigOut(BaseModel):
     filename: str
     config: str
+
+
+class FailoverOrderIn(StrictIn):
+    order: list[int] = Field(max_length=200)
+
+
+class FailoverOut(BaseModel):
+    order: list[int]
+    # node id → epoch seconds its current unbroken run of successful real checks began
+    ok_since: dict[int, float]
