@@ -2,7 +2,7 @@ import pytest
 
 from pi_gw_panel.config import Settings
 from pi_gw_panel.models import Node, TuningProfile
-from pi_gw_panel.xray_config.builder import build_config
+from pi_gw_panel.xray_config.builder import TAILNET_DOMAINS, build_config
 
 
 def _node():
@@ -129,5 +129,5 @@ def test_tailnet_failopen_routes_tailscale_via_proxy_with_direct_fallback():
     tail = [i for i, r in enumerate(rules) if r.get("balancerTag") == "tailnet"]
     # right after private→direct: ahead of the catch-all and any user rule
     assert tail == [private + 1, private + 2, private + 3]
-    assert "domain:tailscale.com" in rules[tail[0]]["domain"]
+    assert rules[tail[0]]["domain"] == TAILNET_DOMAINS
     assert rules[-1]["outboundTag"] == "proxy"
